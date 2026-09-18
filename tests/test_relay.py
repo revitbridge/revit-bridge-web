@@ -105,3 +105,70 @@ def test_slot_tokens_guard_http_and_handshake(make_client, env):
             client.get("/api/v1/bridge/service-health").json()))
         thread.start(); thread.join(timeout=5)
         assert outcome["connected_slots"] == 1
+
+
+class _InstantAddin:
+    """A socket whose reply is delivered before send_text returns.
+
+    That is what happens when the receive loop wins the race against the
+    sender: resolve_response runs while send_text is still awaiting.
+    """
+
+    def __init__(self, manager, slot_id: str, reply_for):
+        self._mgr = manager
+        self._slot = slot_id
+        self._reply_for = reply_for
+        self.sent: list[dict] = []
+
+    class client_state:  # what SlotConnection.connected inspects
+        name = "CONNECTED"
+
+    async def send_text(self, text: str) -> None:
+        request = json.loads(text)
+        self.sent.append(request)
+        for reply in self._reply_for(request):
+            self._mgr.resolve_response(self._slot, json.dumps(reply))
+
+
+def test_reply_arriving_before_send_returns_is_not_lost():
+    import asyncio
+
+    from backend.relay import SlotManager
+
+    async def scenario():
+        mgr = SlotManager(max_slots=2)
+        ws = _InstantAddin(mgr, "1", lambda req: [{"jsonrpc": "2.0", "id": req["id"], "result": {"message": "hi"}}])
+        assert mgr.register("1", ws)
+        resp = await mgr.send_command("1", "say_hello", {"message": "ping"}, timeout=1.0)
+        assert resp.success and resp.result == {"message": "hi"}
+        assert mgr.get_status()["slots"]["1"]["requests"] == 1
+        assert mgr.get_connection("1").pending is None
+        return ws.sent[0]["method"]
+
+    assert asyncio.run(scenario()) == "say_hello"
+
+
+def test_stray_reply_before_ours_is_skipped_not_misattributed():
+    import asyncio
+
+    from backend.relay import SlotManager
+
+    async def scenario():
+        mgr = SlotManager(max_slots=2)
+        # A late reply from an earlier request comes first, then the real one.
+        ws = _InstantAddin(mgr, "1", lambda req: [
+            {"jsonrpc": "2.0", "id": "stale-1", "result": {"message": "old"}},
+        ])
+        assert mgr.register("1", ws)
+
+        async def deliver_real_reply_later():
+            await asyncio.sleep(0.05)
+            mgr.resolve_response("1", json.dumps({"jsonrpc": "2.0", "id": ws.sent[0]["id"], "result": {"message": "new"}}))
+
+        task = asyncio.create_task(deliver_real_reply_later())
+        resp = await mgr.send_command("1", "say_hello", {}, timeout=1.0)
+        await task
+        return resp
+
+    resp = asyncio.run(scenario())
+    assert resp.success and resp.result == {"message": "new"}

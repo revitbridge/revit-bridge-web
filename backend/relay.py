@@ -121,6 +121,10 @@ class SlotManager:
             deadline = loop.time() + timeout
             raw = ""
             try:
+                # The future must exist before the request leaves: the receive
+                # loop may deliver a fast reply (say_hello) before send_text
+                # returns, and resolve_response drops replies nobody waits for.
+                conn.pending = loop.create_future()
                 await conn.ws.send_text(json.dumps(payload, ensure_ascii=False))
                 # Wait for the reply carrying our id; skip stray messages
                 # instead of attributing them to this request.
@@ -128,7 +132,6 @@ class SlotManager:
                     remaining = deadline - loop.time()
                     if remaining <= 0:
                         return RevitResponse(success=False, error=f"Timeout after {timeout}s")
-                    conn.pending = loop.create_future()
                     raw = await asyncio.wait_for(conn.pending, timeout=remaining)
                     try:
                         parsed = json.loads(raw)
@@ -137,6 +140,7 @@ class SlotManager:
                     if parsed.get("id") != request_id:
                         _log.warning("slot %s reply id mismatch: expected %s got %s",
                                      slot_id, request_id, parsed.get("id"))
+                        conn.pending = loop.create_future()  # keep waiting for ours
                         continue
                     break
                 conn.request_count += 1
