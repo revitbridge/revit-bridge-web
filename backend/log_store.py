@@ -162,6 +162,46 @@ class InteractionLogStore:
                 return conn.execute("DELETE FROM interaction_logs WHERE timestamp < ?", (date_str,)).rowcount
 
 
+def _sse_frames(chunk: str):
+    """Yield ``(event, data)`` for every ``data:`` line in a chunk of SSE text."""
+    event = ""
+    for line in chunk.split("\n"):
+        if line.startswith("event: "):
+            event = line[7:].strip()
+        elif line.startswith("data: "):
+            yield event, line[6:]
+            event = ""
+
+
+def sse_tokens(chunk: str) -> list[str]:
+    """String payloads of plain ``data:`` frames - the streamed reply text."""
+    found: list[str] = []
+    for event, data in _sse_frames(chunk):
+        if event or data.strip() == "[DONE]":
+            continue
+        try:
+            token = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(token, str):
+            found.append(token)
+    return found
+
+
+def sse_error_status(chunk: str) -> str | None:
+    """``"error: <detail>"`` when the chunk carries an ``event: error`` frame."""
+    for event, data in _sse_frames(chunk):
+        if event != "error":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            payload = data
+        detail = payload.get("detail", payload) if isinstance(payload, dict) else payload
+        return f"error: {detail}"
+    return None
+
+
 def end_of_day(end_date: str) -> str:
     """Upper bound for an ``end_date`` filter.
 
@@ -211,21 +251,23 @@ async def log_and_stream(
     user_input: str = "",
     model: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    """Pass an SSE stream through unchanged and log the assembled reply after it ends."""
+    """Pass an SSE stream through unchanged and log the assembled reply after it ends.
+
+    Frames are inspected by type: string ``data:`` payloads are the reply,
+    an ``event: error`` frame (the model endpoint failed; no exception is
+    raised for it) marks the record ``error: <detail>`` so ``/api/logs/stats``
+    counts model failures alongside crashes.
+    """
     store = get_log_store()
     tokens: list[str] = []
     start = time.time()
     status = "ok"
     try:
         async for chunk in sse_generator:
-            for line in chunk.split("\n"):
-                if line.startswith("data: ") and "[DONE]" not in line:
-                    try:
-                        token = json.loads(line[6:])
-                        if isinstance(token, str):
-                            tokens.append(token)
-                    except (json.JSONDecodeError, ValueError):
-                        pass
+            event_status = sse_error_status(chunk)
+            if event_status:
+                status = event_status
+            tokens.extend(sse_tokens(chunk))
             yield chunk
     except Exception as exc:
         status = f"error: {exc}"

@@ -95,6 +95,27 @@ def test_chat_reports_model_errors_as_an_sse_event(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.text.startswith('event: error\ndata: {"detail": "Model endpoint returned HTTP 401')
 
+    # The interaction log records the model failure, so stats count it.
+    row = get_log_store().query()["items"][0]
+    assert row["status"] == "error: Model endpoint returned HTTP 401: bad key"
+    assert row["assistant_output"] == ""  # the error frame is not reply text
+    stats = get_log_store().stats()
+    assert stats["total"] == 1 and stats["errors"] == 1
+
+
+def test_sse_frame_classification():
+    from backend.log_store import sse_error_status, sse_tokens
+
+    chunk = 'data: "Hel"\n\ndata: "lo"\n\nevent: done\ndata: [DONE]\n\n'
+    assert sse_tokens(chunk) == ["Hel", "lo"]
+    assert sse_error_status(chunk) is None
+
+    error = 'event: error\ndata: {"detail": "upstream closed"}\n\n'
+    assert sse_tokens(error) == []
+    assert sse_error_status(error) == "error: upstream closed"
+    assert sse_error_status('event: error\ndata: "plain text"\n\n') == "error: plain text"
+    assert sse_tokens('data: {"not": "a token"}\n\n') == []
+
 
 def test_chat_rate_limit(make_client, env):
     env.setenv("CHAT_RATE_LIMIT", "2")
