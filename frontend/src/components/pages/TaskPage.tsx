@@ -8,6 +8,7 @@ import { bridgeApi } from '../../api/bridge'
 import { chatStream } from '../../api/chat'
 import { useSessionStore } from '../../store'
 import type { ChatMessage, ToolParam } from '../../types/api'
+import { consumeChat } from '../../utils/chatRun'
 import { extractCSharp } from '../../utils/code'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import Accordion from '../shared/Accordion'
@@ -48,21 +49,19 @@ export default function TaskPage() {
     setSaveStatus('')
     const abort = new AbortController()
     abortRef.current = abort
-    let reply = ''
+    // Every change of the assistant text (tokens, a model error, the empty
+    // fallback) is rendered through this one path.
+    const showAssistant = (content: string) => setMessages(prev => {
+      const copy = [...prev]
+      if (copy.length && copy[copy.length - 1].role === 'assistant') copy[copy.length - 1] = { role: 'assistant', content }
+      else copy.push({ role: 'assistant', content })
+      return copy
+    })
     try {
-      for await (const evt of chatStream(text, chatSessionId, abort.signal)) {
-        if (evt.type === 'session') { setChatSessionId(evt.id); continue }
-        if (evt.type === 'error') { reply += `\n\n**Model error:** ${evt.detail}`; break }
-        reply += evt.text
-        const snapshot = reply
-        setMessages(prev => {
-          const copy = [...prev]
-          if (copy.length && copy[copy.length - 1].role === 'assistant') copy[copy.length - 1] = { role: 'assistant', content: snapshot }
-          else copy.push({ role: 'assistant', content: snapshot })
-          return copy
-        })
-      }
-      if (!reply) setMessages(prev => [...prev, { role: 'assistant', content: '(no response)' }])
+      const reply = await consumeChat(chatStream(text, chatSessionId, abort.signal), {
+        onSession: setChatSessionId,
+        onUpdate: showAssistant,
+      })
       const proposed = extractCSharp(reply)
       if (proposed) { setCode(proposed); setStep(2) }
     } catch (e: unknown) {
