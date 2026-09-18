@@ -1,0 +1,29 @@
+# Git and CI
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.pyc
+.venv
+.pytest_cache
+tests
+
+# Frontend build inputs are copied per stage; outputs are rebuilt
+frontend/node_modules
+frontend/dist
+
+# Runtime data and secrets are mounted, never baked in
+data
+.secrets
+.env
+.env.*
+!.env.example
+
+# Docs and editor state
+*.md
+docs
+.claude
+.vscode
+.idea

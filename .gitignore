@@ -6,3 +6,17 @@
 
 # Local Claude Code state
 .claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/*.local
+
+# Runtime data (skills, capability packs, interaction logs)
+data/

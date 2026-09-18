@@ -1,0 +1,31 @@
+[project]
+name = "revit-bridge-web"
+version = "0.1.0"
+description = "Deploy-anywhere demo host for revit-bridge"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+# The host only imports revit_bridge; every Revit interaction goes through it.
+# The one model client (backend/llm.py) speaks OpenAI-compatible HTTP via httpx.
+dependencies = [
+  "revit-bridge>=0.1.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "pyyaml>=6",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+# Runs from the source tree (python -m backend.main); nothing to build.
+package = false
+
+# Until revit-bridge 0.1.x is on PyPI, resolve it from the public repository.
+# Switch to the PyPI release by deleting this table and re-locking.
+[tool.uv.sources]
+revit-bridge = { git = "https://github.com/revitbridge/revit-bridge", branch = "phase4-query-helpers" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
