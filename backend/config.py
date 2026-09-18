@@ -30,9 +30,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 
 from revit_bridge.auth import load_slot_tokens, slot_token_required
 from revit_bridge.revit.settings import env_flag
@@ -40,6 +41,10 @@ from revit_bridge.revit.settings import env_flag
 DEFAULT_PORT = 7860
 DEFAULT_MAX_SLOTS = 5
 DEFAULT_CHAT_RATE_LIMIT = 30
+
+
+class ConfigError(RuntimeError):
+    """The environment describes a deployment that cannot run; refuse to start."""
 
 
 @dataclass(frozen=True)
@@ -59,11 +64,22 @@ class WebSettings:
     max_slots: int = DEFAULT_MAX_SLOTS
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
     slot_token_required: bool = False
+    # {slot_id: token}, resolved once at startup; the request path only reads it.
+    slot_tokens: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
+        """Read the environment and validate it; raise ``ConfigError`` on a
+        deployment that cannot run (e.g. tokens required but none configured,
+        a token file missing or empty) so the process exits with the reason
+        instead of answering 500 to every request."""
         env = os.environ if env is None else env
         skills = env.get("SKILLS_DIR", "").strip()
+        max_slots = _int(env.get("MAX_SLOTS"), DEFAULT_MAX_SLOTS, "MAX_SLOTS")
+        try:
+            tokens = load_slot_tokens(env, max_slots=max_slots)
+        except RuntimeError as exc:
+            raise ConfigError(f"slot tokens: {exc}") from None
         return cls(
             host=env.get("HOST", "").strip() or "0.0.0.0",
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
@@ -79,9 +95,10 @@ class WebSettings:
             llm_api_key=env.get("LLM_API_KEY", "").strip(),
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
             admin_password=env.get("ADMIN_PASSWORD", ""),
-            max_slots=_int(env.get("MAX_SLOTS"), DEFAULT_MAX_SLOTS, "MAX_SLOTS"),
+            max_slots=max_slots,
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
             slot_token_required=slot_token_required(env),
+            slot_tokens=MappingProxyType(dict(tokens)),
         )
 
     # -- derived paths ---------------------------------------------------------
@@ -101,10 +118,6 @@ class WebSettings:
     @property
     def server_model_configured(self) -> bool:
         return bool(self.llm_api_key and self.llm_model)
-
-    def slot_tokens(self, env: Mapping[str, str] | None = None) -> dict[str, str]:
-        """Pre-shared slot tokens, resolved by the package from the environment."""
-        return load_slot_tokens(env, max_slots=self.max_slots)
 
     def config_json(self) -> dict:
         """What the SPA fetches at startup (``/config.json``)."""
@@ -126,8 +139,8 @@ def _int(raw: str | None, default: int, name: str) -> int:
         return default
     try:
         return int(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    except ValueError:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from None
 
 
 @lru_cache(maxsize=1)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api import bridge, chat, logs, skills
-from backend.config import get_settings
+from backend.config import ConfigError, get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -85,7 +86,21 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+def build_app_or_exit() -> FastAPI:
+    """Create the app, or print the configuration error and exit with 2.
+
+    A deployment whose environment cannot work (slot tokens demanded but not
+    provided, a token file missing or empty, a non-numeric port) must fail at
+    startup with the reason, not answer 500 to every request.
+    """
+    try:
+        return create_app()
+    except ConfigError as exc:
+        print(f"revit-bridge-web: cannot start: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+
+
+app = build_app_or_exit()
 
 
 def main() -> None:

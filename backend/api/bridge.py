@@ -60,11 +60,10 @@ async def set_slot_context(connection: HTTPConnection) -> None:
         ):
             raise HTTPException(403, "Missing X-Slot-Id")
         return
-    tokens = settings.slot_tokens()
-    if not tokens:
+    if not settings.slot_tokens:
         _log.warning("no slot tokens configured - X-Slot-Token check skipped (insecure)")
         return
-    if not verify_slot_token(tokens, slot_id, connection.headers.get("x-slot-token")):
+    if not verify_slot_token(settings.slot_tokens, slot_id, connection.headers.get("x-slot-token")):
         raise HTTPException(403, "Invalid or missing X-Slot-Token")
 
 
@@ -430,7 +429,9 @@ async def revit_ws_endpoint(ws: WebSocket, slot_id: str):
 
     await ws.accept()
 
-    tokens = get_settings().slot_tokens()
+    # Tokens were loaded and validated at startup (WebSettings.from_env);
+    # a misconfigured deployment never reaches this point.
+    tokens = get_settings().slot_tokens
     if tokens:
         try:
             first = await asyncio.wait_for(ws.receive_text(), timeout=10)
