@@ -113,7 +113,13 @@ class InteractionLogStore:
         if start_date:
             where.append("timestamp >= ?"); params.append(start_date)
         if end_date:
-            where.append("timestamp <= ?"); params.append(end_date)
+            # Timestamps are "YYYY-MM-DD HH:MM:SS"; a bare date must include
+            # the whole of that day, not just its first second.
+            bound = end_of_day(end_date)
+            if bound != end_date.strip():
+                where.append("timestamp < ?"); params.append(bound)
+            else:
+                where.append("timestamp <= ?"); params.append(bound)
         if status:
             where.append("status = ?"); params.append(status)
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
@@ -154,6 +160,23 @@ class InteractionLogStore:
         with self._lock:
             with contextlib.closing(self._conn()) as conn, conn:
                 return conn.execute("DELETE FROM interaction_logs WHERE timestamp < ?", (date_str,)).rowcount
+
+
+def end_of_day(end_date: str) -> str:
+    """Upper bound for an ``end_date`` filter.
+
+    ``"2026-09-18"`` becomes ``"2026-09-19"`` (the next day, used exclusively)
+    so the end day is included; a value that already carries a time is
+    returned unchanged and compared inclusively.
+    """
+    text = end_date.strip()
+    if len(text) == 10:
+        try:
+            day = datetime.strptime(text, "%Y-%m-%d")
+        except ValueError:
+            return text
+        return (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    return text
 
 
 _store: InteractionLogStore | None = None

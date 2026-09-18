@@ -75,3 +75,29 @@ def test_logs_are_admin_only(make_client, env):
     assert client.get("/api/logs", headers=ADMIN).json()["total"] == 0
     assert client.get("/api/logs/stats", headers=ADMIN).json()["total"] == 0
     assert client.delete("/api/logs?before=2030-01-01", headers=ADMIN).json()["deleted"] == 0
+
+
+def test_log_date_filters_include_the_end_day(make_client, env):
+    from datetime import datetime, timedelta, timezone
+
+    from backend.log_store import end_of_day, get_log_store
+
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    store = get_log_store()
+    store.log(module="chat", user_input="today's question", assistant_output="answer")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    same_day = client.get("/api/logs", params={"start_date": today, "end_date": today}, headers=ADMIN).json()
+    assert same_day["total"] == 1
+    assert client.get("/api/logs", params={"end_date": yesterday}, headers=ADMIN).json()["total"] == 0
+    assert client.get("/api/logs", params={"start_date": tomorrow}, headers=ADMIN).json()["total"] == 0
+    assert client.get("/api/logs", params={"start_date": yesterday, "end_date": tomorrow}, headers=ADMIN).json()["total"] == 1
+
+    assert end_of_day("2026-09-18") == "2026-09-19"
+    assert end_of_day("2026-12-31") == "2027-01-01"
+    assert end_of_day("2026-09-18 12:00:00") == "2026-09-18 12:00:00"  # explicit time: used as-is
+    assert end_of_day("not-a-date") == "not-a-date"
