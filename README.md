@@ -19,6 +19,13 @@ docker compose up -d --build
 The UI is on `http://127.0.0.1:7860`. Put a reverse proxy with TLS in front of it for anything
 beyond localhost; WebSocket upgrades on `/api/v1/bridge/ws/` must be forwarded.
 
+Split deployment (SPA on a static host, API on another machine): build `frontend/` and upload
+`dist/`, then place a static `config.json` next to its `index.html` - copy
+[`frontend/public/config.example.json`](frontend/public/config.example.json) and set `apiBase` to the
+API origin (and `wsBase` if the relay differs). The SPA reads that file at startup; the backend's own
+`/config.json` only describes a same-origin setup. Set `CORS_ORIGINS` on the API side to the static
+host's origin.
+
 Connect a designer's Revit to the host (on their machine, Revit closed):
 
 ```powershell
@@ -68,7 +75,8 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_FILE_N` | `0`, unset | Pre-shared token per slot; put the file in `./.secrets/` (mounted read-only at `/run/secrets`). The browser sends `X-Slot-Id` / `X-Slot-Token`. |
 | `DATA_DIR` | `/app/data` | Skills, the host's copy of the capability packs, interaction logs (`./data` volume). |
 | `SKILLS_DIR` | unset | Optional read-only skill directory (mount it into the container). |
-| `PUBLIC_API_BASE`, `PUBLIC_WS_BASE`, `CORS_ORIGINS` | unset | For a split deployment: where the SPA finds the API, what the add-in command shows, which origins may call the API. |
+| `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
+| `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment). |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are trusted for client IPs. |
 

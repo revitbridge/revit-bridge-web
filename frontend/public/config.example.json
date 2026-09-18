@@ -1,0 +1,11 @@
+{
+  "apiBase": "https://api.example.com",
+  "wsBase": "wss://api.example.com/api/v1/bridge/ws",
+  "features": {
+    "byoModel": true,
+    "serverModel": false,
+    "admin": false,
+    "slotTokenRequired": false,
+    "maxSlots": 5
+  }
+}

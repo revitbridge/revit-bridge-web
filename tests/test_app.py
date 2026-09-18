@@ -9,8 +9,7 @@ BUILTIN_PACKS = 11
 
 
 def test_health_and_config_json(make_client, env):
-    env.setenv("PUBLIC_API_BASE", "https://demo.example/")
-    env.setenv("PUBLIC_WS_BASE", "wss://demo.example/api/v1/bridge/ws")
+    env.setenv("PUBLIC_WS_BASE", "wss://relay.example/api/v1/bridge/ws/")
     env.setenv("ADMIN_PASSWORD", "s3cret")
     env.setenv("MAX_SLOTS", "3")
     client = make_client()
@@ -21,8 +20,8 @@ def test_health_and_config_json(make_client, env):
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "no-cache"
     assert resp.json() == {
-        "apiBase": "https://demo.example",
-        "wsBase": "wss://demo.example/api/v1/bridge/ws",
+        "apiBase": "",  # served by the backend, the SPA is same-origin by construction
+        "wsBase": "wss://relay.example/api/v1/bridge/ws",
         "features": {
             "byoModel": True,
             "serverModel": False,
@@ -36,7 +35,8 @@ def test_health_and_config_json(make_client, env):
 def test_settings_defaults_come_from_env_only():
     s = WebSettings.from_env({})
     assert (s.host, s.port, s.max_slots, s.cors_origins) == ("0.0.0.0", 7860, 5, ())
-    assert s.config_json()["apiBase"] == ""
+    assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
+        "byoModel": True, "serverModel": False, "admin": False, "slotTokenRequired": False, "maxSlots": 5}}
     s = WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k", "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
 

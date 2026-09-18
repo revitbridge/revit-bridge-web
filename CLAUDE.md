@@ -10,7 +10,7 @@ repository.
 ```bash
 uv sync                                  # backend deps (revit-bridge included)
 uv run pytest                            # backend tests with TestClient, no Revit needed
-cd frontend && npm ci && npm run build && npm run lint
+cd frontend && npm ci && npm run lint && npm test && npm run build   # vitest: config parsing, chat stream handling
 docker compose up --build                # the smoke test: UI on http://127.0.0.1:7860
 uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > docs/api-v0.json
 ```

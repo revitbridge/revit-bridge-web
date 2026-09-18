@@ -17,7 +17,7 @@ def env(tmp_path, monkeypatch):
     for var in ("REVIT_BRIDGE_TOKEN", "REVIT_BRIDGE_CAPABILITIES_DIR", "SKILLS_DIR",
                 "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_ALLOW_HTTP",
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
-                "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS", "PUBLIC_API_BASE",
+                "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
                 "PUBLIC_WS_BASE", "MAX_SLOTS", "CHAT_RATE_LIMIT"):
         monkeypatch.delenv(var, raising=False)
     _reset()

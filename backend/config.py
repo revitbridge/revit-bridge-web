@@ -7,8 +7,9 @@ subset the browser needs so one frontend build works on any address.
     HOST / PORT                 bind address of the server (0.0.0.0:7860)
     CORS_ORIGINS                comma-separated origins when the SPA is hosted
                                 elsewhere (empty = same-origin only)
-    PUBLIC_API_BASE             apiBase announced in /config.json ("" = same origin)
-    PUBLIC_WS_BASE              wsBase announced in /config.json ("" = derived)
+    PUBLIC_WS_BASE              wsBase announced in /config.json when the relay is
+                                reached on another address than the page ("" =
+                                derived from the page origin)
     DATA_DIR                    writable directory: skills/, capabilities/,
                                 interaction_logs.db (default ./data)
     SKILLS_DIR                  optional read-only skill directory (e.g. a mounted
@@ -52,7 +53,6 @@ class WebSettings:
     host: str = "0.0.0.0"
     port: int = DEFAULT_PORT
     cors_origins: tuple[str, ...] = ()
-    public_api_base: str = ""
     public_ws_base: str = ""
     data_dir: Path = Path("data")
     skills_dir: Path | None = None
@@ -86,7 +86,6 @@ class WebSettings:
             cors_origins=tuple(
                 o.strip() for o in env.get("CORS_ORIGINS", "").split(",") if o.strip()
             ),
-            public_api_base=env.get("PUBLIC_API_BASE", "").strip().rstrip("/"),
             public_ws_base=env.get("PUBLIC_WS_BASE", "").strip().rstrip("/"),
             data_dir=Path(env.get("DATA_DIR", "").strip() or "data"),
             skills_dir=Path(skills) if skills else None,
@@ -120,9 +119,15 @@ class WebSettings:
         return bool(self.llm_api_key and self.llm_model)
 
     def config_json(self) -> dict:
-        """What the SPA fetches at startup (``/config.json``)."""
+        """What the SPA fetches at startup (``/config.json``).
+
+        Served by this backend the SPA is same-origin by construction, so
+        ``apiBase`` is always empty here. A split deployment (SPA on a static
+        host, API elsewhere) ships its own static ``config.json`` of the same
+        shape next to ``index.html``; see ``frontend/public/config.example.json``.
+        """
         return {
-            "apiBase": self.public_api_base,
+            "apiBase": "",
             "wsBase": self.public_ws_base,
             "features": {
                 "byoModel": True,
