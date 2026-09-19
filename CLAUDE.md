@@ -48,4 +48,5 @@ release. When the host needs something newer, bump the constraint and `uv lock`.
 ## Commits
 
 Prefix commit subjects with `revit-bridge-web: `. Before committing run `uv run pytest`,
-`npm run build` and `git grep -E "sk-or-v1-|sk-ant-|AIza[0-9A-Za-z_-]{20,}|ghp_"` (must be empty).
+`npm run build` and the key-pattern `git grep` from the workspace `AGENTS.md` (it must
+print nothing; the pattern is deliberately not repeated here so this file cannot match it).
