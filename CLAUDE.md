@@ -42,9 +42,8 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
 
 ## Dependency on the package
 
-`pyproject.toml` requires `revit-bridge>=0.1.0`. Until that version is on PyPI,
-`[tool.uv.sources]` resolves it from the package repository; delete that table and
-re-lock (`uv lock`) once the release exists. `uv.lock` pins the exact commit.
+`pyproject.toml` requires `revit-bridge>=0.1.0` from PyPI; `uv.lock` pins the exact
+release. When the host needs something newer, bump the constraint and `uv lock`.
 
 ## Commits
 

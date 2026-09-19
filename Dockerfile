@@ -9,12 +9,9 @@ RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-## Stage 2: resolve Python dependencies from the lock file
+## Stage 2: resolve Python dependencies from the lock file (revit-bridge from PyPI)
 FROM python:3.12-slim AS python-deps
 COPY --from=ghcr.io/astral-sh/uv:0.12.15 /uv /bin/uv
-# git is only needed while revit-bridge resolves from its repository; drop it
-# together with [tool.uv.sources] once the package is on PyPI.
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON=/usr/local/bin/python3.12 \
     UV_PYTHON_DOWNLOADS=never \

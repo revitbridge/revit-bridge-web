@@ -22,10 +22,5 @@ dev = ["pytest>=8"]
 # Runs from the source tree (python -m backend.main); nothing to build.
 package = false
 
-# Until revit-bridge 0.1.x is on PyPI, resolve it from the public repository.
-# Switch to the PyPI release by deleting this table and re-locking.
-[tool.uv.sources]
-revit-bridge = { git = "https://github.com/revitbridge/revit-bridge", branch = "phase4-query-helpers" }
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]

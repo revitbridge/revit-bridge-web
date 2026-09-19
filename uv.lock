@@ -753,12 +753,16 @@ wheels = [
 [[package]]
 name = "revit-bridge"
 version = "0.1.0"
-source = { git = "https://github.com/revitbridge/revit-bridge?branch=phase4-query-helpers#ece0626d424e15916b6a5956b70d1676b8746b8d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/35/d5/cf088f125b7f24c45efcd6f3322fe955398fe6a89ae1741b8fa0ccdbc454/revit_bridge-0.1.0.tar.gz", hash = "sha256:55f0e59ba106f5b8bbe9bcfd5daae55688326cc44b611d88187a3803935217ee", size = 43932, upload-time = "2026-09-18T12:14:46.773Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/36/11/c3d14ccd434b106fc4b62ce4498f42c2719a90177a72233858f06007ec44/revit_bridge-0.1.0-py3-none-any.whl", hash = "sha256:29b878ae8c3c5a42759236b20a2a29688623a761cb3d666f73e16592d102ba95", size = 49927, upload-time = "2026-09-18T12:14:45.407Z" },
 ]
 
 [[package]]
@@ -783,7 +787,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "revit-bridge", git = "https://github.com/revitbridge/revit-bridge?branch=phase4-query-helpers" },
+    { name = "revit-bridge", specifier = ">=0.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
