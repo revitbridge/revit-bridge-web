@@ -80,6 +80,18 @@ _rate_hits: dict[str, list[float]] = {}
 _RATE_WINDOW = 60.0
 
 
+def _prune_idle(now: float) -> None:
+    """Forget addresses whose every hit is older than the window.
+
+    Called under the lock on each check, so the table only ever holds
+    addresses seen within the last minute instead of every visitor since
+    the process started.
+    """
+    cutoff = now - _RATE_WINDOW
+    for ip in [ip for ip, hits in _rate_hits.items() if not hits or hits[-1] <= cutoff]:
+        del _rate_hits[ip]
+
+
 def rate_limit(request: Request) -> None:
     limit = get_settings().chat_rate_limit
     if limit <= 0:
@@ -87,6 +99,7 @@ def rate_limit(request: Request) -> None:
     ip = get_client_ip(request)
     now = time.time()
     with _rate_lock:
+        _prune_idle(now)
         hits = [t for t in _rate_hits.get(ip, []) if now - t < _RATE_WINDOW]
         if len(hits) >= limit:
             raise HTTPException(429, "Too many requests")
