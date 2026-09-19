@@ -423,7 +423,9 @@ async def revit_ws_endpoint(ws: WebSocket, slot_id: str):
     handshake (``{"type": "auth", "slot_id": ..., "token": ...}``).
     """
     mgr = get_slot_manager()
-    if not slot_id.isdigit() or not (1 <= int(slot_id) <= mgr.max_slots):
+    # Exact literal match: str.isdigit()/int() would also accept "01" or
+    # Unicode digits, registering a key no X-Slot-Id or token lookup matches.
+    if slot_id not in mgr.slot_ids:
         await ws.close(code=4001, reason=f"Invalid slot_id. Use 1-{mgr.max_slots}")
         return
 

@@ -49,15 +49,16 @@ class SlotManager:
 
     def __init__(self, max_slots: int = 5):
         self.max_slots = max_slots
+        self.slot_ids: frozenset[str] = frozenset(str(i) for i in range(1, max_slots + 1))
         self._slots: dict[str, SlotConnection] = {}
 
     # -- registration ----------------------------------------------------------
 
     def register(self, slot_id: str, ws: WebSocket) -> bool:
-        """Claim a slot for a connection. False when the slot is occupied."""
-        if slot_id in self._slots and self._slots[slot_id].connected:
+        """Claim a slot for a connection. False when the id is unknown or the slot is occupied."""
+        if slot_id not in self.slot_ids:
             return False
-        if len(self._slots) >= self.max_slots and slot_id not in self._slots:
+        if slot_id in self._slots and self._slots[slot_id].connected:
             return False
         self._slots[slot_id] = SlotConnection(slot_id=slot_id, ws=ws)
         _log.info("slot %s registered (total %d)", slot_id, len(self._slots))

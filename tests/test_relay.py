@@ -55,14 +55,20 @@ def test_slot_roundtrip_without_tokens(client):
                        headers={"X-Slot-Id": "1"}).status_code == 502
 
 
-def test_invalid_slot_and_occupied_slot(client):
+def _rejected_at_handshake(client, path: str) -> int | None:
     try:
-        with client.websocket_connect("/api/v1/bridge/ws/9"):
+        with client.websocket_connect(path):
             pass
-        raised = False
     except WebSocketDisconnect as exc:
-        raised = exc.code == 4001
-    assert raised
+        return exc.code
+    return None
+
+
+def test_invalid_slot_and_occupied_slot(client):
+    arabic_one, fullwidth_one = chr(0x0661), chr(0xFF11)  # str.isdigit() accepts both
+    for bad in ("9", "0", "01", "1 ", arabic_one, fullwidth_one, "one"):
+        assert _rejected_at_handshake(client, f"/api/v1/bridge/ws/{bad}") == 4001, bad
+    assert client.get("/api/v1/bridge/slots").json()["connected"] == 0
 
     with client.websocket_connect(WS):
         try:
@@ -172,3 +178,13 @@ def test_stray_reply_before_ours_is_skipped_not_misattributed():
 
     resp = asyncio.run(scenario())
     assert resp.success and resp.result == {"message": "new"}
+
+
+def test_slot_manager_only_registers_literal_slot_ids():
+    from backend.relay import SlotManager
+
+    mgr = SlotManager(max_slots=2)
+    assert mgr.slot_ids == {"1", "2"}
+    for bad in ("01", "3", chr(0x0661), ""):
+        assert mgr.register(bad, ws=None) is False
+    assert mgr.get_status()["connected"] == 0
