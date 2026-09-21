@@ -12,9 +12,10 @@ subset the browser needs so one frontend build works on any address.
                                 derived from the page origin)
     DATA_DIR                    writable directory of this host: skills/,
                                 interaction_logs.db (default ./data)
-    SKILLS_DIR                  optional read-only skill directory replacing the
-                                skills shipped in the revit-bridge wheel (e.g. a
-                                mounted checkout of the plugin's skills)
+    SKILLS_DIR                  optional read-only directory replacing the built-in
+                                skill directory (the wheel's skills/, laid out as
+                                revit-bridge/SKILL.md + references/); an empty
+                                directory lists no built-in skills
     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
                                 server-side defaults for the model; request
                                 headers X-LLM-Base-Url / X-LLM-Model / X-LLM-Key
