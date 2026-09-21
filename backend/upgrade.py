@@ -37,8 +37,8 @@ def quarantine_legacy_packs(user_dir: Path) -> list[Path]:
         legacy.mkdir(parents=True, exist_ok=True)
         target = _free_name(legacy, path.name)
         path.replace(target)
-        _log.warning("capability pack %s is a 0.1 copy without schema_version; moved to %s "
-                     "(the package's own pack of that name is used instead)", path.name, target)
+        _log.warning("capability pack %s has no schema_version (a 0.1 file); moved to %s - "
+                     "the wheel's pack of that name, if there is one, is listed instead", path.name, target)
         moved.append(target)
     return moved
 
