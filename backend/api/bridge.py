@@ -9,8 +9,9 @@ Prefix ``/api/v1/bridge``. Two transports to Revit:
   configured).
 
 Every route validates or executes through the package: ``sandbox.review``
-before any code is dispatched, ``ToolStore`` for packs,
-``RevitQueryExecutor`` for model queries.
+before any code is dispatched, ``ToolStore`` for packs (built-in packs from
+the wheel plus the user packs under the package's data root,
+``REVIT_BRIDGE_DATA_DIR``), ``RevitQueryExecutor`` for model queries.
 """
 from __future__ import annotations
 
@@ -26,11 +27,11 @@ from starlette.requests import HTTPConnection
 
 from revit_bridge import __version__ as bridge_version
 from revit_bridge.auth import parse_handshake_token, verify_slot_token
+from revit_bridge.capabilities import ToolStore
 from revit_bridge.mcp_server import check_connection
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
 from revit_bridge.snapshot import RevitQueryExecutor
 
-from backend.capabilities import get_tool_store
 from backend.config import get_settings
 from backend.relay import WebSocketRevitClient, get_slot_manager
 
@@ -210,7 +211,7 @@ async def solidify_tool(req: SolidifyRequest):
     safe, warnings = sandbox.review(req.code)
     if not safe:
         raise HTTPException(400, detail={"error": "blocked", "warnings": warnings})
-    store = get_tool_store()
+    store = ToolStore()
     tool = store.solidify(
         name=req.name, code=req.code, description=req.description,
         parameters=req.parameters, tags=req.tags, source_query=req.source_query,
@@ -243,12 +244,12 @@ async def _sync_to_revit(tool) -> bool:
 
 @router.get("/tools")
 async def list_tools():
-    return [_tool_summary(t) for t in get_tool_store().list_tools()]
+    return [_tool_summary(t) for t in ToolStore().list_tools()]
 
 
 @router.get("/tools/{name}")
 async def get_tool(name: str):
-    tool = get_tool_store().load(name)
+    tool = ToolStore().load(name)
     if not tool:
         raise HTTPException(404, f"Tool '{name}' not found")
     return _tool_detail(tool)
@@ -261,7 +262,7 @@ async def update_tool(name: str, req: UpdateToolRequest):
         safe, warnings = sandbox.review(updates["code_template"] or "")
         if not safe:
             raise HTTPException(422, f"Code review failed: {'; '.join(warnings)}")
-    tool = get_tool_store().update(name, updates)
+    tool = ToolStore().update(name, updates)
     if not tool:
         raise HTTPException(404, f"Tool '{name}' not found")
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}
@@ -269,7 +270,7 @@ async def update_tool(name: str, req: UpdateToolRequest):
 
 @router.delete("/tools/{name}")
 async def delete_tool(name: str):
-    if get_tool_store().delete(name):
+    if ToolStore().delete(name):
         return {"status": "deleted", "name": name}
     raise HTTPException(404, f"Tool '{name}' not found")
 
@@ -277,7 +278,7 @@ async def delete_tool(name: str):
 @router.get("/tools/{name}/choices")
 async def get_tool_choices(name: str):
     """Real values for the pack's dynamic parameters (levels, types, elements)."""
-    store = get_tool_store()
+    store = ToolStore()
     if not store.load(name):
         raise HTTPException(404, f"Tool '{name}' not found")
     dynamic = store.get_dynamic_params(name)
@@ -295,7 +296,7 @@ async def get_tool_choices(name: str):
 @router.post("/tools/{name}/run")
 async def run_tool(name: str, req: RunToolRequest):
     """Render the pack with the given parameters, review, execute."""
-    store = get_tool_store()
+    store = ToolStore()
     if not store.load(name):
         raise HTTPException(404, f"Tool '{name}' not found")
     valid, errors, _ = store.validate_params(name, req.params)

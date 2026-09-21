@@ -73,7 +73,8 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `MAX_SLOTS` | `5` | Remote add-in slots on the relay. |
 | `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_FILE_N` | `0`, unset | Pre-shared token per slot; put the file in `./.secrets/` (mounted read-only at `/run/secrets`). The browser sends `X-Slot-Id` / `X-Slot-Token`. |
-| `DATA_DIR` | `/app/data` | Skills, the host's copy of the capability packs, interaction logs (`./data` volume). |
+| `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
+| `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
 | `SKILLS_DIR` | unset | Optional read-only skill directory (mount it into the container). |
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment). |

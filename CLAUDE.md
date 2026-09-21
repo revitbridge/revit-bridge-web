@@ -21,7 +21,7 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
 - `backend/api/bridge.py` - `/api/v1/bridge/*`, slot header dependency, add-in WebSocket endpoint.
 - `backend/api/chat.py` - `/api/chat` SSE; `backend/llm.py` the single OpenAI-compatible client.
 - `backend/relay.py` - `SlotManager` / `WebSocketRevitClient` (same surface as `RevitClient`).
-- `backend/skill_store.py`, `backend/log_store.py`, `backend/capabilities.py`, `backend/config.py`.
+- `backend/skill_store.py`, `backend/log_store.py`, `backend/config.py`.
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`.
 - `tests/` - pytest; `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 

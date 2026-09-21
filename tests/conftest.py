@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import capabilities, config, log_store, relay, skill_store, session
+from backend import config, log_store, relay, skill_store, session
 
 
 @pytest.fixture
@@ -33,7 +33,6 @@ def _reset() -> None:
     from backend.api import chat
     chat._rate_hits.clear()
     config.reset_settings()
-    capabilities.reset_tool_store()
     skill_store.reset_skill_store()
     log_store.reset_log_store()
     relay.reset_slot_manager()

@@ -30,9 +30,13 @@ COPY backend/ backend/
 COPY --from=frontend-build /build/dist/ frontend/dist/
 COPY docker-entrypoint.sh /usr/local/bin/revit-bridge-web-entrypoint
 
+# DATA_DIR is this host's directory (skills, interaction logs);
+# REVIT_BRIDGE_DATA_DIR is the package's data root (user capability packs,
+# usage.json, evidence). Both live in the ./data volume.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
+    REVIT_BRIDGE_DATA_DIR=/app/data \
     HOST=0.0.0.0 \
     PORT=7860
 

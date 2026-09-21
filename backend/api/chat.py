@@ -20,9 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from revit_bridge.capabilities import ToolStore
 from revit_bridge.revit.settings import RevitSettings
 
-from backend.capabilities import get_tool_store
 from backend.config import get_settings
 from backend.llm import SSE_DONE, LLMError, LLMSettings, format_sse, format_sse_event, stream_chat
 from backend.log_store import get_client_ip, log_and_stream
@@ -110,7 +110,7 @@ def rate_limit(request: Request) -> None:
 def build_system_prompt() -> str:
     """Host conventions, the capability pack index, then every enabled skill."""
     parts = [HOST_INSTRUCTIONS.strip()]
-    tools = get_tool_store().list_tools()
+    tools = ToolStore().list_tools()
     if tools:
         lines = ["## Capability packs on this host (run from the Capabilities page)"]
         for tool in tools:

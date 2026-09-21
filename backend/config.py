@@ -10,7 +10,7 @@ subset the browser needs so one frontend build works on any address.
     PUBLIC_WS_BASE              wsBase announced in /config.json when the relay is
                                 reached on another address than the page ("" =
                                 derived from the page origin)
-    DATA_DIR                    writable directory: skills/, capabilities/,
+    DATA_DIR                    writable directory of this host: skills/,
                                 interaction_logs.db (default ./data)
     SKILLS_DIR                  optional read-only skill directory (e.g. a mounted
                                 checkout of the plugin's skills)
@@ -23,9 +23,11 @@ subset the browser needs so one frontend build works on any address.
     MAX_SLOTS                   number of remote add-in slots (default 5)
     CHAT_RATE_LIMIT             requests per minute per IP on /api/chat (default 30)
 
-The package reads its own variables: REVIT_BRIDGE_HOST / PORT / TOKEN /
-TIMEOUT / CAPABILITIES_DIR and MCP_BRIDGE_REQUIRE_SLOT_TOKEN /
-MCP_BRIDGE_SLOT_TOKEN_N / MCP_BRIDGE_SLOT_TOKEN_FILE_N.
+The package reads its own variables: REVIT_BRIDGE_DATA_DIR (its data root:
+user capability packs, usage.json, the evidence ledger; the container sets
+/app/data), REVIT_BRIDGE_HOST / PORT / TOKEN / TIMEOUT and
+MCP_BRIDGE_REQUIRE_SLOT_TOKEN / MCP_BRIDGE_SLOT_TOKEN_N /
+MCP_BRIDGE_SLOT_TOKEN_FILE_N.
 """
 from __future__ import annotations
 
@@ -105,10 +107,6 @@ class WebSettings:
     @property
     def user_skills_dir(self) -> Path:
         return self.data_dir / "skills"
-
-    @property
-    def capabilities_dir(self) -> Path:
-        return self.data_dir / "capabilities"
 
     @property
     def log_db_path(self) -> Path:

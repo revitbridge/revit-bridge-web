@@ -11,7 +11,10 @@ services:
       - path: .env
         required: false
     environment:
+      # This host's files (skills, interaction logs) and the package's data
+      # root (user capability packs, usage.json, evidence): the ./data volume.
       DATA_DIR: /app/data
+      REVIT_BRIDGE_DATA_DIR: /app/data
       # Inside the container the app always listens on 7860; PORT in .env only
       # chooses the published host port above.
       PORT: 7860
