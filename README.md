@@ -90,7 +90,19 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are trusted for client IPs. |
 
-The HTTP contract is exported to [`docs/api-v0.json`](docs/api-v0.json) (`/openapi.json` on a running host).
+## API v1
+
+`/api/v1/bridge/*` is a thin HTTP surface over the package, exported to
+[`docs/api-v1.json`](docs/api-v1.json) (`/openapi.json` on a running host). The routes follow the
+package's flow: `GET /snapshot` and `POST /query` read the model; `GET /tools`,
+`POST /tools/{name}/missing-params` and `POST /spec/reconcile` prepare a TaskSpec; `POST /spec/confirm`
+turns the designer's confirmation into a one-time token; `POST /tools/{name}/run` and `POST /execute`
+run only with that token (sandbox review, preconditions, validator and the evidence ledger are the
+package's; the ledger records `host: "web"`); `GET /evidence` and `POST /evidence/{id}/validate` show
+and re-check what ran. A request that cannot be honoured as written is 4xx, a Revit that cannot be
+reached is 503, and a refusal by the gate, a failed precondition or a failed validation is 200 with
+`success: false`; error bodies are `{error, message?, ...}` with the MCP tools' codes. Pick a Revit
+with `X-Slot-Id` (+ `X-Slot-Token`) as before.
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; the container reads
 slot tokens from mounted files and the model key only from request headers or the environment.
 

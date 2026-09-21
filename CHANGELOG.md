@@ -6,7 +6,31 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Web API v1 under `/api/v1/bridge`, every route a thin wrapper over `revit-bridge` 0.2:
+  `GET /snapshot`, `POST /query`, `POST /tools/{name}/missing-params`,
+  `POST /spec/reconcile`, `POST /spec/confirm` (issues the one-time token, channel
+  `host_ui`), `GET /evidence`, `POST /evidence/{id}/validate`. The contract is exported
+  to `docs/api-v1.json` (CI checks it).
+- `tests/fake_revit.py`: a TCP stand-in for the add-in so every route is tested end to
+  end without Revit.
+
 ### Changed
+
+- `POST /tools/{name}/run` and `POST /execute` require the token from
+  `POST /spec/confirm` and run through the package's `run_pack` / `run_code`
+  (sandbox, preconditions, validator, evidence ledger with `host: "web"`); without a
+  token they answer 400 `confirmation_required`, a tampered call is 200
+  `confirmation_invalid`, a failed validation 200 `validation_failed`. The reply is the
+  MCP `ExecutionResult` shape.
+- `GET /tools` returns the MCP `list_tools` shape (`name, description, version,
+  parameters, preconditions, validator, used`). `POST /solidify` takes v1 parameters
+  and an optional `validator`.
+- Status codes and error bodies across the bridge routes: 4xx for a request that
+  cannot be honoured, 503 `revit_unreachable` when no add-in answers (was 502), 200
+  `success: false` for refusals; bodies are `{error, message?, ...}` instead of
+  FastAPI's `{detail}`.
 
 - Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
   packs read in place from the wheel, keeps user packs and `usage.json` under its own
@@ -37,6 +61,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Removed
 
+- `GET/POST /unit`, `GET /project-units`, `POST /query-revit`: the snapshot's `units`
+  and `POST /query` replace them (the Connect page reads units from the snapshot).
+  `docs/api-v0.json` is replaced by `docs/api-v1.json`.
 - `backend/capabilities.py` (the first-start copy of the packs into `DATA_DIR`).
 
 ## [0.1.0] - 2026-09-18
