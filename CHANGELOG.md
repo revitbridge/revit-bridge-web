@@ -8,7 +8,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
-- Requires `revit-bridge` 0.2 (`>=0.2.0,<0.3`). The package now ships eight built-in
+- Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
   packs read in place from the wheel, keeps user packs and `usage.json` under its own
   data root, and no longer rewrites pack files to count executions.
 - Capability packs come straight from the package's `ToolStore`: built-in packs are

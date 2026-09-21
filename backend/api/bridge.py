@@ -28,8 +28,8 @@ from starlette.requests import HTTPConnection
 from revit_bridge import __version__ as bridge_version
 from revit_bridge.auth import parse_handshake_token, verify_slot_token
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.mcp_server import check_connection
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
+from revit_bridge.revit.probe import check_connection
 from revit_bridge.snapshot import RevitQueryExecutor
 
 from backend.config import get_settings
