@@ -41,7 +41,7 @@ def install(app: FastAPI) -> None:
         """A body or query that does not fit the route: the MCP tools call it invalid_args."""
         errors = exc.errors()
         first = errors[0] if errors else {}
-        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+        where = ".".join(str(p) for p in first.get("loc", ()) if p != "body" and not isinstance(p, int))
         message = f"{where}: {first.get('msg')}" if where else str(first.get("msg", "invalid request"))
         return JSONResponse(status_code=422, content={
             "error": "invalid_args", "message": message,
