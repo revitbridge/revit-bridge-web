@@ -5,7 +5,8 @@ import json
 
 from backend.config import WebSettings
 
-BUILTIN_PACKS = 11
+# Packs shipped read-only inside the revit-bridge 0.2 wheel.
+BUILTIN_PACKS = 8
 
 
 def test_health_and_config_json(make_client, env):
@@ -41,14 +42,16 @@ def test_settings_defaults_come_from_env_only():
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
 
 
-def test_capability_packs_are_seeded_into_data_dir_and_listed(client, env, tmp_path):
+def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path):
     tools = client.get("/api/v1/bridge/tools").json()
     names = sorted(t["name"] for t in tools)
     assert len(names) == BUILTIN_PACKS and len(set(names)) == BUILTIN_PACKS
     assert "create_wall" in names and "query_levels" in names
 
-    seeded = tmp_path / "data" / "capabilities"
-    assert sorted(p.stem for p in seeded.glob("*.yaml")) == names
+    # The package reads its built-in packs in place; the user directory under
+    # the data root holds only what this host writes (nothing yet).
+    user_dir = tmp_path / "data" / "capabilities"
+    assert not list(user_dir.glob("*.yaml"))
 
     detail = client.get("/api/v1/bridge/tools/create_wall").json()
     assert detail["code_template"].strip()
@@ -57,18 +60,25 @@ def test_capability_packs_are_seeded_into_data_dir_and_listed(client, env, tmp_p
     assert client.get("/api/v1/bridge/tools/nope").status_code == 404
 
 
-def test_pack_edits_persist_in_the_host_copy(client):
+def test_pack_edits_land_in_the_user_directory(client, tmp_path):
     resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"})
     assert resp.status_code == 200
     assert resp.json()["description"] == "levels, sorted"
     assert resp.json()["revit_synced"] is False  # no Revit in tests
+    user_dir = tmp_path / "data" / "capabilities"
+    assert (user_dir / "query_levels.yaml").is_file()  # the built-in copy is untouched
+    assert client.get("/api/v1/bridge/tools/query_levels").json()["description"] == "levels, sorted"
 
     blocked = client.put("/api/v1/bridge/tools/query_levels",
                          json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
     assert blocked.status_code == 422
 
+    # Deleting removes the user copy and hides the built-in one behind a marker.
     assert client.delete("/api/v1/bridge/tools/query_levels").json()["status"] == "deleted"
+    assert not (user_dir / "query_levels.yaml").exists()
+    assert (user_dir / "query_levels.disabled").is_file()
     assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS - 1
+    assert client.get("/api/v1/bridge/tools/query_levels").status_code == 404
 
 
 def test_execute_is_reviewed_then_needs_a_revit(client):

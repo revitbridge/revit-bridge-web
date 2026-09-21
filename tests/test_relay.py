@@ -55,6 +55,33 @@ def test_slot_roundtrip_without_tokens(client):
                        headers={"X-Slot-Id": "1"}).status_code == 502
 
 
+def test_pack_run_over_the_slot_counts_usage_in_the_data_root(client, tmp_path):
+    with client.websocket_connect(WS) as addin:
+        outcome: dict = {}
+
+        def run():
+            outcome["run"] = client.post(
+                "/api/v1/bridge/tools/query_levels/run", json={"params": {}}, headers={"X-Slot-Id": "1"},
+            ).json()
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        request = addin.receive_json()
+        assert request["method"] == "send_code_to_revit"
+        addin.send_text(_addin_reply(request, {"success": True, "result": "[]", "errorMessage": ""}))
+        thread.join(timeout=5)
+        assert outcome["run"] == {"success": True, "tool": "query_levels", "result": [], "error": None}
+
+    # The package counts the run in usage.json under its data root and leaves
+    # the built-in pack file alone (it is read-only inside the wheel).
+    user_dir = tmp_path / "data" / "capabilities"
+    usage = json.loads((user_dir / "usage.json").read_text(encoding="utf-8"))
+    assert usage["query_levels"]["execution_count"] == 1 and usage["query_levels"]["failure_count"] == 0
+    assert not (user_dir / "query_levels.yaml").exists()
+    listed = {t["name"]: t for t in client.get("/api/v1/bridge/tools").json()}
+    assert listed["query_levels"]["execution_count"] == 1
+
+
 def _rejected_at_handshake(client, path: str) -> int | None:
     try:
         with client.websocket_connect(path):

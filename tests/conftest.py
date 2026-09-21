@@ -11,10 +11,14 @@ from backend import capabilities, config, log_store, relay, skill_store, session
 def env(tmp_path, monkeypatch):
     """Point the host at a private data dir and no Revit; returns monkeypatch."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    # The package's own data root (user packs, usage.json, evidence) must not
+    # be the developer's real one.
+    monkeypatch.setenv("REVIT_BRIDGE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("REVIT_BRIDGE_HOST", "127.0.0.1")
     monkeypatch.setenv("REVIT_BRIDGE_PORT", "1")  # nothing listens here
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "2")
-    for var in ("REVIT_BRIDGE_TOKEN", "REVIT_BRIDGE_CAPABILITIES_DIR", "SKILLS_DIR",
+    for var in ("REVIT_BRIDGE_TOKEN", "REVIT_BRIDGE_CAPABILITIES_DIR", "REVIT_BRIDGE_EVIDENCE_DIR",
+                "SKILLS_DIR",
                 "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_ALLOW_HTTP",
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",

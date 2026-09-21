@@ -4,6 +4,14 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Requires `revit-bridge` 0.2 (`>=0.2.0,<0.3`). The package now ships eight built-in
+  packs read in place from the wheel, keeps user packs and `usage.json` under its own
+  data root, and no longer rewrites pack files to count executions.
+
 ## [0.1.0] - 2026-09-18
 
 First standalone release of the demo host, split out of the former
