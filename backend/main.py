@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from revit_bridge.capabilities import ToolStore
 
-from backend.api import bridge, chat, logs, skills
+from backend.api import bridge, chat, errors, logs, skills
 from backend.config import ConfigError, get_settings
 from backend.upgrade import quarantine_legacy_packs
 
@@ -54,6 +54,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
             expose_headers=["X-Session-Id"],
         )
 
+    errors.install(app)
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(logs.router)

@@ -722,40 +722,35 @@
         }
       }
     },
-    "/api/v1/bridge/unit": {
+    "/api/v1/bridge/snapshot": {
       "get": {
         "tags": [
           "bridge"
         ],
-        "summary": "Get Unit",
-        "operationId": "get_unit_api_v1_bridge_unit_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
+        "summary": "Get Snapshot",
+        "description": "``take_snapshot``: the open model as a ``ProjectSnapshot`` (units, levels, grids,\nselection, the family types of ``categories`` - repeat the parameter or separate\nnames with commas; absent: walls, columns, framing, floors, doors, windows;\n``categories=`` empty: no family types).",
+        "operationId": "get_snapshot_api_v1_bridge_snapshot_get",
+        "parameters": [
+          {
+            "name": "categories",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Categories"
             }
           }
-        }
-      },
-      "post": {
-        "tags": [
-          "bridge"
         ],
-        "summary": "Set Unit",
-        "operationId": "set_unit_api_v1_bridge_unit_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UnitSettingRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -778,79 +773,19 @@
         }
       }
     },
-    "/api/v1/bridge/project-units": {
-      "get": {
-        "tags": [
-          "bridge"
-        ],
-        "summary": "Get Project Units",
-        "description": "Ask Revit which length unit the project displays.",
-        "operationId": "get_project_units_api_v1_bridge_project_units_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/bridge/execute": {
+    "/api/v1/bridge/query": {
       "post": {
         "tags": [
           "bridge"
         ],
-        "summary": "Execute Code",
-        "description": "Send C# to Revit after the sandbox review.",
-        "operationId": "execute_code_api_v1_bridge_execute_post",
+        "summary": "Query Model",
+        "description": "``run_query``: one read-only query by kind (levels, grids, family_types, elements,\nselection, view_elements, units, counts). The package's answer is returned as is;\nan unknown kind or bad args is 400, Revit reporting an error is 200 with ``error``.",
+        "operationId": "query_model_api_v1_bridge_query_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExecuteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/bridge/solidify": {
-      "post": {
-        "tags": [
-          "bridge"
-        ],
-        "summary": "Solidify Tool",
-        "description": "Save working code as a capability pack; best-effort sync to the add-in.",
-        "operationId": "solidify_tool_api_v1_bridge_solidify_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SolidifyRequest"
+                "$ref": "#/components/schemas/QueryRequest"
               }
             }
           },
@@ -884,6 +819,7 @@
           "bridge"
         ],
         "summary": "List Tools",
+        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape.",
         "operationId": "list_tools_api_v1_bridge_tools_get",
         "responses": {
           "200": {
@@ -941,6 +877,7 @@
           "bridge"
         ],
         "summary": "Update Tool",
+        "description": "Change editable fields; the package validates the result as a v1 pack (422 with problems).",
         "operationId": "update_tool_api_v1_bridge_tools__name__put",
         "parameters": [
           {
@@ -1064,13 +1001,64 @@
         }
       }
     },
+    "/api/v1/bridge/tools/{name}/missing-params": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Tool Missing Params",
+        "description": "``missing_params``: the questions still open for the pack given ``known`` values,\nwith the real options from ``snapshot`` (or one taken now, best effort).",
+        "operationId": "tool_missing_params_api_v1_bridge_tools__name__missing_params_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MissingParamsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bridge/tools/{name}/run": {
       "post": {
         "tags": [
           "bridge"
         ],
         "summary": "Run Tool",
-        "description": "Render the pack with the given parameters, review, execute.",
+        "description": "``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,\nvalidator, evidence, all in the package. Without a token: 400 ``confirmation_required``.",
         "operationId": "run_tool_api_v1_bridge_tools__name__run_post",
         "parameters": [
           {
@@ -1115,24 +1103,243 @@
         }
       }
     },
-    "/api/v1/bridge/query-revit": {
+    "/api/v1/bridge/spec/reconcile": {
       "post": {
         "tags": [
           "bridge"
         ],
-        "summary": "Query Revit",
-        "description": "Run an add-in command (or one of the known read queries).",
-        "operationId": "query_revit_api_v1_bridge_query_revit_post",
+        "summary": "Reconcile Spec",
+        "description": "``reconcile``: the draft TaskSpec against the snapshot (given, or taken now).",
+        "operationId": "reconcile_spec_api_v1_bridge_spec_reconcile_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/QueryRevitRequest"
+                "$ref": "#/components/schemas/ReconcileRequest"
               }
             }
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/spec/confirm": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Confirm Spec",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}``.\nThe token belongs to the browser session and never enters the model context.",
+        "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/execute": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Execute Code",
+        "description": "``run_code``: the confirmed C# under its token; the sandbox review and the ledger are the package's.",
+        "operationId": "execute_code_api_v1_bridge_execute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/solidify": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Solidify Tool",
+        "description": "``ToolStore.solidify``: save working code as a v1 pack; best-effort sync to the add-in.",
+        "operationId": "solidify_tool_api_v1_bridge_solidify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SolidifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/evidence": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "List Evidence",
+        "description": "``Ledger.recent``: the newest execution records, optionally of one pack.",
+        "operationId": "list_evidence_api_v1_bridge_evidence_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tool"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/evidence/{evidence_id}/validate": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Validate Evidence",
+        "description": "``revalidate``: the recorded execution's assertion against the model as it is now.",
+        "operationId": "validate_evidence_api_v1_bridge_evidence__evidence_id__validate_post",
+        "parameters": [
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Evidence Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1302,6 +1509,25 @@
         ],
         "title": "ChatRequest"
       },
+      "ConfirmRequest": {
+        "properties": {
+          "spec": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Spec"
+          },
+          "confirmed_by": {
+            "type": "string",
+            "title": "Confirmed By",
+            "default": "designer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "spec"
+        ],
+        "title": "ConfirmRequest"
+      },
       "ExecuteRequest": {
         "properties": {
           "code": {
@@ -1319,6 +1545,11 @@
               }
             ],
             "title": "Parameters"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "default": ""
           }
         },
         "type": "object",
@@ -1340,23 +1571,77 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
-      "QueryRevitRequest": {
+      "MissingParamsRequest": {
         "properties": {
-          "command": {
-            "type": "string",
-            "title": "Command"
-          },
-          "params": {
+          "known": {
             "additionalProperties": true,
             "type": "object",
-            "title": "Params"
+            "title": "Known"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "default": "zh"
+          }
+        },
+        "type": "object",
+        "title": "MissingParamsRequest"
+      },
+      "QueryRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "args": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Args"
           }
         },
         "type": "object",
         "required": [
-          "command"
+          "kind"
         ],
-        "title": "QueryRevitRequest"
+        "title": "QueryRequest"
+      },
+      "ReconcileRequest": {
+        "properties": {
+          "spec": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Spec"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot"
+          }
+        },
+        "type": "object",
+        "required": [
+          "spec"
+        ],
+        "title": "ReconcileRequest"
       },
       "RunToolRequest": {
         "properties": {
@@ -1364,6 +1649,11 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Params"
+          },
+          "token": {
+            "type": "string",
+            "title": "Token",
+            "default": ""
           }
         },
         "type": "object",
@@ -1528,17 +1818,22 @@
             "type": "array",
             "title": "Parameters"
           },
-          "tags": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Tags"
-          },
           "source_query": {
             "type": "string",
             "title": "Source Query",
             "default": ""
+          },
+          "validator": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validator"
           }
         },
         "type": "object",
@@ -1547,19 +1842,6 @@
           "code"
         ],
         "title": "SolidifyRequest"
-      },
-      "UnitSettingRequest": {
-        "properties": {
-          "unit": {
-            "type": "string",
-            "title": "Unit"
-          }
-        },
-        "type": "object",
-        "required": [
-          "unit"
-        ],
-        "title": "UnitSettingRequest"
       },
       "UpdateToolRequest": {
         "properties": {

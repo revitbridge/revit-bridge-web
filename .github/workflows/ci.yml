@@ -30,7 +30,7 @@ jobs:
       - name: OpenAPI export is current
         run: |
           uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > /tmp/api.json
-          diff -u docs/api-v0.json /tmp/api.json
+          diff -u docs/api-v1.json /tmp/api.json
 
   frontend:
     runs-on: ubuntu-latest

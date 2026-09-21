@@ -1,7 +1,7 @@
 # revit-bridge-web
 
 Demo host for the `revit-bridge` package. Public repository: only `README.md`,
-`CHANGELOG.md`, this file and `docs/api-v0.json` are documentation; design notes,
+`CHANGELOG.md`, this file and `docs/api-v1.json` are documentation; design notes,
 deployment details (domains, nginx, Cloudflare) and logs live in the private notes
 repository.
 
@@ -12,18 +12,18 @@ uv sync                                  # backend deps (revit-bridge included)
 uv run pytest                            # backend tests with TestClient, no Revit needed
 cd frontend && npm ci && npm run lint && npm test && npm run build   # vitest: config parsing, chat stream handling
 docker compose up --build                # the smoke test: UI on http://127.0.0.1:7860
-uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > docs/api-v0.json
+uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > docs/api-v1.json
 ```
 
 ## Layout
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving.
-- `backend/api/bridge.py` - `/api/v1/bridge/*`, slot header dependency, add-in WebSocket endpoint.
+- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence), slot header dependency, add-in WebSocket endpoint; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat` SSE; `backend/llm.py` the single OpenAI-compatible client.
 - `backend/relay.py` - `SlotManager` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/skill_store.py`, `backend/log_store.py`, `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`.
-- `tests/` - pytest; `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
+- `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
 ## Hard constraints
 
@@ -36,7 +36,7 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
   `LLM_*` environment variables. Keys are never written to disk, logs or error messages.
 - Configuration comes only from environment variables (see `.env.example`); no config files.
 - Web API contract changes are a planning decision: stop and record `BLOCKED` in the notes log.
-- `docs/` holds exactly one file, `docs/api-v0.json`. Deployment details stay in the notes repo.
+- `docs/` holds exactly one file, `docs/api-v1.json`. Deployment details stay in the notes repo.
 - Scripts (`*.sh`, `*.ps1`, `*.py` tools, Dockerfile) are ASCII only.
 - `.env`, `.secrets/`, `*.token` never enter the repository.
 

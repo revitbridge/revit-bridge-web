@@ -13,6 +13,17 @@ def _addin_reply(request: dict, result) -> str:
     return json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result})
 
 
+def _serve(addin, count: int, handler) -> list[dict]:
+    """Answer ``count`` requests on the add-in side (the package's flow is deterministic)."""
+    seen = []
+    for _ in range(count):
+        request = addin.receive_json()
+        assert request["method"] == "send_code_to_revit"
+        seen.append(request)
+        addin.send_text(json.dumps(handler(request)))
+    return seen
+
+
 def test_slot_roundtrip_without_tokens(client):
     with client.websocket_connect(WS) as addin:
         assert client.get("/api/v1/bridge/slots").json()["slots"]["1"]["status"] == "connected"
@@ -32,45 +43,73 @@ def test_slot_roundtrip_without_tokens(client):
         assert outcome["health"]["revit_connected"] is True
         assert outcome["health"]["mode"] == "websocket"
 
-        # A code execution over the slot unwraps the add-in's nested reply.
+        # A confirmed code execution over the slot: the package probes the document,
+        # sends the code and unwraps the add-in's nested reply; the ledger says "web".
+        token = client.post("/api/v1/bridge/spec/confirm", json={"spec": {
+            "task": "one", "action": {"kind": "execute_code", "code": "return 1;"}, "parameters": []}},
+            headers={"X-Slot-Id": "1"}).json()["token"]
+
         def execute():
             outcome["exec"] = client.post(
-                "/api/v1/bridge/execute", json={"code": "return 1;"}, headers={"X-Slot-Id": "1"},
+                "/api/v1/bridge/execute", json={"code": "return 1;", "token": token}, headers={"X-Slot-Id": "1"},
             ).json()
+
+        def handler(request):
+            code = request["params"]["code"]
+            if code == "return 1;":
+                return {"jsonrpc": "2.0", "id": request["id"], "result": {
+                    "success": True, "result": json.dumps({"Status": "Created", "ElementId": 7}), "errorMessage": ""}}
+            return {"jsonrpc": "2.0", "id": request["id"], "result": {
+                "success": True, "result": json.dumps({"Title": "Project1", "RevitVersion": "2026"}), "errorMessage": ""}}
 
         thread = threading.Thread(target=execute)
         thread.start()
-        request = addin.receive_json()
-        assert request["method"] == "send_code_to_revit"
-        addin.send_text(_addin_reply(request, {
-            "success": True, "result": json.dumps({"Status": "Created", "ElementId": 7}), "errorMessage": "",
-        }))
+        _serve(addin, 2, handler)                     # document probe, then the code
         thread.join(timeout=5)
-        assert outcome["exec"] == {"success": True, "result": {"Status": "Created", "ElementId": 7}, "error": None}
+        out = outcome["exec"]
+        assert out["success"] is True and out["result"] == {"Status": "Created", "ElementId": 7} and out["error"] is None
+        from backend.api.bridge import get_ledger
+        record = get_ledger().get(out["evidence_id"])
+        assert record["host"] == "web" and record["document"] == {"title": "Project1", "revit_version": "2026"}
 
     assert client.get("/api/v1/bridge/slots").json()["connected"] == 0
     missing = client.get("/api/v1/bridge/revit-health", headers={"X-Slot-Id": "1"}).json()
     assert missing["revit_connected"] is False and "no connected" in missing["detail"]
-    assert client.post("/api/v1/bridge/execute", json={"code": "return 1;"},
-                       headers={"X-Slot-Id": "1"}).status_code == 502
+    gone = client.post("/api/v1/bridge/execute", json={"code": "return 1;", "token": token}, headers={"X-Slot-Id": "1"})
+    assert gone.status_code == 503 and gone.json()["error"] == "revit_unreachable"
 
 
 def test_pack_run_over_the_slot_counts_usage_in_the_data_root(client, tmp_path):
     with client.websocket_connect(WS) as addin:
         outcome: dict = {}
+        token = client.post("/api/v1/bridge/spec/confirm", json={"spec": {
+            "task": "levels", "action": {"kind": "run_tool", "tool": "query_levels"}, "parameters": []}},
+            headers={"X-Slot-Id": "1"}).json()["token"]
 
         def run():
             outcome["run"] = client.post(
-                "/api/v1/bridge/tools/query_levels/run", json={"params": {}}, headers={"X-Slot-Id": "1"},
+                "/api/v1/bridge/tools/query_levels/run", json={"params": {}, "token": token},
+                headers={"X-Slot-Id": "1"},
             ).json()
+
+        def handler(request):
+            code = request["params"]["code"]
+            if "GetElementCount" in code:                       # the count_delta probe, before and after
+                payload = 3
+            elif "return levels;" in code:                      # the pack itself
+                payload = [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}]
+            else:                                               # the document probe
+                payload = {"Title": "Project1", "RevitVersion": "2026"}
+            return _addin_reply(request, {"success": True, "result": json.dumps(payload), "errorMessage": ""})
 
         thread = threading.Thread(target=run)
         thread.start()
-        request = addin.receive_json()
-        assert request["method"] == "send_code_to_revit"
-        addin.send_text(_addin_reply(request, {"success": True, "result": "[]", "errorMessage": ""}))
+        _serve(addin, 4, lambda r: json.loads(handler(r)))   # probe, count, the pack, count
         thread.join(timeout=5)
-        assert outcome["run"] == {"success": True, "tool": "query_levels", "result": [], "error": None}
+        out = outcome["run"]
+        assert out["success"] is True and out["tool"] == "query_levels" and out["error"] is None
+        assert out["result"] == [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}]
+        assert out["validation"]["passed"] is True and out["evidence_id"].startswith("ev_")
 
     # The package counts the run in usage.json under its data root and leaves
     # the built-in pack file alone (it is read-only inside the wheel).
@@ -79,7 +118,7 @@ def test_pack_run_over_the_slot_counts_usage_in_the_data_root(client, tmp_path):
     assert usage["query_levels"]["execution_count"] == 1 and usage["query_levels"]["failure_count"] == 0
     assert not (user_dir / "query_levels.yaml").exists()
     listed = {t["name"]: t for t in client.get("/api/v1/bridge/tools").json()}
-    assert listed["query_levels"]["execution_count"] == 1
+    assert listed["query_levels"]["used"] == 1
 
 
 def _rejected_at_handshake(client, path: str) -> int | None:

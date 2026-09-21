@@ -30,13 +30,23 @@ def env(tmp_path, monkeypatch):
 
 
 def _reset() -> None:
-    from backend.api import chat
+    from backend.api import bridge, chat
     chat._rate_hits.clear()
+    bridge.reset_bridge_state()
     config.reset_settings()
     skill_store.reset_skill_store()
     log_store.reset_log_store()
     relay.reset_slot_manager()
     session._store = None
+
+
+@pytest.fixture
+def revit(env):
+    """A fake add-in behind a small model (tests/fake_revit.py), reachable over TCP."""
+    from tests.fake_revit import FakeRevit, model_handler
+    with FakeRevit(model_handler()) as fake:
+        env.setenv("REVIT_BRIDGE_PORT", str(fake.port))
+        yield fake
 
 
 @pytest.fixture

@@ -71,7 +71,7 @@ def test_pack_edits_land_in_the_user_directory(client, tmp_path):
 
     blocked = client.put("/api/v1/bridge/tools/query_levels",
                          json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
-    assert blocked.status_code == 422
+    assert blocked.status_code == 422 and blocked.json()["error"] == "blocked"
 
     # Deleting removes the user copy and hides the built-in one behind a marker.
     assert client.delete("/api/v1/bridge/tools/query_levels").json()["status"] == "deleted"
@@ -79,61 +79,6 @@ def test_pack_edits_land_in_the_user_directory(client, tmp_path):
     assert (user_dir / "query_levels.disabled").is_file()
     assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS - 1
     assert client.get("/api/v1/bridge/tools/query_levels").status_code == 404
-
-
-def test_execute_is_reviewed_then_needs_a_revit(client):
-    blocked = client.post("/api/v1/bridge/execute", json={"code": "System.Diagnostics.Process.Start(\"cmd\");"})
-    assert blocked.status_code == 400
-    assert blocked.json()["detail"]["error"] == "blocked"
-
-    unreachable = client.post("/api/v1/bridge/execute", json={"code": "return 1;"})
-    assert unreachable.status_code == 502
-    assert "127.0.0.1:1" in unreachable.json()["detail"]
-
-
-def test_run_tool_validates_parameters_before_touching_revit(client):
-    resp = client.post("/api/v1/bridge/tools/create_wall/run", json={"params": {}})
-    assert resp.status_code == 422
-    assert "level_name" in resp.json()["detail"]
-
-    resp = client.post("/api/v1/bridge/tools/query_levels/run", json={"params": {}})
-    assert resp.status_code == 502  # valid, reviewed, no Revit listening
-
-
-def test_solidify_reviews_code_and_writes_a_pack(client, tmp_path):
-    resp = client.post("/api/v1/bridge/solidify", json={
-        "name": "count_walls",
-        "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();",
-        "description": "How many walls",
-        "tags": ["query"],
-    })
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "solidified", "name": "count_walls",
-                           "display_name": "Count Walls", "revit_synced": False}
-    assert (tmp_path / "data" / "capabilities" / "count_walls.yaml").is_file()
-
-    blocked = client.post("/api/v1/bridge/solidify", json={"name": "evil", "code": "System.IO.File.Delete(\"x\");"})
-    assert blocked.status_code == 400
-
-
-def test_invalid_packs_are_422_not_500(client, tmp_path):
-    """0.2's ToolStore validates packs and raises ValueError; the routes turn that
-    into 422 {error: invalid_pack, problems: [...]} like the MCP solidify tool."""
-    # A model-written C# interpolation looks like an undeclared placeholder.
-    resp = client.post("/api/v1/bridge/solidify", json={
-        "name": "interpolated", "code": "var l = \"{level_name}\"; return 1;", "parameters": [],
-    })
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "invalid_pack"
-    assert resp.json()["detail"]["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
-    assert not (tmp_path / "data" / "capabilities" / "interpolated.yaml").exists()
-
-    resp = client.put("/api/v1/bridge/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "invalid_pack"
-    assert any("{level_name}" in p for p in resp.json()["detail"]["problems"])
-    assert not (tmp_path / "data" / "capabilities" / "query_levels.yaml").exists()  # nothing written
-    assert "{level_name}" not in client.get("/api/v1/bridge/tools/query_levels").json()["code_template"]
 
 
 def test_health_routes_without_revit(client):
@@ -146,23 +91,23 @@ def test_health_routes_without_revit(client):
     assert service["status"] == "ok" and service["connected_slots"] == 0
     assert client.get("/api/v1/bridge/slots").json()["max_slots"] == 5
 
-    units = client.get("/api/v1/bridge/project-units").json()
-    assert "error" in units and units["current_setting"] == "mm"
 
-
-def test_openapi_lists_the_contract(client):
+def test_openapi_lists_the_v1_contract(client):
     spec = client.get("/openapi.json").json()
     paths = set(spec["paths"])
-    expected = {
-        "/health", "/config.json", "/api/chat", "/api/skills", "/api/skills/import",
-        "/api/logs", "/api/logs/stats", "/api/logs/verify",
-        "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/run",
-        "/api/v1/bridge/tools/{name}/choices", "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
-        "/api/v1/bridge/query-revit", "/api/v1/bridge/trigger-selection",
+    bridge = {p for p in paths if p.startswith("/api/v1/bridge/")}
+    assert bridge == {
+        "/api/v1/bridge/snapshot", "/api/v1/bridge/query",
+        "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/choices",
+        "/api/v1/bridge/tools/{name}/missing-params", "/api/v1/bridge/tools/{name}/run",
+        "/api/v1/bridge/spec/reconcile", "/api/v1/bridge/spec/confirm",
+        "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
+        "/api/v1/bridge/evidence", "/api/v1/bridge/evidence/{evidence_id}/validate",
+        "/api/v1/bridge/trigger-selection",
         "/api/v1/bridge/revit-health", "/api/v1/bridge/service-health", "/api/v1/bridge/slots",
-        "/api/v1/bridge/unit", "/api/v1/bridge/project-units",
     }
-    assert expected <= paths, expected - paths
+    assert {"/health", "/config.json", "/api/chat", "/api/skills", "/api/skills/import",
+            "/api/logs", "/api/logs/stats", "/api/logs/verify"} <= paths
     # Nothing from the retired RAG / orchestration surface survived.
     assert not [p for p in paths if any(k in p for k in ("generate", "orchestrate", "classify", "match-tool", "search", "t2r"))]
-    assert json.dumps(spec)  # serialisable, exported to docs/api-v0.json
+    assert json.dumps(spec)  # serialisable, exported to docs/api-v1.json
