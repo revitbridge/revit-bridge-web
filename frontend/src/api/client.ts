@@ -7,17 +7,32 @@ function url(path: string): string {
   return `${getConfig().apiBase}${path}`
 }
 
-async function fail(resp: Response): Promise<never> {
-  const raw = await resp.text().catch(() => '')
-  const isHtml = raw.trimStart().startsWith('<') || (resp.headers.get('content-type') || '').includes('text/html')
-  if (isHtml) throw new Error(`${resp.status}: backend unreachable (HTML page instead of JSON)`)
+/* The message for a failed response: the bridge's {error, message?} body, FastAPI's
+   {detail} (a string or a list), or the raw text; an HTML page means no backend. */
+export function describeFailure(status: number, raw: string, contentType = ''): string {
+  const isHtml = raw.trimStart().startsWith('<') || contentType.includes('text/html')
+  if (isHtml) return `${status}: backend unreachable (HTML page instead of JSON)`
   let detail = raw.slice(0, 400)
   try {
     const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed.detail === 'string') detail = parsed.detail
-    else if (parsed && parsed.detail) detail = JSON.stringify(parsed.detail)
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.message === 'string' && parsed.message) {
+        detail = typeof parsed.error === 'string' ? `${parsed.error}: ${parsed.message}` : parsed.message
+      } else if (typeof parsed.error === 'string') {
+        detail = parsed.error
+      } else if (typeof parsed.detail === 'string') {
+        detail = parsed.detail
+      } else if (parsed.detail) {
+        detail = JSON.stringify(parsed.detail)
+      }
+    }
   } catch { /* keep raw text */ }
-  throw new Error(`${resp.status}: ${detail}`)
+  return `${status}: ${detail}`
+}
+
+async function fail(resp: Response): Promise<never> {
+  const raw = await resp.text().catch(() => '')
+  throw new Error(describeFailure(resp.status, raw, resp.headers.get('content-type') || ''))
 }
 
 export async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
