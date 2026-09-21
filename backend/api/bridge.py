@@ -15,11 +15,13 @@ evidence ledger, all inside the package) -> ``Ledger.recent`` / ``revalidate``.
 ``ToolStore`` (built-in packs from the wheel plus the user packs under
 ``REVIT_BRIDGE_DATA_DIR``) serves the pack routes.
 
-Status codes: a request that cannot be honoured as written is 4xx, a Revit
-that cannot be reached is 503, and a refusal by the gate, a failed
-precondition or a failed validation is 200 with ``success: false`` - the
-same payloads the MCP tools return. Error bodies are ``{error, message?, ...}``
-(see ``backend.api.errors``).
+Status codes: a request the route refuses as such is 400 (``confirmation_required``,
+``invalid_category``, ``unknown_kind``, ``blocked``, ``no_validator``), a body that
+parsed but is not valid is 422 (``invalid_args``, ``invalid_spec``, ``invalid_snapshot``,
+``invalid_pack``), something that does not exist is 404, a Revit that cannot be
+reached is 503, and a refusal by the gate, a failed precondition or a failed
+validation is 200 with ``success: false`` - the same payloads the MCP tools
+return. Error bodies are ``{error, message?, ...}`` (see ``backend.api.errors``).
 """
 from __future__ import annotations
 
@@ -148,14 +150,14 @@ def _parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
     try:
         return ProjectSnapshot.model_validate(data)
     except ValidationError as exc:
-        raise ApiError(400, "invalid_snapshot", str(exc)) from None
+        raise ApiError(422, "invalid_snapshot", str(exc)) from None
 
 
 def _parse_spec(data: dict) -> TaskSpec:
     try:
         return TaskSpec.model_validate(data)
     except ValidationError as exc:
-        raise ApiError(400, "invalid_spec", str(exc)) from None
+        raise ApiError(422, "invalid_spec", str(exc)) from None
 
 
 def _pack_for(spec: TaskSpec, store: ToolStore):
@@ -317,7 +319,7 @@ async def get_snapshot(categories: list[str] | None = Query(default=None)):
 async def query_model(req: QueryRequest):
     """``run_query``: one read-only query by kind (levels, grids, family_types, elements,
     selection, view_elements, units, counts). The package's answer is returned as is;
-    an unknown kind or bad args is 400, Revit reporting an error is 200 with ``error``."""
+    an unknown kind is 400, bad args 422, Revit reporting an error is 200 with ``error``."""
     try:
         client = await get_revit_client()
         answer = await run_query(RevitQueryExecutor(client), req.kind, req.args)
@@ -328,8 +330,10 @@ async def query_model(req: QueryRequest):
         raise revit_unreachable(exc, kind=req.kind) from None
     except Exception as exc:  # noqa: BLE001 - a bug in the query, never a bad request
         raise ApiError(500, "query_failed", f"{type(exc).__name__}: {exc}", kind=req.kind) from None
-    if answer.get("error") in ("unknown_kind", "invalid_args"):
+    if answer.get("error") == "unknown_kind":
         raise ApiError(400, **answer)
+    if answer.get("error") == "invalid_args":
+        raise ApiError(422, **answer)
     return answer
 
 
@@ -356,7 +360,7 @@ async def update_tool(name: str, req: UpdateToolRequest):
     if "code_template" in updates:
         safe, warnings = sandbox.review(updates["code_template"] or "")
         if not safe:
-            raise ApiError(422, "blocked", "Code review failed", warnings=warnings)
+            raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
     try:
         tool = ToolStore().update(name, updates)
     except ValueError as exc:

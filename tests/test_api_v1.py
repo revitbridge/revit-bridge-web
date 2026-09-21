@@ -77,7 +77,7 @@ def test_query_returns_the_package_answer_as_is(revit, client):
     assert unknown.json()["error"] == "unknown_kind" and "levels" in unknown.json()["kinds"]
 
     bad_args = client.post(f"{B}/query", json={"kind": "levels", "args": {"limit": 5}})
-    assert bad_args.status_code == 400 and bad_args.json()["error"] == "invalid_args"
+    assert bad_args.status_code == 422 and bad_args.json()["error"] == "invalid_args"
 
     assert client.post(f"{B}/query", json={"args": {}}).status_code == 422  # kind missing: invalid_args
     assert client.post(f"{B}/query", json={"args": {}}).json()["error"] == "invalid_args"
@@ -118,7 +118,7 @@ def test_tool_detail_update_and_delete_are_unchanged(client, tmp_path):
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
     assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
     blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
-    assert blocked.status_code == 422 and blocked.json()["error"] == "blocked"
+    assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
     assert client.delete(f"{B}/tools/query_levels").json() == {"status": "deleted", "name": "query_levels"}
     assert client.delete(f"{B}/tools/query_levels").status_code == 404
@@ -156,7 +156,7 @@ def test_missing_params_asks_with_options_from_the_snapshot(client):
     assert resp.status_code == 200 and resp.json()[0]["options"] == []
 
     bad = client.post(f"{B}/tools/create_wall/missing-params", json={"known": {}, "snapshot": {"levels": 3}})
-    assert bad.status_code == 400 and bad.json()["error"] == "invalid_snapshot"
+    assert bad.status_code == 422 and bad.json()["error"] == "invalid_snapshot"
     assert client.post(f"{B}/tools/nope/missing-params", json={"known": {}}).status_code == 404
 
 
@@ -173,7 +173,9 @@ def test_reconcile_checks_the_draft_against_the_snapshot(revit, client):
     assert ok["conflicts"] == [] and ok["questions"] == []
 
     bad = client.post(f"{B}/spec/reconcile", json={"spec": {"task": "x"}})
-    assert bad.status_code == 400 and bad.json()["error"] == "invalid_spec"
+    assert bad.status_code == 422 and bad.json()["error"] == "invalid_spec"
+    stale = client.post(f"{B}/spec/reconcile", json={"spec": spec_for("create_wall", **WALL), "snapshot": {"levels": 3}})
+    assert stale.status_code == 422 and stale.json()["error"] == "invalid_snapshot"
 
 
 def test_reconcile_without_snapshot_or_revit_is_503(client):

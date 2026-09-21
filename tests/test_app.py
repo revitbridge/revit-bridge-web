@@ -71,7 +71,7 @@ def test_pack_edits_land_in_the_user_directory(client, tmp_path):
 
     blocked = client.put("/api/v1/bridge/tools/query_levels",
                          json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
-    assert blocked.status_code == 422 and blocked.json()["error"] == "blocked"
+    assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
     # Deleting removes the user copy and hides the built-in one behind a marker.
     assert client.delete("/api/v1/bridge/tools/query_levels").json()["status"] == "deleted"

@@ -27,10 +27,13 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 - `GET /tools` returns the MCP `list_tools` shape (`name, description, version,
   parameters, preconditions, validator, used`). `POST /solidify` takes v1 parameters
   and an optional `validator`.
-- Status codes and error bodies across the bridge routes: 4xx for a request that
-  cannot be honoured, 503 `revit_unreachable` when no add-in answers (was 502), 200
-  `success: false` for refusals; bodies are `{error, message?, ...}` instead of
-  FastAPI's `{detail}`.
+- Status codes and error bodies across the bridge routes: 400 for a request the route
+  refuses as such (`confirmation_required`, `invalid_category`, `unknown_kind`,
+  `blocked`, `no_validator`), 422 for a body that parsed but is not valid
+  (`invalid_args`, `invalid_spec`, `invalid_snapshot`, `invalid_pack`), 404 for what
+  does not exist (`unknown_tool`, `unknown_evidence`), 503 `revit_unreachable` when no
+  add-in answers (was 502), 200 `success: false` for refusals; bodies are
+  `{error, message?, ...}` instead of FastAPI's `{detail}`.
 
 - Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
   packs read in place from the wheel, keeps user packs and `usage.json` under its own
