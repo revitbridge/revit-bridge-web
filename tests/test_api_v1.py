@@ -374,7 +374,8 @@ def test_trigger_selection_returns_the_picked_element(env):
 def test_retired_routes_are_gone(client):
     paths = set(client.get("/openapi.json").json()["paths"])
     assert not {f"{B}/unit", f"{B}/project-units", f"{B}/query-revit"} & paths
-    # An unknown GET falls through to the SPA (HTML), never to a JSON answer.
-    assert "json" not in client.get(f"{B}/project-units").headers["content-type"]
+    # An unknown GET is a 404, or the SPA's index.html when a frontend build is present.
+    gone = client.get(f"{B}/project-units")
+    assert gone.status_code == 404 or "html" in gone.headers["content-type"]
     assert client.post(f"{B}/unit", json={"unit": "mm"}).status_code in (404, 405)
     assert client.post(f"{B}/query-revit", json={"command": "get_levels"}).status_code in (404, 405)
