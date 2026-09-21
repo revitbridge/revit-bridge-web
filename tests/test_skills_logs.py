@@ -6,7 +6,29 @@ from backend.api import chat as chat_module
 ADMIN = {"X-Admin-Token": "hunter2"}
 
 
-def test_skill_edits_require_the_admin_password(client):
+def test_wheel_skills_are_the_default_builtins(client):
+    """Without SKILLS_DIR the plugin skills shipped in the revit-bridge wheel are listed."""
+    listing = client.get("/api/skills").json()["skills"]
+    by_id = {s["id"]: s for s in listing}
+    assert "builtin:revit-bridge/SKILL" in by_id
+    assert all(s["readonly"] and s["layer"] == "revit-bridge" for s in listing)
+    assert by_id["builtin:revit-bridge/SKILL"]["name"] == "revit-bridge"
+    assert any(i.startswith("builtin:revit-bridge/references/") for i in by_id)
+
+    detail = client.get("/api/skills/builtin:revit-bridge/SKILL").json()
+    assert detail["content"].startswith("# revit-bridge")
+    assert "get_project_snapshot" in chat_module.build_system_prompt()
+    # Read-only: the store refuses to edit or delete anything from the wheel.
+    from backend.skill_store import get_skill_store
+    assert get_skill_store().update("builtin:revit-bridge/SKILL", content="x") is None
+    assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
+
+
+def test_skill_edits_require_the_admin_password(make_client, env, tmp_path):
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    env.setenv("SKILLS_DIR", str(empty))  # override the wheel's skills with nothing
+    client = make_client()
     assert client.get("/api/skills").json() == {"skills": []}
     # No ADMIN_PASSWORD configured: mutations are unavailable, not open.
     assert client.post("/api/skills", json={"name": "x", "content": "y"}).status_code == 503

@@ -15,6 +15,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   read from the wheel, user packs live under `REVIT_BRIDGE_DATA_DIR/capabilities`
   (`/app/data` in the container, the `./data` volume). Nothing is copied on first
   start any more; the entrypoint only makes the volume writable.
+- Built-in skills default to the plugin skills shipped in the `revit-bridge` wheel
+  (`builtin:revit-bridge/SKILL` and its references); `SKILLS_DIR` is now an optional
+  override instead of the only way to get them.
 
 ### Removed
 

@@ -45,7 +45,8 @@ reached over TCP (`host.docker.internal:18080`) without any of that.
    *Pick in Revit* pastes the selected elements into your message.
 3. **Capabilities** - *Packs*: run a saved pack with real choices from the model (levels, types,
    elements), edit or delete it. *Skills*: Markdown protocols that are appended to the model's system
-   prompt; add, upload or import them from GitHub (admin password required).
+   prompt - the plugin's `revit-bridge` skill comes with the package; add, upload or import more from
+   GitHub (admin password required).
 
 The task page is the thin host loop of this release; the spec-driven flow (snapshot, reconciliation,
 confirmation gate, validation, evidence) arrives with the next package versions.
@@ -75,7 +76,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_FILE_N` | `0`, unset | Pre-shared token per slot; put the file in `./.secrets/` (mounted read-only at `/run/secrets`). The browser sends `X-Slot-Id` / `X-Slot-Token`. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
 | `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
-| `SKILLS_DIR` | unset | Optional read-only skill directory (mount it into the container). |
+| `SKILLS_DIR` | unset | Optional read-only skill directory that replaces the plugin skills shipped in the `revit-bridge` wheel (mount it into the container). |
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment). |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |

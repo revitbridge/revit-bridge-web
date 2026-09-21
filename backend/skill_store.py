@@ -4,9 +4,11 @@ Two directories feed the store:
 
 - the user directory ``DATA_DIR/skills`` - editable through the API,
   one ``<id>.md`` per skill;
-- an optional read-only directory ``SKILLS_DIR`` - for example a checkout of
-  the plugin's ``skills/revit-bridge`` folder - scanned recursively and
-  exposed with ids ``builtin:<relative/path>``.
+- a read-only built-in directory, scanned recursively and exposed with ids
+  ``builtin:<relative/path>``: by default the plugin skills shipped inside
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``, so
+  ``builtin:revit-bridge/SKILL`` and its ``references/``); ``SKILLS_DIR``
+  replaces that directory with a mounted checkout.
 
 Every enabled skill is concatenated into the chat system prompt.
 """
@@ -18,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from revit_bridge import skills_dir
 
 _log = logging.getLogger("backend.skills")
 
@@ -63,7 +67,8 @@ class SkillStore:
     def __init__(self, user_dir: Path, builtin_dir: Path | None = None):
         self._dir = Path(user_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
-        self._builtin = Path(builtin_dir) if builtin_dir else None
+        # No override: the skills shipped inside the revit-bridge wheel.
+        self._builtin = Path(builtin_dir) if builtin_dir else skills_dir()
 
     # -- helpers ---------------------------------------------------------------
 
