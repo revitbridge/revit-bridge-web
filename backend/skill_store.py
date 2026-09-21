@@ -10,7 +10,13 @@ Two directories feed the store:
   ``builtin:revit-bridge/SKILL`` and its ``references/``); ``SKILLS_DIR``
   replaces that directory with a mounted checkout.
 
-Every enabled skill is concatenated into the chat system prompt.
+Every enabled skill is concatenated into the chat system prompt. The wheel's
+skills are listed and readable but **disabled by default**: ``SKILL.md`` is
+written for a host with the MCP tools (snapshot, confirm_spec, ...) that this
+chat does not have yet, and the ``references/`` are material the skill reads
+on demand, not prompt text. A file's own ``enabled: true`` front matter still
+wins. A mounted ``SKILLS_DIR`` is enabled by default, as before: mounting it
+is the operator's choice and its files are theirs to edit.
 """
 from __future__ import annotations
 
@@ -67,8 +73,10 @@ class SkillStore:
     def __init__(self, user_dir: Path, builtin_dir: Path | None = None):
         self._dir = Path(user_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
-        # No override: the skills shipped inside the revit-bridge wheel.
+        # No override: the skills shipped inside the revit-bridge wheel, which
+        # stay out of the prompt unless a file says ``enabled: true`` itself.
         self._builtin = Path(builtin_dir) if builtin_dir else skills_dir()
+        self._builtin_enabled_by_default = builtin_dir is not None
 
     # -- helpers ---------------------------------------------------------------
 
@@ -85,13 +93,14 @@ class SkillStore:
     def _summary(self, skill_id: str, path: Path, parsed: dict, *, readonly: bool, layer: str = "") -> dict:
         meta = parsed["meta"]
         title, desc = _first_title_and_paragraph(parsed["content"])
+        enabled_default = self._builtin_enabled_by_default if readonly else True
         return {
             "id": skill_id,
             "name": str(meta.get("name") or title or path.stem),
             "description": str(meta.get("description") or desc or ""),
             "version": str(meta.get("version", "1.0")),
             "author": str(meta.get("author", "")),
-            "enabled": bool(meta.get("enabled", True)),
+            "enabled": bool(meta.get("enabled", enabled_default)),
             "source": "builtin" if readonly else "custom",
             "layer": layer,
             "readonly": readonly,
@@ -110,12 +119,22 @@ class SkillStore:
                 _log.warning("skipping skill %s: %s", path.name, exc)
         return skills
 
+    @staticmethod
+    def _builtin_order(rel: Path) -> tuple:
+        """Sort key: a directory's own files before its subdirectories, ``SKILL.md``
+        first among them, then by name - the same on every platform (Path
+        ordering is case-insensitive on Windows and would put ``references/``
+        before ``SKILL.md`` there and after it on Linux)."""
+        parents = tuple(part.lower() for part in rel.parts[:-1])
+        return (parents, 0 if rel.name == "SKILL.md" else 1, rel.name.lower())
+
     def _list_builtin(self) -> list[dict]:
         if not self._builtin or not self._builtin.is_dir():
             return []
         found = []
         root = self._builtin.resolve()
-        for path in sorted(root.rglob("*.md")):
+        paths = sorted(root.rglob("*.md"), key=lambda p: self._builtin_order(p.relative_to(root)))
+        for path in paths:
             rel = path.relative_to(root).with_suffix("").as_posix()
             layer = rel.split("/")[0] if "/" in rel else ""
             try:

@@ -17,7 +17,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   start any more; the entrypoint only makes the volume writable.
 - Built-in skills default to the plugin skills shipped in the `revit-bridge` wheel
   (`builtin:revit-bridge/SKILL` and its references); `SKILLS_DIR` is now an optional
-  override instead of the only way to get them.
+  override instead of the only way to get them. The wheel's skills are listed and
+  readable but disabled by default (a file's own `enabled: true` wins): `SKILL.md`
+  expects the MCP tools this chat does not have yet and the references are read on
+  demand, so a fresh install's system prompt is unchanged from 0.1. A mounted
+  `SKILLS_DIR` is enabled by default as before.
 
 ### Removed
 
