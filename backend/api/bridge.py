@@ -83,6 +83,18 @@ def _tcp_unreachable(exc: Exception | None = None) -> HTTPException:
     return HTTPException(502, f"Cannot connect to the Revit add-in at {s.host}:{s.port}. Is Revit running?")
 
 
+# ``ToolStore.solidify`` / ``update`` validate the pack (undeclared ``{placeholder}``,
+# malformed parameter, unknown validator) and raise ValueError listing the problems.
+_INVALID_PACK_PREFIX = "invalid capability pack: "
+
+
+def _invalid_pack(exc: ValueError) -> HTTPException:
+    text = str(exc)
+    if text.startswith(_INVALID_PACK_PREFIX):
+        text = text[len(_INVALID_PACK_PREFIX):]
+    return HTTPException(422, detail={"error": "invalid_pack", "problems": text.split("; ")})
+
+
 async def get_revit_client():
     """The selected slot's relay client, or the local TCP client."""
     slot_id = request_slot_id.get(None)
@@ -212,10 +224,13 @@ async def solidify_tool(req: SolidifyRequest):
     if not safe:
         raise HTTPException(400, detail={"error": "blocked", "warnings": warnings})
     store = ToolStore()
-    tool = store.solidify(
-        name=req.name, code=req.code, description=req.description,
-        parameters=req.parameters, tags=req.tags, source_query=req.source_query,
-    )
+    try:
+        tool = store.solidify(
+            name=req.name, code=req.code, description=req.description,
+            parameters=req.parameters, tags=req.tags, source_query=req.source_query,
+        )
+    except ValueError as exc:
+        raise _invalid_pack(exc) from None
     return {
         "status": "solidified",
         "name": tool.name,
@@ -262,7 +277,10 @@ async def update_tool(name: str, req: UpdateToolRequest):
         safe, warnings = sandbox.review(updates["code_template"] or "")
         if not safe:
             raise HTTPException(422, f"Code review failed: {'; '.join(warnings)}")
-    tool = ToolStore().update(name, updates)
+    try:
+        tool = ToolStore().update(name, updates)
+    except ValueError as exc:
+        raise _invalid_pack(exc) from None
     if not tool:
         raise HTTPException(404, f"Tool '{name}' not found")
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}

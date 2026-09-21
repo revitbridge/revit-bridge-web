@@ -23,6 +23,13 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   demand, so a fresh install's system prompt is unchanged from 0.1. A mounted
   `SKILLS_DIR` is enabled by default as before.
 
+### Fixed
+
+- `POST /api/v1/bridge/solidify` and `PUT /api/v1/bridge/tools/{name}` answer
+  `422 {"error": "invalid_pack", "problems": [...]}` when the package rejects the pack
+  (an undeclared `{placeholder}` in the code, a malformed parameter, an unknown
+  validator) instead of 500.
+
 ### Removed
 
 - `backend/capabilities.py` (the first-start copy of the packs into `DATA_DIR`).

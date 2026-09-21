@@ -116,6 +116,26 @@ def test_solidify_reviews_code_and_writes_a_pack(client, tmp_path):
     assert blocked.status_code == 400
 
 
+def test_invalid_packs_are_422_not_500(client, tmp_path):
+    """0.2's ToolStore validates packs and raises ValueError; the routes turn that
+    into 422 {error: invalid_pack, problems: [...]} like the MCP solidify tool."""
+    # A model-written C# interpolation looks like an undeclared placeholder.
+    resp = client.post("/api/v1/bridge/solidify", json={
+        "name": "interpolated", "code": "var l = \"{level_name}\"; return 1;", "parameters": [],
+    })
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "invalid_pack"
+    assert resp.json()["detail"]["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
+    assert not (tmp_path / "data" / "capabilities" / "interpolated.yaml").exists()
+
+    resp = client.put("/api/v1/bridge/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["error"] == "invalid_pack"
+    assert any("{level_name}" in p for p in resp.json()["detail"]["problems"])
+    assert not (tmp_path / "data" / "capabilities" / "query_levels.yaml").exists()  # nothing written
+    assert "{level_name}" not in client.get("/api/v1/bridge/tools/query_levels").json()["code_template"]
+
+
 def test_health_routes_without_revit(client):
     health = client.get("/api/v1/bridge/revit-health").json()
     assert health["revit_connected"] is False
