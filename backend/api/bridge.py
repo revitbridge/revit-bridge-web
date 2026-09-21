@@ -155,6 +155,7 @@ def _tool_summary(tool) -> dict:
         "name": tool.name,
         "display_name": tool.display_name,
         "description": tool.description,
+        "version": tool.version,
         "parameters": tool.parameters,
         "tags": tool.tags,
         "execution_count": tool.execution_count,

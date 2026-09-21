@@ -18,8 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from revit_bridge.capabilities import ToolStore
+
 from backend.api import bridge, chat, logs, skills
 from backend.config import ConfigError, get_settings
+from backend.upgrade import quarantine_legacy_packs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -31,6 +34,9 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     settings = get_settings()
+    # A data volume written by the 0.1 host holds copies of the old built-in
+    # packs where the package now keeps user packs; park them aside.
+    quarantine_legacy_packs(ToolStore().user_dir)
     app = FastAPI(
         title="revit-bridge-web",
         version=APP_VERSION,

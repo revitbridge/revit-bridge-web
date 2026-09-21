@@ -52,6 +52,13 @@ reached over TCP (`host.docker.internal:18080`) without any of that.
 The task page is the thin host loop of this release; the spec-driven flow (snapshot, reconciliation,
 confirmation gate, validation, evidence) arrives with the next package versions.
 
+Upgrading from 0.1: the 0.1 host copied the package's built-in packs into `data/capabilities/`,
+which is now the package's own directory for user packs, where a file of the same name would hide
+the wheel's pack. On its first start 0.2 moves every 0.1 copy (a pack file without
+`schema_version`) to `data/capabilities/legacy-0.1/` and logs one line per file; nothing is
+deleted. A pack you solidified with 0.1 lands there too: solidify it again from the Capabilities
+page (its `code_template` and `parameters` are still in the file).
+
 Development without Docker:
 
 ```bash
