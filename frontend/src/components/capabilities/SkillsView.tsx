@@ -87,8 +87,9 @@ export default function SkillsView() {
         <div className="empty-state">
           <h3 className="heading-display" style={{ fontSize: 15 }}>No skills yet</h3>
           <p className="section-copy">
-            Mount the plugin's skill directory with <code>SKILLS_DIR</code>, or add company standards and personal
-            preferences here. They shape how the model asks and answers.
+            The package's own skills are listed unless <code>SKILLS_DIR</code> points at a directory without any;
+            unset it to get them back, or add company standards and personal preferences here. They shape how the
+            model asks and answers.
           </p>
         </div>
       ) : (
