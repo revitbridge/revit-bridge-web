@@ -34,8 +34,8 @@ export default function ConnectPage() {
       if (h.revit_connected) {
         setStatus(`Connected | ${h.mode}${h.latency_ms != null ? ` | ${h.latency_ms} ms` : ''} | ${h.endpoint || ''} | ${h.timestamp}`)
         try {
-          const u = await bridgeApi.projectUnits()
-          setUnits(u.error ? `Project units: ${u.error}` : `Project units: ${u.display_name} (${u.detected})`)
+          const snap = await bridgeApi.snapshot([])
+          setUnits(`Project units: ${snap.units.raw || '?'} (${snap.units.length}) | ${snap.document.title}`)
         } catch (e: unknown) {
           setUnits(`Project units: ${getErrorMessage(e)}`)
         }

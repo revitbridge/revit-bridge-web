@@ -2,7 +2,7 @@
 
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
 import type {
-  ExecutionResponse, ProjectUnits, RevitHealthResponse, SlotsStatus, SolidifyResponse,
+  ExecutionResponse, ProjectSnapshot, QueryAnswer, RevitHealthResponse, SlotsStatus, SolidifyResponse,
   ToolChoiceItem, ToolDetail, ToolInfo, ToolParam, ToolUpdatePayload,
 } from '../types/api'
 
@@ -12,7 +12,11 @@ const enc = encodeURIComponent
 export const bridgeApi = {
   revitHealth: () => apiGet<RevitHealthResponse>(`${B}/revit-health`),
   slots: () => apiGet<SlotsStatus>(`${B}/slots`),
-  projectUnits: () => apiGet<ProjectUnits>(`${B}/project-units`),
+
+  /* Read-only model access: the package's snapshot and query(kind, args). */
+  snapshot: (categories?: string[]) =>   // undefined: the default categories; []: no family types
+    apiGet<ProjectSnapshot>(`${B}/snapshot${categories ? `?categories=${enc(categories.join(','))}` : ''}`),
+  query: (kind: string, args: Record<string, unknown> = {}) => apiPost<QueryAnswer>(`${B}/query`, { kind, args }),
 
   execute: (code: string) => apiPost<ExecutionResponse>(`${B}/execute`, { code }),
 
@@ -26,7 +30,5 @@ export const bridgeApi = {
   getToolChoices: (name: string) => apiGet<Record<string, ToolChoiceItem[]>>(`${B}/tools/${enc(name)}/choices`),
   runTool: (name: string, params: Record<string, string>) => apiPost<ExecutionResponse>(`${B}/tools/${enc(name)}/run`, { params }),
 
-  queryRevit: (command: string, params: Record<string, unknown> = {}) =>
-    apiPost<{ result: unknown; error?: string | null }>(`${B}/query-revit`, { command, params }),
   triggerSelection: () => apiPost<{ elements: Array<Record<string, unknown>> }>(`${B}/trigger-selection`, {}),
 }

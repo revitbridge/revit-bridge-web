@@ -1,4 +1,4 @@
-/* Shared API types (mirrors docs/api-v0.json). */
+/* Shared API types (mirrors docs/api-v1.json). */
 
 export interface RevitHealthResponse {
   revit_connected: boolean
@@ -24,12 +24,32 @@ export interface SlotsStatus {
   slots: Record<string, SlotInfo>
 }
 
-export interface ProjectUnits {
-  revit_unit?: string
-  display_name?: string
-  detected?: string
+/* revit_bridge.snapshot.ProjectSnapshot, as GET /snapshot returns it. */
+export interface ProjectSnapshot {
+  schema_version: number
+  taken_at: string
+  duration_ms: number
+  document: { title: string; revit_version: string; is_workshared: boolean }
+  units: { length: string; raw: string }
+  active_view: { name: string; view_type: string; level: string | null } | null
+  levels: Array<{ id: number; name: string; elevation_mm: number }>
+  grids: { count: number; names: string[] }
+  family_types: Array<{ category: string; count: number; names: string[] }>
+  selection: Array<{ id: number; category: string; name: string }>
+  selection_count: number
+  links: Array<{ name: string; loaded: boolean }>
+  phases: string[]
+  warnings: string[]
+  fingerprint: string
+}
+
+/* POST /query: the package's answer as is ({kind, items, ...} or {error, ...}). */
+export interface QueryAnswer {
+  kind?: string
+  items?: Array<Record<string, unknown>>
   error?: string
-  current_setting: string
+  message?: string
+  [key: string]: unknown
 }
 
 export interface ToolParam {
