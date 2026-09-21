@@ -57,6 +57,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Fixed
 
+- Over a slot, a Revit that is gone or leaves mid-request is a transport failure
+  (`ConnectionError`) like over TCP, so the package consumes no confirmation token and
+  writes no ledger line for code that never reached Revit; only a reply that does not
+  arrive in time is still `success: false, "Timeout ..."`.
 - `POST /api/v1/bridge/solidify` and `PUT /api/v1/bridge/tools/{name}` answer
   `422 {"error": "invalid_pack", "problems": [...]}` when the package rejects the pack
   (an undeclared `{placeholder}` in the code, a malformed parameter, an unknown

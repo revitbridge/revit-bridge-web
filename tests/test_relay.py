@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import threading
 
+import pytest
 from starlette.websockets import WebSocketDisconnect
 
 WS = "/api/v1/bridge/ws/1"
@@ -119,6 +120,73 @@ def test_pack_run_over_the_slot_counts_usage_in_the_data_root(client, tmp_path):
     assert not (user_dir / "query_levels.yaml").exists()
     listed = {t["name"]: t for t in client.get("/api/v1/bridge/tools").json()}
     assert listed["query_levels"]["used"] == 1
+
+
+def test_a_slot_that_leaves_mid_request_is_a_transport_failure(client):
+    """The add-in goes away between the route's check and the reply: the package sees
+    ConnectionError (like the TCP client), consumes no token and writes no ledger line."""
+    from backend.api.bridge import get_gate, get_ledger
+
+    headers = {"X-Slot-Id": "1"}
+    outcome: dict = {}
+    with client.websocket_connect(WS) as addin:
+        token = client.post("/api/v1/bridge/spec/confirm", json={"spec": {
+            "task": "levels", "action": {"kind": "run_tool", "tool": "query_levels"}, "parameters": []}},
+            headers=headers).json()["token"]
+
+        def run():
+            resp = client.post("/api/v1/bridge/tools/query_levels/run",
+                               json={"params": {}, "token": token}, headers=headers)
+            outcome["run"] = (resp.status_code, resp.json())
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        probe = addin.receive_json()                      # the package's document probe
+        assert probe["method"] == "send_code_to_revit"
+        addin.close()                                     # ...and the add-in leaves instead of answering
+        thread.join(timeout=10)
+
+    status, out = outcome["run"]
+    if status == 200:                                    # the package's "nothing reached Revit"
+        assert out["success"] is False and out["error"] and out.get("evidence_id") is None
+    else:
+        assert status == 503 and out["error"] == "revit_unreachable"
+    assert get_gate().peek(token).used_at is None        # still redeemable
+    assert get_ledger().recent() == []                   # nothing reached Revit, nothing recorded
+
+    # A read over a slot whose add-in leaves is 503, not a 200 with an error string.
+    with client.websocket_connect(WS) as addin:
+        def query():
+            resp = client.post("/api/v1/bridge/query", json={"kind": "levels"}, headers=headers)
+            outcome["query"] = (resp.status_code, resp.json())
+
+        thread = threading.Thread(target=query)
+        thread.start()
+        assert addin.receive_json()["method"] == "send_code_to_revit"
+        addin.close()
+        thread.join(timeout=10)
+    status, out = outcome["query"]
+    assert status == 503 and out["error"] == "revit_unreachable" and out["kind"] == "levels"
+
+
+def test_relay_client_failure_contract_matches_the_tcp_client():
+    import asyncio
+
+    from backend.relay import SlotManager, WebSocketRevitClient
+
+    mgr = SlotManager(max_slots=2)
+    client = WebSocketRevitClient(mgr, "1", timeout=1)
+
+    async def scenario():
+        with pytest.raises(ConnectionError):
+            await client.ensure_connected()
+        with pytest.raises(ConnectionError):
+            await client.send_command("say_hello", {})
+        with pytest.raises(ConnectionError):
+            await mgr.send_code("2", "return 1;")
+        assert await client.ping() is False
+
+    asyncio.run(scenario())
 
 
 def _rejected_at_handshake(client, path: str) -> int | None:

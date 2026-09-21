@@ -6,9 +6,14 @@ that socket. Browser requests select a slot with ``X-Slot-Id``. One slot
 handles one request at a time (Revit executes serially).
 
 ``WebSocketRevitClient`` gives a slot the same ``send_command`` /
-``send_code`` / ``ping`` surface as ``revit_bridge.revit.RevitClient`` so the
-routes and ``revit_bridge.snapshot.RevitQueryExecutor`` do not care which
-transport is underneath.
+``send_code`` / ``ping`` / ``ensure_connected`` surface as
+``revit_bridge.revit.RevitClient`` so the routes, the package's execution
+flow and ``revit_bridge.snapshot.RevitQueryExecutor`` do not care which
+transport is underneath. The failure contract is the TCP client's too: a
+slot with no add-in, an add-in that leaves mid-request or a socket that
+cannot be written raise ``ConnectionError`` (the package then consumes no
+token and writes no ledger line - nothing reached Revit); only a reply that
+does not arrive in time is ``RevitResponse(success=False, "Timeout ...")``.
 """
 from __future__ import annotations
 
@@ -19,7 +24,7 @@ import random
 import time
 from dataclasses import dataclass, field
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from revit_bridge.revit import RevitResponse
 
@@ -110,10 +115,14 @@ class SlotManager:
         self, slot_id: str, method: str, params: dict | None = None,
         timeout: float = 60.0,
     ) -> RevitResponse:
-        """Send one JSON-RPC 2.0 request over the slot and await its reply."""
+        """Send one JSON-RPC 2.0 request over the slot and await its reply.
+
+        Raises ``ConnectionError`` when the slot has no add-in, the add-in
+        leaves before answering or the socket cannot be written.
+        """
         conn = self.get_connection(slot_id)
         if not conn:
-            return RevitResponse(success=False, error=f"Slot '{slot_id}' not connected")
+            raise ConnectionError(f"Slot '{slot_id}' has no connected Revit add-in")
 
         async with conn.lock:
             request_id = f"{int(time.time() * 1000)}{random.randint(100000, 999999)}"
@@ -147,8 +156,16 @@ class SlotManager:
                 conn.request_count += 1
             except asyncio.TimeoutError:
                 return RevitResponse(success=False, error=f"Timeout after {timeout}s")
-            except Exception as exc:
-                return RevitResponse(success=False, error=str(exc))
+            except asyncio.CancelledError:
+                # unregister() cancels the pending future when the add-in leaves;
+                # any other cancellation is the request itself being cancelled.
+                if conn.pending is not None and conn.pending.cancelled():
+                    raise ConnectionError(f"Slot '{slot_id}' left while waiting for a reply") from None
+                raise
+            except (WebSocketDisconnect, RuntimeError, OSError) as exc:
+                # send_text on a closed socket (Starlette raises RuntimeError /
+                # WebSocketDisconnect) - nothing reached Revit
+                raise ConnectionError(f"Slot '{slot_id}' connection failed: {exc}") from exc
             finally:
                 conn.pending = None
 
@@ -201,6 +218,12 @@ class WebSocketRevitClient:
     @property
     def connected(self) -> bool:
         return self._mgr.get_connection(self._slot_id) is not None
+
+    async def ensure_connected(self) -> None:
+        """The package calls this before its timed probes: no add-in on the slot is a
+        transport failure now, not a probe timeout later."""
+        if not self.connected:
+            raise ConnectionError(f"Slot '{self._slot_id}' has no connected Revit add-in")
 
     async def send_command(self, method: str, params: dict | None = None) -> RevitResponse:
         return await self._mgr.send_command(self._slot_id, method, params, self._timeout)
