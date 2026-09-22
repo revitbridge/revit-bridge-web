@@ -35,7 +35,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   (`invalid_args`, `invalid_spec`, `invalid_snapshot`, `invalid_pack`), 404 for what
   does not exist (`unknown_tool`, `unknown_evidence`), 503 `revit_unreachable` when no
   add-in answers (was 502), 200 `success: false` for refusals; bodies are
-  `{error, message?, ...}` instead of FastAPI's `{detail}`.
+  `{error, message?, ...}` instead of FastAPI's `{detail}`. `docs/api-v1.json`
+  declares those statuses per route as `ErrorBody`; FastAPI's own validation errors are
+  `invalid_args` on the bridge routes only - `/api/chat`, `/api/skills` and `/api/logs`
+  keep `{detail: [...]}`.
 
 - Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
   packs read in place from the wheel, keeps user packs and `usage.json` under its own

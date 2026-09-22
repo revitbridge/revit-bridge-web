@@ -111,3 +111,36 @@ def test_openapi_lists_the_v1_contract(client):
     # Nothing from the retired RAG / orchestration surface survived.
     assert not [p for p in paths if any(k in p for k in ("generate", "orchestrate", "classify", "match-tool", "search", "t2r"))]
     assert json.dumps(spec)  # serialisable, exported to docs/api-v1.json
+
+
+def test_openapi_describes_the_error_contract(client):
+    """Bridge routes declare their {error, message?} statuses; other routes keep FastAPI's shape."""
+    spec = client.get("/openapi.json").json()
+    error_ref = {"$ref": "#/components/schemas/ErrorBody"}
+
+    query = spec["paths"]["/api/v1/bridge/query"]["post"]["responses"]
+    assert set(query) == {"200", "400", "403", "422", "500", "503"}
+    for status in ("400", "422", "503"):
+        assert query[status]["content"]["application/json"]["schema"] == error_ref
+    assert "HTTPValidationError" not in json.dumps(query)
+
+    run = spec["paths"]["/api/v1/bridge/tools/{name}/run"]["post"]["responses"]
+    assert set(run) == {"200", "400", "403", "422", "503"}
+    # Every bridge route with a body or parameters declares its own 422; none falls back.
+    for path, item in spec["paths"].items():
+        if path.startswith("/api/v1/bridge/"):
+            for op in item.values():
+                assert "HTTPValidationError" not in json.dumps(op["responses"]), path
+
+    skill = spec["paths"]["/api/skills/{skill_id}"]["put"]["responses"]
+    assert skill["422"]["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/HTTPValidationError"}
+    body = spec["components"]["schemas"]["ErrorBody"]
+    assert body["required"] == ["error"] and body.get("additionalProperties", True) is not False
+
+    # The handler is scoped the same way: a bad body outside the bridge keeps {detail}.
+    outside = client.post("/api/skills", json={"content": 1})
+    assert outside.status_code in (403, 422, 503)
+    if outside.status_code == 422:
+        assert "detail" in outside.json() and "error" not in outside.json()
+    inside = client.post("/api/v1/bridge/query", json={"args": {}})
+    assert inside.status_code == 422 and inside.json()["error"] == "invalid_args"

@@ -49,7 +49,7 @@ from revit_bridge.spec.gate import Gate, confirmation_required
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
-from backend.api.errors import ApiError, revit_unreachable
+from backend.api.errors import ApiError, responses, revit_unreachable
 from backend.config import get_settings
 from backend.ratelimit import client_key, confirm_limiter
 from backend.relay import WebSocketRevitClient, get_slot_manager
@@ -298,7 +298,7 @@ def _invalid_pack(exc: ValueError) -> ApiError:
 
 # -- the model, read-only --------------------------------------------------------
 
-@router.get("/snapshot")
+@router.get("/snapshot", responses=responses(400, 403, 422, 500, 503))
 async def get_snapshot(categories: list[str] | None = Query(default=None)):
     """``take_snapshot``: the open model as a ``ProjectSnapshot`` (units, levels, grids,
     selection, the family types of ``categories`` - repeat the parameter or separate
@@ -316,7 +316,7 @@ async def get_snapshot(categories: list[str] | None = Query(default=None)):
     return snapshot.model_dump(mode="json")
 
 
-@router.post("/query")
+@router.post("/query", responses=responses(400, 403, 422, 500, 503))
 async def query_model(req: QueryRequest):
     """``run_query``: one read-only query by kind (levels, grids, family_types, elements,
     selection, view_elements, units, counts). The package's answer is returned as is;
@@ -340,13 +340,13 @@ async def query_model(req: QueryRequest):
 
 # -- capability packs ----------------------------------------------------------
 
-@router.get("/tools")
+@router.get("/tools", responses=responses(403))
 async def list_tools():
     """``ToolStore.list_tools`` in the MCP ``list_tools`` shape."""
     return [_tool_listing(t) for t in ToolStore().list_tools()]
 
 
-@router.get("/tools/{name}")
+@router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
     tool = ToolStore().load(name)
     if not tool:
@@ -354,7 +354,7 @@ async def get_tool(name: str):
     return _tool_detail(tool)
 
 
-@router.put("/tools/{name}")
+@router.put("/tools/{name}", responses=responses(400, 403, 404, 422))
 async def update_tool(name: str, req: UpdateToolRequest):
     """Change editable fields; the package validates the result as a v1 pack (422 with problems)."""
     updates = req.model_dump(exclude_unset=True)
@@ -371,14 +371,14 @@ async def update_tool(name: str, req: UpdateToolRequest):
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}
 
 
-@router.delete("/tools/{name}")
+@router.delete("/tools/{name}", responses=responses(403, 404, 422))
 async def delete_tool(name: str):
     if ToolStore().delete(name):
         return {"status": "deleted", "name": name}
     raise _unknown_tool(name)
 
 
-@router.get("/tools/{name}/choices")
+@router.get("/tools/{name}/choices", responses=responses(403, 404, 422, 503, 504))
 async def get_tool_choices(name: str):
     """Real values for the pack's dynamic parameters (levels, types, elements)."""
     store = ToolStore()
@@ -396,7 +396,7 @@ async def get_tool_choices(name: str):
         raise revit_unreachable(exc) from None
 
 
-@router.post("/tools/{name}/missing-params")
+@router.post("/tools/{name}/missing-params", responses=responses(403, 404, 422))
 async def tool_missing_params(name: str, req: MissingParamsRequest):
     """``missing_params``: the questions still open for the pack given ``known`` values,
     with the real options from ``snapshot`` (or one taken now, best effort)."""
@@ -412,7 +412,7 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
     return [q.model_dump(mode="json") for q in missing_params(pack, req.known, snapshot, req.language)]
 
 
-@router.post("/tools/{name}/run")
+@router.post("/tools/{name}/run", responses=responses(400, 403, 422, 503))
 async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
     validator, evidence, all in the package. Without a token: 400 ``confirmation_required``."""
@@ -425,7 +425,7 @@ async def run_tool(name: str, req: RunToolRequest):
 
 # -- specs ---------------------------------------------------------------------
 
-@router.post("/spec/reconcile")
+@router.post("/spec/reconcile", responses=responses(403, 422, 500, 503))
 async def reconcile_spec(req: ReconcileRequest):
     """``reconcile``: the draft TaskSpec against the snapshot (given, or taken now)."""
     draft = _parse_spec(req.spec)
@@ -442,7 +442,7 @@ def confirm_rate_limit(request: Request) -> None:
         raise ApiError(429, "rate_limited", "Too many confirmations from this address; try again in a minute")
 
 
-@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)])
+@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)], responses=responses(403, 422, 429))
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
     Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}``.
@@ -460,7 +460,7 @@ async def confirm_spec(req: ConfirmRequest):
 
 # -- execution -----------------------------------------------------------------
 
-@router.post("/execute")
+@router.post("/execute", responses=responses(400, 403, 422, 503))
 async def execute_code(req: ExecuteRequest):
     """``run_code``: the confirmed C# under its token; the sandbox review and the ledger are the package's."""
     token = _require_token(req.token)
@@ -470,7 +470,7 @@ async def execute_code(req: ExecuteRequest):
     return _execution_payload(result)
 
 
-@router.post("/solidify")
+@router.post("/solidify", responses=responses(400, 403, 422))
 async def solidify_tool(req: SolidifyRequest):
     """``ToolStore.solidify``: save working code as a v1 pack; best-effort sync to the add-in."""
     safe, warnings = sandbox.review(req.code)
@@ -510,13 +510,13 @@ async def _sync_to_revit(tool) -> bool:
 
 # -- evidence ------------------------------------------------------------------
 
-@router.get("/evidence")
+@router.get("/evidence", responses=responses(403, 422))
 async def list_evidence(limit: int = 20, tool: str | None = None):
     """``Ledger.recent``: the newest execution records, optionally of one pack."""
     return get_ledger().recent(max(1, min(limit, MAX_EVIDENCE)), tool or None)
 
 
-@router.post("/evidence/{evidence_id}/validate")
+@router.post("/evidence/{evidence_id}/validate", responses=responses(400, 403, 404, 422, 503))
 async def validate_evidence(evidence_id: str):
     """``revalidate``: the recorded execution's assertion against the model as it is now."""
     client = await get_revit_client()
@@ -533,7 +533,7 @@ async def validate_evidence(evidence_id: str):
 
 # -- selection -----------------------------------------------------------------
 
-@router.post("/trigger-selection")
+@router.post("/trigger-selection", responses=responses(403, 503))
 async def trigger_selection():
     """Put Revit into pick mode and return what the designer selected."""
     client = await get_revit_client()
@@ -545,7 +545,7 @@ async def trigger_selection():
 
 # -- health --------------------------------------------------------------------
 
-@router.get("/revit-health")
+@router.get("/revit-health", responses=responses(403))
 async def revit_health():
     """Is a Revit reachable: the selected slot, else the local TCP add-in."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
