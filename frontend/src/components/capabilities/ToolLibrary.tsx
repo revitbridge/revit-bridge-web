@@ -131,7 +131,6 @@ export default function ToolLibrary() {
                 <th className="px-3 py-2 text-left label-text">Name</th>
                 <th className="px-3 py-2 text-left label-text">Description</th>
                 <th className="px-3 py-2 text-left label-text w-16">Uses</th>
-                <th className="px-3 py-2 text-left label-text">Tags</th>
                 <th className="px-3 py-2 w-16"></th>
               </tr>
             </thead>
@@ -141,8 +140,7 @@ export default function ToolLibrary() {
                   style={{ cursor: 'pointer', background: selected === t.name ? 'rgba(217,119,87,0.08)' : 'transparent', borderBottom: '1px solid var(--line)' }}>
                   <td className="px-3 py-1.5" style={{ fontWeight: 500 }}>{t.name}</td>
                   <td className="px-3 py-1.5" style={{ fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--mid)' }}>{t.description}</td>
-                  <td className="px-3 py-1.5">{t.execution_count}</td>
-                  <td className="px-3 py-1.5" style={{ color: 'var(--faint)' }}>{t.tags?.join(', ')}</td>
+                  <td className="px-3 py-1.5">{t.used}</td>
                   <td className="px-3 py-1.5">
                     <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>
                   </td>

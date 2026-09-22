@@ -58,24 +58,37 @@ export interface ToolParam {
   type?: string
   default?: unknown
   source?: string
+  required?: boolean
+  unit?: string
   choices_from?: string
 }
 
+/* One item of GET /tools: the package's list_tools shape. */
 export interface ToolInfo {
+  name: string
+  description: string
+  version: string
+  parameters: ToolParam[]
+  preconditions: Array<Record<string, unknown>>
+  validator: string | null
+  used: number
+}
+
+/* GET /tools/{name}: the full pack. */
+export interface ToolDetail {
   name: string
   display_name: string
   description: string
+  version: string
   parameters: ToolParam[]
   tags: string[]
   execution_count: number
-}
-
-export interface ToolDetail extends ToolInfo {
   code_template: string
   source_query: string
-  preconditions: string[]
+  preconditions: Array<Record<string, unknown>>
   applies_when: string[]
   not_for: string[]
+  validator: Record<string, unknown> | null
 }
 
 export interface ToolChoiceItem {
