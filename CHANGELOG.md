@@ -22,6 +22,8 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   The host's own `HOST_INSTRUCTIONS` and the pack index in the prompt are gone.
 - Sessions keep the model's message history (with tool calls), the last snapshot
   fingerprint, the last proposed spec and the last reported `evidence_id`; never a token.
+  A tool result is kept in the session up to 8 KB (head plus a one-line note); the turn
+  that produced it still sends it to the model in full.
 - `frontend/src/api/chat.ts`: `parseSseFrame()` and `chatEvents()` yield the host loop's
   events (`session`, `token`, `spec`, `execution`, `error`, `done`); the types are in
   `frontend/src/types/api.ts`. The pages arrive with the next release.

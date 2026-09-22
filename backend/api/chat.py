@@ -49,6 +49,8 @@ router = APIRouter(prefix="/api", tags=["chat"])
 
 HISTORY_WINDOW = 40          # messages sent to the model, cut at a user turn
 MAX_TOOL_ROUNDS = 8          # tool-call rounds per turn before the model must answer in text
+TOOL_RESULT_KEEP = 8192      # characters of a tool result kept in the session after its turn
+ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {total} in the turn that produced it]"
 
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
@@ -88,6 +90,17 @@ def build_system_prompt(bridge: bool = True) -> str:
 def execution_message(execution: dict) -> str:
     """The fixed first line, then the ExecutionResult JSON as the page received it."""
     return f"{EXECUTION_PREFIX}\n{json.dumps(execution, ensure_ascii=False)}"
+
+
+def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
+    """The tool message as the session stores it: a snapshot or an element listing can
+    run to hundreds of KB, and every later turn would carry it again. The turn that
+    produced it still sends it in full; later turns see the head and a note."""
+    content = message.get("content") or ""
+    if len(content) <= keep:
+        return message
+    note = ELISION_NOTE.format(kept=keep, total=len(content))
+    return {**message, "content": f"{content[:keep]}\n{note}"}
 
 
 @router.post("/chat", dependencies=[Depends(rate_limit)])
@@ -157,8 +170,8 @@ async def chat(req: ChatRequest, request: Request):
                     if outcome.spec_event is not None:
                         yield format_sse_event("spec", outcome.spec_event)
                     reply = tool_message(call, outcome.result)
-                    session.add(reply)
-                    messages.append(reply)
+                    session.add(kept_tool_message(reply))     # the session keeps at most the head
+                    messages.append(reply)                    # this turn sees all of it
         except LLMError as exc:
             yield format_sse_event("error", {"detail": str(exc)})
             return
