@@ -113,12 +113,18 @@ def test_tool_detail_update_and_delete_are_unchanged(client, tmp_path):
 
     updated = client.put(f"{B}/tools/query_levels", json={"description": "levels, sorted"})
     assert updated.status_code == 200 and updated.json()["description"] == "levels, sorted"
-    assert (tmp_path / "data" / "capabilities" / "query_levels.yaml").is_file()
+    user_file = tmp_path / "data" / "capabilities" / "query_levels.yaml"
+    assert user_file.is_file()
+    written = user_file.read_bytes()
     invalid = client.put(f"{B}/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"})
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
     assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
+    # The refused update wrote nothing: the served pack and the file are what the valid update left.
+    assert "{level_name}" not in client.get(f"{B}/tools/query_levels").json()["code_template"]
+    assert user_file.read_bytes() == written
     blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
+    assert user_file.read_bytes() == written
 
     assert client.delete(f"{B}/tools/query_levels").json() == {"status": "deleted", "name": "query_levels"}
     assert client.delete(f"{B}/tools/query_levels").status_code == 404
