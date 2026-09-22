@@ -1,15 +1,25 @@
-/* Capability packs: pick one, load its real choices from Revit, fill parameters, run, edit. */
+/* Capability packs: pick one, load its real choices from Revit, fill parameters,
+   confirm and run under a token, edit. */
 
 import { useCallback, useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
-import type { ToolChoiceItem, ToolInfo, ToolParam } from '../../types/api'
+import type { ExecutionResult, SpecError, ToolChoiceItem, ToolInfo, ToolParam } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
 import Accordion from '../shared/Accordion'
-import ExecResult, { type ExecOutcome } from '../shared/ExecResult'
 import StepIndicator from '../shared/StepIndicator'
+import { taskApi } from '../task/api'
+import { ExecutionView } from '../task/ExecutionPanel'
+import { tokenPrefix } from '../task/format'
+import { SpecTable } from '../task/SpecCard'
+import { confirmAndRun, describePreconditions, specFromForm } from './directRun'
 import ToolParamEditor from './ToolParamEditor'
 
-const STEPS = ['Select pack', 'Load choices', 'Set parameters', 'Run']
+const STEPS = ['Select pack', 'Load choices', 'Set parameters', 'Confirm and run']
+
+type RunOutcome =
+  | { kind: 'rejected'; errors: SpecError[] }
+  | { kind: 'executed'; token: string; expires_at: string; result: ExecutionResult }
+  | { kind: 'failed'; message: string }
 
 export default function ToolLibrary() {
   const [tools, setTools] = useState<ToolInfo[]>([])
@@ -18,10 +28,10 @@ export default function ToolLibrary() {
   const [params, setParams] = useState<ToolParam[]>([])
   const [choices, setChoices] = useState<Record<string, ToolChoiceItem[]>>({})
   const [values, setValues] = useState<Record<string, string>>({})
-  const [result, setResult] = useState<ExecOutcome | null>(null)
+  const [result, setResult] = useState<RunOutcome | null>(null)
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
-  const [detail, setDetail] = useState<{ display_name: string; description: string; code_template: string; source_query: string; tags: string[] } | null>(null)
+  const [detail, setDetail] = useState<{ display_name: string; description: string; code_template: string; source_query: string; tags: string[]; version: string; preconditions: Array<Record<string, unknown>>; validator: Record<string, unknown> | null } | null>(null)
   const [showCode, setShowCode] = useState(false)
   const [editMode, setEditMode] = useState(false)
   const [edit, setEdit] = useState({ display_name: '', description: '', source_query: '', tags: '', params: '[]', code: '' })
@@ -45,7 +55,8 @@ export default function ToolLibrary() {
       const d = await bridgeApi.getTool(name)
       const all = d.parameters || []
       setParams(all)
-      setDetail({ display_name: d.display_name || d.name, description: d.description || '', code_template: d.code_template || '', source_query: d.source_query || '', tags: d.tags || [] })
+      setDetail({ display_name: d.display_name || d.name, description: d.description || '', code_template: d.code_template || '', source_query: d.source_query || '', tags: d.tags || [],
+        version: d.version, preconditions: d.preconditions || [], validator: d.validator ?? null })
       setEdit({ display_name: d.display_name || d.name, description: d.description || '', source_query: d.source_query || '', tags: (d.tags || []).join(', '), params: JSON.stringify(all, null, 2), code: d.code_template || '' })
 
       let ch: Record<string, ToolChoiceItem[]> = {}
@@ -68,15 +79,20 @@ export default function ToolLibrary() {
     }
   }, [])
 
+  /* The filled-in values become a TaskSpec; the run goes through the gate like every other. */
+  const spec = selected && step >= 3 ? specFromForm({ name: selected, display_name: detail?.display_name }, params, values, choices) : null
+
   const run = async () => {
-    if (!selected) return
+    if (!spec) return
     setLoading(true); setStep(4)
     try {
-      const res = await bridgeApi.runTool(selected, values)
-      setResult(res.success ? { ok: true, data: res.result } : { ok: false, data: null, error: res.error })
+      const outcome = await confirmAndRun(taskApi, spec)
+      setResult(outcome.status === 'rejected'
+        ? { kind: 'rejected', errors: outcome.errors }
+        : { kind: 'executed', token: outcome.token, expires_at: outcome.expires_at, result: outcome.result })
       refresh()
     } catch (e: unknown) {
-      setResult({ ok: false, data: null, error: getErrorMessage(e) })
+      setResult({ kind: 'failed', message: getErrorMessage(e) })
     } finally {
       setLoading(false)
     }
@@ -96,7 +112,8 @@ export default function ToolLibrary() {
         display_name: edit.display_name, description: edit.description, source_query: edit.source_query,
         tags: edit.tags.split(',').map(t => t.trim()).filter(Boolean), parameters: parsed, code_template: edit.code,
       })
-      setDetail({ display_name: u.display_name, description: u.description, code_template: u.code_template, source_query: u.source_query, tags: u.tags })
+      setDetail({ display_name: u.display_name, description: u.description, code_template: u.code_template, source_query: u.source_query, tags: u.tags,
+        version: u.version, preconditions: u.preconditions || [], validator: u.validator ?? null })
       setParams(u.parameters || [])
       setEditMode(false)
       setSaveStatus(`Saved${u.revit_synced ? ' and registered in Revit' : ''}.`)
@@ -130,6 +147,9 @@ export default function ToolLibrary() {
               <tr style={{ background: 'var(--bg2)' }}>
                 <th className="px-3 py-2 text-left label-text">Name</th>
                 <th className="px-3 py-2 text-left label-text">Description</th>
+                <th className="px-3 py-2 text-left label-text w-16">Version</th>
+                <th className="px-3 py-2 text-left label-text">Validator</th>
+                <th className="px-3 py-2 text-left label-text">Preconditions</th>
                 <th className="px-3 py-2 text-left label-text w-16">Uses</th>
                 <th className="px-3 py-2 w-16"></th>
               </tr>
@@ -140,6 +160,9 @@ export default function ToolLibrary() {
                   style={{ cursor: 'pointer', background: selected === t.name ? 'rgba(217,119,87,0.08)' : 'transparent', borderBottom: '1px solid var(--line)' }}>
                   <td className="px-3 py-1.5" style={{ fontWeight: 500 }}>{t.name}</td>
                   <td className="px-3 py-1.5" style={{ fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--mid)' }}>{t.description}</td>
+                  <td className="px-3 py-1.5">{t.version}</td>
+                  <td className="px-3 py-1.5">{t.validator ?? <span style={{ color: 'var(--faint)' }}>none</span>}</td>
+                  <td className="px-3 py-1.5" style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
                   <td className="px-3 py-1.5">{t.used}</td>
                   <td className="px-3 py-1.5">
                     <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>
@@ -161,6 +184,12 @@ export default function ToolLibrary() {
             {detail && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
           </div>
           {detail?.description && step >= 3 && <p className="section-copy">{detail.description}</p>}
+          {detail && step >= 3 && (
+            <p className="section-copy small" style={{ margin: 0 }}>
+              v{detail.version} | validator: {detail.validator ? <code>{JSON.stringify(detail.validator)}</code> : 'none'}
+              {' | '}preconditions: {detail.preconditions.length ? describePreconditions(detail.preconditions) : 'none'}
+            </p>
+          )}
           {detail && detail.tags.length > 0 && step >= 3 && <div className="tool-tag-row">{detail.tags.map(tag => <span key={tag}>{tag}</span>)}</div>}
           {notice && <p className="tool-warning-status">{notice}</p>}
         </div>
@@ -205,11 +234,31 @@ export default function ToolLibrary() {
           onChange={(name, value) => setValues(prev => ({ ...prev, [name]: value }))} />
       )}
 
-      {step >= 3 && (
-        <button onClick={run} disabled={loading} className="btn-primary">{loading ? 'Running...' : 'Run in Revit'}</button>
+      {spec && (
+        <Accordion title="Spec card (what the token binds to)" defaultOpen>
+          <SpecTable spec={spec} />
+          <p className="section-copy small">
+            Confirm issues a one-time token for exactly these values and runs the pack under it; the result and the
+            validator's checks are recorded in the evidence ledger.
+          </p>
+          <button onClick={run} disabled={loading || spec.parameters.length < params.filter(p => p.required).length} className="btn-primary">
+            {loading ? 'Running...' : 'Confirm and run in Revit'}
+          </button>
+        </Accordion>
       )}
 
-      {result && <ExecResult result={result} />}
+      {result?.kind === 'rejected' && (
+        <ul className="spec-errors">
+          {result.errors.map((e, i) => <li key={i}>Confirm refused: <code>{e.code}</code>{e.param ? <> on <code>{e.param}</code></> : null}: {e.message}</li>)}
+        </ul>
+      )}
+      {result?.kind === 'failed' && <p className="tool-warning-status">{result.message}</p>}
+      {result?.kind === 'executed' && (
+        <div>
+          <span className="token-chip">token <code>{tokenPrefix(result.token)}</code> | expires {result.expires_at}</span>
+          <ExecutionView execution={result.result} />
+        </div>
+      )}
     </div>
   )
 }
