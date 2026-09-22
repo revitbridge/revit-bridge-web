@@ -116,6 +116,7 @@ export interface SolidifyResponse {
   status: string
   name: string
   display_name: string
+  version?: string
   revit_synced: boolean
 }
 
@@ -135,7 +136,7 @@ export interface Skill {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
 }
 
@@ -220,3 +221,85 @@ export type HostEvent =
   | { type: 'execution'; execution: ExecutionResult }
   | { type: 'error'; detail: string }
   | { type: 'done' }
+
+/* -- phase 6: confirmed execution, evidence and v1 packs (the /api/v1/bridge contract) -- */
+
+/* POST /spec/confirm: the designer confirmed the card; the token stays in the browser. */
+export interface ConfirmResponse {
+  token: string
+  spec_hash: string
+  expires_at: string
+  card: string
+}
+
+/* The pack validator's report, as it appears in an execution result and in the ledger. */
+export interface ValidationReport {
+  validator: string
+  passed: boolean
+  checks: Array<{ detail: string; passed?: boolean }>
+  before?: Record<string, unknown>
+  after?: Record<string, unknown>
+}
+
+/* One line of the evidence ledger: GET /evidence. */
+export interface EvidenceRecord {
+  id: string
+  ts: string
+  host: string
+  action: 'run_tool' | 'execute_code' | string
+  tool: string | null
+  tool_version: string | null
+  spec_hash: string | null
+  projection_hash: string | null
+  token_prefix: string | null
+  confirmed_by: string | null
+  channel: string | null
+  params: Record<string, unknown> | null
+  code_sha256: string | null
+  code_head: string | null
+  document: { title?: string; revit_version?: string } | null
+  success: boolean
+  error: string | null
+  result_summary: Record<string, unknown> | null
+  validation: ValidationReport | null
+  duration_ms: number | null
+  preconditions_failed: string[]
+  warnings: string[]
+}
+
+/* POST /evidence/{id}/validate: the recorded assertion re-run against the model now. */
+export interface RevalidateReport extends ValidationReport {
+  evidence_id: string
+  tool: string
+}
+
+/* A v1 pack parameter as POST /solidify and PUT /tools/{name} take it. */
+export interface PackParameter {
+  name: string
+  type: string
+  description?: string
+  source: string          // designer | tool:<query> | answer | default
+  required: boolean
+  unit?: string | null
+  choices_from?: string
+  default?: unknown
+}
+
+export interface SolidifyRequest {
+  name: string
+  code: string
+  description: string
+  parameters: PackParameter[]
+  source_query: string
+  validator?: Record<string, unknown> | null
+}
+
+/* A rejected request: {error, message?} plus what the endpoint adds (spec errors, pack problems, sandbox warnings). */
+export interface ApiErrorBody {
+  error: string
+  message?: string
+  errors?: Array<{ code: string; param: string | null; message: string }>
+  problems?: string[]
+  warnings?: string[]
+  [key: string]: unknown
+}
