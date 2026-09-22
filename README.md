@@ -40,18 +40,29 @@ reached over TCP (`host.docker.internal:18080`) without any of that.
 1. **Connect** - choose the Revit (local TCP or a slot), enter the slot token if the host requires one,
    fill in *Model* (OpenAI-compatible base URL, model name, API key). Model settings stay in the
    browser tab (`sessionStorage`) and travel as request headers; the server never stores them.
-2. **Task** - describe what you want. The model works through the package's tools - it takes a
-   snapshot, asks the questions a capability pack still has open (with the real levels and types),
-   reconciles a draft against the model - and proposes a TaskSpec; the host shows the spec card. It
-   cannot confirm or execute anything: you confirm the card and the host runs exactly what was
-   confirmed, then the result goes back to the model for a faithful report. Until the task page of
-   the next release ships, the page still shows the old chat: executions from the UI are refused
-   because the page does not obtain the token from `/spec/confirm` yet.
-3. **Capabilities** - *Packs*: run a saved pack with real choices from the model (levels, types,
-   elements), edit or delete it (*Run* is refused the same way until the next release). *Skills*:
-   Markdown protocols that are appended to the model's system prompt - the plugin's `revit-bridge`
-   skill comes with the package and is on; its references are listed but off (the model reads them on
-   demand); add, upload or import more from GitHub (admin password required).
+2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
+   summary, selection, fingerprint). Describe what you want in one sentence: the model works through
+   the package's tools - it takes a snapshot, asks the questions a capability pack still has open
+   (with the real levels and types, as buttons you can click) and reconciles a draft - then proposes
+   a TaskSpec, which the page shows as a spec card: every parameter with its source and evidence,
+   the readings it made as checkboxes, conflicts in red. It cannot confirm or execute anything.
+   *Confirm* lights up only when the reconciliation is ready; it issues a one-time token that stays
+   in the page's memory (never `localStorage`), and the host runs exactly what was confirmed. You
+   see the validator's checks, the evidence id, and `validation_failed` in red when Revit ran the
+   code but the model did not change as claimed. The tamper demo changes one confirmed value and
+   runs again under the same token: `confirmation_invalid`, nothing reaches Revit. The result then
+   goes back to the model for a faithful report, and code that worked can be solidified into a v1
+   pack. The *Compare with no bridge* switch sends the same sentence a second time with
+   `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
+3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
+   real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
+   takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
+   delete it. *Skills*: Markdown protocols that are appended to the model's system prompt - the
+   plugin's `revit-bridge` skill comes with the package and is on; its references are listed but off
+   (the model reads them on demand); add, upload or import more from GitHub (admin password required).
+4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
+   it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
+   *Validate* re-runs its assertion against the model as it is now.
 
 The system prompt is the package's `host_instructions()` plus the enabled skills; the task page's
 "without the bridge" comparison sends the same message with `bridge: false` (one plain prompt, no

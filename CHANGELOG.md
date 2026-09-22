@@ -26,7 +26,18 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   that produced it still sends it to the model in full.
 - `frontend/src/api/chat.ts`: `parseSseFrame()` and `chatEvents()` yield the host loop's
   events (`session`, `token`, `spec`, `execution`, `error`, `done`); the types are in
-  `frontend/src/types/api.ts`. The pages arrive with the next release.
+  `frontend/src/types/api.ts`.
+- The task page is the demo sequence: the snapshot, the brief with the model's questions as
+  clickable options, the side-by-side comparison with a `bridge: false` session, the spec card
+  from the `spec` event (source and evidence per parameter, the readings as checkboxes,
+  conflicts in red, *Confirm* only when the reconciliation is ready), the confirmed execution
+  with the validator's checks and a prominent `validation_failed`, the tamper demo (one value
+  changed under the same token is `confirmation_invalid`), the report back to the model and
+  solidifying code that worked into a v1 pack. The confirmation token lives in the page's
+  memory only - never `localStorage` or `sessionStorage`.
+- An **Evidence** page: the ledger (`GET /evidence`) with one row per execution, every field of a
+  record when it is expanded, and *Validate* (`POST /evidence/{id}/validate`) to re-run its
+  assertion against the model as it is now.
 - Web API v1 under `/api/v1/bridge`, every route a thin wrapper over `revit-bridge` 0.2:
   `GET /snapshot`, `POST /query`, `POST /tools/{name}/missing-params`,
   `POST /spec/reconcile`, `POST /spec/confirm` (issues the one-time token, channel
@@ -45,9 +56,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   token they answer 400 `confirmation_required`, a tampered call is 200
   `confirmation_invalid`, a failed validation 200 `validation_failed`. The reply is the
   MCP `ExecutionResult` shape.
-- Until the task page of the next release, executions from the UI (*Execute in Revit*
-  on the Task page, *Run* on the Capabilities page) are refused with
-  `confirmation_required`: the page does not obtain the token from `/spec/confirm` yet.
+- Executions from the UI go through the gate: the Task page and the Capabilities page both
+  build a TaskSpec, confirm it (`POST /spec/confirm`) and run it with the token. The 0.1 path
+  (the model writes C# in the chat, the page posts it to `/execute`) is gone, with
+  `frontend/src/utils/code.ts`.
+- The Capabilities pack list shows the pack's version, validator and preconditions.
 - `GET /tools` returns the MCP `list_tools` shape (`name, description, version,
   parameters, preconditions, validator, used`). `POST /solidify` takes v1 parameters
   and an optional `validator`.
