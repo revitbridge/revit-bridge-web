@@ -26,6 +26,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   token they answer 400 `confirmation_required`, a tampered call is 200
   `confirmation_invalid`, a failed validation 200 `validation_failed`. The reply is the
   MCP `ExecutionResult` shape.
+- Until the task page of the next release, executions from the UI (*Execute in Revit*
+  on the Task page, *Run* on the Capabilities page) are refused with
+  `confirmation_required`: the page does not obtain the token from `/spec/confirm` yet.
 - `GET /tools` returns the MCP `list_tools` shape (`name, description, version,
   parameters, preconditions, validator, used`). `POST /solidify` takes v1 parameters
   and an optional `validator`.

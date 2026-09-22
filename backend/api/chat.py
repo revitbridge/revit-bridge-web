@@ -3,8 +3,10 @@
 The host loop of this phase is deliberately thin: system prompt = host
 conventions + capability pack index + enabled skills; the model answers in
 prose and, when asked to act, in one ```csharp block that the Task page
-extracts, shows for review and sends to ``/api/v1/bridge/execute``.
-Tool calling, snapshots and the spec gate arrive with the task page rewrite.
+extracts and shows for review. Until the task page of the next release,
+executions from the UI are refused: ``/api/v1/bridge/execute`` needs the
+token from ``/spec/confirm``, which the page does not obtain yet. Tool
+calling, snapshots and the confirmation step arrive with that rewrite.
 
 Wire format (unchanged from the previous host): SSE frames
 ``data: "<json string token>"`` and a final ``event: done`` / ``[DONE]``;

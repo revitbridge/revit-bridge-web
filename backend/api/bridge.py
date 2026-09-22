@@ -19,9 +19,11 @@ Status codes: a request the route refuses as such is 400 (``confirmation_require
 ``invalid_category``, ``unknown_kind``, ``blocked``, ``no_validator``), a body that
 parsed but is not valid is 422 (``invalid_args``, ``invalid_spec``, ``invalid_snapshot``,
 ``invalid_pack``), something that does not exist is 404, a Revit that cannot be
-reached is 503, and a refusal by the gate, a failed precondition or a failed
-validation is 200 with ``success: false`` - the same payloads the MCP tools
-return. Error bodies are ``{error, message?, ...}`` (see ``backend.api.errors``).
+reached *before* the run is 503 (a transport failure *during* the run is the
+package's ``success: false`` without consuming the token), and a refusal by the
+gate, a failed precondition or a failed validation is 200 with ``success: false``
+- the same payloads the MCP tools return. Error bodies are ``{error, message?, ...}``
+(see ``backend.api.errors``).
 """
 from __future__ import annotations
 

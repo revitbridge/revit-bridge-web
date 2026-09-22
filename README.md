@@ -42,9 +42,12 @@ reached over TCP (`host.docker.internal:18080`) without any of that.
    browser tab (`sessionStorage`) and travel as request headers; the server never stores them.
 2. **Task** - describe what you want. The model asks for what it cannot know, then proposes C# in a
    code block. Review it, *Execute in Revit*, and *Save as a capability pack* when it worked.
-   *Pick in Revit* pastes the selected elements into your message.
+   *Pick in Revit* pastes the selected elements into your message. Until the task page of the next
+   release, executions from the UI are refused: the API needs the token from `/spec/confirm`, which
+   the page does not obtain yet.
 3. **Capabilities** - *Packs*: run a saved pack with real choices from the model (levels, types,
-   elements), edit or delete it. *Skills*: Markdown protocols that are appended to the model's system
+   elements), edit or delete it (*Run* is refused the same way until the next release). *Skills*:
+   Markdown protocols that are appended to the model's system
    prompt - the plugin's `revit-bridge` skill and its references come with the package, listed but
    switched off until the task page can call the tools it describes; add, upload or import more from
    GitHub (admin password required).
@@ -99,10 +102,13 @@ package's flow: `GET /snapshot` and `POST /query` read the model; `GET /tools`,
 turns the designer's confirmation into a one-time token; `POST /tools/{name}/run` and `POST /execute`
 run only with that token (sandbox review, preconditions, validator and the evidence ledger are the
 package's; the ledger records `host: "web"`); `GET /evidence` and `POST /evidence/{id}/validate` show
-and re-check what ran. A request that cannot be honoured as written is 4xx, a Revit that cannot be
-reached is 503, and a refusal by the gate, a failed precondition or a failed validation is 200 with
-`success: false`; error bodies are `{error, message?, ...}` with the MCP tools' codes. Pick a Revit
+and re-check what ran. A request the route refuses as such is 400, a body that parsed but is not
+valid 422, a Revit that cannot be reached before the run is 503 (a transport failure during the run
+is the package's `success: false` without consuming the token), and a refusal by the gate, a failed
+precondition or a failed validation is 200 with `success: false`; error bodies are
+`{error, message?, ...}` with the MCP tools' codes, declared per route in the export. Pick a Revit
 with `X-Slot-Id` (+ `X-Slot-Token`) as before.
+
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; the container reads
 slot tokens from mounted files and the model key only from request headers or the environment.
 
