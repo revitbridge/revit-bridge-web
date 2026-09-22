@@ -359,6 +359,45 @@ def test_solidify_takes_v1_parameters_and_a_validator(client, tmp_path):
 
 # -- evidence ------------------------------------------------------------------------
 
+def test_ledger_and_gate_file_io_run_off_the_event_loop(revit, client, monkeypatch):
+    """confirm() issues and evidence() reads in the threadpool, not on the loop that drives the relay."""
+    import asyncio
+
+    from revit_bridge.evidence.ledger import Ledger
+    from revit_bridge.spec.gate import Gate
+
+    on_loop: dict[str, bool] = {}
+
+    def has_running_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:                 # a threadpool worker has no loop of its own
+            return False
+
+    real_issue, real_recent, real_get = Gate.issue, Ledger.recent, Ledger.get
+
+    def issue(self, *args, **kwargs):
+        on_loop["issue"] = has_running_loop()
+        return real_issue(self, *args, **kwargs)
+
+    def recent(self, *args, **kwargs):
+        on_loop["recent"] = has_running_loop()
+        return real_recent(self, *args, **kwargs)
+
+    def get(self, *args, **kwargs):
+        on_loop.setdefault("get", has_running_loop())
+        return real_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(Gate, "issue", issue)
+    monkeypatch.setattr(Ledger, "recent", recent)
+    monkeypatch.setattr(Ledger, "get", get)
+    confirm(client, spec_for("query_levels"))
+    assert client.get(f"{B}/evidence").status_code == 200
+    assert client.post(f"{B}/evidence/ev_nope/validate").status_code == 404
+    assert on_loop == {"issue": False, "recent": False, "get": False}
+
+
 def test_evidence_lists_the_ledger_newest_first(revit, client):
     assert client.get(f"{B}/evidence").json() == []
     first = client.post(f"{B}/tools/query_levels/run",

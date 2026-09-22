@@ -34,6 +34,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
 
@@ -460,7 +461,9 @@ async def confirm_spec(req: ConfirmRequest):
     errors = validate_spec(spec, _pack_for(spec, ToolStore()))
     if errors:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])
-    conf = get_gate().issue(spec, confirmed_by=req.confirmed_by.strip() or "designer", channel=CONFIRM_CHANNEL)
+    # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
+    conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
+                                   channel=CONFIRM_CHANNEL)
     return {"token": conf.token, "spec_hash": conf.spec_hash, "expires_at": conf.expires_at, "card": spec.card()}
 
 
@@ -519,7 +522,8 @@ async def _sync_to_revit(tool) -> bool:
 @router.get("/evidence", responses=responses(403, 422))
 async def list_evidence(limit: int = 20, tool: str | None = None):
     """``Ledger.recent``: the newest execution records, optionally of one pack."""
-    return get_ledger().recent(max(1, min(limit, MAX_EVIDENCE)), tool or None)
+    # reads the monthly JSONL files: off the event loop
+    return await run_in_threadpool(get_ledger().recent, max(1, min(limit, MAX_EVIDENCE)), tool or None)
 
 
 @router.post("/evidence/{evidence_id}/validate", responses=responses(400, 403, 404, 422, 503))
@@ -527,7 +531,7 @@ async def validate_evidence(evidence_id: str):
     """``revalidate``: the recorded execution's assertion against the model as it is now.
     An unknown record is 404 before any Revit is needed."""
     ledger = get_ledger()
-    if ledger.get(evidence_id) is None:
+    if await run_in_threadpool(ledger.get, evidence_id) is None:
         raise ApiError(404, "unknown_evidence", evidence_id=evidence_id)
     client = await get_revit_client()
     try:
