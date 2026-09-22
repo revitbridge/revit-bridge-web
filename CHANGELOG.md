@@ -8,6 +8,23 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Added
 
+- The host loop: `POST /api/chat` runs the model with the package's read-only tools
+  (`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`,
+  `reconcile`) and `propose_spec` (OpenAI-compatible function calling in `backend/llm.py`).
+  `propose_spec` validates and reconciles the draft and pushes `event: spec`
+  `{spec, card, errors, reconcile}` to the page; the model gets `{accepted, errors,
+  reconcile}`. The model has no `confirm_spec`, `run_tool` or `execute_code`. The page
+  reports an execution back with `{execution, session_id}`: the turn starts with
+  `event: execution` and the model reports faithfully. `bridge: false` is the comparison
+  mode: one plain prompt, no tools, no skills.
+- The system prompt is the package's `host_instructions()` plus the enabled skills; the
+  wheel's `revit-bridge/SKILL.md` is now enabled by default (its references stay off).
+  The host's own `HOST_INSTRUCTIONS` and the pack index in the prompt are gone.
+- Sessions keep the model's message history (with tool calls), the last snapshot
+  fingerprint, the last proposed spec and the last reported `evidence_id`; never a token.
+- `frontend/src/api/chat.ts`: `parseSseFrame()` and `chatEvents()` yield the host loop's
+  events (`session`, `token`, `spec`, `execution`, `error`, `done`); the types are in
+  `frontend/src/types/api.ts`. The pages arrive with the next release.
 - Web API v1 under `/api/v1/bridge`, every route a thin wrapper over `revit-bridge` 0.2:
   `GET /snapshot`, `POST /query`, `POST /tools/{name}/missing-params`,
   `POST /spec/reconcile`, `POST /spec/confirm` (issues the one-time token, channel
