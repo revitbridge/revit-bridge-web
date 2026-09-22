@@ -77,7 +77,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 |---|---|---|
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. Unset = visitors must bring their own. |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints (local models). |
-| `CHAT_RATE_LIMIT` | `30` | `/api/chat` requests per minute per client IP. |
+| `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
 | `ADMIN_PASSWORD` | unset | Enables skill edits and `/api/logs` via `X-Admin-Token`. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `MAX_SLOTS` | `5` | Remote add-in slots on the relay. |

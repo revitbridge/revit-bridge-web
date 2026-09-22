@@ -12,8 +12,6 @@ the response header ``X-Session-Id`` names the server-side session.
 """
 from __future__ import annotations
 
-import threading
-import time
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -26,6 +24,7 @@ from revit_bridge.revit.settings import RevitSettings
 from backend.config import get_settings
 from backend.llm import SSE_DONE, LLMError, LLMSettings, format_sse, format_sse_event, stream_chat
 from backend.log_store import get_client_ip, log_and_stream
+from backend.ratelimit import chat_limiter, client_key
 from backend.session import get_session_store
 from backend.skill_store import get_skill_store
 
@@ -73,38 +72,11 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
 
 
-# -- per-IP sliding window rate limit (protects a shared server-side key) ------
-
-_rate_lock = threading.Lock()
-_rate_hits: dict[str, list[float]] = {}
-_RATE_WINDOW = 60.0
-
-
-def _prune_idle(now: float) -> None:
-    """Forget addresses whose every hit is older than the window.
-
-    Called under the lock on each check, so the table only ever holds
-    addresses seen within the last minute instead of every visitor since
-    the process started.
-    """
-    cutoff = now - _RATE_WINDOW
-    for ip in [ip for ip, hits in _rate_hits.items() if not hits or hits[-1] <= cutoff]:
-        del _rate_hits[ip]
-
+# -- per-IP rate limit (protects a shared server-side key) ---------------------
 
 def rate_limit(request: Request) -> None:
-    limit = get_settings().chat_rate_limit
-    if limit <= 0:
-        return
-    ip = get_client_ip(request)
-    now = time.time()
-    with _rate_lock:
-        _prune_idle(now)
-        hits = [t for t in _rate_hits.get(ip, []) if now - t < _RATE_WINDOW]
-        if len(hits) >= limit:
-            raise HTTPException(429, "Too many requests")
-        hits.append(now)
-        _rate_hits[ip] = hits
+    if not chat_limiter.allow(client_key(request), get_settings().chat_rate_limit):
+        raise HTTPException(429, "Too many requests")
 
 
 def build_system_prompt() -> str:

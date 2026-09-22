@@ -30,8 +30,9 @@ def env(tmp_path, monkeypatch):
 
 
 def _reset() -> None:
-    from backend.api import bridge, chat
-    chat._rate_hits.clear()
+    from backend import ratelimit
+    from backend.api import bridge
+    ratelimit.reset_all()
     bridge.reset_bridge_state()
     config.reset_settings()
     skill_store.reset_skill_store()

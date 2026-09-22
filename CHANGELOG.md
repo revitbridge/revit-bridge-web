@@ -15,6 +15,8 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   to `docs/api-v1.json` (CI checks it).
 - `tests/fake_revit.py`: a TCP stand-in for the add-in so every route is tested end to
   end without Revit.
+- `POST /spec/confirm` is rate limited per client address like `/api/chat`
+  (`CHAT_RATE_LIMIT`, its own counter): 429 `{error: rate_limited}`.
 
 ### Changed
 

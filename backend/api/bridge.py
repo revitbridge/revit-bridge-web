@@ -31,7 +31,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
 
@@ -51,6 +51,7 @@ from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api.errors import ApiError, revit_unreachable
 from backend.config import get_settings
+from backend.ratelimit import client_key, confirm_limiter
 from backend.relay import WebSocketRevitClient, get_slot_manager
 
 _log = logging.getLogger("backend.bridge")
@@ -435,7 +436,13 @@ async def reconcile_spec(req: ReconcileRequest):
     return reconcile(draft, snapshot, _pack_for(draft, store)).model_dump(mode="json")
 
 
-@router.post("/spec/confirm")
+def confirm_rate_limit(request: Request) -> None:
+    """Each confirmation writes a pending file to the data volume: CHAT_RATE_LIMIT per minute per address."""
+    if not confirm_limiter.allow(client_key(request), get_settings().chat_rate_limit):
+        raise ApiError(429, "rate_limited", "Too many confirmations from this address; try again in a minute")
+
+
+@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)])
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
     Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}``.

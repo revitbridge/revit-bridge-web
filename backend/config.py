@@ -23,7 +23,8 @@ subset the browser needs so one frontend build works on any address.
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
     ADMIN_PASSWORD              enables /api/logs and skill edits (X-Admin-Token)
     MAX_SLOTS                   number of remote add-in slots (default 5)
-    CHAT_RATE_LIMIT             requests per minute per IP on /api/chat (default 30)
+    CHAT_RATE_LIMIT             requests per minute per IP on /api/chat and on
+                                /api/v1/bridge/spec/confirm (default 30)
 
 The package reads its own variables: REVIT_BRIDGE_DATA_DIR (its data root:
 user capability packs, usage.json, the evidence ledger; the container sets

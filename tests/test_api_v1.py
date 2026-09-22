@@ -202,6 +202,23 @@ def test_confirm_issues_a_host_ui_token(client):
     assert unparsable.status_code == 422 and unparsable.json()["errors"][0]["code"] == "invalid_spec"
 
 
+def test_confirm_is_rate_limited_per_address(make_client, env, tmp_path):
+    """Every confirmation writes a pending file; the same per-IP window as /api/chat guards it."""
+    env.setenv("CHAT_RATE_LIMIT", "3")
+    client = make_client()
+    spec = spec_for("query_levels")
+    for _ in range(3):
+        assert client.post(f"{B}/spec/confirm", json={"spec": spec}).status_code == 200
+    resp = client.post(f"{B}/spec/confirm", json={"spec": spec})
+    assert resp.status_code == 429
+    assert resp.json()["error"] == "rate_limited" and "minute" in resp.json()["message"]
+    pending = tmp_path / "data" / "evidence" / "pending"
+    assert len(list(pending.glob("*.json"))) == 3
+    # The chat limiter is a separate table: a chat call is still admitted.
+    assert client.post("/api/chat", json={"message": "hi"},
+                       headers={"X-LLM-Base-Url": "https://api.example/v1", "X-LLM-Model": "m"}).status_code == 400
+
+
 # -- execution -----------------------------------------------------------------------
 
 def test_run_tool_needs_a_token_then_runs_validates_and_records(revit, client, tmp_path):

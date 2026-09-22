@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
 from backend import llm as llm_module
 from backend.api import chat as chat_module
@@ -169,35 +168,29 @@ def test_stream_chat_parses_openai_sse(monkeypatch):
     assert exc.value.status == 502 and "HTTP 401" in str(exc.value) and "Bearer" not in str(exc.value)
 
 
-def test_rate_limiter_forgets_idle_addresses(env, monkeypatch):
+def test_rate_limiter_forgets_idle_addresses():
     """The hit table must not keep every visitor since process start (item 8)."""
-    from types import SimpleNamespace
+    from backend.ratelimit import RateLimiter
 
     clock = {"now": 1_000.0}
-    monkeypatch.setattr(chat_module.time, "time", lambda: clock["now"])
-    env.setenv("CHAT_RATE_LIMIT", "2")
+    limiter = RateLimiter(clock=lambda: clock["now"])
 
-    def request_from(ip: str):
-        return SimpleNamespace(client=SimpleNamespace(host=ip))
-
-    chat_module.rate_limit(request_from("10.0.0.1"))
-    chat_module.rate_limit(request_from("10.0.0.2"))
-    assert set(chat_module._rate_hits) == {"10.0.0.1", "10.0.0.2"}
+    assert limiter.allow("10.0.0.1", 2) and limiter.allow("10.0.0.2", 2)
+    assert limiter.keys() == {"10.0.0.1", "10.0.0.2"}
 
     clock["now"] += 30
-    chat_module.rate_limit(request_from("10.0.0.1"))  # still inside the window: nothing pruned
-    assert set(chat_module._rate_hits) == {"10.0.0.1", "10.0.0.2"}
+    assert limiter.allow("10.0.0.1", 2)  # still inside the window: nothing pruned
+    assert limiter.keys() == {"10.0.0.1", "10.0.0.2"}
 
     clock["now"] += 31  # 10.0.0.2's only hit is now older than the 60 s window
-    chat_module.rate_limit(request_from("10.0.0.3"))
-    assert set(chat_module._rate_hits) == {"10.0.0.1", "10.0.0.3"}
+    assert limiter.allow("10.0.0.3", 2)
+    assert limiter.keys() == {"10.0.0.1", "10.0.0.3"}
 
     clock["now"] += 61  # everything idle; a new visitor leaves only itself behind
-    chat_module.rate_limit(request_from("10.0.0.4"))
-    assert set(chat_module._rate_hits) == {"10.0.0.4"}
+    assert limiter.allow("10.0.0.4", 2)
+    assert limiter.keys() == {"10.0.0.4"}
 
-    # The limit itself still applies within a window.
-    chat_module.rate_limit(request_from("10.0.0.4"))
-    with pytest.raises(HTTPException) as exc:
-        chat_module.rate_limit(request_from("10.0.0.4"))
-    assert exc.value.status_code == 429
+    # The limit itself still applies within a window; 0 disables it.
+    assert limiter.allow("10.0.0.4", 2)
+    assert limiter.allow("10.0.0.4", 2) is False
+    assert limiter.allow("10.0.0.4", 0)
