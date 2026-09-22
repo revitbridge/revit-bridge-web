@@ -280,6 +280,19 @@ def test_run_tool_passes_validation_failed_through(env, tmp_path):
     assert record["host"] == "web" and record["error"] == "validation_failed"
 
 
+def test_run_and_validate_look_things_up_before_needing_a_revit(client):
+    """No Revit in this test: an unknown pack or record is 404, whatever else is missing."""
+    resp = client.post(f"{B}/tools/nope/run", json={"params": {}})
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "unknown_tool", "message": "Tool 'nope' not found", "tool": "nope"}
+    resp = client.post(f"{B}/tools/nope/run", json={"params": {}, "token": "whatever"})
+    assert resp.status_code == 404 and resp.json()["error"] == "unknown_tool"
+
+    resp = client.post(f"{B}/evidence/ev_nope/validate")
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "unknown_evidence", "evidence_id": "ev_nope"}
+
+
 def test_run_tool_without_a_revit_is_503_and_keeps_the_token(client):
     token = confirm(client, spec_for("query_levels"))
     resp = client.post(f"{B}/tools/query_levels/run", json={"params": {}, "token": token})

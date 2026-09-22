@@ -1278,7 +1278,7 @@
           "bridge"
         ],
         "summary": "Run Tool",
-        "description": "``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,\nvalidator, evidence, all in the package. Without a token: 400 ``confirmation_required``.",
+        "description": "``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,\nvalidator, evidence, all in the package. An unknown pack is 404 and a missing token\n400 ``confirmation_required`` before anything else is looked at.",
         "operationId": "run_tool_api_v1_bridge_tools__name__run_post",
         "parameters": [
           {
@@ -1322,6 +1322,16 @@
           },
           "403": {
             "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1687,7 +1697,7 @@
           "bridge"
         ],
         "summary": "Validate Evidence",
-        "description": "``revalidate``: the recorded execution's assertion against the model as it is now.",
+        "description": "``revalidate``: the recorded execution's assertion against the model as it is now.\nAn unknown record is 404 before any Revit is needed.",
         "operationId": "validate_evidence_api_v1_bridge_evidence__evidence_id__validate_post",
         "parameters": [
           {

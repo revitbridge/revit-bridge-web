@@ -125,7 +125,7 @@ def test_openapi_describes_the_error_contract(client):
     assert "HTTPValidationError" not in json.dumps(query)
 
     run = spec["paths"]["/api/v1/bridge/tools/{name}/run"]["post"]["responses"]
-    assert set(run) == {"200", "400", "403", "422", "503"}
+    assert set(run) == {"200", "400", "403", "404", "422", "503"}
     # Every bridge route with a body or parameters declares its own 422; none falls back.
     for path, item in spec["paths"].items():
         if path.startswith("/api/v1/bridge/"):

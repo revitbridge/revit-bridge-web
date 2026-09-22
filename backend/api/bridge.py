@@ -412,13 +412,17 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
     return [q.model_dump(mode="json") for q in missing_params(pack, req.known, snapshot, req.language)]
 
 
-@router.post("/tools/{name}/run", responses=responses(400, 403, 422, 503))
+@router.post("/tools/{name}/run", responses=responses(400, 403, 404, 422, 503))
 async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
-    validator, evidence, all in the package. Without a token: 400 ``confirmation_required``."""
+    validator, evidence, all in the package. An unknown pack is 404 and a missing token
+    400 ``confirmation_required`` before anything else is looked at."""
+    store = ToolStore()
+    if store.load(name) is None:
+        raise _unknown_tool(name)
     token = _require_token(req.token)
     client = await get_revit_client()
-    result = await run_pack(store=ToolStore(), gate=get_gate(), ledger=get_ledger(), client=client,
+    result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
                             name=name, params=req.params, token=token, host=HOST)
     return _execution_payload(result)
 
@@ -518,10 +522,14 @@ async def list_evidence(limit: int = 20, tool: str | None = None):
 
 @router.post("/evidence/{evidence_id}/validate", responses=responses(400, 403, 404, 422, 503))
 async def validate_evidence(evidence_id: str):
-    """``revalidate``: the recorded execution's assertion against the model as it is now."""
+    """``revalidate``: the recorded execution's assertion against the model as it is now.
+    An unknown record is 404 before any Revit is needed."""
+    ledger = get_ledger()
+    if ledger.get(evidence_id) is None:
+        raise ApiError(404, "unknown_evidence", evidence_id=evidence_id)
     client = await get_revit_client()
     try:
-        report = await revalidate(store=ToolStore(), ledger=get_ledger(), client=client, evidence_id=evidence_id)
+        report = await revalidate(store=ToolStore(), ledger=ledger, client=client, evidence_id=evidence_id)
     except OSError as exc:
         raise revit_unreachable(exc) from None
     if report.get("error") == "unknown_evidence":
