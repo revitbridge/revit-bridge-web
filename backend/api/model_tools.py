@@ -226,16 +226,17 @@ async def _reconcile(args: dict, session: Session) -> ToolOutcome:
 async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     """validate_spec + reconcile; the page sees the card, the model the verdict."""
     given = args.get("spec")
-    session.spec = given if isinstance(given, dict) else None
     try:
         spec = TaskSpec.model_validate(given)
     except ValidationError as exc:
-        # Nothing the page could render: the verdict goes to the model only.
+        # Nothing the page could render, nothing worth keeping: the verdict goes to
+        # the model only and the session's last spec stays what it was.
         errors = [{"code": "invalid_spec", "param": None, "message": str(exc)}]
         return ToolOutcome({"accepted": False, "errors": errors, "reconcile": None})
     store = ToolStore()
+    session.spec = spec.model_dump(mode="json")
     errors = [e.model_dump() for e in validate_spec(spec, pack_for(spec, store))]
-    event = {"spec": spec.model_dump(mode="json"), "card": spec.card(), "errors": errors, "reconcile": None}
+    event = {"spec": session.spec, "card": spec.card(), "errors": errors, "reconcile": None}
     try:
         report = reconcile(spec, await snapshot_now(await get_revit_client()), pack_for(spec, store)).model_dump(mode="json")
     except ApiError as exc:
