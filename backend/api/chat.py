@@ -1,30 +1,45 @@
-"""``POST /api/chat`` - streamed conversation with the designer's own model.
+"""``POST /api/chat`` - the host loop: the designer's own model, with tools.
 
-The host loop of this phase is deliberately thin: system prompt = host
-conventions + capability pack index + enabled skills; the model answers in
-prose and, when asked to act, in one ```csharp block that the Task page
-extracts and shows for review. Until the task page of the next release,
-executions from the UI are refused: ``/api/v1/bridge/execute`` needs the
-token from ``/spec/confirm``, which the page does not obtain yet. Tool
-calling, snapshots and the confirmation step arrive with that rewrite.
+Each turn streams one conversation step over SSE. The model may call the
+package's read-only tools (snapshot, query, packs, missing_params,
+reconcile) and ``propose_spec`` (see ``backend.api.model_tools``); the host
+runs each call, feeds the result back as a ``tool`` message and streams the
+next completion, until the model answers in text. Confirmation and
+execution never happen here: the page confirms (``POST /spec/confirm``)
+and runs with the token it holds, then reports the result back through
+this route (``execution`` instead of ``message``) so the model can report
+faithfully what the validator found.
 
-Wire format (unchanged from the previous host): SSE frames
-``data: "<json string token>"`` and a final ``event: done`` / ``[DONE]``;
-the response header ``X-Session-Id`` names the server-side session.
+Wire format: SSE frames ``data: "<json string token>"`` for the reply text,
+``event: spec`` ``data: {spec, card, errors, reconcile}`` when the model
+proposed a spec, ``event: execution`` ``data: <ExecutionResult JSON>`` when
+the page reported an execution (first frame of that turn), ``event: error``
+for a model failure, and a final ``event: done`` / ``[DONE]``; the response
+header ``X-Session-Id`` names the server-side session.
+
+``bridge: false`` is the comparison mode of the task page: one fixed base
+prompt, no tools, no skills, no execution feedback - what a model would do
+without the bridge.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from revit_bridge.capabilities import ToolStore
-from revit_bridge.revit.settings import RevitSettings
+from revit_bridge import host_instructions
 
+from backend.api.bridge import set_slot_context
+from backend.api.errors import ApiError
+from backend.api.model_tools import TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
 from backend.config import get_settings
-from backend.llm import SSE_DONE, LLMError, LLMSettings, format_sse, format_sse_event, stream_chat
+from backend.llm import (
+    SSE_DONE, LLMError, LLMSettings, assistant_message, format_sse, format_sse_event,
+    stream_completion, tool_message,
+)
 from backend.log_store import get_client_ip, log_and_stream
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import get_session_store
@@ -32,46 +47,24 @@ from backend.skill_store import get_skill_store
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
-HISTORY_TURNS = 20
+HISTORY_WINDOW = 40          # messages sent to the model, cut at a user turn
+MAX_TOOL_ROUNDS = 8          # tool-call rounds per turn before the model must answer in text
 
-HOST_INSTRUCTIONS = """\
-You are the model behind revit-bridge-web, a demo host connected to a running
-Autodesk Revit through the revit-bridge add-in. A designer is talking to you.
+# The user message that carries an execution result back to the model (spec 10.8).
+EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
 
-## What you may do
-
-- Answer questions about the Revit model and the Revit API.
-- Propose C# to run in Revit. Put the code in exactly one ```csharp block.
-  The designer reviews it and runs it themselves; you cannot execute anything.
-- When a capability pack below matches the request, say so and tell the
-  designer to run it from the Capabilities page instead of writing new code.
-
-## C# execution conventions (revit-bridge add-in)
-
-- The code is the body of `public static object Execute(Document document, object[] parameters)`.
-- `document` is in scope and a Transaction is already open: never open your own.
-- End with `return <object>;` - anonymous objects and lists are serialised to JSON.
-- Internal units are feet; convert millimetres with `/ 304.8`.
-- Target the API of the running Revit (2026 unless the designer says otherwise).
-
-## Parameter source protocol
-
-Every value in the code must come from the designer's own words, from data
-they pasted (levels, element ids, project units) or from a question you
-asked and they answered. Never assume a level, a type name, a coordinate or
-a dimension. If something is missing, ask - one short, concrete question per
-missing value - before writing code.
-
-## Faithful reporting
-
-If the designer pastes an execution result, report exactly what it says.
-An error is an error; do not soften it and do not claim success.
-"""
+# bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
+BASE_PROMPT = (
+    "You are an assistant to an architect who works in Autodesk Revit. Answer their "
+    "questions and requests as helpfully as you can, in their language."
+)
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=8000)
+    message: str | None = Field(default=None, max_length=8000)
+    execution: dict | None = None      # an ExecutionResult the page got from /run or /execute
     session_id: str | None = None
+    bridge: bool = True
 
 
 # -- per-IP rate limit (protects a shared server-side key) ---------------------
@@ -81,27 +74,35 @@ def rate_limit(request: Request) -> None:
         raise HTTPException(429, "Too many requests")
 
 
-def build_system_prompt() -> str:
-    """Host conventions, the capability pack index, then every enabled skill."""
-    parts = [HOST_INSTRUCTIONS.strip()]
-    tools = ToolStore().list_tools()
-    if tools:
-        lines = ["## Capability packs on this host (run from the Capabilities page)"]
-        for tool in tools:
-            params = ", ".join(p.get("name", "?") for p in tool.parameters) or "none"
-            lines.append(f"- `{tool.name}`: {tool.description} (params: {params})")
-        parts.append("\n".join(lines))
+def build_system_prompt(bridge: bool = True) -> str:
+    """The package's host instructions plus every enabled skill; the base prompt without the bridge."""
+    if not bridge:
+        return BASE_PROMPT
+    parts = [host_instructions().strip()]
     skills = get_skill_store().active_prompt()
     if skills:
         parts.append("## Skills\n\n" + skills)
-    revit = RevitSettings.from_env()
-    parts.append(f"The add-in endpoint of this host is {revit.host}:{revit.port} (TCP) "
-                 f"or a remote slot; the designer chooses on the Connect page.")
     return "\n\n".join(parts)
+
+
+def execution_message(execution: dict) -> str:
+    """The fixed first line, then the ExecutionResult JSON as the page received it."""
+    return f"{EXECUTION_PREFIX}\n{json.dumps(execution, ensure_ascii=False)}"
 
 
 @router.post("/chat", dependencies=[Depends(rate_limit)])
 async def chat(req: ChatRequest, request: Request):
+    if (req.message is None) == (req.execution is None):
+        raise ApiError(422, "invalid_args", "send exactly one of message and execution")
+    if req.message is not None and not req.message.strip():
+        raise ApiError(422, "invalid_args", "message is empty")
+    if req.execution is not None and not req.bridge:
+        raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
+    if req.bridge:
+        # The model's tools reach Revit through the selected slot: the same header
+        # checks as the bridge routes (403 without a slot when tokens are required).
+        await set_slot_context(request)
+
     settings = get_settings()
     try:
         llm = LLMSettings.resolve(request.headers, settings)
@@ -115,23 +116,52 @@ async def chat(req: ChatRequest, request: Request):
         )
 
     session = get_session_store().get_or_create(req.session_id)
-    messages = [{"role": "system", "content": build_system_prompt()}]
-    messages.extend(session.history[-HISTORY_TURNS:])
-    messages.append({"role": "user", "content": req.message})
+    text = req.message if req.message is not None else execution_message(req.execution)
+    session.add({"role": "user", "content": text})
+    if req.execution is not None and req.execution.get("evidence_id"):
+        session.evidence_id = str(req.execution["evidence_id"])
+    tools = TOOL_DEFINITIONS if req.bridge else None
+    messages = [{"role": "system", "content": build_system_prompt(req.bridge)}]
+    messages.extend(session.window(HISTORY_WINDOW))
 
     async def generate() -> AsyncGenerator[str, None]:
-        reply: list[str] = []
+        if req.execution is not None:
+            yield format_sse_event("execution", req.execution)
         try:
-            async for token in stream_chat(llm, messages):
-                reply.append(token)
-                yield format_sse(token)
+            for round_no in range(MAX_TOOL_ROUNDS + 1):
+                # The last round goes out without tools so the model has to answer in text.
+                round_tools = tools if round_no < MAX_TOOL_ROUNDS else None
+                parts: list[str] = []
+                calls = None
+                async for item in stream_completion(llm, messages, tools=round_tools):
+                    if isinstance(item, str):
+                        parts.append(item)
+                        yield format_sse(item)
+                    else:
+                        calls = item
+                content = "".join(parts)
+                if not calls:
+                    if content:
+                        session.add(assistant_message(content))
+                    break
+                assistant = assistant_message(content, calls)
+                session.add(assistant)
+                messages.append(assistant)
+                for call in calls:
+                    args = parse_arguments(call.arguments)
+                    if args is None:
+                        outcome = ToolOutcome({"error": "invalid_args",
+                                               "message": "arguments must be a JSON object"})
+                    else:
+                        outcome = await call_tool(call.name, args, session)
+                    if outcome.spec_event is not None:
+                        yield format_sse_event("spec", outcome.spec_event)
+                    reply = tool_message(call, outcome.result)
+                    session.add(reply)
+                    messages.append(reply)
         except LLMError as exc:
             yield format_sse_event("error", {"detail": str(exc)})
             return
-        finally:
-            session.add_message("user", req.message)
-            if reply:
-                session.add_message("assistant", "".join(reply))
         yield SSE_DONE
 
     return StreamingResponse(
@@ -141,7 +171,7 @@ async def chat(req: ChatRequest, request: Request):
             session_id=session.session_id,
             client_ip=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
-            user_input=req.message,
+            user_input=text,
             model=llm.model,
         ),
         media_type="text/event-stream",

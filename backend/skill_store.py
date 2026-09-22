@@ -10,13 +10,13 @@ Two directories feed the store:
   ``builtin:revit-bridge/SKILL`` and its ``references/``); ``SKILLS_DIR``
   replaces that directory with a mounted checkout.
 
-Every enabled skill is concatenated into the chat system prompt. The wheel's
-skills are listed and readable but **disabled by default**: ``SKILL.md`` is
-written for a host with the MCP tools (snapshot, confirm_spec, ...) that this
-chat does not have yet, and the ``references/`` are material the skill reads
-on demand, not prompt text. A file's own ``enabled: true`` front matter still
-wins. A mounted ``SKILLS_DIR`` is enabled by default, as before: mounting it
-is the operator's choice and its files are theirs to edit.
+Every enabled skill is concatenated into the chat system prompt. Of the
+wheel's skills only each ``SKILL.md`` is enabled by default (the chat has the
+tools it describes since the host loop); the ``references/`` are material
+the skill reads on demand, not prompt text, so they stay off unless a file's
+own ``enabled: true`` front matter says otherwise. A mounted ``SKILLS_DIR``
+is enabled by default throughout: mounting it is the operator's choice and
+its files are theirs to edit.
 """
 from __future__ import annotations
 
@@ -73,8 +73,8 @@ class SkillStore:
     def __init__(self, user_dir: Path, builtin_dir: Path | None = None):
         self._dir = Path(user_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
-        # No override: the skills shipped inside the revit-bridge wheel, which
-        # stay out of the prompt unless a file says ``enabled: true`` itself.
+        # No override: the skills shipped inside the revit-bridge wheel, of which
+        # only SKILL.md files enter the prompt unless a file says ``enabled: true``.
         self._builtin = Path(builtin_dir) if builtin_dir else skills_dir()
         self._builtin_enabled_by_default = builtin_dir is not None
 
@@ -93,7 +93,9 @@ class SkillStore:
     def _summary(self, skill_id: str, path: Path, parsed: dict, *, readonly: bool, layer: str = "") -> dict:
         meta = parsed["meta"]
         title, desc = _first_title_and_paragraph(parsed["content"])
-        enabled_default = self._builtin_enabled_by_default if readonly else True
+        enabled_default = True
+        if readonly:
+            enabled_default = self._builtin_enabled_by_default or path.name == "SKILL.md"
         return {
             "id": skill_id,
             "name": str(meta.get("name") or title or path.stem),

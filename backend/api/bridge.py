@@ -144,11 +144,11 @@ async def get_revit_client():
         raise revit_unreachable(exc, endpoint=f"{s.host}:{s.port}") from None
 
 
-def _unknown_tool(name: str) -> ApiError:
+def unknown_tool(name: str) -> ApiError:
     return ApiError(404, "unknown_tool", f"Tool '{name}' not found", tool=name)
 
 
-def _parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
+def parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
     if data is None:
         return None
     try:
@@ -157,20 +157,20 @@ def _parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
         raise ApiError(422, "invalid_snapshot", str(exc)) from None
 
 
-def _parse_spec(data: dict) -> TaskSpec:
+def parse_spec(data: dict) -> TaskSpec:
     try:
         return TaskSpec.model_validate(data)
     except ValidationError as exc:
         raise ApiError(422, "invalid_spec", str(exc)) from None
 
 
-def _pack_for(spec: TaskSpec, store: ToolStore):
+def pack_for(spec: TaskSpec, store: ToolStore):
     if spec.action.kind == "run_tool" and spec.action.tool:
         return store.load(spec.action.tool)
     return None
 
 
-async def _snapshot_now(client, categories: list[str] | None = None) -> ProjectSnapshot:
+async def snapshot_now(client, categories: list[str] | None = None) -> ProjectSnapshot:
     """A fresh snapshot for a route that was not given one (same mapping as the MCP tool)."""
     try:
         return await take_snapshot(client, categories)
@@ -253,7 +253,7 @@ class UpdateToolRequest(BaseModel):
     not_for: list[str] | None = None
 
 
-def _tool_listing(tool) -> dict:
+def tool_listing(tool) -> dict:
     """One item of ``GET /tools``: the MCP ``list_tools`` shape."""
     return {
         "name": tool.name,
@@ -315,7 +315,7 @@ async def get_snapshot(categories: list[str] | None = Query(default=None)):
     except ValueError as exc:
         raise ApiError(400, "invalid_category", str(exc)) from None
     client = await get_revit_client()
-    snapshot = await _snapshot_now(client, cats)
+    snapshot = await snapshot_now(client, cats)
     return snapshot.model_dump(mode="json")
 
 
@@ -346,14 +346,14 @@ async def query_model(req: QueryRequest):
 @router.get("/tools", responses=responses(403))
 async def list_tools():
     """``ToolStore.list_tools`` in the MCP ``list_tools`` shape."""
-    return [_tool_listing(t) for t in ToolStore().list_tools()]
+    return [tool_listing(t) for t in ToolStore().list_tools()]
 
 
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
     tool = ToolStore().load(name)
     if not tool:
-        raise _unknown_tool(name)
+        raise unknown_tool(name)
     return _tool_detail(tool)
 
 
@@ -370,7 +370,7 @@ async def update_tool(name: str, req: UpdateToolRequest):
     except ValueError as exc:
         raise _invalid_pack(exc) from None
     if not tool:
-        raise _unknown_tool(name)
+        raise unknown_tool(name)
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}
 
 
@@ -378,7 +378,7 @@ async def update_tool(name: str, req: UpdateToolRequest):
 async def delete_tool(name: str):
     if ToolStore().delete(name):
         return {"status": "deleted", "name": name}
-    raise _unknown_tool(name)
+    raise unknown_tool(name)
 
 
 @router.get("/tools/{name}/choices", responses=responses(403, 404, 422, 503, 504))
@@ -386,7 +386,7 @@ async def get_tool_choices(name: str):
     """Real values for the pack's dynamic parameters (levels, types, elements)."""
     store = ToolStore()
     if not store.load(name):
-        raise _unknown_tool(name)
+        raise unknown_tool(name)
     dynamic = store.get_dynamic_params(name)
     if not dynamic:
         return {}
@@ -405,8 +405,8 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
     with the real options from ``snapshot`` (or one taken now, best effort)."""
     pack = ToolStore().load(name)
     if pack is None:
-        raise _unknown_tool(name)
-    snapshot = _parse_snapshot(req.snapshot)
+        raise unknown_tool(name)
+    snapshot = parse_snapshot(req.snapshot)
     if req.snapshot is None:
         try:
             snapshot = await take_snapshot(await get_revit_client())
@@ -422,7 +422,7 @@ async def run_tool(name: str, req: RunToolRequest):
     400 ``confirmation_required`` before anything else is looked at."""
     store = ToolStore()
     if store.load(name) is None:
-        raise _unknown_tool(name)
+        raise unknown_tool(name)
     token = _require_token(req.token)
     client = await get_revit_client()
     result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
@@ -435,12 +435,12 @@ async def run_tool(name: str, req: RunToolRequest):
 @router.post("/spec/reconcile", responses=responses(403, 422, 500, 503))
 async def reconcile_spec(req: ReconcileRequest):
     """``reconcile``: the draft TaskSpec against the snapshot (given, or taken now)."""
-    draft = _parse_spec(req.spec)
+    draft = parse_spec(req.spec)
     store = ToolStore()
-    snapshot = _parse_snapshot(req.snapshot)
+    snapshot = parse_snapshot(req.snapshot)
     if snapshot is None:
-        snapshot = await _snapshot_now(await get_revit_client())
-    return reconcile(draft, snapshot, _pack_for(draft, store)).model_dump(mode="json")
+        snapshot = await snapshot_now(await get_revit_client())
+    return reconcile(draft, snapshot, pack_for(draft, store)).model_dump(mode="json")
 
 
 def confirm_rate_limit(request: Request) -> None:
@@ -458,7 +458,7 @@ async def confirm_spec(req: ConfirmRequest):
         spec = TaskSpec.model_validate(req.spec)
     except ValidationError as exc:
         raise ApiError(422, "invalid_spec", errors=[{"code": "invalid_spec", "param": None, "message": str(exc)}]) from None
-    errors = validate_spec(spec, _pack_for(spec, ToolStore()))
+    errors = validate_spec(spec, pack_for(spec, ToolStore()))
     if errors:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])
     # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay

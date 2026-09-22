@@ -6,59 +6,62 @@ from backend.api import chat as chat_module
 ADMIN = {"X-Admin-Token": "hunter2"}
 
 
-def test_wheel_skills_are_listed_but_disabled_by_default(make_client, env, tmp_path):
-    """Without SKILLS_DIR the wheel's skills are listed and readable, SKILL first,
-    and none of them enters the prompt: the fresh-install system prompt is the
-    0.1 one (HOST_INSTRUCTIONS + the pack index)."""
+def test_wheel_skill_is_on_and_its_references_off_by_default(make_client, env, tmp_path):
+    """Without SKILLS_DIR the wheel's skills are listed, SKILL first; SKILL.md is enabled
+    (the host loop has the tools it describes), the references stay off: the system
+    prompt is the package's host instructions plus the SKILL body, nothing else."""
+    from revit_bridge import host_instructions
+
     client = make_client()
     listing = client.get("/api/skills").json()["skills"]
-    assert listing[0]["id"] == "builtin:revit-bridge/SKILL"
+    assert listing[0]["id"] == "builtin:revit-bridge/SKILL" and listing[0]["enabled"] is True
     assert all(s["readonly"] and s["layer"] == "revit-bridge" for s in listing)
     assert listing[0]["name"] == "revit-bridge"
-    assert any(s["id"].startswith("builtin:revit-bridge/references/") for s in listing)
-    assert not any(s["enabled"] for s in listing)
+    references = [s for s in listing if s["id"].startswith("builtin:revit-bridge/references/")]
+    assert references and not any(s["enabled"] for s in references)
 
     detail = client.get("/api/skills/builtin:revit-bridge/SKILL").json()
-    assert detail["content"].startswith("# revit-bridge") and detail["enabled"] is False
+    assert detail["content"].startswith("# revit-bridge") and detail["enabled"] is True
     # Read-only: the store refuses to edit or delete anything from the wheel.
     from backend.skill_store import get_skill_store
     assert get_skill_store().update("builtin:revit-bridge/SKILL", content="x") is None
     assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
 
     prompt = chat_module.build_system_prompt()
-    assert prompt.startswith(chat_module.HOST_INSTRUCTIONS.strip())
-    assert "## Capability packs on this host" in prompt
-    assert "## Skills" not in prompt
-    assert "get_project_snapshot" not in prompt and "bim-wall-standards" not in prompt
-    assert len(prompt) < 10_000
+    assert prompt == host_instructions().strip() + "\n\n## Skills\n\n" + detail["content"]
+    assert "bim-wall-standards" not in prompt and "Capability packs on this host" not in prompt
+    assert len(prompt) < 20_000
 
-    # Byte-for-byte the prompt of a host with no built-in skills at all (0.1).
+    # With no built-in skills at all the prompt is the host instructions alone.
     empty = tmp_path / "no-skills"
     empty.mkdir()
     env.setenv("SKILLS_DIR", str(empty))
     make_client()
-    assert chat_module.build_system_prompt() == prompt
+    assert chat_module.build_system_prompt() == host_instructions().strip()
+    assert chat_module.build_system_prompt(bridge=False) == chat_module.BASE_PROMPT
 
 
 def test_builtin_enabled_default_depends_on_the_source(tmp_path, monkeypatch):
-    """Wheel skills: off unless the file says ``enabled: true``. A mounted
-    SKILLS_DIR: on unless the file says ``enabled: false``."""
+    """Wheel skills: SKILL.md on, references off, unless the file says otherwise.
+    A mounted SKILLS_DIR: on unless the file says ``enabled: false``."""
     from backend import skill_store
 
     wheel = tmp_path / "wheel-skills"
     (wheel / "a" / "references").mkdir(parents=True)
-    (wheel / "b").mkdir()
-    (wheel / "a" / "SKILL.md").write_text("---\nname: a\nenabled: true\n---\n\nA on.\n", encoding="utf-8")
+    (wheel / "b" / "references").mkdir(parents=True)
+    (wheel / "a" / "SKILL.md").write_text("---\nname: a\nenabled: false\n---\n\nA off.\n", encoding="utf-8")
     (wheel / "a" / "references" / "r.md").write_text("# R\n\nReference.\n", encoding="utf-8")
     (wheel / "b" / "SKILL.md").write_text("---\nname: b\n---\n\nB default.\n", encoding="utf-8")
+    (wheel / "b" / "references" / "on.md").write_text("---\nenabled: true\n---\n\nB ref on.\n", encoding="utf-8")
     monkeypatch.setattr(skill_store, "skills_dir", lambda: wheel)
 
     store = skill_store.SkillStore(tmp_path / "user")
     assert [(s["id"], s["enabled"]) for s in store.list_all()] == [
-        ("builtin:a/SKILL", True), ("builtin:a/references/r", False), ("builtin:b/SKILL", False),
+        ("builtin:a/SKILL", False), ("builtin:a/references/r", False),
+        ("builtin:b/SKILL", True), ("builtin:b/references/on", True),
     ]
-    assert store.get("builtin:b/SKILL")["enabled"] is False
-    assert store.active_prompt() == "A on."
+    assert store.get("builtin:a/references/r")["enabled"] is False
+    assert store.active_prompt() == "B default.\n\n---\n\nB ref on."
 
     mounted = tmp_path / "mounted"
     mounted.mkdir()

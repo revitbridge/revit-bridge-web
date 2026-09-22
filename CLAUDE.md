@@ -19,11 +19,13 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving.
 - `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence), slot header dependency, add-in WebSocket endpoint; `backend/api/errors.py` the `{error, message?}` responses.
-- `backend/api/chat.py` - `/api/chat` SSE; `backend/llm.py` the single OpenAI-compatible client.
+- `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`);
+  `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`);
+  `backend/llm.py` the single OpenAI-compatible client, with function calling; `backend/session.py`.
 - `backend/relay.py` - `SlotManager` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/skill_store.py`, `backend/log_store.py`, `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`.
-- `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
+- `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
 ## Hard constraints
 

@@ -45,17 +45,18 @@ def test_chat_refuses_without_a_model(client):
 
 
 def _fake_stream(tokens, seen: dict):
-    async def stream_chat(llm, messages, **kwargs):
+    async def stream_completion(llm, messages, **kwargs):
         seen["llm"] = llm
         seen["messages"] = messages
+        seen["tools"] = kwargs.get("tools")
         for t in tokens:
             yield t
-    return stream_chat
+    return stream_completion
 
 
 def test_chat_streams_tokens_keeps_history_and_never_stores_the_key(client, env, monkeypatch):
     seen: dict = {}
-    monkeypatch.setattr(chat_module, "stream_chat", _fake_stream(["Hel", "lo ", "designer"], seen))
+    monkeypatch.setattr(chat_module, "stream_completion", _fake_stream(["Hel", "lo ", "designer"], seen))
 
     headers = {"X-LLM-Base-Url": "https://api.example/v1", "X-LLM-Model": "gpt-x", "X-LLM-Key": "sk-browser-only"}
     resp = client.post("/api/chat", json={"message": "hi there"}, headers=headers)
@@ -64,10 +65,12 @@ def test_chat_streams_tokens_keeps_history_and_never_stores_the_key(client, env,
     session_id = resp.headers["X-Session-Id"]
     assert resp.text == 'data: "Hel"\n\ndata: "lo "\n\ndata: "designer"\n\nevent: done\ndata: [DONE]\n\n'
 
-    # The model got the host prompt, the pack index and the user turn.
+    # The model got the package's host instructions, the tools and the user turn.
     assert seen["llm"].model == "gpt-x" and seen["llm"].api_key == "sk-browser-only"
     system, user = seen["messages"][0], seen["messages"][-1]
-    assert system["role"] == "system" and "create_wall" in system["content"]
+    assert system["role"] == "system" and system["content"].startswith("You are connected to a running Autodesk Revit")
+    assert "propose_spec" in system["content"]
+    assert "confirm_spec" not in [t["function"]["name"] for t in seen["tools"]]
     assert user == {"role": "user", "content": "hi there"}
 
     # Second turn on the same session carries the first exchange.
@@ -89,7 +92,7 @@ def test_chat_reports_model_errors_as_an_sse_event(client, monkeypatch):
         raise LLMError("Model endpoint returned HTTP 401: bad key", status=502)
         yield  # pragma: no cover - makes this an async generator
 
-    monkeypatch.setattr(chat_module, "stream_chat", failing)
+    monkeypatch.setattr(chat_module, "stream_completion", failing)
     headers = {"X-LLM-Base-Url": "https://api.example/v1", "X-LLM-Model": "m", "X-LLM-Key": "k"}
     resp = client.post("/api/chat", json={"message": "hi"}, headers=headers)
     assert resp.status_code == 200

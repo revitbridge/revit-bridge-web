@@ -1926,10 +1926,28 @@
       "ChatRequest": {
         "properties": {
           "message": {
-            "type": "string",
-            "maxLength": 8000,
-            "minLength": 1,
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 8000
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Message"
+          },
+          "execution": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution"
           },
           "session_id": {
             "anyOf": [
@@ -1941,12 +1959,14 @@
               }
             ],
             "title": "Session Id"
+          },
+          "bridge": {
+            "type": "boolean",
+            "title": "Bridge",
+            "default": true
           }
         },
         "type": "object",
-        "required": [
-          "message"
-        ],
         "title": "ChatRequest"
       },
       "ConfirmRequest": {

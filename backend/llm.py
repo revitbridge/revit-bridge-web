@@ -6,6 +6,12 @@ Bring your own model. The browser sends ``X-LLM-Base-Url`` / ``X-LLM-Model``
 one request only: nothing is written to disk and the key never appears in a
 log line, an error message or a ``repr``.
 
+``stream_completion`` speaks the OpenAI-compatible function-calling
+protocol: ``tools`` go out with the request, streamed ``tool_calls`` deltas
+(one fragment per chunk, keyed by ``index``) are assembled and handed back
+as one ``list[ToolCall]`` once the model is done, and ``tool`` role messages
+carry the results back in the next request.
+
 Ported from the streaming half of the former ``pipeline/llm_client.py``,
 rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 """
@@ -94,15 +100,66 @@ def _check_base_url(base_url: str, settings: WebSettings) -> None:
     )
 
 
-async def stream_chat(
+# -- function calling ------------------------------------------------------------
+
+@dataclass
+class ToolCall:
+    """One function call the model asked for; ``arguments`` is the raw JSON text."""
+    id: str
+    name: str
+    arguments: str
+
+    def as_message_part(self) -> dict:
+        """The entry of an assistant message's ``tool_calls`` list."""
+        return {"id": self.id, "type": "function",
+                "function": {"name": self.name, "arguments": self.arguments}}
+
+
+def assistant_message(content: str, tool_calls: list[ToolCall] | None = None) -> dict:
+    """The assistant turn to keep in the history: its text and/or the calls it made."""
+    message: dict = {"role": "assistant", "content": content or None}
+    if tool_calls:
+        message["tool_calls"] = [c.as_message_part() for c in tool_calls]
+    return message
+
+
+def tool_message(call: ToolCall, result) -> dict:
+    """A tool result for the next request; ``result`` is JSON-encoded unless it is text."""
+    content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+    return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
+    """Fold one streamed ``tool_calls`` delta into the call it belongs to."""
+    if not isinstance(fragment, dict):
+        return
+    try:
+        index = int(fragment.get("index", len(calls)))
+    except (TypeError, ValueError):
+        index = len(calls)
+    call = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+    if fragment.get("id"):
+        call["id"] = str(fragment["id"])
+    function = fragment.get("function") or {}
+    if function.get("name"):
+        call["name"] += str(function["name"])
+    if function.get("arguments"):
+        call["arguments"] += str(function["arguments"])
+
+
+async def stream_completion(
     llm: LLMSettings,
     messages: list[dict],
     *,
+    tools: list[dict] | None = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
-) -> AsyncIterator[str]:
-    """Yield content deltas of a streamed chat completion.
+) -> AsyncIterator[str | list[ToolCall]]:
+    """Stream one chat completion: content deltas as they arrive (``str``) and,
+    when the model called tools, one ``list[ToolCall]`` at the end, assembled
+    from the streamed fragments (each call's ``id`` and ``name`` arrive once,
+    its ``arguments`` in pieces, all keyed by ``index``).
 
     Raises ``LLMError`` when the endpoint answers with an error status; the
     message carries the status and a short body excerpt, never the request.
@@ -120,13 +177,17 @@ async def stream_chat(
         "Accept": "text/event-stream",
         "X-Title": "revit-bridge-web",
     }
-    payload = {
+    payload: dict = {
         "model": llm.model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
     }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    calls: dict[int, dict] = {}          # index -> {id, name, arguments}
     client_timeout = httpx.Timeout(timeout, connect=15.0)
     try:
         async with httpx.AsyncClient(timeout=client_timeout) as client:
@@ -152,11 +213,34 @@ async def stream_chat(
                     token = delta.get("content")
                     if token:
                         yield token
+                    for fragment in delta.get("tool_calls") or []:
+                        _merge_tool_call(calls, fragment)
     except httpx.HTTPError as exc:
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)
         raise LLMError(f"Model endpoint unreachable: {type(exc).__name__}", status=502) from None
+    assembled = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["arguments"])
+                 for i, c in sorted(calls.items()) if c["name"]]
+    if assembled:
+        yield assembled
 
+
+async def stream_chat(
+    llm: LLMSettings,
+    messages: list[dict],
+    *,
+    temperature: float = 0.3,
+    max_tokens: int = 4096,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> AsyncIterator[str]:
+    """Content deltas only, no tools: the 0.1 surface, for callers that want plain text."""
+    async for item in stream_completion(llm, messages, temperature=temperature,
+                                        max_tokens=max_tokens, timeout=timeout):
+        if isinstance(item, str):
+            yield item
+
+
+# -- SSE frames --------------------------------------------------------------------
 
 def format_sse(data: str) -> str:
     """One SSE frame carrying a JSON-encoded string token."""

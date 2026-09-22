@@ -1,6 +1,12 @@
-"""In-memory chat sessions: history per session id, two-hour idle TTL.
+"""In-memory chat sessions: the model's message history plus what the host loop
+knows about the task, per session id, two-hour idle TTL.
 
-Model settings are not part of a session any more; they travel with every
+A session holds the messages the model saw (user, assistant with its
+``tool_calls``, tool results), the ``snapshot_fingerprint`` of the last
+snapshot the model took, the last ``spec`` it proposed and the most recent
+``evidence_id`` the page reported back. It never holds a confirmation
+token: the token lives in the browser's memory and the gate's ``pending/``
+directory is the server-side record. Model settings travel with every
 request as headers (see ``backend.llm``), so nothing secret is held here.
 """
 from __future__ import annotations
@@ -11,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 
 TTL_SECONDS = 2 * 60 * 60
-MAX_HISTORY = 40
+MAX_HISTORY = 60
 
 
 @dataclass
@@ -19,8 +25,11 @@ class Session:
     session_id: str
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
-    # [{"role": "user" | "assistant", "content": str}, ...]
+    # OpenAI-shaped messages: {"role": "user"|"assistant"|"tool", "content": ..., ...}
     history: list[dict] = field(default_factory=list)
+    snapshot_fingerprint: str | None = None
+    spec: dict | None = None
+    evidence_id: str | None = None
 
     def touch(self) -> None:
         self.last_active = time.time()
@@ -28,11 +37,27 @@ class Session:
     def is_expired(self) -> bool:
         return (time.time() - self.last_active) > TTL_SECONDS
 
-    def add_message(self, role: str, content: str) -> None:
-        self.history.append({"role": role, "content": content})
+    def add(self, message: dict) -> None:
+        self.history.append(message)
         if len(self.history) > MAX_HISTORY:
-            self.history = self.history[-MAX_HISTORY:]
+            self.history = trim_at_user_turn(self.history[-MAX_HISTORY:])
         self.touch()
+
+    def add_message(self, role: str, content: str) -> None:
+        self.add({"role": role, "content": content})
+
+    def window(self, limit: int) -> list[dict]:
+        """The last ``limit`` messages, cut at a user turn so no tool result is
+        sent without the assistant call it answers."""
+        return trim_at_user_turn(self.history[-limit:]) if limit > 0 else []
+
+
+def trim_at_user_turn(messages: list[dict]) -> list[dict]:
+    """Drop leading messages until the first ``user`` turn (an empty list if none)."""
+    for i, message in enumerate(messages):
+        if message.get("role") == "user":
+            return messages[i:]
+    return []
 
 
 class SessionStore:
