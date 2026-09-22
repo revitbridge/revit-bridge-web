@@ -6,8 +6,9 @@ import { useSessionStore } from './store'
 import ConnectPage from './components/pages/ConnectPage'
 import TaskPage from './components/pages/TaskPage'
 import CapabilitiesPage from './components/pages/CapabilitiesPage'
+import EvidencePage from './components/pages/EvidencePage'
 
-const TABS = ['Connect', 'Task', 'Capabilities'] as const
+const TABS = ['Connect', 'Task', 'Capabilities', 'Evidence'] as const
 
 export default function App() {
   const [active, setActive] = useState(0)
@@ -43,6 +44,7 @@ export default function App() {
         {active === 0 && <ConnectPage />}
         {active === 1 && <TaskPage />}
         {active === 2 && <CapabilitiesPage />}
+        {active === 3 && <EvidencePage />}
       </main>
     </div>
   )
