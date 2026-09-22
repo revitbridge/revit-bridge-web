@@ -138,3 +138,85 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+/* -- the host loop (POST /api/chat), spec 10.10 ------------------------------------ */
+
+/* revit_bridge.spec.models.TaskSpec as JSON. */
+export interface TaskSpec {
+  task: string
+  action: { kind: 'run_tool' | 'execute_code'; tool?: string; code?: string; code_parameters?: unknown[] }
+  parameters: SpecParameter[]
+  interpretations?: Interpretation[]
+  steps?: string[]
+  snapshot_fingerprint?: string
+  language?: string
+}
+
+export interface SpecParameter {
+  name: string
+  value: unknown
+  unit?: string | null
+  source: string
+  evidence: string
+}
+
+export interface Interpretation {
+  param: string | null
+  text: string
+  confirmed: boolean
+}
+
+export interface SpecError {
+  code: string
+  param: string | null
+  message: string
+}
+
+export interface ReconcileResult {
+  conflicts: Array<Record<string, unknown>>
+  questions: Question[]
+  interpretations_required: Interpretation[]
+  ready: boolean
+}
+
+export interface Question {
+  id: string
+  param: string
+  text: string
+  why?: string
+  options: Array<{ label: string; value: unknown; source?: string }>
+  allow_other?: boolean
+}
+
+/* What /tools/{name}/run and /execute answer (the package's ExecutionResult, or a refusal). */
+export interface ExecutionResult {
+  success: boolean
+  error: string | null
+  tool?: string | null
+  result?: unknown
+  validation?: { validator: string; passed: boolean; checks: Array<{ detail: string; passed?: boolean }> } | null
+  evidence_id?: string
+  preconditions_failed?: string[]
+  warnings?: string[]
+  hint?: string
+  reason?: string
+  message?: string
+}
+
+/* One turn of the host loop: exactly one of message / execution. */
+export interface HostRequest {
+  message?: string
+  execution?: ExecutionResult
+  session_id: string | null
+  bridge?: boolean
+}
+
+/* The SSE events of one turn, as chatEvents() yields them. */
+export type HostEvent =
+  | { type: 'session'; id: string }
+  | { type: 'token'; text: string }
+  | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
+      reconcile_error?: { error: string; message?: string } }
+  | { type: 'execution'; execution: ExecutionResult }
+  | { type: 'error'; detail: string }
+  | { type: 'done' }
