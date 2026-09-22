@@ -225,21 +225,6 @@ async def stream_completion(
         yield assembled
 
 
-async def stream_chat(
-    llm: LLMSettings,
-    messages: list[dict],
-    *,
-    temperature: float = 0.3,
-    max_tokens: int = 4096,
-    timeout: float = DEFAULT_TIMEOUT,
-) -> AsyncIterator[str]:
-    """Content deltas only, no tools: the 0.1 surface, for callers that want plain text."""
-    async for item in stream_completion(llm, messages, temperature=temperature,
-                                        max_tokens=max_tokens, timeout=timeout):
-        if isinstance(item, str):
-            yield item
-
-
 # -- SSE frames --------------------------------------------------------------------
 
 def format_sse(data: str) -> str:

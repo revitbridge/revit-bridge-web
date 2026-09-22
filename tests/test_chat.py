@@ -129,7 +129,7 @@ def test_chat_rate_limit(make_client, env):
     assert client.post("/api/chat", json={"message": "3"}, headers=headers).status_code == 429
 
 
-def test_stream_chat_parses_openai_sse(monkeypatch):
+def test_stream_completion_parses_openai_sse(monkeypatch):
     """The httpx layer: SSE deltas become tokens, error statuses become LLMError."""
     import asyncio
 
@@ -160,7 +160,7 @@ def test_stream_chat_parses_openai_sse(monkeypatch):
 
     async def collect(key):
         settings = LLMSettings(base_url="https://api.example/v1", model="m", api_key=key)
-        return [t async for t in llm_module.stream_chat(settings, [{"role": "user", "content": "x"}])]
+        return [t async for t in llm_module.stream_completion(settings, [{"role": "user", "content": "x"}])]
 
     assert asyncio.run(collect("good")) == ["A", "B"]
     assert captured["url"] == "https://api.example/v1/chat/completions"
