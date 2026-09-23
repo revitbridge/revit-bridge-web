@@ -15,7 +15,7 @@ const api = {
   validateEvidence: async () => ({ evidence_id: 'x', tool: 't', validator: 'created_ids', passed: true, checks: [] }),
 }
 
-const online: DeviceStatus = { device_id: 'dev_a1b2c3', label: 'studio-01', online: true, last_seen: '2026-09-23T09:00:00Z', requests: 7 }
+const online: DeviceStatus = { device_id: 'dev_a1b2c3', label: 'studio-01', online: true, last_seen: '2026-09-23T09:00:00Z', requests: 7, revoked: false }
 
 const deviceApi = {
   pair: async () => ({ code: 'K7QD-2M9X', device_id: 'dev_a1b2c3', expires_at: '2026-09-23T09:10:00Z', browser_key: 'bk', install_command: 'irm https://host/install.ps1' }),

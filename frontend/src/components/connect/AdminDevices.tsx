@@ -37,7 +37,7 @@ export default function AdminDevices({ devices, error, busy, onLoad, onRevoke, n
                   <td className="mono">{d.device_id}</td>
                   <td>{d.label || <span className="muted">-</span>}</td>
                   <td>
-                    {d.revoked_at
+                    {d.revoked
                       ? <span className="outcome failed">revoked</span>
                       : <span className={`outcome ${d.online ? 'ok' : ''}`}>{d.online ? 'online' : 'offline'}</span>}
                   </td>
@@ -45,7 +45,7 @@ export default function AdminDevices({ devices, error, busy, onLoad, onRevoke, n
                   <td>{d.requests ?? 0}</td>
                   <td>{d.addin_version || <span className="muted">-</span>}</td>
                   <td>
-                    {!d.revoked_at && (
+                    {!d.revoked && (
                       <button className="btn-ghost danger" onClick={() => onRevoke(d.device_id)} disabled={!!busy[d.device_id]}>
                         {busy[d.device_id] || 'Revoke'}
                       </button>

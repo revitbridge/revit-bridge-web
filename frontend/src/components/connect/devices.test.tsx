@@ -11,7 +11,7 @@ const NOW = Date.parse('2026-09-23T09:00:00Z')
 const noop = () => {}
 
 const device = { device_id: 'dev_a1b2c3d4e5f6', browser_key: 'bk_secret_value', label: 'studio-01' }
-const online: DeviceStatus = { device_id: device.device_id, label: 'studio-01', online: true, last_seen: '2026-09-23T08:59:40Z', requests: 7 }
+const online: DeviceStatus = { device_id: device.device_id, label: 'studio-01', online: true, last_seen: '2026-09-23T08:59:40Z', requests: 7, revoked: false }
 const offline: DeviceStatus = { ...online, online: false, last_seen: '2026-09-23T08:30:00Z', requests: 2 }
 
 function list(statuses: Record<string, DeviceStatus>, selected: string, busy: Record<string, string> = {}) {
@@ -75,7 +75,7 @@ describe('PairPanel', () => {
 
 describe('AdminDevices', () => {
   it('lists every device with its state, and offers Revoke only for the live ones', () => {
-    const revoked: DeviceStatus = { device_id: 'dev_old', label: 'old', online: false, last_seen: '2026-09-22T09:00:00Z', requests: 0, revoked_at: '2026-09-22T10:00:00Z' }
+    const revoked: DeviceStatus = { device_id: 'dev_old', label: 'old', online: false, last_seen: '2026-09-22T09:00:00Z', requests: 0, revoked: true }
     const html = renderToStaticMarkup(
       <AdminDevices devices={[{ ...online, addin_version: '0.2.0' }, revoked]} error="" busy={{}} onLoad={noop} onRevoke={noop} now={NOW} />,
     )

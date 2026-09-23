@@ -13,7 +13,7 @@ const issued: PairingResponse = {
   install_command: '& ([scriptblock]::Create((irm https://host/install.ps1))) -Mode remote -Server https://host -Pair K7QD-2M9X',
 }
 
-const offline: DeviceStatus = { device_id: issued.device_id, label: 'studio-01', online: false, last_seen: null, requests: 0 }
+const offline: DeviceStatus = { device_id: issued.device_id, label: 'studio-01', online: false, last_seen: null, requests: 0, revoked: false }
 const online: DeviceStatus = { ...offline, online: true, last_seen: '2026-09-23T09:01:00Z', requests: 3 }
 
 /* An API whose status() answers from a script; every call is recorded with its key. */

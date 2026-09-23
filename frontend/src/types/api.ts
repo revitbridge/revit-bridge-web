@@ -33,10 +33,9 @@ export interface DeviceStatus {
   device_id: string
   label: string
   online: boolean
-  last_seen: string | null
-  requests: number
-  created_at?: string
-  revoked_at?: string | null
+  last_seen: string | null      // ISO, or null before the add-in ever connected
+  requests: number              // the relay's counter; 0 while offline
+  revoked: boolean
   addin_version?: string | null
 }
 

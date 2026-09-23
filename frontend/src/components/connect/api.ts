@@ -27,7 +27,7 @@ export const deviceApi = {
     del<{ status?: string }>(`${B}/devices/${enc(deviceId)}`, keyHeaders(deviceId, browserKey)),
 
   /* Admin only (X-Admin-Token, sent by the shared request helper): every device this host knows. */
-  all: () => get<DeviceStatus[]>(`${B}/devices`),
+  all: async () => (await get<{ devices: DeviceStatus[] }>(`${B}/devices`)).devices,
 
   /* How many devices may connect at once, and how many are connected. */
   capacity: () => get<DevicesStatus>(`${B}/slots`),
