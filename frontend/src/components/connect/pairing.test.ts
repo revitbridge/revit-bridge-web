@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useSessionStore } from '../../store'
 import type { DeviceStatus, PairingResponse } from '../../types/api'
 import { BridgeApiError } from '../shared/http'
-import { createPairingFlow, POLL_INTERVAL_MS } from './pairing'
+import { CODE_EXPIRED, createPairingFlow, POLL_INTERVAL_MS } from './pairing'
 import { lastSeen, timeLeft } from './format'
 
 const issued: PairingResponse = {
@@ -77,7 +77,7 @@ describe('pairing a device', () => {
   })
 
   it('keeps waiting while the code is unredeemed, and gives up after ten minutes', async () => {
-    const api = fakeApi([new BridgeApiError(404, JSON.stringify({ error: 'unknown_device' }))])
+    const api = fakeApi([offline])                           // 200, online false: nobody has redeemed it yet
     const clock = fakeClock()
     const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
 
@@ -86,10 +86,61 @@ describe('pairing a device', () => {
     const s = flow.store.getState()
     expect(s.gaveUp).toBe(true)
     expect(s.waiting).toBe(false)
+    expect(s.pairError).toBe('')
     expect(api.status).toHaveBeenCalledTimes(200)            // 600 s / 3 s
     expect(useSessionStore.getState().deviceId).toBe('')     // nothing selected
     // the key is kept anyway: the designer may still redeem the code before it expires
     expect(useSessionStore.getState().devices).toHaveLength(1)
+  })
+
+  it('stops when the pairing expired and the host purged it (404)', async () => {
+    const api = fakeApi([offline, new BridgeApiError(404, JSON.stringify({ error: 'unknown_device' }))])
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('late')
+
+    expect(api.status).toHaveBeenCalledTimes(2)
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, gaveUp: false, pairError: CODE_EXPIRED })
+    expect(useSessionStore.getState().deviceId).toBe('')
+  })
+
+  it('stops and says why when the key is not that device\'s (403)', async () => {
+    const api = fakeApi([new BridgeApiError(403, JSON.stringify({ error: 'invalid_device_key', message: 'not this device' }))])
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('wrong')
+
+    expect(api.status).toHaveBeenCalledTimes(1)
+    const s = flow.store.getState()
+    expect(s).toMatchObject({ waiting: false, gaveUp: false, pairError: 'invalid_device_key: not this device' })
+    expect(s.pairing).toEqual(issued)      // the code stays on screen: it may still be good
+  })
+
+  it('stops once the code is past its expiry, even while the host still answers', async () => {
+    // the clock starts at 0 and moves 3 s per poll: this code dies during the third
+    const soon = { ...issued, expires_at: new Date(7000).toISOString() }
+    const api = fakeApi([offline], { pair: vi.fn().mockResolvedValue(soon) })
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('slowpoke')
+
+    expect(api.status).toHaveBeenCalledTimes(3)
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, gaveUp: false, pairError: CODE_EXPIRED })
+  })
+
+  it('keeps polling when the host itself cannot be reached', async () => {
+    const api = fakeApi([new Error('502: backend unreachable'), new Error('502: backend unreachable'), online])
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('flaky')
+
+    expect(api.status).toHaveBeenCalledTimes(3)
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, pairError: '' })
+    expect(useSessionStore.getState().deviceId).toBe(issued.device_id)
   })
 
   it('reports a refused pairing and stops', async () => {

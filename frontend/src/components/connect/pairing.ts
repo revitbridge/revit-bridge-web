@@ -15,6 +15,7 @@ import { deviceApi, type DeviceApi } from './api'
 
 export const POLL_INTERVAL_MS = 3000
 export const POLL_LIMIT_MS = 10 * 60 * 1000
+export const CODE_EXPIRED = 'That pairing code expired before an add-in redeemed it. Pair again.'
 
 export interface PairingState {
   pairing: PairingResponse | null      // the code being waited on; the key is already remembered
@@ -74,17 +75,32 @@ export function createPairingFlow(deps: PairingDeps = {}) {
 
   /* Steps 2-3: the designer runs the install command (or types the code in the
      add-in's settings), the add-in redeems it and connects; we ask every three
-     seconds for ten minutes. */
+     seconds for ten minutes.
+
+     While the code is unredeemed the host answers 200 with online false. The
+     two answers that end the wait are 404 (the pairing expired and was purged)
+     and 403 (this browser's key is not that device's); only a host we cannot
+     reach is worth asking again. */
   async function waitForAddin(issued: PairingResponse) {
     const started = now()
+    const stop = (patch: Partial<PairingState>) => setState({ pairing: null, waiting: false, ...patch })
     while (getState().pairing?.device_id === issued.device_id) {
       await wait(POLL_INTERVAL_MS)
       if (getState().pairing?.device_id !== issued.device_id) return      // cancelled
       let status: DeviceStatus
       try {
         status = await api.status(issued.device_id, issued.browser_key)
-      } catch {
-        // an unredeemed code may answer 404/403: that is the wait, not a failure
+      } catch (e: unknown) {
+        if (e instanceof BridgeApiError && e.status === 404) {
+          stop({ pairError: CODE_EXPIRED })          // the pairing expired and was purged
+          return
+        }
+        if (e instanceof BridgeApiError && e.status >= 400 && e.status < 500) {
+          // the key is not this device's: stop asking, but leave the code on screen
+          setState({ waiting: false, pairError: describe(e) })
+          return
+        }
+        // no host to ask (network, 5xx): keep waiting out the ten minutes
         if (now() - started >= POLL_LIMIT_MS) { setState({ waiting: false, gaveUp: true }); return }
         continue
       }
@@ -92,7 +108,11 @@ export function createPairingFlow(deps: PairingDeps = {}) {
       if (status.online) {
         if (status.label) session().rememberDevice({ device_id: issued.device_id, browser_key: issued.browser_key, label: status.label })
         session().selectDevice(issued.device_id)                          // the new device becomes the one in use
-        setState({ pairing: null, waiting: false })
+        stop({})
+        return
+      }
+      if (Date.parse(issued.expires_at) <= now()) {
+        stop({ pairError: CODE_EXPIRED })
         return
       }
       if (now() - started >= POLL_LIMIT_MS) {
