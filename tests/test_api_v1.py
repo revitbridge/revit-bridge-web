@@ -1,6 +1,8 @@
 """The v1 contract under /api/v1/bridge: one test per endpoint, the package behind a fake add-in."""
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from revit_bridge import execution
@@ -456,3 +458,37 @@ def test_retired_routes_are_gone(client):
     assert gone.status_code == 404 or "html" in gone.headers["content-type"]
     assert client.post(f"{B}/unit", json={"unit": "mm"}).status_code in (404, 405)
     assert client.post(f"{B}/query-revit", json={"command": "get_levels"}).status_code in (404, 405)
+
+
+# -- scope (phase 7) ------------------------------------------------------------------
+
+def test_executions_and_evidence_belong_to_a_scope(revit, client):
+    """Without a device header everything is "local": the confirmation, the ledger line
+    and what /evidence shows. A token issued locally is not redeemable elsewhere."""
+    token = confirm(client, spec_for("query_levels"))
+    assert bridge_module.get_gate().peek(token).scope == "local"
+
+    run = client.post(f"{B}/tools/query_levels/run", json={"params": {}, "token": token}).json()
+    assert run["success"] is True
+    record = bridge_module.get_ledger().get(run["evidence_id"])
+    assert record["scope"] == "local" and record["host"] == "web"
+    assert [r["id"] for r in client.get(f"{B}/evidence").json()] == [run["evidence_id"]]
+
+    report = client.post(f"{B}/evidence/{run['evidence_id']}/validate")
+    assert report.status_code == 200 and report.json()["passed"] is True
+
+
+def test_a_record_of_another_scope_reads_as_absent(revit, client):
+    run = client.post(f"{B}/tools/query_levels/run",
+                      json={"params": {}, "token": confirm(client, spec_for("query_levels"))}).json()
+    # Rewrite the line as another device's: the browser must not even learn it exists.
+    ledger = bridge_module.get_ledger()
+    path = ledger._file_for(run["evidence_id"])
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for line in lines:
+        line["scope"] = "dev_abcdefghijkl"
+    path.write_text("\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n", encoding="utf-8")
+
+    assert client.get(f"{B}/evidence").json() == []
+    resp = client.post(f"{B}/evidence/{run['evidence_id']}/validate")
+    assert resp.status_code == 404 and resp.json()["error"] == "unknown_evidence"

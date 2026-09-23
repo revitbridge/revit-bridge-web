@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from fastapi import WebSocket, WebSocketDisconnect
 
 from revit_bridge.revit import RevitResponse
+from revit_bridge.revit.client import CONFIRM_TIMEOUT_SECONDS
 
 _log = logging.getLogger("backend.relay")
 
@@ -172,18 +173,28 @@ class SlotManager:
             if parsed.get("error"):
                 err = parsed["error"]
                 msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-                return RevitResponse(success=False, error=msg, raw=raw)
+                code = err.get("code") if isinstance(err, dict) else None
+                # The code matters: -32001 is the designer saying No on the device,
+                # which the package turns into declined_on_device.
+                return RevitResponse(success=False, error=msg, raw=raw,
+                                     error_code=code if isinstance(code, int) else None)
             return RevitResponse(success=True, result=parsed.get("result"), raw=raw)
 
     async def send_code(
         self, slot_id: str, code: str, parameters: list | None = None,
-        timeout: float = 60.0,
+        timeout: float = 60.0, confirm: dict | None = None,
     ) -> RevitResponse:
-        """``send_code_to_revit`` with the same unwrapping as the TCP client."""
-        resp = await self.send_command(
-            slot_id, "send_code_to_revit", {"code": code, "parameters": parameters or []},
-            timeout=timeout,
-        )
+        """``send_code_to_revit`` with the same unwrapping as the TCP client.
+
+        ``confirm`` (``{kind, title, message}``) asks the add-in to show the
+        designer a Yes/No dialog first; such a request waits for a person, so
+        never less than ``CONFIRM_TIMEOUT_SECONDS``.
+        """
+        params: dict = {"code": code, "parameters": parameters or []}
+        if confirm is not None:
+            params["confirm"] = confirm
+            timeout = max(timeout, CONFIRM_TIMEOUT_SECONDS)
+        resp = await self.send_command(slot_id, "send_code_to_revit", params, timeout=timeout)
         if resp.success and isinstance(resp.result, dict) and "success" in resp.result:
             inner = resp.result
             inner_result = inner.get("result", "")
@@ -228,8 +239,9 @@ class WebSocketRevitClient:
     async def send_command(self, method: str, params: dict | None = None) -> RevitResponse:
         return await self._mgr.send_command(self._slot_id, method, params, self._timeout)
 
-    async def send_code(self, code: str, parameters: list | None = None) -> RevitResponse:
-        return await self._mgr.send_code(self._slot_id, code, parameters, self._timeout)
+    async def send_code(self, code: str, parameters: list | None = None,
+                        confirm: dict | None = None) -> RevitResponse:
+        return await self._mgr.send_code(self._slot_id, code, parameters, self._timeout, confirm=confirm)
 
     async def ping(self) -> bool:
         try:

@@ -67,6 +67,15 @@ MAX_EVIDENCE = 200
 # Set per request by the router dependency; read when a Revit client is needed.
 request_slot_id: ContextVar[str | None] = ContextVar("slot_id", default=None)
 
+# The scope every confirmation and every ledger line belongs to: the device the
+# request drives, or "local" for the add-in on this machine (package default).
+LOCAL_SCOPE = "local"
+
+
+def current_scope() -> str:
+    """The scope of this request: its device id, or ``"local"`` without one."""
+    return request_slot_id.get(None) or LOCAL_SCOPE
+
 
 async def set_slot_context(connection: HTTPConnection) -> None:
     """Read ``X-Slot-Id`` and enforce ``X-Slot-Token`` when tokens are configured.
@@ -426,7 +435,7 @@ async def run_tool(name: str, req: RunToolRequest):
     token = _require_token(req.token)
     client = await get_revit_client()
     result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
-                            name=name, params=req.params, token=token, host=HOST)
+                            name=name, params=req.params, token=token, host=HOST, scope=current_scope())
     return _execution_payload(result)
 
 
@@ -463,7 +472,7 @@ async def confirm_spec(req: ConfirmRequest):
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])
     # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
     conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
-                                   channel=CONFIRM_CHANNEL)
+                                   channel=CONFIRM_CHANNEL, scope=current_scope())
     return {"token": conf.token, "spec_hash": conf.spec_hash, "expires_at": conf.expires_at, "card": spec.card()}
 
 
@@ -475,7 +484,7 @@ async def execute_code(req: ExecuteRequest):
     token = _require_token(req.token)
     client = await get_revit_client()
     result = await run_code(gate=get_gate(), ledger=get_ledger(), client=client, code=req.code,
-                            parameters=req.parameters, token=token, host=HOST)
+                            parameters=req.parameters, token=token, host=HOST, scope=current_scope())
     return _execution_payload(result)
 
 
@@ -521,25 +530,32 @@ async def _sync_to_revit(tool) -> bool:
 
 @router.get("/evidence", responses=responses(403, 422))
 async def list_evidence(limit: int = 20, tool: str | None = None):
-    """``Ledger.recent``: the newest execution records, optionally of one pack."""
+    """``Ledger.recent``: the newest execution records of this device, optionally of one pack.
+
+    A browser sees only what ran on the device it drives (or, without a device
+    header, on the local add-in); the filter is silent."""
     # reads the monthly JSONL files: off the event loop
-    return await run_in_threadpool(get_ledger().recent, max(1, min(limit, MAX_EVIDENCE)), tool or None)
+    return await run_in_threadpool(get_ledger().recent, max(1, min(limit, MAX_EVIDENCE)), tool or None,
+                                   current_scope())
 
 
 @router.post("/evidence/{evidence_id}/validate", responses=responses(400, 403, 404, 422, 503))
 async def validate_evidence(evidence_id: str):
     """``revalidate``: the recorded execution's assertion against the model as it is now.
-    An unknown record is 404 before any Revit is needed."""
+    An unknown record - or one of another device - is 404 before any Revit is needed."""
     ledger = get_ledger()
-    if await run_in_threadpool(ledger.get, evidence_id) is None:
+    record = await run_in_threadpool(ledger.get, evidence_id)
+    if record is None or (record.get("scope") or LOCAL_SCOPE) != current_scope():
+        # Another device's record reads as absent: its existence is not this browser's business.
         raise ApiError(404, "unknown_evidence", evidence_id=evidence_id)
     client = await get_revit_client()
     try:
-        report = await revalidate(store=ToolStore(), ledger=ledger, client=client, evidence_id=evidence_id)
+        report = await revalidate(store=ToolStore(), ledger=ledger, client=client, evidence_id=evidence_id,
+                                  scope=current_scope())
     except OSError as exc:
         raise revit_unreachable(exc) from None
-    if report.get("error") == "unknown_evidence":
-        raise ApiError(404, **report)
+    if report.get("error") in ("unknown_evidence", "scope_mismatch"):
+        raise ApiError(404, "unknown_evidence", evidence_id=evidence_id)
     if report.get("error"):
         raise ApiError(400, **report)
     return report
