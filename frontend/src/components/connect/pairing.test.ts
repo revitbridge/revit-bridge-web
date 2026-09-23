@@ -118,6 +118,18 @@ describe('pairing a device', () => {
     expect(s.pairing).toEqual(issued)      // the code stays on screen: it may still be good
   })
 
+  it('a 403 after the code expired reads as expired, not as a wrong key', async () => {
+    // a host that refuses to say which device an id belongs to answers 403 for a purged pairing
+    const soon = { ...issued, expires_at: new Date(2000).toISOString() }
+    const api = fakeApi([new BridgeApiError(403, JSON.stringify({ error: 'invalid_device_key' }))], { pair: vi.fn().mockResolvedValue(soon) })
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('purged')
+
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, pairError: CODE_EXPIRED })
+  })
+
   it('stops once the code is past its expiry, even while the host still answers', async () => {
     // the clock starts at 0 and moves 3 s per poll: this code dies during the third
     const soon = { ...issued, expires_at: new Date(7000).toISOString() }

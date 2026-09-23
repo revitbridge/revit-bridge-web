@@ -91,11 +91,13 @@ export function createPairingFlow(deps: PairingDeps = {}) {
       try {
         status = await api.status(issued.device_id, issued.browser_key)
       } catch (e: unknown) {
-        if (e instanceof BridgeApiError && e.status === 404) {
-          stop({ pairError: CODE_EXPIRED })          // the pairing expired and was purged
-          return
-        }
         if (e instanceof BridgeApiError && e.status >= 400 && e.status < 500) {
+          // 404 is a purged pairing; a host that will not say which device it was
+          // answers 403 for the same case, so the clock decides between the two
+          if (e.status === 404 || Date.parse(issued.expires_at) <= now()) {
+            stop({ pairError: CODE_EXPIRED })
+            return
+          }
           // the key is not this device's: stop asking, but leave the code on screen
           setState({ waiting: false, pairError: describe(e) })
           return
