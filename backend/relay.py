@@ -1,16 +1,18 @@
-"""WebSocket slot relay: remote Revit add-ins connect here, the host talks back.
+"""WebSocket device relay: remote Revit add-ins connect here, the host talks back.
 
-The add-in opens ``/api/v1/bridge/ws/{slot_id}`` towards the server; the
-server keeps ``slot_id -> WebSocket`` and forwards JSON-RPC 2.0 requests over
-that socket. Browser requests select a slot with ``X-Slot-Id``. One slot
-handles one request at a time (Revit executes serially).
+The add-in opens ``/api/v1/bridge/ws/{device_id}`` towards the server and
+authenticates with its device token (see ``backend.api.devices``); the server
+keeps ``device_id -> WebSocket`` and forwards JSON-RPC 2.0 requests over that
+socket. Browser requests select a device with ``X-Device-Id`` /
+``X-Device-Key``. One device handles one request at a time (Revit executes
+serially) and ``MAX_DEVICES`` caps how many may be connected at once.
 
-``WebSocketRevitClient`` gives a slot the same ``send_command`` /
+``WebSocketRevitClient`` gives a device the same ``send_command`` /
 ``send_code`` / ``ping`` / ``ensure_connected`` surface as
 ``revit_bridge.revit.RevitClient`` so the routes, the package's execution
 flow and ``revit_bridge.snapshot.RevitQueryExecutor`` do not care which
 transport is underneath. The failure contract is the TCP client's too: a
-slot with no add-in, an add-in that leaves mid-request or a socket that
+device with no add-in, an add-in that leaves mid-request or a socket that
 cannot be written raise ``ConnectionError`` (the package then consumes no
 token and writes no ledger line - nothing reached Revit); only a reply that
 does not arrive in time is ``RevitResponse(success=False, "Timeout ...")``.
@@ -33,9 +35,9 @@ _log = logging.getLogger("backend.relay")
 
 
 @dataclass
-class SlotConnection:
-    """One Revit add-in connection on a named slot."""
-    slot_id: str
+class DeviceConnection:
+    """One Revit add-in connection and the device it belongs to."""
+    device_id: str
     ws: WebSocket
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending: asyncio.Future | None = field(default=None, repr=False)
@@ -50,80 +52,90 @@ class SlotConnection:
             return False
 
 
-class SlotManager:
-    """Registry of add-in connections, keyed by slot id."""
+class DeviceRelay:
+    """Registry of add-in connections, keyed by device id."""
 
-    def __init__(self, max_slots: int = 5):
-        self.max_slots = max_slots
-        self.slot_ids: frozenset[str] = frozenset(str(i) for i in range(1, max_slots + 1))
-        self._slots: dict[str, SlotConnection] = {}
+    def __init__(self, max_devices: int = 20):
+        self.max_devices = max_devices
+        self._devices: dict[str, DeviceConnection] = {}
 
     # -- registration ----------------------------------------------------------
 
-    def register(self, slot_id: str, ws: WebSocket) -> bool:
-        """Claim a slot for a connection. False when the id is unknown or the slot is occupied."""
-        if slot_id not in self.slot_ids:
-            return False
-        if slot_id in self._slots and self._slots[slot_id].connected:
-            return False
-        self._slots[slot_id] = SlotConnection(slot_id=slot_id, ws=ws)
-        _log.info("slot %s registered (total %d)", slot_id, len(self._slots))
-        return True
+    @property
+    def connected_ids(self) -> list[str]:
+        return [d for d, c in self._devices.items() if c.connected]
 
-    def unregister(self, slot_id: str) -> None:
-        conn = self._slots.pop(slot_id, None)
+    def register(self, device_id: str, ws: WebSocket) -> str | None:
+        """Take the device's connection. None on success, else why not: ``"occupied"``
+        (that device is connected already) or ``"full"`` (``MAX_DEVICES`` reached)."""
+        existing = self._devices.get(device_id)
+        if existing is not None and existing.connected:
+            return "occupied"
+        if existing is None and len(self.connected_ids) >= self.max_devices:
+            return "full"
+        self._devices[device_id] = DeviceConnection(device_id=device_id, ws=ws)
+        _log.info("device %s connected (%d connected)", device_id, len(self.connected_ids))
+        return None
+
+    def unregister(self, device_id: str) -> None:
+        conn = self._devices.pop(device_id, None)
         if conn:
             if conn.pending and not conn.pending.done():
                 conn.pending.cancel()
-            _log.info("slot %s unregistered (total %d)", slot_id, len(self._slots))
+            _log.info("device %s disconnected (%d connected)", device_id, len(self.connected_ids))
 
-    def get_connection(self, slot_id: str) -> SlotConnection | None:
-        conn = self._slots.get(slot_id)
+    async def disconnect(self, device_id: str, code: int = 4003, reason: str = "revoked") -> bool:
+        """Close a device's socket: a revoked device must not keep driving Revit."""
+        conn = self._devices.get(device_id)
+        if conn is None:
+            return False
+        try:
+            await conn.ws.close(code=code, reason=reason)
+        except Exception:  # noqa: BLE001 - it may already be gone
+            pass
+        self.unregister(device_id)
+        return True
+
+    def get_connection(self, device_id: str) -> DeviceConnection | None:
+        conn = self._devices.get(device_id)
         return conn if conn and conn.connected else None
 
     # -- status ----------------------------------------------------------------
 
     def get_status(self) -> dict:
-        slots = {}
-        for i in range(1, self.max_slots + 1):
-            sid = str(i)
-            conn = self._slots.get(sid)
-            if conn and conn.connected:
-                slots[sid] = {
-                    "status": "connected",
-                    "connected_at": conn.connected_at,
-                    "requests": conn.request_count,
-                }
-            else:
-                slots[sid] = {"status": "free"}
-        return {
-            "max_slots": self.max_slots,
-            "connected": sum(1 for c in self._slots.values() if c.connected),
-            "slots": slots,
-        }
+        """What ``GET /slots`` publishes: two numbers. No device ids - a visitor must
+        not learn which devices exist."""
+        return {"max_devices": self.max_devices, "connected": len(self.connected_ids)}
+
+    def device_status(self, device_id: str) -> dict:
+        """The relay's half of ``GET /devices/{id}``: connected, since when, how busy."""
+        conn = self.get_connection(device_id)
+        if conn is None:
+            return {"online": False, "connected_at": None, "requests": 0}
+        return {"online": True, "connected_at": conn.connected_at, "requests": conn.request_count}
 
     # -- messages --------------------------------------------------------------
 
-    def resolve_response(self, slot_id: str, data: str) -> None:
+    def resolve_response(self, device_id: str, data: str) -> None:
         """A message arrived from the add-in: it is the reply we are waiting for."""
-        conn = self._slots.get(slot_id)
+        conn = self._devices.get(device_id)
         if conn and conn.pending and not conn.pending.done():
             conn.pending.set_result(data)
         else:
-            _log.warning("slot %s sent a message but nothing is pending", slot_id)
+            _log.warning("device %s sent a message but nothing is pending", device_id)
 
     async def send_command(
-        self, slot_id: str, method: str, params: dict | None = None,
+        self, device_id: str, method: str, params: dict | None = None,
         timeout: float = 60.0,
     ) -> RevitResponse:
-        """Send one JSON-RPC 2.0 request over the slot and await its reply.
+        """Send one JSON-RPC 2.0 request to the device and await its reply.
 
-        Raises ``ConnectionError`` when the slot has no add-in, the add-in
-        leaves before answering or the socket cannot be written.
+        Raises ``ConnectionError`` when the device has no add-in connected, the
+        add-in leaves before answering or the socket cannot be written.
         """
-        conn = self.get_connection(slot_id)
+        conn = self.get_connection(device_id)
         if not conn:
-            raise ConnectionError(f"Slot '{slot_id}' has no connected Revit add-in")
+            raise ConnectionError(f"Device '{device_id}' has no connected Revit add-in")
 
         async with conn.lock:
             request_id = f"{int(time.time() * 1000)}{random.randint(100000, 999999)}"
@@ -149,8 +161,8 @@ class SlotManager:
                     except json.JSONDecodeError:
                         return RevitResponse(success=False, error="Invalid JSON from Revit", raw=raw)
                     if parsed.get("id") != request_id:
-                        _log.warning("slot %s reply id mismatch: expected %s got %s",
-                                     slot_id, request_id, parsed.get("id"))
+                        _log.warning("device %s reply id mismatch: expected %s got %s",
+                                     device_id, request_id, parsed.get("id"))
                         conn.pending = loop.create_future()  # keep waiting for ours
                         continue
                     break
@@ -161,12 +173,12 @@ class SlotManager:
                 # unregister() cancels the pending future when the add-in leaves;
                 # any other cancellation is the request itself being cancelled.
                 if conn.pending is not None and conn.pending.cancelled():
-                    raise ConnectionError(f"Slot '{slot_id}' left while waiting for a reply") from None
+                    raise ConnectionError(f"Device '{device_id}' left while waiting for a reply") from None
                 raise
             except (WebSocketDisconnect, RuntimeError, OSError) as exc:
                 # send_text on a closed socket (Starlette raises RuntimeError /
                 # WebSocketDisconnect) - nothing reached Revit
-                raise ConnectionError(f"Slot '{slot_id}' connection failed: {exc}") from exc
+                raise ConnectionError(f"Device '{device_id}' connection failed: {exc}") from exc
             finally:
                 conn.pending = None
 
@@ -181,7 +193,7 @@ class SlotManager:
             return RevitResponse(success=True, result=parsed.get("result"), raw=raw)
 
     async def send_code(
-        self, slot_id: str, code: str, parameters: list | None = None,
+        self, device_id: str, code: str, parameters: list | None = None,
         timeout: float = 60.0, confirm: dict | None = None,
     ) -> RevitResponse:
         """``send_code_to_revit`` with the same unwrapping as the TCP client.
@@ -194,7 +206,7 @@ class SlotManager:
         if confirm is not None:
             params["confirm"] = confirm
             timeout = max(timeout, CONFIRM_TIMEOUT_SECONDS)
-        resp = await self.send_command(slot_id, "send_code_to_revit", params, timeout=timeout)
+        resp = await self.send_command(device_id, "send_code_to_revit", params, timeout=timeout)
         if resp.success and isinstance(resp.result, dict) and "success" in resp.result:
             inner = resp.result
             inner_result = inner.get("result", "")
@@ -219,29 +231,29 @@ class SlotManager:
 
 
 class WebSocketRevitClient:
-    """Adapter: a slot looks like ``RevitClient`` to routes and query helpers."""
+    """Adapter: a device looks like ``RevitClient`` to routes and query helpers."""
 
-    def __init__(self, manager: SlotManager, slot_id: str, timeout: float = 60.0):
-        self._mgr = manager
-        self._slot_id = slot_id
+    def __init__(self, relay: DeviceRelay, device_id: str, timeout: float = 60.0):
+        self._relay = relay
+        self._device_id = device_id
         self._timeout = timeout
 
     @property
     def connected(self) -> bool:
-        return self._mgr.get_connection(self._slot_id) is not None
+        return self._relay.get_connection(self._device_id) is not None
 
     async def ensure_connected(self) -> None:
-        """The package calls this before its timed probes: no add-in on the slot is a
+        """The package calls this before its timed probes: a device with no add-in is a
         transport failure now, not a probe timeout later."""
         if not self.connected:
-            raise ConnectionError(f"Slot '{self._slot_id}' has no connected Revit add-in")
+            raise ConnectionError(f"Device '{self._device_id}' has no connected Revit add-in")
 
     async def send_command(self, method: str, params: dict | None = None) -> RevitResponse:
-        return await self._mgr.send_command(self._slot_id, method, params, self._timeout)
+        return await self._relay.send_command(self._device_id, method, params, self._timeout)
 
     async def send_code(self, code: str, parameters: list | None = None,
                         confirm: dict | None = None) -> RevitResponse:
-        return await self._mgr.send_code(self._slot_id, code, parameters, self._timeout, confirm=confirm)
+        return await self._relay.send_code(self._device_id, code, parameters, self._timeout, confirm=confirm)
 
     async def ping(self) -> bool:
         try:
@@ -250,19 +262,19 @@ class WebSocketRevitClient:
             return False
 
 
-_manager: SlotManager | None = None
+_relay: DeviceRelay | None = None
 
 
-def get_slot_manager(max_slots: int | None = None) -> SlotManager:
-    global _manager
-    if _manager is None:
-        if max_slots is None:
+def get_relay(max_devices: int | None = None) -> DeviceRelay:
+    global _relay
+    if _relay is None:
+        if max_devices is None:
             from backend.config import get_settings
-            max_slots = get_settings().max_slots
-        _manager = SlotManager(max_slots=max_slots)
-    return _manager
+            max_devices = get_settings().max_devices
+        _relay = DeviceRelay(max_devices=max_devices)
+    return _relay
 
 
-def reset_slot_manager() -> None:
-    global _manager
-    _manager = None
+def reset_relay() -> None:
+    global _relay
+    _relay = None
