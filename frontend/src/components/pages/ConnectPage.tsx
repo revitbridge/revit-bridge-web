@@ -1,35 +1,57 @@
-/* Connect: which Revit (local TCP or a remote slot), which model, admin access. */
+/* Connect: which Revit this host talks to (a paired device or the local add-in),
+   which model, admin access. */
 
 import { useCallback, useEffect, useState } from 'react'
+import { useStore } from 'zustand'
 import { bridgeApi } from '../../api/bridge'
-import { addinWsEndpoint, getConfig } from '../../config'
+import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
-import type { SlotsStatus } from '../../types/api'
+import type { DevicesStatus } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
+import AdminDevices from '../connect/AdminDevices'
+import DeviceList from '../connect/DeviceList'
+import PairPanel from '../connect/PairPanel'
+import { createPairingFlow, type PairingDeps, type PairingFlow } from '../connect/pairing'
 
-export default function ConnectPage() {
+/* One flow for the tab's lifetime, so a pairing survives a visit to another page. */
+let sharedFlow: PairingFlow | null = null
+function flowFor(deps?: PairingDeps): PairingFlow {
+  if (deps) return createPairingFlow(deps)
+  sharedFlow ??= createPairingFlow()
+  return sharedFlow
+}
+
+export default function ConnectPage({ deps }: { deps?: PairingDeps }) {
   const config = getConfig()
-  const { slot, slotToken, setSlot, setSlotToken, llmBaseUrl, llmModel, llmKey, setLlm, adminToken, setAdminToken } = useSessionStore()
+  const { deviceId, devices, llmBaseUrl, llmModel, llmKey, setLlm, adminToken, setAdminToken } = useSessionStore()
+  const [flow] = useState(() => flowFor(deps))
+  const pairing = useStore(flow.store)
+  const [label, setLabel] = useState('')
   const [status, setStatus] = useState('Not checked yet')
   const [checking, setChecking] = useState(false)
-  const [slots, setSlots] = useState<SlotsStatus | null>(null)
+  const [capacity, setCapacity] = useState<DevicesStatus | null>(null)
   const [units, setUnits] = useState('')
+  const [now, setNow] = useState(0)          // "last seen" ages on its own, not on a render
 
-  const refreshSlots = useCallback(async () => {
-    try { setSlots(await bridgeApi.slots()) } catch { /* relay status is optional */ }
+  const refresh = useCallback(async () => {
+    flow.refresh()
+    try { setCapacity(await bridgeApi.devices()) } catch { /* the relay's capacity is optional */ }
+  }, [flow])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  useEffect(() => {
+    const tick = () => setNow(Date.now())
+    const first = setTimeout(tick, 0)
+    const timer = setInterval(tick, 30000)
+    return () => { clearTimeout(first); clearInterval(timer) }
   }, [])
 
-  useEffect(() => { refreshSlots() }, [refreshSlots])
-
   const check = async () => {
-    if (slot && config.features.slotTokenRequired && !slotToken) {
-      setStatus('This host requires a slot token: enter it before connecting.')
-      return
-    }
     setChecking(true)
     setUnits('')
     try {
-      await refreshSlots()
+      await refresh()
       const h = await bridgeApi.revitHealth()
       if (h.revit_connected) {
         setStatus(`Connected | ${h.mode}${h.latency_ms != null ? ` | ${h.latency_ms} ms` : ''} | ${h.endpoint || ''} | ${h.timestamp}`)
@@ -49,61 +71,25 @@ export default function ConnectPage() {
     }
   }
 
-  const wsEndpoint = addinWsEndpoint()
-  const installCommand = `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server ${wsEndpoint}${slot ? ` -Slot ${slot}` : ''}`
-
   return (
     <div className="page">
+      <PairPanel pairing={pairing.pairing} waiting={pairing.waiting} gaveUp={pairing.gaveUp} error={pairing.pairError}
+        label={label} onLabelChange={setLabel} onPair={() => flow.pair(label)} onCancel={() => flow.cancelPairing()} />
+
+      <DeviceList devices={devices} statuses={pairing.statuses} busy={pairing.busy} selected={deviceId}
+        error={pairing.listError} onSelect={id => flow.select(id)} onRevoke={d => flow.revoke(d)} onRefresh={refresh} now={now} />
+
       <section className="card section">
-        <h3 className="heading-display section-title">Revit</h3>
-        <p className="section-copy">
-          Pick the Revit this host should talk to. <strong>Local</strong> uses the add-in's TCP port on the machine
-          running this server; a <strong>slot</strong> is a remote add-in connected through the WebSocket relay.
-        </p>
+        <h3 className="heading-display section-title">Check the connection</h3>
         <div className="flex items-center gap-2 bridge-status-row">
-          <select className="input-field" value={slot} onChange={e => setSlot(e.target.value)} style={{ maxWidth: 220 }}>
-            <option value="">Local add-in (TCP)</option>
-            {Array.from({ length: slots?.max_slots ?? config.features.maxSlots }, (_, i) => {
-              const sid = String(i + 1)
-              const info = slots?.slots?.[sid]
-              const connected = info?.status === 'connected'
-              return (
-                <option key={sid} value={sid}>
-                  Slot {sid} {connected ? `● online (${info?.requests ?? 0} req)` : '○ free'}
-                </option>
-              )
-            })}
-          </select>
-          {slot && (
-            <input
-              type="password"
-              className="input-field"
-              value={slotToken}
-              onChange={e => setSlotToken(e.target.value.trim())}
-              placeholder={config.features.slotTokenRequired ? 'Slot token (required)' : 'Slot token (if configured)'}
-              autoComplete="off"
-              aria-label="Revit slot token"
-              style={{ maxWidth: 260 }}
-            />
-          )}
-          <button onClick={check} disabled={checking} className="btn-primary">{checking ? 'Checking...' : 'Connect'}</button>
-          <button onClick={refreshSlots} className="btn-secondary">Refresh slots</button>
+          <button onClick={check} disabled={checking} className="btn-primary">{checking ? 'Checking...' : 'Check'}</button>
+          <span className="section-copy small" style={{ margin: 0 }}>
+            {deviceId ? `Device ${deviceId}` : 'Local add-in (TCP)'}
+            {capacity ? ` | ${capacity.connected} of ${capacity.max_devices} devices connected` : ''}
+          </span>
         </div>
         <div className="status-line">{status}</div>
         {units && <div className="status-line">{units}</div>}
-      </section>
-
-      <section className="card section">
-        <h3 className="heading-display section-title">Add-in for a remote Revit</h3>
-        <p className="section-copy">
-          On the designer's machine (Revit closed), install the add-in in remote mode pointing at this host.
-          The add-in then appears as a slot above.
-        </p>
-        <pre className="command-block">{installCommand}</pre>
-        <p className="section-copy small">
-          Relay endpoint: <code>{wsEndpoint}/&lt;slot&gt;</code>. Without <code>-Slot</code> the installer uses slot 1.
-          Local mode needs no server: <code>irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex</code>
-        </p>
       </section>
 
       <section className="card section">
@@ -136,12 +122,18 @@ export default function ConnectPage() {
       </section>
 
       {config.features.admin && (
-        <section className="card section">
-          <h3 className="heading-display section-title">Admin</h3>
-          <p className="section-copy">Needed to add, edit or delete skills and to read interaction logs.</p>
-          <input type="password" className="input-field" value={adminToken} onChange={e => setAdminToken(e.target.value)}
-            placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
-        </section>
+        <>
+          <section className="card section">
+            <h3 className="heading-display section-title">Admin</h3>
+            <p className="section-copy">Needed to list every device, to add, edit or delete skills and to read interaction logs.</p>
+            <input type="password" className="input-field" value={adminToken} onChange={e => setAdminToken(e.target.value)}
+              placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
+          </section>
+          {adminToken && (
+            <AdminDevices devices={pairing.admin} error={pairing.adminError} busy={pairing.busy}
+              onLoad={() => flow.loadAdmin()} onRevoke={id => flow.adminRevoke(id)} now={now} />
+          )}
+        </>
       )}
     </div>
   )

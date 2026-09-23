@@ -1118,3 +1118,114 @@ select {
   .snapshot-grid { grid-template-columns: minmax(0, 1fr); }
   .evidence-field { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* === Connect page (phase 7): pairing a device, my devices === */
+.pair-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.pairing-live {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: rgba(180, 85, 53, 0.06);
+}
+
+.pairing-code-row {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pairing-code {
+  font-family: var(--mono);
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--dark);
+  background: var(--panel);
+  border: 1px solid var(--subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 16px;
+  user-select: all;
+}
+
+.countdown {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--mid);
+}
+
+.countdown.is-expired { color: var(--danger); font-weight: 600; }
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+  background: var(--subtle);
+}
+
+.status-dot.online { background: var(--success); }
+.status-dot.offline { background: var(--subtle); border: 1px solid var(--faint); }
+.status-dot.waiting { background: var(--warning); animation: pulse 1.4s ease-in-out infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.device-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.device-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.device-row:hover { border-color: var(--accent); }
+.device-row.is-selected { border-color: var(--accent); background: rgba(180, 85, 53, 0.08); }
+
+.device-pick {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.device-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dark);
+}
+
+@media (max-width: 600px) {
+  .pairing-code { font-size: 22px; letter-spacing: 0.12em; }
+  .device-row { align-items: flex-start; flex-direction: column; }
+}
