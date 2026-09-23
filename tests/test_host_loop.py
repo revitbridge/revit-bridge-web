@@ -239,14 +239,21 @@ def test_no_bridge_mode_sends_no_tools_and_no_skills(client, model):
     assert "tools" in model.requests[1] and "## Skills" in model.requests[1]["messages"][0]["content"]
 
 
-def test_chat_with_the_bridge_needs_a_slot_when_tokens_are_required(make_client, env, model):
-    env.setenv("MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "1")
-    env.setenv("MCP_BRIDGE_SLOT_TOKEN_1", "top-secret")
-    client = make_client()
-    refused = client.post("/api/chat", json={"message": "hi"}, headers=HEADERS)
-    assert refused.status_code == 403 and refused.json()["error"] == "missing_slot"
-    model.turns.append(text_turn("plain"))
-    assert client.post("/api/chat", json={"message": "hi", "bridge": False}, headers=HEADERS).status_code == 200
+def test_chat_with_the_bridge_checks_the_device_headers(client, device, model):
+    """The model's tools drive the selected device, so the chat applies the same check."""
+    headers, device_id, _ = device
+    refused = client.post("/api/chat", json={"message": "hi"},
+                          headers={**HEADERS, "X-Device-Id": device_id, "X-Device-Key": "nope"})
+    assert refused.status_code == 403 and refused.json()["error"] == "invalid_device_key"
+
+    legacy = client.post("/api/chat", json={"message": "hi"}, headers={**HEADERS, "X-Slot-Id": "1"})
+    assert legacy.status_code == 422 and legacy.json()["error"] == "invalid_args"
+
+    model.turns += [text_turn("hello"), text_turn("plain")]
+    assert client.post("/api/chat", json={"message": "hi"}, headers={**HEADERS, **headers}).status_code == 200
+    # Without the bridge no device is needed at all.
+    assert client.post("/api/chat", json={"message": "hi", "bridge": False},
+                       headers={**HEADERS, "X-Slot-Id": "1"}).status_code == 200
 
 
 def test_history_window_starts_at_a_user_turn():

@@ -4,9 +4,9 @@ Prefix ``/api/v1/bridge``. Two transports to Revit:
 
 - TCP: the add-in listens locally (``REVIT_BRIDGE_HOST:PORT``), used when no
   ``X-Slot-Id`` header is sent;
-- WebSocket relay: a remote add-in connected to ``/ws/{slot_id}``; the
-  browser selects it with ``X-Slot-Id`` (+ ``X-Slot-Token`` when tokens are
-  configured).
+- WebSocket relay: a paired add-in connected to ``/ws/{device_id}``; the
+  browser selects it with ``X-Device-Id`` + ``X-Device-Key`` (see
+  ``backend.api.devices``).
 
 The flow a page walks is the package's: ``take_snapshot`` -> ``missing_params``
 / ``reconcile`` -> ``validate_spec`` + ``Gate.issue`` (the token stays in the
@@ -28,6 +28,7 @@ gate, a failed precondition or a failed validation is 200 with ``success: false`
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextvars import ContextVar
@@ -39,7 +40,6 @@ from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
 
 from revit_bridge import __version__ as bridge_version
-from revit_bridge.auth import parse_handshake_token, verify_slot_token
 from revit_bridge.capabilities import ToolStore
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
@@ -52,60 +52,37 @@ from revit_bridge.spec.gate import Gate, confirmation_required
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
+from backend.api import devices as devices_api
 from backend.api.errors import ApiError, responses, revit_unreachable
 from backend.config import get_settings
 from backend.ratelimit import client_key, confirm_limiter
-from backend.relay import WebSocketRevitClient, get_slot_manager
+from backend.relay import WebSocketRevitClient, get_relay
 
 _log = logging.getLogger("backend.bridge")
 
 PUBLIC_PATHS = {"/api/v1/bridge/service-health", "/api/v1/bridge/slots"}
 HOST = "web"                      # what the evidence ledger records as the host
+HANDSHAKE_TIMEOUT = 10.0          # seconds an add-in has to send its auth message
 CONFIRM_CHANNEL = "host_ui"       # confirmations come from the page, never from the model
 MAX_EVIDENCE = 200
-
-# Set per request by the router dependency; read when a Revit client is needed.
-request_slot_id: ContextVar[str | None] = ContextVar("slot_id", default=None)
 
 # The scope every confirmation and every ledger line belongs to: the device the
 # request drives, or "local" for the add-in on this machine (package default).
 LOCAL_SCOPE = "local"
 
+# Which device this request drives, and the check behind it, live in backend.api.devices.
+set_device_context = devices_api.set_device_context
+
 
 def current_scope() -> str:
     """The scope of this request: its device id, or ``"local"`` without one."""
-    return request_slot_id.get(None) or LOCAL_SCOPE
-
-
-async def set_slot_context(connection: HTTPConnection) -> None:
-    """Read ``X-Slot-Id`` and enforce ``X-Slot-Token`` when tokens are configured.
-
-    WebSocket connections authenticate with their first message instead.
-    When ``MCP_BRIDGE_REQUIRE_SLOT_TOKEN`` is on, only relay status routes
-    stay reachable without a slot.
-    """
-    slot_id = connection.headers.get("x-slot-id")
-    request_slot_id.set(slot_id)
-    settings = get_settings()
-    if not slot_id:
-        if (
-            connection.scope.get("type") == "http"
-            and settings.slot_token_required
-            and connection.url.path not in PUBLIC_PATHS
-        ):
-            raise ApiError(403, "missing_slot", "Missing X-Slot-Id")
-        return
-    if not settings.slot_tokens:
-        _log.warning("no slot tokens configured - X-Slot-Token check skipped (insecure)")
-        return
-    if not verify_slot_token(settings.slot_tokens, slot_id, connection.headers.get("x-slot-token")):
-        raise ApiError(403, "invalid_slot_token", "Invalid or missing X-Slot-Token")
+    return devices_api.current_device() or LOCAL_SCOPE
 
 
 router = APIRouter(
     prefix="/api/v1/bridge",
     tags=["bridge"],
-    dependencies=[Depends(set_slot_context)],
+    dependencies=[Depends(set_device_context)],
 )
 
 
@@ -139,13 +116,13 @@ def reset_bridge_state() -> None:
 
 
 async def get_revit_client():
-    """The selected slot's relay client, or the local TCP client (503 when neither answers)."""
-    slot_id = request_slot_id.get(None)
-    if slot_id:
-        mgr = get_slot_manager()
-        if not mgr.get_connection(slot_id):
-            raise ApiError(503, "revit_unreachable", f"Slot {slot_id} has no connected Revit add-in")
-        return WebSocketRevitClient(mgr, slot_id, timeout=RevitSettings.from_env().timeout)
+    """The selected device's relay client, or the local TCP client (503 when neither answers)."""
+    device_id = devices_api.current_device()
+    if device_id:
+        relay = get_relay()
+        if not relay.get_connection(device_id):
+            raise ApiError(503, "revit_unreachable", f"Device {device_id} has no connected Revit add-in")
+        return WebSocketRevitClient(relay, device_id, timeout=RevitSettings.from_env().timeout)
     try:
         return await RevitClientPool.get_client()
     except OSError as exc:
@@ -575,31 +552,31 @@ async def trigger_selection():
 
 # -- health --------------------------------------------------------------------
 
-@router.get("/revit-health", responses=responses(403))
+@router.get("/revit-health", responses=responses(403, 422))
 async def revit_health():
-    """Is a Revit reachable: the selected slot, else the local TCP add-in."""
+    """Is a Revit reachable: the selected device, else the local TCP add-in."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    slot_id = request_slot_id.get(None)
-    mgr = get_slot_manager()
-    slot_status = mgr.get_status()
+    device_id = devices_api.current_device()
+    relay = get_relay()
+    relay_status = relay.get_status()
 
-    if slot_id:
-        conn = mgr.get_connection(slot_id)
+    if device_id:
+        conn = relay.get_connection(device_id)
         if not conn:
             return {
                 "revit_connected": False, "latency_ms": None, "mode": "websocket",
-                "detail": f"Slot {slot_id} has no connected Revit add-in",
-                "bridge_version": bridge_version, "timestamp": now, "ws_slots": slot_status,
+                "detail": f"Device {device_id} has no connected Revit add-in",
+                "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
             }
         t0 = time.monotonic()
-        ok = await WebSocketRevitClient(mgr, slot_id, timeout=10).ping()
+        ok = await WebSocketRevitClient(relay, device_id, timeout=10).ping()
         return {
             "revit_connected": ok,
             "latency_ms": round((time.monotonic() - t0) * 1000) if ok else None,
             "mode": "websocket",
-            "detail": f"Slot {slot_id} responded" if ok else f"Slot {slot_id} did not answer",
-            "endpoint": f"slot {slot_id}",
-            "bridge_version": bridge_version, "timestamp": now, "ws_slots": slot_status,
+            "detail": f"Device {device_id} responded" if ok else f"Device {device_id} did not answer",
+            "endpoint": f"device {device_id}",
+            "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
         }
 
     t0 = time.monotonic()
@@ -611,79 +588,103 @@ async def revit_health():
             "detail": "Local add-in responded",
             "endpoint": f"{status['host']}:{status['port']}",
             "protocol": "JSON-RPC 2.0 / TCP",
-            "bridge_version": bridge_version, "timestamp": now, "ws_slots": slot_status,
+            "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
         }
     return {
         "revit_connected": False, "latency_ms": None,
         "mode": "waiting_for_revit",
         "detail": f"Local add-in unreachable ({status['error']}); "
-                  f"{slot_status['connected']} remote slot(s) connected",
+                  f"{relay_status['connected']} paired device(s) connected",
         "endpoint": f"{status['host']}:{status['port']}",
-        "bridge_version": bridge_version, "timestamp": now, "ws_slots": slot_status,
+        "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
     }
 
 
 @router.get("/service-health")
 async def service_health():
     """Relay status only; never probes Revit."""
-    slot_status = get_slot_manager().get_status()
+    relay_status = get_relay().get_status()
     return {
         "status": "ok",
         "remote_relay_ready": True,
-        "connected_slots": slot_status["connected"],
-        "websocket_endpoint": "/api/v1/bridge/ws/{slot_id}",
-        "slots": slot_status,
+        "connected_devices": relay_status["connected"],
+        "websocket_endpoint": "/api/v1/bridge/ws/{device_id}",
+        "devices": relay_status,
     }
 
 
 @router.get("/slots")
 async def get_slots():
-    return get_slot_manager().get_status()
+    """How many devices may be connected and how many are: no ids, this is public."""
+    return get_relay().get_status()
 
 
 # -- add-in relay --------------------------------------------------------------
 
-@router.websocket("/ws/{slot_id}")
-async def revit_ws_endpoint(ws: WebSocket, slot_id: str):
-    """Remote add-in connects here and registers on a slot.
+@router.websocket("/ws/{device_id}")
+async def revit_ws_endpoint(ws: WebSocket, device_id: str):
+    """A paired add-in connects here and authenticates with its device token.
 
-    With tokens configured the first message must be the add-in's auth
-    handshake (``{"type": "auth", "slot_id": ..., "token": ...}``).
+    The first message must be ``{"type": "auth", "device_id": ..., "token": ...}``
+    within ``HANDSHAKE_TIMEOUT`` seconds and must verify against the device
+    store, else the socket closes with 4003 - an unknown device, a revoked one
+    and a wrong token are indistinguishable from outside. 4002 means that
+    device is already connected, 4001 that the relay is full.
     """
-    mgr = get_slot_manager()
-    # Exact literal match: str.isdigit()/int() would also accept "01" or
-    # Unicode digits, registering a key no X-Slot-Id or token lookup matches.
-    if slot_id not in mgr.slot_ids:
-        await ws.close(code=4001, reason=f"Invalid slot_id. Use 1-{mgr.max_slots}")
-        return
-
+    relay = get_relay()
     await ws.accept()
 
-    # Tokens were loaded and validated at startup (WebSettings.from_env);
-    # a misconfigured deployment never reaches this point.
-    tokens = get_settings().slot_tokens
-    if tokens:
-        try:
-            first = await asyncio.wait_for(ws.receive_text(), timeout=10)
-        except Exception:  # noqa: BLE001 - no handshake in time
-            first = None
-        if not verify_slot_token(tokens, slot_id, parse_handshake_token(first)):
-            await ws.close(code=4003, reason="Invalid slot token")
-            return
-    else:
-        _log.warning("no slot tokens configured - WebSocket slot auth skipped (insecure)")
-
-    if not mgr.register(slot_id, ws):
-        await ws.close(code=4002, reason="Slot occupied")
+    try:
+        first = await asyncio.wait_for(ws.receive_text(), timeout=HANDSHAKE_TIMEOUT)
+    except Exception:  # noqa: BLE001 - no handshake in time
+        first = None
+    if not await _handshake_ok(first, device_id):
+        await ws.close(code=4003, reason="Invalid device token")
         return
 
-    _log.info("Revit add-in connected on slot %s", slot_id)
+    refused = relay.register(device_id, ws)
+    if refused == "occupied":
+        await ws.close(code=4002, reason="This device is already connected")
+        return
+    if refused is not None:
+        await ws.close(code=4001, reason=f"Too many connected devices (max {relay.max_devices})")
+        return
+    await run_in_threadpool(devices_api.get_device_store().touch, device_id)
+
+    _log.info("Revit add-in connected for device %s", device_id)
     try:
         while True:
-            mgr.resolve_response(slot_id, await ws.receive_text())
+            relay.resolve_response(device_id, await ws.receive_text())
     except WebSocketDisconnect:
-        _log.info("Revit add-in left slot %s", slot_id)
+        _log.info("Revit add-in of device %s left", device_id)
     except Exception as exc:  # noqa: BLE001
-        _log.warning("slot %s websocket error: %s", slot_id, exc)
+        _log.warning("device %s websocket error: %s", device_id, exc)
     finally:
-        mgr.unregister(slot_id)
+        relay.unregister(device_id)
+
+
+async def _handshake_ok(message: str | None, device_id: str) -> bool:
+    """``{"type": "auth", "device_id": ..., "token": ...}`` for this device, verified by the store."""
+    if not message:
+        return False
+    try:
+        payload = json.loads(message)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict) or payload.get("type") != "auth":
+        return False
+    if payload.get("device_id") != device_id:
+        return False
+    token = payload.get("token")
+    if not isinstance(token, str) or not token:
+        return False
+    store = devices_api.get_device_store()
+    return await run_in_threadpool(store.verify_device, device_id, token) is not None
+
+
+# -- devices -------------------------------------------------------------------
+
+# Pairing, the device list and revocation (backend/api/devices.py) hang on this
+# router, so they share its error contract - but the redeem route needs no device
+# header: the add-in has only its pairing code.
+devices_api.register(router)

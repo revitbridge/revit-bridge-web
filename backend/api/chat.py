@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 
 from revit_bridge import host_instructions
 
-from backend.api.bridge import set_slot_context
+from backend.api.bridge import set_device_context
 from backend.api.errors import ApiError
 from backend.api.model_tools import TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
 from backend.config import get_settings
@@ -112,9 +112,9 @@ async def chat(req: ChatRequest, request: Request):
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
     if req.bridge:
-        # The model's tools reach Revit through the selected slot: the same header
-        # checks as the bridge routes (403 without a slot when tokens are required).
-        await set_slot_context(request)
+        # The model's tools reach Revit through the selected device: the same header
+        # checks as the bridge routes (403 on a wrong or revoked device key).
+        await set_device_context(request)
 
     settings = get_settings()
     try:
