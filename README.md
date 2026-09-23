@@ -26,25 +26,28 @@ API origin (and `wsBase` if the relay differs). The SPA reads that file at start
 `/config.json` only describes a same-origin setup. Set `CORS_ORIGINS` on the API side to the static
 host's origin.
 
-Connect a designer's Revit to the host in three steps: on the Connect page choose *pair a Revit* and
-you get a pairing code (ten minutes) plus the one line to run on that machine (Revit closed):
+Connect a designer's Revit to the host in three steps: press **Pair a Revit** on the Connect page,
+run the install command it shows on the designer's machine with Revit closed (it carries the pairing
+code, which is good for ten minutes), and watch the device come up as *online*. An add-in that is
+already installed can be paired by typing the same code into its settings window. A Revit running on
+the Docker host itself is reached over TCP (`host.docker.internal:18080`) without any of that.
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<your-host> -Pair XXXX-XXXX
 ```
 
-The add-in redeems the code, receives its own device token and connects; the page then shows the
-device as online. The browser that paired it keeps the *browser key* (session storage) and sends
-`X-Device-Id` / `X-Device-Key` with every request; *revoke* ends both at once. A Revit running on the
-Docker host itself is reached over TCP (`host.docker.internal:18080`) without any pairing.
+A **device** is one add-in installation. The add-in holds its own token, the browser that paired it
+holds a key; neither can stand in for the other, and revoking the device invalidates both and closes
+its connection.
 
 ## Use
 
-1. **Connect** - choose the Revit (the local add-in over TCP, or a paired device) and fill in *Model*
-   (OpenAI-compatible base URL, model name, API key). Model settings and the device's browser key
-   stay in the browser tab (`sessionStorage`) and travel as request headers; the server never stores
-   them. The pairing UI itself arrives with the next release; until then a device is paired through
-   `POST /api/v1/bridge/devices/pair` (see below).
+1. **Connect** - pair a Revit (the code, the install command, the countdown) and pick the one this
+   host talks to: a paired device or the local add-in over TCP. *My devices* lists what this browser
+   tab holds keys for, with each device's state, last activity, request count and *Revoke*; with the
+   admin password there is a list of every device on the host. Then fill in *Model* (OpenAI-compatible
+   base URL, model name, API key). Model settings and device keys stay in the browser tab
+   (`sessionStorage`) and travel as request headers; the server never stores them.
 2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
    summary, selection, fingerprint). Describe what you want in one sentence: the model works through
    the package's tools - it takes a snapshot, asks the questions a capability pack still has open

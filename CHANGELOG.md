@@ -24,6 +24,13 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   package sends `confirm` with the spec card); a No is `success: false,
   error: "declined_on_device"` with the token consumed and a ledger line. A pack
   run is not asked about.
+- The Connect page pairs a Revit instead of picking a numbered slot: **Pair a Revit** shows the
+  pairing code with its countdown, the install command that carries it and the settings-window
+  alternative, then waits (every three seconds, up to ten minutes) for the add-in to redeem it and
+  come online. *My devices* lists the devices this browser tab holds keys for - label, online, last
+  seen, requests, *Revoke* - and selecting one is what every other page then talks to; the local
+  add-in over TCP stays as the other choice. With the admin password, a list of every device on the
+  host with the same *Revoke*.
 
 - The host loop: `POST /api/chat` runs the model with the package's read-only tools
   (`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`,
@@ -66,6 +73,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   (`CHAT_RATE_LIMIT`, its own counter): 429 `{error: rate_limited}`.
 
 ### Changed
+
+- The browser identifies a Revit with `X-Device-Id` + `X-Device-Key` instead of `X-Slot-Id` +
+  `X-Slot-Token`; the device id and this browser's key live in `sessionStorage` with the model
+  settings, never in `localStorage`. `/config.json` carries `features.maxDevices`; `maxSlots` and
+  `slotTokenRequired` are gone, and so is every slot-token field in the UI.
 
 - `POST /tools/{name}/run` and `POST /execute` require the token from
   `POST /spec/confirm` and run through the package's `run_pack` / `run_code`
