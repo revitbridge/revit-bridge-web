@@ -1,61 +1,18 @@
 /* The v1 endpoints the task and evidence pages need beyond api/bridge.ts.
 
-   Same base URL and session headers as api/client.ts; the one difference is
-   that a rejected request keeps its body (TaskApiError.body) because the
-   pages show the spec errors of /spec/confirm and the pack problems of
-   /solidify line by line. Folded into api/bridge.ts before 6.5. */
+   The request helper is components/shared/http.ts: api/client.ts with the
+   rejected body kept, because the pages show the spec errors of /spec/confirm
+   and the pack problems of /solidify line by line. Folded into api/bridge.ts
+   with the device helpers. */
 
-import { describeFailure } from '../../api/client'
-import { getConfig } from '../../config'
-import { adminHeaders, slotHeaders } from '../../store'
 import type {
-  ApiErrorBody, ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport,
+  ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport,
   SolidifyRequest, SolidifyResponse, TaskSpec,
 } from '../../types/api'
+import { get, post } from '../shared/http'
 
 const B = '/api/v1/bridge'
 const enc = encodeURIComponent
-
-export class TaskApiError extends Error {
-  readonly status: number
-  readonly body: ApiErrorBody | null
-
-  constructor(status: number, raw: string, contentType = '') {
-    super(describeFailure(status, raw, contentType))
-    this.name = 'TaskApiError'
-    this.status = status
-    this.body = parseBody(raw)
-  }
-
-  /* The bridge's error code, when the body carried one. */
-  get code(): string | null {
-    return this.body && typeof this.body.error === 'string' ? this.body.error : null
-  }
-}
-
-function parseBody(raw: string): ApiErrorBody | null {
-  try {
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' && typeof parsed.error === 'string' ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${getConfig().apiBase}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...slotHeaders(), ...adminHeaders(), ...init?.headers },
-  })
-  if (!resp.ok) {
-    const raw = await resp.text().catch(() => '')
-    throw new TaskApiError(resp.status, raw, resp.headers.get('content-type') || '')
-  }
-  return resp.json()
-}
-
-const get = <T>(path: string) => request<T>(path)
-const post = <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
 export const taskApi = {
   /* The questions still open for a pack given the values already known, with the real options. */

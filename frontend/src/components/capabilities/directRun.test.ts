@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolParam } from '../../types/api'
-import { TaskApiError } from '../task/api'
+import { BridgeApiError } from '../shared/http'
 import { confirmAndRun, describePreconditions, specFromForm, typedValue } from './directRun'
 
 const params: ToolParam[] = [
@@ -56,7 +56,7 @@ describe('confirmAndRun', () => {
 
   it('a refused confirmation returns the spec errors and never runs', async () => {
     const api = {
-      confirm: vi.fn().mockRejectedValue(new TaskApiError(422, JSON.stringify({ error: 'invalid_spec', errors: [{ code: 'missing_param', param: 'x', message: 'x is not bound' }] }))),
+      confirm: vi.fn().mockRejectedValue(new BridgeApiError(422, JSON.stringify({ error: 'invalid_spec', errors: [{ code: 'missing_param', param: 'x', message: 'x is not bound' }] }))),
       runTool: vi.fn(),
     }
     expect(await confirmAndRun(api, spec)).toEqual({ status: 'rejected', errors: [{ code: 'missing_param', param: 'x', message: 'x is not bound' }] })

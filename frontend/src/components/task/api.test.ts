@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useSessionStore } from '../../store'
-import { taskApi, TaskApiError } from './api'
+import { taskApi } from './api'
+import { BridgeApiError } from '../shared/http'
 
 type Call = { url: string; init: RequestInit }
 
@@ -18,7 +19,7 @@ const parse = (c: Call) => JSON.parse(String(c.init.body))
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  useSessionStore.getState().setSlot('')
+  useSessionStore.setState({ deviceId: '', browserKey: '', devices: [] })
 })
 
 describe('taskApi', () => {
@@ -61,32 +62,32 @@ describe('taskApi', () => {
     expect(calls[4].init.method).toBe('POST')
   })
 
-  it('sends the slot headers like the rest of the client', async () => {
+  it('sends the selected device\'s headers like the rest of the client', async () => {
     const calls = stubFetch(200, [])
-    useSessionStore.getState().setSlot('2')
-    useSessionStore.getState().setSlotToken('secret')
+    useSessionStore.getState().rememberDevice({ device_id: 'dev_one', browser_key: 'bk_secret', label: 'one' })
+    useSessionStore.getState().selectDevice('dev_one')
     await taskApi.evidence()
-    expect(calls[0].init.headers).toMatchObject({ 'X-Slot-Id': '2', 'X-Slot-Token': 'secret', 'Content-Type': 'application/json' })
+    expect(calls[0].init.headers).toMatchObject({ 'X-Device-Id': 'dev_one', 'X-Device-Key': 'bk_secret', 'Content-Type': 'application/json' })
   })
 
   it('keeps the rejected body: spec errors of /spec/confirm, pack problems of /solidify', async () => {
     stubFetch(422, { error: 'invalid_spec', errors: [{ code: 'missing_param', param: 'x', message: 'x is required' }] })
     const spec = { task: 't', action: { kind: 'run_tool' as const, tool: 'q' }, parameters: [] }
     const err = await taskApi.confirm(spec).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(TaskApiError)
-    const failure = err as TaskApiError
+    expect(err).toBeInstanceOf(BridgeApiError)
+    const failure = err as BridgeApiError
     expect(failure.status).toBe(422)
     expect(failure.code).toBe('invalid_spec')
     expect(failure.message).toBe('422: invalid_spec')
     expect(failure.body?.errors).toEqual([{ code: 'missing_param', param: 'x', message: 'x is required' }])
 
     stubFetch(422, { error: 'invalid_pack', problems: ['parameters[0] (x): required must be true or false', 'validator: unknown kind'] })
-    const pack = await taskApi.solidify({ name: 'n', code: 'c', description: '', parameters: [], source_query: '' }).catch((e: unknown) => e as TaskApiError)
-    expect((pack as TaskApiError).body?.problems).toHaveLength(2)
+    const pack = await taskApi.solidify({ name: 'n', code: 'c', description: '', parameters: [], source_query: '' }).catch((e: unknown) => e as BridgeApiError)
+    expect((pack as BridgeApiError).body?.problems).toHaveLength(2)
 
     stubFetch(502, '<!doctype html><html></html>')
-    const html = await taskApi.evidence().catch((e: unknown) => e as TaskApiError)
-    expect((html as TaskApiError).body).toBeNull()
-    expect((html as TaskApiError).message).toBe('502: backend unreachable (HTML page instead of JSON)')
+    const html = await taskApi.evidence().catch((e: unknown) => e as BridgeApiError)
+    expect((html as BridgeApiError).body).toBeNull()
+    expect((html as BridgeApiError).message).toBe('502: backend unreachable (HTML page instead of JSON)')
   })
 })

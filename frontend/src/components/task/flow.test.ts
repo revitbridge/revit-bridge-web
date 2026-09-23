@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { TaskApiError } from './api'
+import { BridgeApiError } from '../shared/http'
 import { canConfirm, coerceLike, createTaskFlow, interpretationsOf, paramsOf, SPEC_ONLY_REPLY, type FlowApi } from './flow'
 import type { ExecutionResult, HostEvent, HostRequest, ReconcileResult, TaskSpec } from '../../types/api'
 
@@ -190,7 +190,7 @@ describe('the task flow', () => {
 
   it('a 422 from /spec/confirm lists the spec errors; a 400 from /run is shown in the result shape', async () => {
     const host = scriptedHost([{ type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
-    const rejected = new TaskApiError(422, JSON.stringify({ error: 'invalid_spec', errors: [{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }] }))
+    const rejected = new BridgeApiError(422, JSON.stringify({ error: 'invalid_spec', errors: [{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }] }))
     const api = fakeApi({ confirm: vi.fn().mockRejectedValue(rejected) })
     const flow = createTaskFlow({ events: host.events, api })
     await flow.send('brief')
@@ -200,7 +200,7 @@ describe('the task flow', () => {
     expect(s.confirmErrors).toEqual([{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }])
 
     api.confirm = fakeApi().confirm
-    api.runTool = vi.fn().mockRejectedValue(new TaskApiError(400, JSON.stringify({ success: false, error: 'confirmation_required', hint: 'confirm first' })))
+    api.runTool = vi.fn().mockRejectedValue(new BridgeApiError(400, JSON.stringify({ success: false, error: 'confirmation_required', hint: 'confirm first' })))
     await flow.confirm()
     await flow.run()
     s = flow.store.getState()

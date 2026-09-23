@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import type { SolidifyRequest, SolidifyResponse, TaskSpec } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
-import { TaskApiError } from './api'
+import { BridgeApiError } from '../shared/http'
 import { draftPack } from './solidifyDraft'
 
 interface Props {
@@ -47,7 +47,7 @@ export default function SolidifyPanel({ spec, evidenceId, solidify }: Props) {
         parameters, source_query: form.source_query.trim(), validator,
       }))
     } catch (e: unknown) {
-      const body = e instanceof TaskApiError ? e.body : null
+      const body = e instanceof BridgeApiError ? e.body : null
       const listed = body?.problems?.length ? body.problems : body?.warnings?.length ? body.warnings : null
       setProblems(listed ? listed.map(p => `${body?.error}: ${p}`) : [getErrorMessage(e)])
     } finally {

@@ -4,7 +4,7 @@
    with the token. Pure functions, so the spec building is unit-tested. */
 
 import type { ConfirmResponse, ExecutionResult, SpecError, TaskSpec, ToolChoiceItem, ToolParam } from '../../types/api'
-import { TaskApiError } from '../task/api'
+import { BridgeApiError } from '../shared/http'
 import { paramsOf } from '../task/flow'
 
 const NUMERIC = ['double', 'number', 'float', 'int', 'integer']
@@ -85,7 +85,7 @@ export async function confirmAndRun(api: DirectRunApi, spec: TaskSpec): Promise<
   try {
     issued = await api.confirm(spec)
   } catch (e: unknown) {
-    if (e instanceof TaskApiError && e.body?.errors?.length) return { status: 'rejected', errors: e.body.errors }
+    if (e instanceof BridgeApiError && e.body?.errors?.length) return { status: 'rejected', errors: e.body.errors }
     throw e
   }
   const result = await api.runTool(spec.action.tool ?? '', paramsOf(spec), issued.token)

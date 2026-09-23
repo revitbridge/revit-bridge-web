@@ -13,7 +13,7 @@ import type {
 } from '../../types/api'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
-import { TaskApiError } from './api'
+import { BridgeApiError } from '../shared/http'
 
 export type EventSource = (request: HostRequest, signal?: AbortSignal) => AsyncIterable<HostEvent>
 
@@ -221,7 +221,7 @@ export function createTaskFlow(deps: FlowDeps) {
         ? { proposal: { ...s.proposal, reconcile, reconcileError: null, reconciling: false } }
         : {})
     } catch (e: unknown) {
-      const code = e instanceof TaskApiError ? e.code ?? 'reconcile_failed' : 'reconcile_failed'
+      const code = e instanceof BridgeApiError ? e.code ?? 'reconcile_failed' : 'reconcile_failed'
       setState(s => s.proposal?.draft === draft
         ? { proposal: { ...s.proposal, reconcileError: { error: code, message: getErrorMessage(e) }, reconciling: false } }
         : {})
@@ -240,9 +240,9 @@ export function createTaskFlow(deps: FlowDeps) {
         confirming: false, execution: null, executionKind: null, reported: false,
       })
     } catch (e: unknown) {
-      const errors = e instanceof TaskApiError && e.body?.errors?.length
+      const errors = e instanceof BridgeApiError && e.body?.errors?.length
         ? e.body.errors
-        : [{ code: e instanceof TaskApiError ? e.code ?? 'confirm_failed' : 'confirm_failed', param: null, message: getErrorMessage(e) }]
+        : [{ code: e instanceof BridgeApiError ? e.code ?? 'confirm_failed' : 'confirm_failed', param: null, message: getErrorMessage(e) }]
       setState({ confirming: false, confirmErrors: errors })
     }
   }
@@ -269,7 +269,7 @@ export function createTaskFlow(deps: FlowDeps) {
       return result
     } catch (e: unknown) {
       // 400 confirmation_required, 404 unknown pack, 503 Revit unreachable: shown in the result's shape
-      const body = e instanceof TaskApiError ? e.body : null
+      const body = e instanceof BridgeApiError ? e.body : null
       setState({
         execution: {
           success: false,

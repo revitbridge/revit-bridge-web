@@ -4,7 +4,7 @@
 import { createStore } from 'zustand/vanilla'
 import type { EvidenceRecord, RevalidateReport } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
-import { TaskApiError } from '../task/api'
+import { BridgeApiError } from '../shared/http'
 
 export interface EvidenceApi {
   evidence(limit: number, tool: string): Promise<EvidenceRecord[]>
@@ -54,7 +54,7 @@ export function createEvidenceFlow(api: EvidenceApi) {
       const report = await api.validateEvidence(id)
       setState(s => ({ revalidations: { ...s.revalidations, [id]: { status: 'done', report } } }))
     } catch (e: unknown) {
-      const body = e instanceof TaskApiError ? e.body : null
+      const body = e instanceof BridgeApiError ? e.body : null
       setState(s => ({
         revalidations: { ...s.revalidations, [id]: { status: 'failed', error: body?.error ?? 'request_failed', message: body?.message ?? getErrorMessage(e) } },
       }))

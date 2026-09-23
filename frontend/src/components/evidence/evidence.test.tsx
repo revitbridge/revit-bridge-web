@@ -3,7 +3,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { EvidenceRecord } from '../../types/api'
-import { TaskApiError } from '../task/api'
+import { BridgeApiError } from '../shared/http'
 import EvidenceDetails from './EvidenceDetails'
 import { createEvidenceFlow } from './evidenceFlow'
 import { RECORD_FIELDS } from './fields'
@@ -43,7 +43,7 @@ describe('the evidence flow', () => {
   it('keeps the server\'s reason when a record cannot be validated, and the list error when the ledger is unreachable', async () => {
     const api = {
       evidence: vi.fn().mockRejectedValue(new Error('503: backend unreachable')),
-      validateEvidence: vi.fn().mockRejectedValue(new TaskApiError(400, JSON.stringify({ error: 'no_validator', message: 'only run_tool executions carry a validator' }))),
+      validateEvidence: vi.fn().mockRejectedValue(new BridgeApiError(400, JSON.stringify({ error: 'no_validator', message: 'only run_tool executions carry a validator' }))),
     }
     const flow = createEvidenceFlow(api)
     await flow.load()
