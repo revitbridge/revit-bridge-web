@@ -89,9 +89,14 @@ def test_pair_returns_a_code_a_browser_key_and_an_install_command(client, tmp_pa
     paired = resp.json()
     assert set(paired) == {"code", "device_id", "expires_at", "browser_key", "install_command"}
     assert CODE_RE.fullmatch(paired["code"]) and DEVICE_ID_RE.fullmatch(paired["device_id"])
-    assert paired["code"] in paired["install_command"] and "install.ps1" in paired["install_command"]
-    assert "/api/v1/bridge/ws" in paired["install_command"]
     assert len(paired["browser_key"]) >= 24
+
+    # Exactly what the installer takes: the site address and the code, never a ws:// URL.
+    assert paired["install_command"] == (
+        "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/"
+        "revit-bridge-addin/main/installer/install.ps1))) "
+        f"-Mode remote -Server http://testserver -Pair {paired['code']}")
+    assert "ws://" not in paired["install_command"] and "wss://" not in paired["install_command"]
 
     # The key already drives the device; the label came through.
     headers = {"X-Device-Id": paired["device_id"], "X-Device-Key": paired["browser_key"]}
@@ -103,6 +108,30 @@ def test_pair_returns_a_code_a_browser_key_and_an_install_command(client, tmp_pa
     stored = (tmp_path / "data" / "auth" / "devices.json").read_text(encoding="utf-8")
     assert paired["code"] not in stored and paired["browser_key"] not in stored
     assert json.loads(stored)["schema_version"] == 1
+
+
+def test_the_install_command_names_the_public_address(client):
+    """Behind a reverse proxy the request is plain http to 127.0.0.1: the visitor's
+    address comes from X-Forwarded-Proto / X-Forwarded-Host."""
+    proxied = client.post(f"{B}/devices/pair", json={},
+                          headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "demo.example"}).json()
+    assert proxied["install_command"].endswith(f"-Mode remote -Server https://demo.example -Pair {proxied['code']}")
+
+    redeemed = client.post(f"{B}/devices/redeem", json={"code": proxied["code"]},
+                           headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "demo.example"}).json()
+    assert redeemed["ws_url"] == f"wss://demo.example/api/v1/bridge/ws/{proxied['device_id']}"
+
+    # A comma-separated chain (several proxies) uses the first, the client's own.
+    chained = client.post(f"{B}/devices/pair", json={},
+                          headers={"X-Forwarded-Proto": "https, http",
+                                   "X-Forwarded-Host": "demo.example, internal:7860"}).json()
+    assert "-Server https://demo.example " in chained["install_command"]
+
+    # Without the headers: the address the request itself carries.
+    direct = client.post(f"{B}/devices/pair", json={}).json()
+    assert "-Server http://testserver " in direct["install_command"]
+    assert client.post(f"{B}/devices/redeem", json={"code": direct["code"]}).json()["ws_url"].startswith(
+        "ws://testserver/api/v1/bridge/ws/")
 
 
 def test_pair_is_rate_limited_on_its_own_table(make_client, env):

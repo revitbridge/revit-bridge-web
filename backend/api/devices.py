@@ -99,20 +99,41 @@ class RedeemRequest(BaseModel):
 
 # -- helpers -----------------------------------------------------------------------
 
+INSTALLER_URL = ("https://raw.githubusercontent.com/revitbridge/"
+                 "revit-bridge-addin/main/installer/install.ps1")
+
+
+def public_origin(request: Request) -> str:
+    """The address a visitor reached this host on: ``https://demo.example``.
+
+    Behind a reverse proxy the request itself is plain http to 127.0.0.1, so
+    ``X-Forwarded-Proto`` and ``X-Forwarded-Host`` decide when they are present
+    (uvicorn is started with ``--proxy-headers`` and ``FORWARDED_ALLOW_IPS``).
+    """
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    host = forwarded_host or request.url.netloc
+    scheme = forwarded_proto or request.url.scheme
+    scheme = {"wss": "https", "ws": "http"}.get(scheme, scheme)
+    return f"{scheme}://{host}"
+
+
 def install_command(request: Request, code: str) -> str:
-    """The one line the designer runs on the Revit machine (the installer redeems the code)."""
-    settings = get_settings()
-    base = settings.public_ws_base or _ws_base_from(request)
-    return (
-        "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/"
-        "revit-bridge-addin/main/installer/install.ps1))) "
-        f"-Server {base} -Code {code}"
-    )
+    """The one line the designer runs on the Revit machine.
+
+    The installer takes the *site* address and the pairing code; it redeems the
+    code itself and learns the relay address from the answer, so no ws:// URL
+    appears here (the installer refuses one).
+    """
+    return (f"& ([scriptblock]::Create((irm {INSTALLER_URL}))) "
+            f"-Mode remote -Server {public_origin(request)} -Pair {code}")
 
 
 def _ws_base_from(request: Request) -> str:
-    scheme = "wss" if request.url.scheme in ("https", "wss") else "ws"
-    return f"{scheme}://{request.url.netloc}/api/v1/bridge/ws"
+    """Where the add-in's socket lives, for the ``ws_url`` a redeemed pairing returns."""
+    origin = public_origin(request)
+    scheme = "wss" if origin.startswith("https://") else "ws"
+    return f"{scheme}://{origin.split('://', 1)[1]}/api/v1/bridge/ws"
 
 
 def device_view(device: Device, relay_status: dict) -> dict:

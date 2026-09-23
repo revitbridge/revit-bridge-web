@@ -12,7 +12,7 @@ contains no Revit logic of its own - every query, execution and capability pack 
 ```bash
 git clone https://github.com/revitbridge/revit-bridge-web.git
 cd revit-bridge-web
-cp .env.example .env        # optional: server-side model, admin password, slot tokens
+cp .env.example .env        # optional: server-side model, admin password, device limit
 docker compose up -d --build
 ```
 
@@ -30,7 +30,7 @@ Connect a designer's Revit to the host in three steps: on the Connect page choos
 you get a pairing code (ten minutes) plus the one line to run on that machine (Revit closed):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Server wss://<your-host>/api/v1/bridge/ws -Code XXXX-XXXX
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<your-host> -Pair XXXX-XXXX
 ```
 
 The add-in redeems the code, receives its own device token and connects; the page then shows the
@@ -40,9 +40,11 @@ Docker host itself is reached over TCP (`host.docker.internal:18080`) without an
 
 ## Use
 
-1. **Connect** - choose the Revit (local TCP or a slot), enter the slot token if the host requires one,
-   fill in *Model* (OpenAI-compatible base URL, model name, API key). Model settings stay in the
-   browser tab (`sessionStorage`) and travel as request headers; the server never stores them.
+1. **Connect** - choose the Revit (the local add-in over TCP, or a paired device) and fill in *Model*
+   (OpenAI-compatible base URL, model name, API key). Model settings and the device's browser key
+   stay in the browser tab (`sessionStorage`) and travel as request headers; the server never stores
+   them. The pairing UI itself arrives with the next release; until then a device is paired through
+   `POST /api/v1/bridge/devices/pair` (see below).
 2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
    summary, selection, fingerprint). Describe what you want in one sentence: the model works through
    the package's tools - it takes a snapshot, asks the questions a capability pack still has open
