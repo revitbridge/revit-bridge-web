@@ -5,7 +5,6 @@
     "byoModel": true,
     "serverModel": false,
     "admin": false,
-    "slotTokenRequired": false,
-    "maxSlots": 5
+    "maxDevices": 20
   }
 }

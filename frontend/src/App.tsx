@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { getConfig } from './config'
-import { useSessionStore } from './store'
+import { useSessionStore, type PairedDevice } from './store'
 import ConnectPage from './components/pages/ConnectPage'
 import TaskPage from './components/pages/TaskPage'
 import CapabilitiesPage from './components/pages/CapabilitiesPage'
@@ -10,9 +10,16 @@ import EvidencePage from './components/pages/EvidencePage'
 
 const TABS = ['Connect', 'Task', 'Capabilities', 'Evidence'] as const
 
+/* The header chip: the selected device's name, or the local add-in. */
+function deviceLabel(deviceId: string, devices: PairedDevice[]): string {
+  if (!deviceId) return 'local'
+  return devices.find(d => d.device_id === deviceId)?.label || deviceId
+}
+
 export default function App() {
   const [active, setActive] = useState(0)
-  const slot = useSessionStore(s => s.slot)
+  const deviceId = useSessionStore(s => s.deviceId)
+  const devices = useSessionStore(s => s.devices)
   const llmModel = useSessionStore(s => s.llmModel)
   const config = getConfig()
   const modelLabel = llmModel || (config.features.serverModel ? 'server default' : 'not set')
@@ -28,7 +35,7 @@ export default function App() {
           </div>
         </div>
         <div className="runtime-chips">
-          <div className="runtime-chip"><span>Revit</span><strong>{slot ? `slot ${slot}` : 'local'}</strong></div>
+          <div className="runtime-chip"><span>Revit</span><strong>{deviceLabel(deviceId, devices)}</strong></div>
           <div className="runtime-chip"><span>Model</span><strong>{modelLabel}</strong></div>
           <div className="runtime-chip"><span>API</span><strong>{config.apiBase || 'same-origin'}</strong></div>
         </div>

@@ -1,7 +1,8 @@
-/* Base API client: apiBase comes from the runtime config, headers from the session. */
+/* Base API client: apiBase comes from the runtime config, headers from the session
+   (the selected device, the admin token). */
 
 import { getConfig } from '../config'
-import { adminHeaders, slotHeaders } from '../store'
+import { adminHeaders, deviceHeaders } from '../store'
 
 function url(path: string): string {
   return `${getConfig().apiBase}${path}`
@@ -38,7 +39,7 @@ async function fail(resp: Response): Promise<never> {
 export async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url(path), {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...slotHeaders(), ...adminHeaders(), ...init?.headers },
+    headers: { 'Content-Type': 'application/json', ...deviceHeaders(), ...adminHeaders(), ...init?.headers },
   })
   if (!resp.ok) await fail(resp)
   return resp.json()
@@ -57,7 +58,7 @@ export const apiDelete = <T = unknown>(path: string) => apiFetch<T>(path, { meth
 export async function apiStream(path: string, body: unknown, extraHeaders: Record<string, string>, signal?: AbortSignal): Promise<Response> {
   const resp = await fetch(url(path), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...slotHeaders(), ...extraHeaders },
+    headers: { 'Content-Type': 'application/json', ...deviceHeaders(), ...extraHeaders },
     body: JSON.stringify(body),
     signal,
   })

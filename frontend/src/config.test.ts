@@ -6,18 +6,18 @@ describe('parseRuntimeConfig', () => {
     const cfg = parseRuntimeConfig(JSON.stringify({
       apiBase: 'https://api.example.com/',
       wsBase: 'wss://api.example.com/api/v1/bridge/ws/',
-      features: { admin: true, maxSlots: 3 },
+      features: { admin: true, maxDevices: 3 },
     }), 'application/json')
     expect(cfg.apiBase).toBe('https://api.example.com')
     expect(cfg.wsBase).toBe('wss://api.example.com/api/v1/bridge/ws')
-    expect(cfg.features).toEqual({ byoModel: true, serverModel: false, admin: true, slotTokenRequired: false, maxSlots: 3 })
+    expect(cfg.features).toEqual({ byoModel: true, serverModel: false, admin: true, maxDevices: 3 })
   })
 
   it('accepts the static config.example.json shape a split deployment ships', async () => {
     const example = await import('../public/config.example.json')
     const cfg = parseRuntimeConfig(JSON.stringify(example.default))
     expect(cfg.apiBase).toBe('https://api.example.com')
-    expect(cfg.features.maxSlots).toBe(5)
+    expect(cfg.features.maxDevices).toBe(20)
   })
 
   it('refuses the SPA fallback page a static host returns instead of the file', () => {

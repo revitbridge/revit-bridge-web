@@ -2,7 +2,7 @@
 
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
 import type {
-  ExecutionResponse, ProjectSnapshot, QueryAnswer, RevitHealthResponse, SlotsStatus, SolidifyResponse,
+  DevicesStatus, ExecutionResponse, ProjectSnapshot, QueryAnswer, RevitHealthResponse, SolidifyResponse,
   ToolChoiceItem, ToolDetail, ToolInfo, ToolParam, ToolUpdatePayload,
 } from '../types/api'
 
@@ -11,7 +11,7 @@ const enc = encodeURIComponent
 
 export const bridgeApi = {
   revitHealth: () => apiGet<RevitHealthResponse>(`${B}/revit-health`),
-  slots: () => apiGet<SlotsStatus>(`${B}/slots`),
+  devices: () => apiGet<DevicesStatus>(`${B}/slots`),   // how many devices may connect, how many are connected
 
   /* Read-only model access: the package's snapshot and query(kind, args). */
   snapshot: (categories?: string[]) =>   // undefined: the default categories; []: no family types

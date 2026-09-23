@@ -5,20 +5,19 @@ export interface RuntimeFeatures {
   byoModel: boolean
   serverModel: boolean
   admin: boolean
-  slotTokenRequired: boolean
-  maxSlots: number
+  maxDevices: number
 }
 
 export interface RuntimeConfig {
   apiBase: string
-  wsBase: string
+  wsBase: string          // the relay address the server puts in install_command / ws_url
   features: RuntimeFeatures
 }
 
 const DEFAULTS: RuntimeConfig = {
   apiBase: '',
   wsBase: '',
-  features: { byoModel: true, serverModel: false, admin: false, slotTokenRequired: false, maxSlots: 5 },
+  features: { byoModel: true, serverModel: false, admin: false, maxDevices: 20 },
 }
 
 let current: RuntimeConfig = DEFAULTS
@@ -55,11 +54,4 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
 
 export function getConfig(): RuntimeConfig {
   return current
-}
-
-/* Where a Revit add-in should connect for a remote slot. */
-export function addinWsEndpoint(): string {
-  if (current.wsBase) return current.wsBase
-  const origin = current.apiBase || window.location.origin
-  return origin.replace(/^http/, 'ws') + '/api/v1/bridge/ws'
 }

@@ -9,19 +9,35 @@ export interface RevitHealthResponse {
   protocol?: string
   bridge_version: string
   timestamp: string
-  ws_slots: SlotsStatus
+  devices: DevicesStatus
 }
 
-export interface SlotInfo {
-  status: string
-  connected_at?: number
-  requests?: number
-}
-
-export interface SlotsStatus {
-  max_slots: number
+/* GET /slots: the relay's capacity, no per-device detail. */
+export interface DevicesStatus {
+  max_devices: number
   connected: number
-  slots: Record<string, SlotInfo>
+}
+
+/* POST /devices/pair: the code the designer types (or the install command carries),
+   the browser key that drives and revokes this device, both shown once. */
+export interface PairingResponse {
+  code: string
+  device_id: string
+  expires_at: string
+  browser_key: string
+  install_command: string
+}
+
+/* GET /devices/{id} (browser key or admin), and one item of the admin GET /devices. */
+export interface DeviceStatus {
+  device_id: string
+  label: string
+  online: boolean
+  last_seen: string | null
+  requests: number
+  created_at?: string
+  revoked_at?: string | null
+  addin_version?: string | null
 }
 
 /* revit_bridge.snapshot.ProjectSnapshot, as GET /snapshot returns it. */
