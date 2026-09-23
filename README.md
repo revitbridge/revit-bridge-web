@@ -26,14 +26,17 @@ API origin (and `wsBase` if the relay differs). The SPA reads that file at start
 `/config.json` only describes a same-origin setup. Set `CORS_ORIGINS` on the API side to the static
 host's origin.
 
-Connect a designer's Revit to the host (on their machine, Revit closed):
+Connect a designer's Revit to the host in three steps: on the Connect page choose *pair a Revit* and
+you get a pairing code (ten minutes) plus the one line to run on that machine (Revit closed):
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server wss://<your-host>/api/v1/bridge/ws
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Server wss://<your-host>/api/v1/bridge/ws -Code XXXX-XXXX
 ```
 
-The add-in then shows up as a slot on the Connect page. A Revit running on the Docker host itself is
-reached over TCP (`host.docker.internal:18080`) without any of that.
+The add-in redeems the code, receives its own device token and connects; the page then shows the
+device as online. The browser that paired it keeps the *browser key* (session storage) and sends
+`X-Device-Id` / `X-Device-Key` with every request; *revoke* ends both at once. A Revit running on the
+Docker host itself is reached over TCP (`host.docker.internal:18080`) without any pairing.
 
 ## Use
 
@@ -96,8 +99,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
 | `ADMIN_PASSWORD` | unset | Enables skill edits and `/api/logs` via `X-Admin-Token`. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
-| `MAX_SLOTS` | `5` | Remote add-in slots on the relay. |
-| `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_FILE_N` | `0`, unset | Pre-shared token per slot; put the file in `./.secrets/` (mounted read-only at `/run/secrets`). The browser sends `X-Slot-Id` / `X-Slot-Token`. |
+| `MAX_DEVICES` | `20` | How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
 | `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
 | `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `revit-bridge/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. |
@@ -119,8 +121,17 @@ and re-check what ran. A request the route refuses as such is 400, a body that p
 valid 422, a Revit that cannot be reached before the run is 503 (a transport failure during the run
 is the package's `success: false` without consuming the token), and a refusal by the gate, a failed
 precondition or a failed validation is 200 with `success: false`; error bodies are
-`{error, message?, ...}` with the MCP tools' codes, declared per route in the export. Pick a Revit
-with `X-Slot-Id` (+ `X-Slot-Token`) as before.
+`{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
+
+Pairing and devices: `POST /devices/pair` returns `{code, device_id, expires_at, browser_key,
+install_command}`; the add-in calls `POST /devices/redeem` with the code (no headers) and receives
+`{device_id, device_token, ws_url}`; `GET /devices/{id}` and `DELETE /devices/{id}` take the browser
+key (or the admin password), `GET /devices` is admin only, and `GET /slots` publishes
+`{max_devices, connected}`. Pick a Revit with `X-Device-Id` + `X-Device-Key`; without them a request
+drives the local add-in over TCP. Every confirmation and every ledger line belongs to that device
+(`scope`), so a browser sees and re-validates only its own device's evidence, and a token confirmed
+for one device is refused on another. Ad-hoc code (`POST /execute`) also asks the designer on the
+device itself; a No there is `success: false, error: "declined_on_device"`.
 
 `POST /api/chat` is the host loop: `{message, session_id, bridge?}` streams one turn over SSE -
 reply text as `data: "<token>"` frames, `event: spec` (`{spec, card, errors, reconcile}`) when the
@@ -132,8 +143,9 @@ the turn starts with `event: execution` and the model reports what the validator
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
 no tools, no skills and no execution feedback.
 
-Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; the container reads
-slot tokens from mounted files and the model key only from request headers or the environment.
+Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
+and browser key exist in plain text only in the one response that creates them (the store keeps
+hashes), and the model key comes only from request headers or the environment.
 
 ## License
 

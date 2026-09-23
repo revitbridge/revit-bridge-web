@@ -8,6 +8,23 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Added
 
+- Paired devices replace the fixed slots: `POST /api/v1/bridge/devices/pair`,
+  `POST /devices/redeem` (the add-in, no headers), `GET /devices/{id}`,
+  `DELETE /devices/{id}` (revokes and closes the socket), `GET /devices` (admin).
+  The relay is keyed by device id, `/ws/{device_id}` requires the add-in's auth
+  message within ten seconds and `MAX_DEVICES` (20) caps concurrent connections.
+  All of the credential logic is the package's `DeviceStore`: only hashes are
+  stored, in `REVIT_BRIDGE_DATA_DIR/auth/devices.json`.
+- Every confirmation and every ledger line carries a `scope` - the device it
+  belongs to, or `"local"` for the add-in on this machine. A token confirmed for
+  one device is refused on another (`mismatch`), `GET /evidence` shows only that
+  device's records and `POST /evidence/{id}/validate` answers 404
+  `unknown_evidence` for another device's record.
+- `POST /execute` asks the designer on the device before running ad-hoc code (the
+  package sends `confirm` with the spec card); a No is `success: false,
+  error: "declined_on_device"` with the token consumed and a ledger line. A pack
+  run is not asked about.
+
 - The host loop: `POST /api/chat` runs the model with the package's read-only tools
   (`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`,
   `reconcile`) and `propose_spec` (OpenAI-compatible function calling in `backend/llm.py`).
@@ -107,6 +124,12 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   validator) instead of 500.
 
 ### Removed
+
+- `X-Slot-Id` / `X-Slot-Token` (an `X-Slot-*` header is now 422 `invalid_args`),
+  `MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*` (the host
+  refuses to start when one is still set, naming `MAX_DEVICES` or the pairing flow),
+  and the `./.secrets` mount in `docker-compose.yml`. Existing add-ins must be
+  reinstalled once and paired.
 
 - `GET/POST /unit`, `GET /project-units`, `POST /query-revit`: the snapshot's `units`
   and `POST /query` replace them (the Connect page reads units from the snapshot).

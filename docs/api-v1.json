@@ -1629,7 +1629,7 @@
           "bridge"
         ],
         "summary": "List Evidence",
-        "description": "``Ledger.recent``: the newest execution records, optionally of one pack.",
+        "description": "``Ledger.recent``: the newest execution records of this device, optionally of one pack.\n\nA browser sees only what ran on the device it drives (or, without a device\nheader, on the local add-in); the filter is silent.",
         "operationId": "list_evidence_api_v1_bridge_evidence_get",
         "parameters": [
           {
@@ -1697,7 +1697,7 @@
           "bridge"
         ],
         "summary": "Validate Evidence",
-        "description": "``revalidate``: the recorded execution's assertion against the model as it is now.\nAn unknown record is 404 before any Revit is needed.",
+        "description": "``revalidate``: the recorded execution's assertion against the model as it is now.\nAn unknown record - or one of another device - is 404 before any Revit is needed.",
         "operationId": "validate_evidence_api_v1_bridge_evidence__evidence_id__validate_post",
         "parameters": [
           {
@@ -1818,7 +1818,7 @@
           "bridge"
         ],
         "summary": "Revit Health",
-        "description": "Is a Revit reachable: the selected slot, else the local TCP add-in.",
+        "description": "Is a Revit reachable: the selected device, else the local TCP add-in.",
         "operationId": "revit_health_api_v1_bridge_revit_health_get",
         "responses": {
           "200": {
@@ -1831,6 +1831,16 @@
           },
           "403": {
             "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1868,6 +1878,7 @@
           "bridge"
         ],
         "summary": "Get Slots",
+        "description": "How many devices may be connected and how many are: no ids, this is public.",
         "operationId": "get_slots_api_v1_bridge_slots_get",
         "responses": {
           "200": {
@@ -1875,6 +1886,276 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/devices/pair": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Pair Device",
+        "description": "``DeviceStore.create_pairing``: a code for the add-in and the browser key for this tab.\n\nThe code and the key are returned once and stored only as hashes; the\nbrowser keeps the key (session storage) - it is what lets this tab\ndrive and revoke that Revit.",
+        "operationId": "pair_device_api_v1_bridge_devices_pair_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/devices/redeem": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Redeem Pairing",
+        "description": "``DeviceStore.redeem``: the add-in turns the code into its device token.\n\nCalled by the add-in or its installer, so it carries no device headers -\nthe code is the credential. Unknown, expired, already used: all\n``invalid_code``, with no hint which.",
+        "operationId": "redeem_pairing_api_v1_bridge_devices_redeem_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/devices": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "List Devices",
+        "description": "Every device, for an operator holding the admin password.",
+        "operationId": "list_devices_api_v1_bridge_devices_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/devices/{device_id}": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Get Device",
+        "description": "One device: is it online, when was it last seen, how many requests has it served.",
+        "operationId": "get_device_api_v1_bridge_devices__device_id__get",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Revoke Device",
+        "description": "Revoke the device and close its socket: no more requests, key and token dead.",
+        "operationId": "revoke_device_api_v1_bridge_devices__device_id__delete",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
               }
             }
           }
@@ -2085,6 +2366,18 @@
         "type": "object",
         "title": "MissingParamsRequest"
       },
+      "PairRequest": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Label",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "PairRequest"
+      },
       "QueryRequest": {
         "properties": {
           "kind": {
@@ -2128,6 +2421,32 @@
           "spec"
         ],
         "title": "ReconcileRequest"
+      },
+      "RedeemRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Code"
+          },
+          "addin_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Addin Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "RedeemRequest"
       },
       "RunToolRequest": {
         "properties": {

@@ -22,31 +22,39 @@ subset the browser needs so one frontend build works on any address.
                                 take precedence and are never stored
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
     ADMIN_PASSWORD              enables /api/logs and skill edits (X-Admin-Token)
-    MAX_SLOTS                   number of remote add-in slots (default 5)
+    MAX_DEVICES                 how many paired add-ins may be connected at once
+                                (default 20)
     CHAT_RATE_LIMIT             requests per minute per IP on /api/chat and on
                                 /api/v1/bridge/spec/confirm (default 30)
 
 The package reads its own variables: REVIT_BRIDGE_DATA_DIR (its data root:
-user capability packs, usage.json, the evidence ledger; the container sets
-/app/data), REVIT_BRIDGE_HOST / PORT / TOKEN / TIMEOUT and
-MCP_BRIDGE_REQUIRE_SLOT_TOKEN / MCP_BRIDGE_SLOT_TOKEN_N /
-MCP_BRIDGE_SLOT_TOKEN_FILE_N.
+user capability packs, usage.json, the evidence ledger, auth/devices.json; the
+container sets /app/data), REVIT_BRIDGE_HOST / PORT / TOKEN / TIMEOUT and
+REVIT_BRIDGE_CONFIRM_TTL.
+
+The 0.1 slot variables (MAX_SLOTS, MCP_BRIDGE_REQUIRE_SLOT_TOKEN,
+MCP_BRIDGE_SLOT_TOKEN_*) are gone: a deployment that still sets one refuses to
+start rather than silently dropping what its operator meant to configure.
 """
 from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from types import MappingProxyType
-
-from revit_bridge.auth import load_slot_tokens, slot_token_required
 from revit_bridge.revit.settings import env_flag
 
 DEFAULT_PORT = 7860
-DEFAULT_MAX_SLOTS = 5
+DEFAULT_MAX_DEVICES = 20
 DEFAULT_CHAT_RATE_LIMIT = 30
+
+# Retired with the slot relay (phase 7): each names what replaces it, or nothing.
+RETIRED_VARIABLES = {
+    "MAX_SLOTS": "MAX_DEVICES",
+    "MCP_BRIDGE_REQUIRE_SLOT_TOKEN": "",
+    "MCP_BRIDGE_SLOT_TOKEN": "",
+}
 
 
 class ConfigError(RuntimeError):
@@ -66,11 +74,8 @@ class WebSettings:
     llm_api_key: str = ""
     llm_allow_http: bool = False
     admin_password: str = ""
-    max_slots: int = DEFAULT_MAX_SLOTS
+    max_devices: int = DEFAULT_MAX_DEVICES
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
-    slot_token_required: bool = False
-    # {slot_id: token}, resolved once at startup; the request path only reads it.
-    slot_tokens: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
@@ -79,12 +84,8 @@ class WebSettings:
         a token file missing or empty) so the process exits with the reason
         instead of answering 500 to every request."""
         env = os.environ if env is None else env
+        _refuse_retired(env)
         skills = env.get("SKILLS_DIR", "").strip()
-        max_slots = _int(env.get("MAX_SLOTS"), DEFAULT_MAX_SLOTS, "MAX_SLOTS")
-        try:
-            tokens = load_slot_tokens(env, max_slots=max_slots)
-        except RuntimeError as exc:
-            raise ConfigError(f"slot tokens: {exc}") from None
         return cls(
             host=env.get("HOST", "").strip() or "0.0.0.0",
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
@@ -99,10 +100,8 @@ class WebSettings:
             llm_api_key=env.get("LLM_API_KEY", "").strip(),
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
             admin_password=env.get("ADMIN_PASSWORD", ""),
-            max_slots=max_slots,
+            max_devices=_int(env.get("MAX_DEVICES"), DEFAULT_MAX_DEVICES, "MAX_DEVICES"),
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
-            slot_token_required=slot_token_required(env),
-            slot_tokens=MappingProxyType(dict(tokens)),
         )
 
     # -- derived paths ---------------------------------------------------------
@@ -134,10 +133,30 @@ class WebSettings:
                 "byoModel": True,
                 "serverModel": self.server_model_configured,
                 "admin": bool(self.admin_password),
-                "slotTokenRequired": self.slot_token_required,
-                "maxSlots": self.max_slots,
+                "maxDevices": self.max_devices,
+                # 0.1 names the pre-7.3 frontend still reads; they go with the connect page.
+                "slotTokenRequired": False,
+                "maxSlots": self.max_devices,
             },
         }
+
+
+def _refuse_retired(env: Mapping[str, str]) -> None:
+    """A deployment that still configures the slot relay must not start quietly.
+
+    An ignored ``MCP_BRIDGE_REQUIRE_SLOT_TOKEN=1`` would be a silently lost
+    security expectation, and an ignored ``MAX_SLOTS`` a silently wrong limit.
+    """
+    for name in sorted(env):
+        for retired, replacement in RETIRED_VARIABLES.items():
+            if name != retired and not name.startswith(retired + "_"):
+                continue
+            if replacement:
+                raise ConfigError(f"{name} is gone in 0.2: use {replacement} instead")
+            raise ConfigError(
+                f"{name} is gone in 0.2: remote add-ins are paired devices now "
+                f"(POST /api/v1/bridge/devices/pair); delete the variable and pair the Revit again"
+            )
 
 
 def _int(raw: str | None, default: int, name: str) -> int:

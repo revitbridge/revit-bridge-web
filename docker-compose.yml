@@ -19,11 +19,10 @@ services:
       # chooses the published host port above.
       PORT: 7860
       HOST: 0.0.0.0
-      # Where a remote add-in's slot token lives inside the container (the
-      # ./.secrets directory is mounted read-only below). Leave the variable
-      # unset in .env to run without slot tokens.
-      MCP_BRIDGE_SLOT_TOKEN_FILE_1: ${MCP_BRIDGE_SLOT_TOKEN_FILE_1:-}
-      MCP_BRIDGE_REQUIRE_SLOT_TOKEN: ${MCP_BRIDGE_REQUIRE_SLOT_TOKEN:-0}
+      # How many paired add-ins may be connected at once. Their credentials are
+      # created by the pairing flow and stored (hashed) in the data volume, so
+      # there is no secret to mount.
+      MAX_DEVICES: ${MAX_DEVICES:-20}
       # A local add-in on the Docker host is reachable as host.docker.internal.
       REVIT_BRIDGE_HOST: ${REVIT_BRIDGE_HOST:-host.docker.internal}
       REVIT_BRIDGE_PORT: ${REVIT_BRIDGE_PORT:-18080}
@@ -31,6 +30,5 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
-      - ./.secrets:/run/secrets:ro
     mem_limit: 1g
     restart: unless-stopped

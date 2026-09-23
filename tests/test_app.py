@@ -12,7 +12,7 @@ BUILTIN_PACKS = 8
 def test_health_and_config_json(make_client, env):
     env.setenv("PUBLIC_WS_BASE", "wss://relay.example/api/v1/bridge/ws/")
     env.setenv("ADMIN_PASSWORD", "s3cret")
-    env.setenv("MAX_SLOTS", "3")
+    env.setenv("MAX_DEVICES", "3")
     client = make_client()
 
     assert client.get("/health").json() == {"status": "ok", "version": "0.1.0"}
@@ -27,6 +27,8 @@ def test_health_and_config_json(make_client, env):
             "byoModel": True,
             "serverModel": False,
             "admin": True,
+            "maxDevices": 3,
+            # kept until the connect page of 7.3 reads maxDevices
             "slotTokenRequired": False,
             "maxSlots": 3,
         },
@@ -35,9 +37,10 @@ def test_health_and_config_json(make_client, env):
 
 def test_settings_defaults_come_from_env_only():
     s = WebSettings.from_env({})
-    assert (s.host, s.port, s.max_slots, s.cors_origins) == ("0.0.0.0", 7860, 5, ())
+    assert (s.host, s.port, s.max_devices, s.cors_origins) == ("0.0.0.0", 7860, 20, ())
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
-        "byoModel": True, "serverModel": False, "admin": False, "slotTokenRequired": False, "maxSlots": 5}}
+        "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 20,
+        "slotTokenRequired": False, "maxSlots": 20}}
     s = WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k", "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
 
@@ -85,11 +88,11 @@ def test_health_routes_without_revit(client):
     health = client.get("/api/v1/bridge/revit-health").json()
     assert health["revit_connected"] is False
     assert health["mode"] == "waiting_for_revit"
-    assert health["ws_slots"]["connected"] == 0
+    assert health["devices"] == {"max_devices": 20, "connected": 0}
 
     service = client.get("/api/v1/bridge/service-health").json()
-    assert service["status"] == "ok" and service["connected_slots"] == 0
-    assert client.get("/api/v1/bridge/slots").json()["max_slots"] == 5
+    assert service["status"] == "ok" and service["connected_devices"] == 0
+    assert client.get("/api/v1/bridge/slots").json() == {"max_devices": 20, "connected": 0}
 
 
 def test_openapi_lists_the_v1_contract(client):
@@ -104,6 +107,8 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
         "/api/v1/bridge/evidence", "/api/v1/bridge/evidence/{evidence_id}/validate",
         "/api/v1/bridge/trigger-selection",
+        "/api/v1/bridge/devices", "/api/v1/bridge/devices/{device_id}",
+        "/api/v1/bridge/devices/pair", "/api/v1/bridge/devices/redeem",
         "/api/v1/bridge/revit-health", "/api/v1/bridge/service-health", "/api/v1/bridge/slots",
     }
     assert {"/health", "/config.json", "/api/chat", "/api/skills", "/api/skills/import",
