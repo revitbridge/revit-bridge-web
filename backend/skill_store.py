@@ -6,17 +6,22 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``, so
-  ``builtin:revit-bridge/SKILL`` and its ``references/``); ``SKILLS_DIR``
-  replaces that directory with a mounted checkout.
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: since 0.4
+  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL`` and
+  ``builtin:revit-addin-dev/SKILL``, with the Markdown under them such as
+  ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
+  with a mounted checkout.
 
 Every enabled skill is concatenated into the chat system prompt. Of the
-wheel's skills only each ``SKILL.md`` is enabled by default (the chat has the
-tools it describes since the host loop); the ``references/`` are material
-the skill reads on demand, not prompt text, so they stay off unless a file's
-own ``enabled: true`` front matter says otherwise. A mounted ``SKILLS_DIR``
-is enabled by default throughout: mounting it is the operator's choice and
-its files are theirs to edit.
+wheel's skills only ``PROMPT_SKILLS`` are enabled by default: the
+``revit-bridge`` protocol and ``revit-core``, the contract every snippet
+follows. The other lessons are the model's to ask for with ``get_guidance``
+(the chat prompt says so in one line), ``revit-addin-dev`` builds standalone
+add-ins this host has no tools for, and ``references/`` and ``lessons/`` are
+material read on demand, not prompt text. A file's own ``enabled`` front
+matter still decides for itself. A mounted ``SKILLS_DIR`` is enabled by
+default throughout: mounting it is the operator's choice and its files are
+theirs to edit.
 """
 from __future__ import annotations
 
@@ -34,6 +39,9 @@ _log = logging.getLogger("backend.skills")
 _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _ID_RE = re.compile(r"[\w\-]+")
 BUILTIN_PREFIX = "builtin:"
+
+# The wheel's skills that enter the chat prompt unless their front matter says otherwise.
+PROMPT_SKILLS = ("revit-bridge/SKILL", "revit-core/SKILL")
 
 
 def parse_skill_file(text: str) -> dict[str, Any]:
@@ -74,7 +82,7 @@ class SkillStore:
         self._dir = Path(user_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         # No override: the skills shipped inside the revit-bridge wheel, of which
-        # only SKILL.md files enter the prompt unless a file says ``enabled: true``.
+        # only PROMPT_SKILLS enter the prompt unless a file says ``enabled: true``.
         self._builtin = Path(builtin_dir) if builtin_dir else skills_dir()
         self._builtin_enabled_by_default = builtin_dir is not None
 
@@ -95,7 +103,8 @@ class SkillStore:
         title, desc = _first_title_and_paragraph(parsed["content"])
         enabled_default = True
         if readonly:
-            enabled_default = self._builtin_enabled_by_default or path.name == "SKILL.md"
+            rel = skill_id[len(BUILTIN_PREFIX):]
+            enabled_default = self._builtin_enabled_by_default or rel in PROMPT_SKILLS
         return {
             "id": skill_id,
             "name": str(meta.get("name") or title or path.stem),

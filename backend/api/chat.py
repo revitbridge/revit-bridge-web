@@ -17,6 +17,11 @@ the page reported an execution (first frame of that turn), ``event: error``
 for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
+The system prompt with the bridge is the package's host instructions, the
+enabled skills (by default the wheel's ``revit-bridge`` protocol and
+``revit-core``; see ``backend.skill_store``) and one line that points to
+``get_guidance`` for every other lesson category.
+
 ``bridge: false`` is the comparison mode of the task page: one fixed base
 prompt, no tools, no skills, no execution feedback - what a model would do
 without the bridge.
@@ -31,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from revit_bridge import host_instructions
+from revit_bridge.guidance import CATEGORIES
 
 from backend.api.bridge import set_device_context
 from backend.api.errors import ApiError
@@ -55,6 +61,15 @@ ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
 
+# The lessons that are not in the prompt: one line instead of every category's text.
+GUIDANCE_POINTER = (
+    "The lessons are not in this prompt, neither revit-core's nor those of the other categories ("
+    + ", ".join(c for c in CATEGORIES if c != "revit-core")
+    + '): call get_guidance - stage "orient" at the start of a task, '
+    '"write" before you write C# (symbols, revit_categories), "fix" after a failed execution '
+    '(errors, symbols); mode "index" lists every lesson.'
+)
+
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
 BASE_PROMPT = (
     "You are an assistant to an architect who works in Autodesk Revit. Answer their "
@@ -77,13 +92,15 @@ def rate_limit(request: Request) -> None:
 
 
 def build_system_prompt(bridge: bool = True) -> str:
-    """The package's host instructions plus every enabled skill; the base prompt without the bridge."""
+    """The package's host instructions, every enabled skill and the get_guidance pointer;
+    the base prompt without the bridge."""
     if not bridge:
         return BASE_PROMPT
     parts = [host_instructions().strip()]
     skills = get_skill_store().active_prompt()
     if skills:
         parts.append("## Skills\n\n" + skills)
+    parts.append("## Guidance\n\n" + GUIDANCE_POINTER)
     return "\n\n".join(parts)
 
 
