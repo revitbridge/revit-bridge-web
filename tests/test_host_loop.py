@@ -81,7 +81,8 @@ def test_host_loop_walks_the_bridge_flow(revit, client, model):
     first = model.requests[0]
     assert first["messages"][0]["role"] == "system"
     assert first["messages"][0]["content"].startswith(host_instructions().strip())
-    assert "## Skills" in first["messages"][0]["content"] and "# revit-bridge" in first["messages"][0]["content"]
+    assert "## Skills" in first["messages"][0]["content"] and "# revit-core" in first["messages"][0]["content"]
+    assert "# revit-bridge" not in first["messages"][0]["content"]       # the MCP host's protocol stays off
     assert {t["function"]["name"] for t in first["tools"]} == set(TOOL_NAMES)
     assert first["messages"][-1] == {"role": "user", "content": "draw a wall from the origin"}
     assert "confirm_spec" not in {t["function"]["name"] for t in first["tools"]}

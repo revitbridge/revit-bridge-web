@@ -17,10 +17,10 @@ the page reported an execution (first frame of that turn), ``event: error``
 for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
-The system prompt with the bridge is the package's host instructions, the
-enabled skills (by default the wheel's ``revit-bridge`` protocol and
-``revit-core``; see ``backend.skill_store``) and one line that points to
-``get_guidance`` for every other lesson category.
+The system prompt with the bridge is the package's host instructions (this
+host's protocol), the enabled skills (by default the wheel's ``revit-core``;
+see ``backend.skill_store``) and one line that points to ``get_guidance`` for
+every other lesson category.
 
 ``bridge: false`` is the comparison mode of the task page: one fixed base
 prompt, no tools, no skills, no execution feedback - what a model would do
