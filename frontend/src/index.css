@@ -882,6 +882,11 @@ select {
   margin-bottom: 4px;
 }
 
+.kind-pill { margin-right: 6px; vertical-align: 1px; cursor: help; }
+.kind-pill.kind-user_intent { background: rgba(180, 85, 53, 0.14); color: var(--accent2); }
+.kind-pill.kind-model_fact { background: rgba(22, 66, 65, 0.12); color: var(--accent-contrast); }
+.kind-pill.kind-technical { background: rgba(154, 90, 22, 0.14); color: var(--warning); }
+
 .option-row {
   display: flex;
   flex-wrap: wrap;

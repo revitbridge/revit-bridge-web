@@ -1,11 +1,14 @@
 /* Panels 2 and 3: the brief and the model's questions; the same transcript
-   without the bridge when the comparison is on. */
+   without the bridge when the comparison is on. A question's kind is a badge
+   and what it holds up its tooltip: shown only, the spec card gates on
+   reconcile.ready. */
 
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Question } from '../../types/api'
 import type { Transcript } from './flow'
+import { questionBadge } from './format'
 
 interface Props {
   title: string
@@ -54,21 +57,27 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
         ))}
         {questions.length > 0 && onAnswer && (
           <div className="question-list">
-            {questions.map(q => (
-              <div key={q.id} className="question">
-                <div className="question-text">{q.text}</div>
-                {q.why && <div className="muted small-mono">{q.why}</div>}
-                {q.options.length > 0
-                  ? <div className="option-row">
-                      {q.options.map((o, i) => (
-                        <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? `from ${o.source}` : undefined}>
-                          {o.label}
-                        </button>
-                      ))}
-                    </div>
-                  : <div className="muted small-mono">no options from the model: answer in the box below</div>}
-              </div>
-            ))}
+            {questions.map(q => {
+              const badge = questionBadge(q.kind, q.blocks)
+              return (
+                <div key={q.id} className="question">
+                  <div className="question-text">
+                    {badge && <span className={`source-pill kind-pill kind-${q.kind}`} title={badge.title}>{badge.label}</span>}
+                    {q.text}
+                  </div>
+                  {q.why && <div className="muted small-mono">{q.why}</div>}
+                  {q.options.length > 0
+                    ? <div className="option-row">
+                        {q.options.map((o, i) => (
+                          <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? `from ${o.source}` : undefined}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                    : <div className="muted small-mono">no options from the model: answer in the box below</div>}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

@@ -8,6 +8,22 @@ export function showValue(value: unknown): string {
   return typeof value === 'object' ? JSON.stringify(value) : String(value)
 }
 
+const QUESTION_KINDS = new Map<string, { label: string; hint: string }>([
+  ['user_intent', { label: 'designer', hint: 'only the designer can answer this' }],
+  ['model_fact', { label: 'model fact', hint: 'not found in the model: check the model before answering' }],
+  ['technical', { label: 'technical', hint: 'a technical question' }],
+])
+
+/* A question's kind as its badge: a short label and the tooltip, which also lists what
+   the question holds up. An unknown kind shows as it is; no kind (a 0.3 server), no badge. */
+export function questionBadge(kind: string | undefined, blocks?: readonly string[]): { label: string; title: string } | null {
+  if (!kind) return null
+  const known = QUESTION_KINDS.get(kind)
+  const parts = [known?.hint ?? kind]
+  if (blocks?.length) parts.push(`holds up: ${blocks.join(', ')}`)
+  return { label: known?.label ?? kind.replace(/_/g, ' '), title: parts.join('; ') }
+}
+
 /* The first characters of the token: enough to match the ledger's token_prefix, never the whole secret. */
 export function tokenPrefix(token: string): string {
   return `${token.slice(0, TOKEN_PREFIX)}...`

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeApiError } from '../shared/http'
 import { canConfirm, coerceLike, createTaskFlow, interpretationsOf, paramsOf, SPEC_ONLY_REPLY, type FlowApi } from './flow'
-import type { ExecutionResult, HostEvent, HostRequest, ReconcileResult, TaskSpec } from '../../types/api'
+import type { ExecutionResult, HostEvent, HostRequest, Question, ReconcileResult, TaskSpec } from '../../types/api'
 
 const spec: TaskSpec = {
   task: 'Place a structural column at (3000, 3000) on L1',
@@ -51,6 +51,33 @@ function fakeApi(overrides: Partial<FlowApi> = {}): FlowApi & { calls: Array<[st
 }
 
 const specEvent: HostEvent = { type: 'spec', spec, card: 'Task: Place a structural column\nConfirm? (yes / change something)', errors: [], reconcile: notReady }
+
+/* revit-bridge 0.4: reconcile turns a value it cannot find into a question too - an
+   ambiguous one for the designer, a missing one as a model fact - next to the open
+   parameters, and every question carries kind and blocks. */
+const levelQuestion: Question = {
+  id: 'q_level_name', param: 'level_name', text: 'Which level?', why: "level_name = 'L9' does not exist in the snapshot",
+  options: [{ label: 'L1 (0mm)', value: 'L1', source: 'tool:levels' }, { label: 'L2 (3600mm)', value: 'L2', source: 'tool:levels' }],
+  allow_other: true, kind: 'model_fact', blocks: ['spec', 'execute'],
+}
+const typeQuestion: Question = {
+  id: 'q_type_name', param: 'type_name', text: 'Which type?', why: "type_name = 'uc305' matches more than one type",
+  options: [{ label: 'UC305x305x97', value: 'UC305x305x97', source: 'tool:family_types' }, { label: 'UC305x305x118', value: 'UC305x305x118', source: 'tool:family_types' }],
+  allow_other: true, kind: 'user_intent', blocks: ['spec', 'execute'],
+}
+const heightQuestion: Question = {
+  id: 'q_height', param: 'height', text: 'Height (mm)?', why: 'required by the pack', options: [], allow_other: true,
+  kind: 'user_intent', blocks: ['spec', 'execute'],
+}
+const conflicted: ReconcileResult = {
+  conflicts: [
+    { param: 'level_name', claimed: 'L9', kind: 'not_found', available: ['L1', 'L2'], message: "level_name = 'L9' does not exist in the snapshot" },
+    { param: 'type_name', claimed: 'uc305', kind: 'ambiguous', available: ['UC305x305x97', 'UC305x305x118'], message: "type_name = 'uc305' matches more than one type" },
+  ],
+  questions: [levelQuestion, typeQuestion, heightQuestion],
+  interpretations_required: [],
+  ready: false,
+}
 
 describe('the task flow', () => {
   it('folds a turn into the transcript: session, tokens, then the spec card', async () => {
@@ -113,6 +140,33 @@ describe('the task flow', () => {
     const flow = createTaskFlow({ events: host.events, api: fakeApi() })
     await flow.answer({ id: 'q_level_name', param: 'level_name', text: 'Which level?', options: [{ label: 'L1 (0mm)', value: 'L1' }] }, { label: 'L1 (0mm)', value: 'L1' })
     expect(host.requests[0].message).toBe('level_name = L1')
+  })
+
+  it('keeps every question reconcile asks, conflicts included, with kind and blocks; a click answers in the chat', async () => {
+    const host = scriptedHost([{ type: 'spec', spec, card: 'c', errors: [], reconcile: conflicted }, { type: 'done' }], [{ type: 'done' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('brief')
+    const s = flow.store.getState()
+    expect(s.proposal?.reconcile?.questions).toEqual([levelQuestion, typeQuestion, heightQuestion])
+    expect(s.proposal?.reconcile?.questions.map(q => [q.param, q.kind, q.blocks])).toEqual([
+      ['level_name', 'model_fact', ['spec', 'execute']],
+      ['type_name', 'user_intent', ['spec', 'execute']],
+      ['height', 'user_intent', ['spec', 'execute']],
+    ])
+    expect(canConfirm(s)).toBe(false)
+    await flow.answer(levelQuestion, levelQuestion.options[1])
+    expect(host.requests[1].message).toBe('level_name = L2')
+  })
+
+  it('kind and blocks are shown, never a gate: Confirm follows reconcile.ready alone', async () => {
+    const odd: ReconcileResult = { ...ready, questions: [{ ...heightQuestion, kind: 'technical', blocks: ['build'] }] }
+    const host = scriptedHost([{ type: 'spec', spec, card: 'c', errors: [], reconcile: odd }, { type: 'done' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('brief')
+    expect(canConfirm(flow.store.getState())).toBe(true)
+    // a 0.3 server sends neither key
+    const old: Question = { id: 'q_x', param: 'x', text: 'x?', options: [] }
+    expect(old.kind).toBeUndefined()
   })
 
   it('ticking an interpretation reconciles the draft again and lights Confirm', async () => {

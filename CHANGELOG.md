@@ -6,8 +6,22 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Upgrading: the host needs `revit-bridge>=0.4,<0.5` (`uv sync`, or rebuild the image). The system
+prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
+`reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
+
 ### Added
 
+- `get_guidance`, the package's lessons for writing Revit code, as a model tool: the same
+  arguments (`mode`, `stage`, `skill_categories`, `revit_categories`, `symbols`, `errors`,
+  `exceptions`, `revit_version`, `ids`, `seen_hashes`), description and JSON reply as the MCP
+  tool, computed in process by `revit_bridge.guidance` on the framework lessons in the wheel plus
+  the company, project and personal layers the environment names
+  (`REVIT_BRIDGE_GUIDANCE_COMPANY` / `_PROJECT`, `REVIT_BRIDGE_DATA_DIR/guidance`). Read-only;
+  bad arguments and an invalid framework layer are results (`invalid_args`, `guidance_invalid`).
+  A test compares the description and the parameter names with the installed MCP tool.
+- The task page shows each question's `kind` as a badge (*designer*, *model fact*, *technical*)
+  with what it `blocks` in the tooltip. Display only: *Confirm* still follows `reconcile.ready`.
 - Paired devices replace the fixed slots: `POST /api/v1/bridge/devices/pair`,
   `POST /devices/redeem` (the add-in, no headers), `GET /devices/{id}`,
   `DELETE /devices/{id}` (revokes and closes the socket), `GET /devices` (admin).
@@ -74,6 +88,14 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
+- Requires `revit-bridge>=0.4,<0.5` (0.4.0 in `uv.lock`; the image installs it from PyPI).
+- The system prompt no longer carries every `SKILL.md` in the wheel: of 0.4's three skills only
+  the `revit-bridge` protocol and `revit-core` are on by default (`revit-addin-dev`, references
+  and lessons are listed but off), followed by one line that sends the model to `get_guidance`
+  for the lessons and names the other categories. With the bridge the prompt is 22,348 bytes
+  (UTF-8); concatenating every `SKILL.md` of 0.4.0 would have made it 28,918 bytes (13,837 with
+  0.3.0). A mounted `SKILLS_DIR` is unchanged: every file on unless it says otherwise.
+  `bridge: false` is unchanged: 145 bytes, no skills, no tools.
 - The browser identifies a Revit with `X-Device-Id` + `X-Device-Key` instead of `X-Slot-Id` +
   `X-Slot-Token`; the device id and this browser's key live in `sessionStorage` with the model
   settings, never in `localStorage`. `/config.json` carries `features.maxDevices`; `maxSlots` and
@@ -126,6 +148,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Fixed
 
+- A round that offers the model no tools (`bridge: false`, or the last round of a turn) no
+  longer runs `tool_calls` the model returns anyway: they are logged (`backend.chat`) and
+  dropped, and the round ends with the model's text, or an empty assistant message.
 - Over a slot, a Revit that is gone or leaves mid-request is a transport failure
   (`ConnectionError`) like over TCP, so the package consumes no confirmation token and
   writes no ledger line for code that never reached Revit; only a reply that does not

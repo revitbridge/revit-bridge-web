@@ -50,10 +50,13 @@ its connection.
    (`sessionStorage`) and travel as request headers; the server never stores them.
 2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
    summary, selection, fingerprint). Describe what you want in one sentence: the model works through
-   the package's tools - it takes a snapshot, asks the questions a capability pack still has open
-   (with the real levels and types, as buttons you can click) and reconciles a draft - then proposes
+   the package's tools - it reads the lessons for writing Revit code it needs (`get_guidance`), takes
+   a snapshot, asks the questions a capability pack still has open (with the real levels and types,
+   as buttons you can click) and reconciles a draft - then proposes
    a TaskSpec, which the page shows as a spec card: every parameter with its source and evidence,
-   the readings it made as checkboxes, conflicts in red. It cannot confirm or execute anything.
+   the readings it made as checkboxes, conflicts in red. A value the reconciliation cannot find is a
+   question too; each question has a badge for who can answer it (*designer*, or *model fact*: check
+   the model first) and lists in its tooltip what it holds up. It cannot confirm or execute anything.
    *Confirm* lights up only when the reconciliation is ready; it issues a one-time token that stays
    in the page's memory (never `localStorage`), and the host runs exactly what was confirmed. You
    see the validator's checks, the evidence id, and `validation_failed` in red when Revit ran the
@@ -66,15 +69,17 @@ its connection.
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
    delete it. *Skills*: Markdown protocols that are appended to the model's system prompt - the
-   plugin's `revit-bridge` skill comes with the package and is on; its references are listed but off
-   (the model reads them on demand); add, upload or import more from GitHub (admin password required).
+   package's `revit-bridge` protocol and `revit-core` (the contract every snippet follows) are on;
+   `revit-addin-dev`, the references and the lessons are listed but off (the model asks for lessons
+   with `get_guidance`); add, upload or import more from GitHub (admin password required).
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.
 
-The system prompt is the package's `host_instructions()` plus the enabled skills; the task page's
-"without the bridge" comparison sends the same message with `bridge: false` (one plain prompt, no
-tools, no skills).
+The system prompt is the package's `host_instructions()`, the enabled skills and one line that
+sends the model to `get_guidance` for the lessons (revit-core's and every other category's); the
+task page's "without the bridge" comparison sends the same message with `bridge: false` (one plain
+prompt, no tools, no skills).
 
 Upgrading from 0.1: the 0.1 host copied the package's built-in packs into `data/capabilities/`,
 which is now the package's own directory for user packs, where a file of the same name would hide
@@ -107,7 +112,8 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `MAX_DEVICES` | `20` | How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
 | `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
-| `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `revit-bridge/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. |
+| `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `<skill>/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. Every file in a mounted directory is on unless its front matter says `enabled: false`. |
+| `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for `get_guidance`, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment). |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
@@ -141,12 +147,15 @@ device itself; a No there is `success: false, error: "declined_on_device"`.
 `POST /api/chat` is the host loop: `{message, session_id, bridge?}` streams one turn over SSE -
 reply text as `data: "<token>"` frames, `event: spec` (`{spec, card, errors, reconcile}`) when the
 model proposed a spec, `event: done`. The model's tools are the package's read-only ones
-(`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`)
-plus `propose_spec`; it has no `confirm_spec`, `run_tool` or `execute_code`. After the page ran
+(`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`,
+`get_guidance`) plus `propose_spec`; it has no `confirm_spec`, `run_tool` or `execute_code`.
+`get_guidance` is the package's lesson selection called in process (no MCP server), with the MCP
+tool's arguments, description and JSON reply. After the page ran
 something, `{execution: <ExecutionResult>, session_id}` (instead of `message`) hands the result back:
 the turn starts with `event: execution` and the model reports what the validator found. Exactly one
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
-no tools, no skills and no execution feedback.
+no tools, no skills and no execution feedback (tool calls a model sends anyway are dropped, never
+run - as in the last round of a turn, which goes out without tools).
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps
