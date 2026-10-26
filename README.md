@@ -69,17 +69,19 @@ its connection.
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
    delete it. *Skills*: Markdown protocols that are appended to the model's system prompt - the
-   package's `revit-bridge` protocol and `revit-core` (the contract every snippet follows) are on;
+   package's `revit-core` (the contract every snippet follows) is on; the `revit-bridge` protocol
+   (written for the MCP server's tools; this host's protocol is the package's `host_instructions()`),
    `revit-addin-dev`, the references and the lessons are listed but off (the model asks for lessons
    with `get_guidance`); add, upload or import more from GitHub (admin password required).
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.
 
-The system prompt is the package's `host_instructions()`, the enabled skills and one line that
-sends the model to `get_guidance` for the lessons (revit-core's and every other category's); the
-task page's "without the bridge" comparison sends the same message with `bridge: false` (one plain
-prompt, no tools, no skills).
+The system prompt is the package's `host_instructions()` (this host's protocol), the enabled skills
+(by default only `revit-core`) and one line that sends the model to `get_guidance` for the lessons
+(revit-core's and every other category's) - about 5.5 KB in all. The task page's "without the
+bridge" comparison sends the same message with `bridge: false` (one plain prompt, no tools, no
+skills).
 
 Upgrading from 0.1: the 0.1 host copied the package's built-in packs into `data/capabilities/`,
 which is now the package's own directory for user packs, where a file of the same name would hide
@@ -150,8 +152,11 @@ model proposed a spec, `event: done`. The model's tools are the package's read-o
 (`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`,
 `get_guidance`) plus `propose_spec`; it has no `confirm_spec`, `run_tool` or `execute_code`.
 `get_guidance` is the package's lesson selection called in process (no MCP server), with the MCP
-tool's arguments, description and JSON reply. After the page ran
-something, `{execution: <ExecutionResult>, session_id}` (instead of `message`) hands the result back:
+tool's arguments and JSON reply; its description is the MCP tool's followed by one note for this
+host, which has no `check_code` (after a failed execution: `stage=fix` with the symbols you suspect).
+The session keeps a tool result up to 8 KB after the turn that produced it (head plus a one-line
+note), a `get_guidance` reply up to 16 KB, so the orient lessons reach later turns whole. After the
+page ran something, `{execution: <ExecutionResult>, session_id}` (instead of `message`) hands the result back:
 the turn starts with `event: execution` and the model reports what the validator found. Exactly one
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
 no tools, no skills and no execution feedback (tool calls a model sends anyway are dropped, never
