@@ -25,10 +25,15 @@ enabled skills (by default the wheel's ``revit-bridge`` protocol and
 ``bridge: false`` is the comparison mode of the task page: one fixed base
 prompt, no tools, no skills, no execution feedback - what a model would do
 without the bridge.
+
+A round that offers no tools (``bridge: false``, or the last round of a turn)
+runs none: ``tool_calls`` the model returns anyway are logged and dropped, and
+the round ends with the model's text, or an empty assistant message.
 """
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -52,6 +57,7 @@ from backend.session import get_session_store
 from backend.skill_store import get_skill_store
 
 router = APIRouter(prefix="/api", tags=["chat"])
+_log = logging.getLogger("backend.chat")
 
 HISTORY_WINDOW = 40          # messages sent to the model, cut at a user turn
 MAX_TOOL_ROUNDS = 8          # tool-call rounds per turn before the model must answer in text
@@ -170,6 +176,13 @@ async def chat(req: ChatRequest, request: Request):
                     else:
                         calls = item
                 content = "".join(parts)
+                if calls and round_tools is None:
+                    # Nothing was offered, so nothing runs: the round ends with the text.
+                    _log.warning("not run: %d tool call(s) (%s) from a round without tools "
+                                 "(bridge=%s, session %s)", len(calls), ", ".join(c.name for c in calls),
+                                 req.bridge, session.session_id)
+                    session.add({"role": "assistant", "content": content})
+                    break
                 if not calls:
                     if content:
                         session.add(assistant_message(content))

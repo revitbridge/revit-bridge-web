@@ -55,6 +55,15 @@ def test_the_wheel_puts_the_protocol_and_revit_core_in_the_prompt(make_client, e
                                                  + chat_module.GUIDANCE_POINTER)
     assert chat_module.build_system_prompt(bridge=False) == chat_module.BASE_PROMPT
 
+    # Every skill switched off: the same - the pointer stays, get_guidance is still a tool.
+    off = tmp_path / "all-off"
+    off.mkdir()
+    (off / "SKILL.md").write_text("---\nname: x\nenabled: false\n---\n\nOff.\n", encoding="utf-8")
+    env.setenv("SKILLS_DIR", str(off))
+    make_client()
+    assert chat_module.build_system_prompt() == (host_instructions().strip() + "\n\n## Guidance\n\n"
+                                                 + chat_module.GUIDANCE_POINTER)
+
 
 def test_builtin_enabled_default_depends_on_the_source(tmp_path, monkeypatch):
     """Wheel skills: revit-bridge and revit-core SKILL.md on, every other file off,

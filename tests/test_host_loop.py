@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import httpx
 import pytest
@@ -218,6 +219,54 @@ def test_a_model_that_never_stops_calling_tools_is_cut_off(client, model):
     assert resp.status_code == 200 and tokens(sse(resp.text)) == "done"
     assert len(model.requests) == chat_module.MAX_TOOL_ROUNDS + 1
     assert "tools" in model.requests[-2] and "tools" not in model.requests[-1]   # the last round has no tools
+
+
+def test_tool_calls_from_a_round_without_tools_are_not_run(client, model, monkeypatch, caplog):
+    """bridge: false offers no tools and the last round of a turn withholds them: calls the
+    model returns anyway are logged and dropped, never run; the round ends with its text."""
+    ran: list[str] = []
+    real_call_tool = chat_module.call_tool
+
+    async def spy(name, arguments, session):
+        ran.append(name)
+        return await real_call_tool(name, arguments, session)
+
+    monkeypatch.setattr(chat_module, "call_tool", spy)
+    caplog.set_level(logging.WARNING, logger="backend.chat")
+
+    # bridge: false - the model calls tools it was never offered.
+    model.turns.append(tool_turn(("propose_spec", {"spec": spec_for("query_levels")}),
+                                 ("get_guidance", {"stage": "orient"}), content="I would draft this."))
+    resp = client.post("/api/chat", json={"message": "list levels", "bridge": False}, headers=HEADERS)
+    assert resp.status_code == 200
+    frames = sse(resp.text)
+    assert tokens(frames) == "I would draft this." and frames[-1] == ("done", None)
+    assert events(frames, "spec") == [] and ran == []
+    assert len(model.requests) == 1 and "tools" not in model.requests[0]       # no second round
+    session = get_session_store().get(resp.headers["X-Session-Id"])
+    assert session.history == [{"role": "user", "content": "list levels"},
+                               {"role": "assistant", "content": "I would draft this."}]
+    assert session.spec is None
+    assert "not run: 2 tool call(s) (propose_spec, get_guidance)" in caplog.text and "bridge=False" in caplog.text
+
+    # No text at all: the round ends with an empty assistant message.
+    model.turns.append(tool_turn(("list_tools", {})))
+    resp = client.post("/api/chat", json={"message": "and now?", "bridge": False, "session_id": session.session_id},
+                       headers=HEADERS)
+    assert resp.status_code == 200 and tokens(sse(resp.text)) == "" and ran == []
+    assert session.history[-1] == {"role": "assistant", "content": ""}
+
+    # The last round of a bridge turn goes out without tools: its calls do not run either.
+    rounds = chat_module.MAX_TOOL_ROUNDS
+    model.turns += [tool_turn(("list_tools", {}))] * rounds
+    model.turns.append(tool_turn(("propose_spec", {"spec": spec_for("query_levels")}), content="Out of rounds."))
+    resp = client.post("/api/chat", json={"message": "loop"}, headers=HEADERS)
+    assert resp.status_code == 200
+    frames = sse(resp.text)
+    assert ran == ["list_tools"] * rounds
+    assert events(frames, "spec") == [] and tokens(frames) == "Out of rounds."
+    assert "tools" not in model.requests[-1]
+    assert "not run: 1 tool call(s) (propose_spec)" in caplog.text and "bridge=True" in caplog.text
 
 
 def test_message_and_execution_are_exclusive(client, model):

@@ -148,6 +148,9 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 ### Fixed
 
+- A round that offers the model no tools (`bridge: false`, or the last round of a turn) no
+  longer runs `tool_calls` the model returns anyway: they are logged (`backend.chat`) and
+  dropped, and the round ends with the model's text, or an empty assistant message.
 - Over a slot, a Revit that is gone or leaves mid-request is a transport failure
   (`ConnectionError`) like over TCP, so the package consumes no confirmation token and
   writes no ledger line for code that never reached Revit; only a reply that does not

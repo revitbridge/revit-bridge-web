@@ -154,7 +154,8 @@ tool's arguments, description and JSON reply. After the page ran
 something, `{execution: <ExecutionResult>, session_id}` (instead of `message`) hands the result back:
 the turn starts with `event: execution` and the model reports what the validator found. Exactly one
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
-no tools, no skills and no execution feedback.
+no tools, no skills and no execution feedback (tool calls a model sends anyway are dropped, never
+run - as in the last round of a turn, which goes out without tools).
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps
