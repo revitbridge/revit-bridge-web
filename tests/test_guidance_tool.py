@@ -13,7 +13,9 @@ import revit_bridge.mcp_server as mcp_server
 from revit_bridge.paths import guidance_dir
 
 from backend.api import model_tools
-from backend.api.model_tools import GET_GUIDANCE, TOOL_DEFINITIONS, TOOL_NAMES, call_tool
+from backend.api.model_tools import (
+    GET_GUIDANCE, GET_GUIDANCE_HOST_NOTE, MCP_GET_GUIDANCE_DOC, TOOL_DEFINITIONS, TOOL_NAMES, call_tool,
+)
 from backend.session import Session
 
 
@@ -38,8 +40,14 @@ def fresh_library(env):
 
 
 def test_the_description_and_arguments_are_the_mcp_tools():
-    """Copied by hand; this fails when the installed package's docstring or signature moves."""
-    assert definition()["description"] == inspect.getdoc(mcp_server.get_guidance)
+    """Copied by hand; this fails when the installed package's docstring or signature moves.
+    The description is the MCP docstring word for word, then this host's one note."""
+    description = definition()["description"]
+    assert MCP_GET_GUIDANCE_DOC == inspect.getdoc(mcp_server.get_guidance)
+    assert description.startswith(inspect.getdoc(mcp_server.get_guidance))
+    assert description == MCP_GET_GUIDANCE_DOC + "\n" + GET_GUIDANCE_HOST_NOTE
+    assert description.endswith("\nThis host has no check_code; use stage=fix with the symbols you suspect.")
+    assert description.count("check_code") == 2            # the docstring's fix stage, and the note
     signature = inspect.signature(mcp_server.get_guidance)
     properties = definition()["parameters"]["properties"]
     assert list(properties) == list(signature.parameters)
