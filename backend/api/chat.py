@@ -22,6 +22,11 @@ host's protocol), the enabled skills (by default the wheel's ``revit-core``;
 see ``backend.skill_store``) and one line that points to ``get_guidance`` for
 every other lesson category.
 
+A tool result stays in the session up to ``TOOL_RESULT_KEEP`` characters after
+the turn that produced it (head plus a one-line note); a ``get_guidance``
+reply up to ``GUIDANCE_RESULT_KEEP``, so the lessons a task started with stay
+whole in the turns that write and fix its code.
+
 ``bridge: false`` is the comparison mode of the task page: one fixed base
 prompt, no tools, no skills, no execution feedback - what a model would do
 without the bridge.
@@ -45,7 +50,7 @@ from revit_bridge.guidance import CATEGORIES
 
 from backend.api.bridge import set_device_context
 from backend.api.errors import ApiError
-from backend.api.model_tools import TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
+from backend.api.model_tools import GET_GUIDANCE, TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
 from backend.config import get_settings
 from backend.llm import (
     SSE_DONE, LLMError, LLMSettings, assistant_message, format_sse, format_sse_event,
@@ -62,6 +67,9 @@ _log = logging.getLogger("backend.chat")
 HISTORY_WINDOW = 40          # messages sent to the model, cut at a user turn
 MAX_TOOL_ROUNDS = 8          # tool-call rounds per turn before the model must answer in text
 TOOL_RESULT_KEEP = 8192      # characters of a tool result kept in the session after its turn
+# get_guidance's replies: the package budgets recommend (orient is about 12.4 KB, every
+# recommend and index reply measured fits); only mode "read" of many ids runs longer.
+GUIDANCE_RESULT_KEEP = 16384
 ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {total} in the turn that produced it]"
 
 # The user message that carries an execution result back to the model (spec 10.8).
@@ -113,6 +121,11 @@ def build_system_prompt(bridge: bool = True) -> str:
 def execution_message(execution: dict) -> str:
     """The fixed first line, then the ExecutionResult JSON as the page received it."""
     return f"{EXECUTION_PREFIX}\n{json.dumps(execution, ensure_ascii=False)}"
+
+
+def result_keep(tool: str) -> int:
+    """How much of a tool's result the session keeps after the turn that produced it."""
+    return GUIDANCE_RESULT_KEEP if tool == GET_GUIDANCE else TOOL_RESULT_KEEP
 
 
 def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
@@ -200,8 +213,9 @@ async def chat(req: ChatRequest, request: Request):
                     if outcome.spec_event is not None:
                         yield format_sse_event("spec", outcome.spec_event)
                     reply = tool_message(call, outcome.result)
-                    session.add(kept_tool_message(reply))     # the session keeps at most the head
-                    messages.append(reply)                    # this turn sees all of it
+                    # The session keeps at most the head; this turn sees all of it.
+                    session.add(kept_tool_message(reply, result_keep(call.name)))
+                    messages.append(reply)
         except LLMError as exc:
             yield format_sse_event("error", {"detail": str(exc)})
             return

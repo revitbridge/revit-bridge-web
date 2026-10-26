@@ -41,6 +41,42 @@ def test_large_tool_results_are_capped_in_the_session_after_the_turn(client, mod
     assert later["content"] == stored["content"]
 
 
+def test_the_orient_lessons_reach_the_next_turn_whole(client, model):
+    """get_guidance's orient reply (about 12.4 KB, over TOOL_RESULT_KEEP) stays whole in the
+    session, so the turns that write and fix the code still see every core lesson."""
+    model.turns += [tool_turn(("get_guidance", {"mode": "recommend", "stage": "orient"})),
+                    text_turn("read the contract")]
+    resp = client.post("/api/chat", json={"message": "move the wall by 200 mm"}, headers=HEADERS)
+    assert resp.status_code == 200 and tokens(sse(resp.text)) == "read the contract"
+    full = [m for m in model.requests[1]["messages"] if m.get("role") == "tool"][0]["content"]
+    assert chat_module.TOOL_RESULT_KEEP < len(full) <= chat_module.GUIDANCE_RESULT_KEEP
+    orient = json.loads(full)
+    assert orient["error"] is None and "revit-core/snippet-contract" in [i["id"] for i in orient["items"]]
+
+    session = get_session_store().get(resp.headers["X-Session-Id"])
+    stored = [m for m in session.history if m.get("role") == "tool"][0]
+    assert stored["content"] == full                                    # no head, no note
+
+    model.turns.append(text_turn("writing it now"))
+    client.post("/api/chat", json={"message": "go on", "session_id": session.session_id}, headers=HEADERS)
+    later = [m for m in model.requests[-1]["messages"] if m.get("role") == "tool"][0]["content"]
+    assert later == full and json.loads(later) == orient                 # still the whole JSON
+    assert "tool result elided" not in later
+
+
+def test_only_get_guidance_keeps_more_and_it_is_capped_too():
+    from backend.api.model_tools import GET_GUIDANCE, TOOL_NAMES
+
+    assert chat_module.result_keep(GET_GUIDANCE) == chat_module.GUIDANCE_RESULT_KEEP == 16384
+    for name in TOOL_NAMES - {GET_GUIDANCE}:
+        assert chat_module.result_keep(name) == chat_module.TOOL_RESULT_KEEP == 8192, name
+    # A read of many lessons runs past 16 KB: head and note, as for any other tool.
+    big = {"role": "tool", "tool_call_id": "c1", "content": "z" * 20000}
+    capped = chat_module.kept_tool_message(big, chat_module.result_keep(GET_GUIDANCE))
+    note = chat_module.ELISION_NOTE.format(kept=chat_module.GUIDANCE_RESULT_KEEP, total=20000)
+    assert capped["content"] == "z" * chat_module.GUIDANCE_RESULT_KEEP + "\n" + note
+
+
 def test_small_tool_results_are_stored_as_they_are():
     message = {"role": "tool", "tool_call_id": "c1", "content": "x" * 100}
     assert chat_module.kept_tool_message(message) is message
