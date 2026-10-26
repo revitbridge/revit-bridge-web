@@ -13,15 +13,18 @@ Two directories feed the store:
   with a mounted checkout.
 
 Every enabled skill is concatenated into the chat system prompt. Of the
-wheel's skills only ``PROMPT_SKILLS`` are enabled by default: the
-``revit-bridge`` protocol and ``revit-core``, the contract every snippet
-follows. The other lessons are the model's to ask for with ``get_guidance``
-(the chat prompt says so in one line), ``revit-addin-dev`` builds standalone
-add-ins this host has no tools for, and ``references/`` and ``lessons/`` are
-material read on demand, not prompt text. A file's own ``enabled`` front
-matter still decides for itself. A mounted ``SKILLS_DIR`` is enabled by
-default throughout: mounting it is the operator's choice and its files are
-theirs to edit.
+wheel's skills only ``PROMPT_SKILLS`` are enabled by default: ``revit-core``,
+the contract every snippet follows. The ``revit-bridge`` protocol is written
+for an MCP host (``check_code``, ``confirm_spec``, ``execute_code`` and the
+verification tools, none of which this host gives the model); this host's
+protocol is the package's ``host_instructions()``, which the chat prompt
+always starts with. The other lessons are the model's to ask for with
+``get_guidance`` (the chat prompt says so in one line), ``revit-addin-dev``
+builds standalone add-ins this host has no tools for, and ``references/`` and
+``lessons/`` are material read on demand, not prompt text. A file's own
+``enabled`` front matter still decides for itself. A mounted ``SKILLS_DIR``
+is enabled by default throughout: mounting it is the operator's choice and
+its files are theirs to edit.
 """
 from __future__ import annotations
 
@@ -41,7 +44,8 @@ _ID_RE = re.compile(r"[\w\-]+")
 BUILTIN_PREFIX = "builtin:"
 
 # The wheel's skills that enter the chat prompt unless their front matter says otherwise.
-PROMPT_SKILLS = ("revit-bridge/SKILL", "revit-core/SKILL")
+# Not revit-bridge/SKILL: the MCP host's tool flow; host_instructions() is this host's.
+PROMPT_SKILLS = ("revit-core/SKILL",)
 
 
 def parse_skill_file(text: str) -> dict[str, Any]:

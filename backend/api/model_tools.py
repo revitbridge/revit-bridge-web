@@ -12,7 +12,9 @@ the result comes back to the model as a message, never as something it ran.
 called in process on the layers the MCP server loads: the framework lessons in
 the wheel plus the company, project and personal directories the environment
 names (``revit_bridge.paths.guidance_layer_dirs``). Its description is the MCP
-tool's docstring, word for word (a test compares them).
+tool's docstring, word for word (a test checks it is the description's start),
+and one host note after it: the docstring's fix stage speaks of ``check_code``,
+which this host does not have.
 
 ``propose_spec`` is what makes the page's spec card appear: the server runs
 ``validate_spec`` and ``reconcile`` on the draft, the page gets an SSE
@@ -49,7 +51,7 @@ GET_GUIDANCE = "get_guidance"
 
 # The MCP tool's docstring (revit_bridge.mcp_server.get_guidance), copied word for word;
 # tests/test_guidance_tool.py fails when the installed package says something else.
-GET_GUIDANCE_DESCRIPTION = (
+MCP_GET_GUIDANCE_DOC = (
     'Lessons for writing Revit code, chosen by rules (no model), read-only, no token.\n'
     'mode "recommend" needs stage: orient (task start: the execute_code snippet\n'
     'contract, units, versions), write (before writing C#: pass symbols = the API\n'
@@ -64,6 +66,9 @@ GET_GUIDANCE_DESCRIPTION = (
     'revit, applicability, why, body, bytes, truncated}], omitted: [{id, title,\n'
     'reason}], missing, budget, warnings, error}.'
 )
+# What this host adds after it: the model learns of a failure from the execution result.
+GET_GUIDANCE_HOST_NOTE = "This host has no check_code; use stage=fix with the symbols you suspect."
+GET_GUIDANCE_DESCRIPTION = MCP_GET_GUIDANCE_DOC + "\n" + GET_GUIDANCE_HOST_NOTE
 
 # get_guidance's arguments as the MCP tool declares them: text, or lists of text.
 GUIDANCE_TEXT_ARGS = ("mode", "stage", "revit_version")

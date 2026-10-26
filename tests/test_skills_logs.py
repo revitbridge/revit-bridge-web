@@ -6,19 +6,23 @@ from backend.api import chat as chat_module
 ADMIN = {"X-Admin-Token": "hunter2"}
 
 
-def test_the_wheel_puts_the_protocol_and_revit_core_in_the_prompt(make_client, env, tmp_path):
-    """Without SKILLS_DIR the wheel's skills are listed, but only the revit-bridge protocol
-    and revit-core are enabled; revit-addin-dev, references and lessons stay off. The
-    system prompt is the package's host instructions, those two SKILL bodies and one
-    line that sends the model to get_guidance for the lessons."""
-    from revit_bridge import host_instructions
+def test_the_wheel_puts_revit_core_in_the_prompt(make_client, env, tmp_path):
+    """Without SKILLS_DIR the wheel's skills are listed, but only revit-core is enabled;
+    the revit-bridge protocol (the MCP host's tool flow), revit-addin-dev, references and
+    lessons stay off. The system prompt is the package's host instructions (this host's
+    protocol), the revit-core SKILL body and one line that sends the model to
+    get_guidance for the lessons."""
+    import shutil
+
+    from revit_bridge import host_instructions, skills_dir
     from revit_bridge.guidance import CATEGORIES
 
     client = make_client()
     listing = client.get("/api/skills").json()["skills"]
     assert all(s["readonly"] and s["source"] == "builtin" for s in listing)
     on = [s["id"] for s in listing if s["enabled"]]
-    assert on == ["builtin:revit-bridge/SKILL", "builtin:revit-core/SKILL"]
+    assert on == ["builtin:revit-core/SKILL"]
+    assert "builtin:revit-bridge/SKILL" in [s["id"] for s in listing]
     assert "builtin:revit-addin-dev/SKILL" in [s["id"] for s in listing]
     assert any(s["id"].startswith("builtin:revit-bridge/references/") for s in listing)
     lessons = [s for s in listing if s["id"].startswith("builtin:revit-core/lessons/")]
@@ -27,7 +31,7 @@ def test_the_wheel_puts_the_protocol_and_revit_core_in_the_prompt(make_client, e
     protocol = client.get("/api/skills/builtin:revit-bridge/SKILL").json()
     core = client.get("/api/skills/builtin:revit-core/SKILL").json()
     addin = client.get("/api/skills/builtin:revit-addin-dev/SKILL").json()
-    assert protocol["content"].startswith("# revit-bridge") and protocol["enabled"] is True
+    assert protocol["content"].startswith("# revit-bridge") and protocol["enabled"] is False
     assert core["content"].startswith("# revit-core") and core["enabled"] is True
     assert addin["enabled"] is False
     # Read-only: the store refuses to edit or delete anything from the wheel.
@@ -36,15 +40,15 @@ def test_the_wheel_puts_the_protocol_and_revit_core_in_the_prompt(make_client, e
     assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
 
     prompt = chat_module.build_system_prompt()
-    assert prompt == (host_instructions().strip() + "\n\n## Skills\n\n" + protocol["content"]
-                      + "\n\n---\n\n" + core["content"] + "\n\n## Guidance\n\n" + chat_module.GUIDANCE_POINTER)
-    assert addin["content"] not in prompt
+    assert prompt == (host_instructions().strip() + "\n\n## Skills\n\n" + core["content"]
+                      + "\n\n## Guidance\n\n" + chat_module.GUIDANCE_POINTER)
+    assert protocol["content"] not in prompt and addin["content"] not in prompt
     for lesson in lessons:                                   # titles in the index, bodies not
         assert get_skill_store().get(lesson["id"])["content"] not in prompt
     pointer = chat_module.GUIDANCE_POINTER
     assert "\n" not in pointer and "get_guidance" in pointer
     assert all(category in pointer for category in CATEGORIES)
-    assert len(prompt.encode("utf-8")) < 25_000
+    assert len(prompt.encode("utf-8")) < 6_000                # 22,348 bytes with the protocol in it
 
     # With no built-in skills at all: the host instructions and the pointer.
     empty = tmp_path / "no-skills"
@@ -64,18 +68,26 @@ def test_the_wheel_puts_the_protocol_and_revit_core_in_the_prompt(make_client, e
     assert chat_module.build_system_prompt() == (host_instructions().strip() + "\n\n## Guidance\n\n"
                                                  + chat_module.GUIDANCE_POINTER)
 
+    # A mounted SKILLS_DIR is the operator's: the protocol in it is on, as before.
+    mounted = tmp_path / "mounted"
+    shutil.copytree(skills_dir() / "revit-bridge", mounted / "revit-bridge")
+    env.setenv("SKILLS_DIR", str(mounted))
+    make_client()
+    assert get_skill_store().get("builtin:revit-bridge/SKILL")["enabled"] is True
+    assert protocol["content"] in chat_module.build_system_prompt()
+
 
 def test_builtin_enabled_default_depends_on_the_source(tmp_path, monkeypatch):
-    """Wheel skills: revit-bridge and revit-core SKILL.md on, every other file off,
-    unless the file says otherwise. A mounted SKILLS_DIR: on unless the file says
-    ``enabled: false``."""
+    """Wheel skills: revit-core SKILL.md on, every other file off (revit-bridge's
+    SKILL.md too), unless the file says otherwise. A mounted SKILLS_DIR: on unless the
+    file says ``enabled: false``."""
     from backend import skill_store
 
     wheel = tmp_path / "wheel-skills"
     files = {
         "extra/SKILL.md": "---\nname: extra\nenabled: true\n---\n\nX on.\n",
         "revit-addin-dev/SKILL.md": "---\nname: revit-addin-dev\n---\n\nAdd-in off.\n",
-        "revit-bridge/SKILL.md": "---\nname: revit-bridge\n---\n\nB default.\n",
+        "revit-bridge/SKILL.md": "---\nname: revit-bridge\n---\n\nB off.\n",
         "revit-bridge/references/on.md": "---\nenabled: true\n---\n\nB ref on.\n",
         "revit-bridge/references/r.md": "# R\n\nReference.\n",
         "revit-core/SKILL.md": "---\nname: revit-core\n---\n\nC default.\n",
@@ -90,13 +102,18 @@ def test_builtin_enabled_default_depends_on_the_source(tmp_path, monkeypatch):
     store = skill_store.SkillStore(tmp_path / "user")
     assert [(s["id"], s["enabled"]) for s in store.list_all()] == [
         ("builtin:extra/SKILL", True), ("builtin:revit-addin-dev/SKILL", False),
-        ("builtin:revit-bridge/SKILL", True), ("builtin:revit-bridge/references/on", True),
+        ("builtin:revit-bridge/SKILL", False), ("builtin:revit-bridge/references/on", True),
         ("builtin:revit-bridge/references/r", False),
         ("builtin:revit-core/SKILL", True), ("builtin:revit-core/lessons/l", False),
         ("builtin:revit-views/SKILL", False),
     ]
     assert store.get("builtin:revit-bridge/references/r")["enabled"] is False
-    assert store.active_prompt() == "X on.\n\n---\n\nB default.\n\n---\n\nB ref on.\n\n---\n\nC default."
+    assert store.active_prompt() == "X on.\n\n---\n\nB ref on.\n\n---\n\nC default."
+    # Its own front matter still turns it on, in its old place.
+    (wheel / "revit-bridge" / "SKILL.md").write_text("---\nname: revit-bridge\nenabled: true\n---\n\nB on.\n",
+                                                     encoding="utf-8")
+    assert store.get("builtin:revit-bridge/SKILL")["enabled"] is True
+    assert store.active_prompt() == "X on.\n\n---\n\nB on.\n\n---\n\nB ref on.\n\n---\n\nC default."
 
     mounted = tmp_path / "mounted"
     mounted.mkdir()

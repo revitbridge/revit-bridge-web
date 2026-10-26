@@ -14,12 +14,14 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 - `get_guidance`, the package's lessons for writing Revit code, as a model tool: the same
   arguments (`mode`, `stage`, `skill_categories`, `revit_categories`, `symbols`, `errors`,
-  `exceptions`, `revit_version`, `ids`, `seen_hashes`), description and JSON reply as the MCP
-  tool, computed in process by `revit_bridge.guidance` on the framework lessons in the wheel plus
-  the company, project and personal layers the environment names
-  (`REVIT_BRIDGE_GUIDANCE_COMPANY` / `_PROJECT`, `REVIT_BRIDGE_DATA_DIR/guidance`). Read-only;
-  bad arguments and an invalid framework layer are results (`invalid_args`, `guidance_invalid`).
-  A test compares the description and the parameter names with the installed MCP tool.
+  `exceptions`, `revit_version`, `ids`, `seen_hashes`) and JSON reply as the MCP tool, computed in
+  process by `revit_bridge.guidance` on the framework lessons in the wheel plus the company,
+  project and personal layers the environment names (`REVIT_BRIDGE_GUIDANCE_COMPANY` /
+  `_PROJECT`, `REVIT_BRIDGE_DATA_DIR/guidance`). Read-only; bad arguments and an invalid framework
+  layer are results (`invalid_args`, `guidance_invalid`). The description is the MCP tool's
+  docstring word for word followed by one host note: "This host has no check_code; use stage=fix
+  with the symbols you suspect." A test checks that the description starts with the installed MCP
+  tool's docstring and that the parameter names match its signature.
 - The task page shows each question's `kind` as a badge (*designer*, *model fact*, *technical*)
   with what it `blocks` in the tooltip. Display only: *Confirm* still follows `reconcile.ready`.
 - Paired devices replace the fixed slots: `POST /api/v1/bridge/devices/pair`,
@@ -55,13 +57,14 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   reports an execution back with `{execution, session_id}`: the turn starts with
   `event: execution` and the model reports faithfully. `bridge: false` is the comparison
   mode: one plain prompt, no tools, no skills.
-- The system prompt is the package's `host_instructions()` plus the enabled skills; the
-  wheel's `revit-bridge/SKILL.md` is now enabled by default (its references stay off).
-  The host's own `HOST_INSTRUCTIONS` and the pack index in the prompt are gone.
+- The system prompt is the package's `host_instructions()` plus the enabled skills (which of the
+  wheel's are on by default: see *Changed*). The host's own `HOST_INSTRUCTIONS` and the pack
+  index in the prompt are gone.
 - Sessions keep the model's message history (with tool calls), the last snapshot
   fingerprint, the last proposed spec and the last reported `evidence_id`; never a token.
-  A tool result is kept in the session up to 8 KB (head plus a one-line note); the turn
-  that produced it still sends it to the model in full.
+  A tool result is kept in the session up to 8 KB (head plus a one-line note), a
+  `get_guidance` reply up to 16 KB, so the orient lessons (about 12.4 KB) reach later turns
+  whole; the turn that produced a result still sends it to the model in full.
 - `frontend/src/api/chat.ts`: `parseSseFrame()` and `chatEvents()` yield the host loop's
   events (`session`, `token`, `spec`, `execution`, `error`, `done`); the types are in
   `frontend/src/types/api.ts`.
@@ -90,11 +93,15 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 - Requires `revit-bridge>=0.4,<0.5` (0.4.0 in `uv.lock`; the image installs it from PyPI).
 - The system prompt no longer carries every `SKILL.md` in the wheel: of 0.4's three skills only
-  the `revit-bridge` protocol and `revit-core` are on by default (`revit-addin-dev`, references
-  and lessons are listed but off), followed by one line that sends the model to `get_guidance`
-  for the lessons and names the other categories. With the bridge the prompt is 22,348 bytes
-  (UTF-8); concatenating every `SKILL.md` of 0.4.0 would have made it 28,918 bytes (13,837 with
-  0.3.0). A mounted `SKILLS_DIR` is unchanged: every file on unless it says otherwise.
+  `revit-core` is on by default, followed by one line that sends the model to `get_guidance` for
+  the lessons and names the other categories. The `revit-bridge` protocol is listed but off: it
+  describes the MCP server's tool flow (`check_code`, `confirm_spec`, `execute_code`, the
+  verification tools), and this host's protocol is the package's `host_instructions()`, which
+  opens the prompt. `revit-addin-dev`, references and lessons are listed but off too. A file's
+  own `enabled: true` still turns it on. With the bridge the prompt is 5,455 bytes (UTF-8); with
+  the `revit-bridge` protocol in it, it was 22,348 bytes, and concatenating every `SKILL.md` of
+  0.4.0 would have made it 28,918 bytes (13,837 with 0.3.0). A mounted `SKILLS_DIR` is
+  unchanged: every file on unless it says otherwise.
   `bridge: false` is unchanged: 145 bytes, no skills, no tools.
 - The browser identifies a Revit with `X-Device-Id` + `X-Device-Key` instead of `X-Slot-Id` +
   `X-Slot-Token`; the device id and this browser's key live in `sessionStorage` with the model
