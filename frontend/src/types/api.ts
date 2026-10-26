@@ -195,6 +195,14 @@ export interface ReconcileResult {
   ready: boolean
 }
 
+/* Who can answer a question (revit-bridge 0.4): the designer (user_intent), the model
+   once checked (model_fact: a value the model was said to have and does not), or a
+   technical one. Absent from a 0.3 server. */
+export type QuestionKind = 'user_intent' | 'model_fact' | 'technical'
+
+/* The steps an unanswered question holds up (revit-bridge 0.4). */
+export type BlockedStep = 'spec' | 'execute' | 'build'
+
 export interface Question {
   id: string
   param: string
@@ -202,6 +210,9 @@ export interface Question {
   why?: string
   options: Array<{ label: string; value: unknown; source?: string }>
   allow_other?: boolean
+  // Shown, never acted on: the page gates on reconcile.ready alone.
+  kind?: QuestionKind
+  blocks?: BlockedStep[]
 }
 
 /* What /tools/{name}/run and /execute answer (the package's ExecutionResult, or a refusal). */

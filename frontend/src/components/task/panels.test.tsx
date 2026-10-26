@@ -2,10 +2,11 @@
 
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import type { ExecutionResult, HostEvent, TaskSpec } from '../../types/api'
+import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
+import ChatPanel from './ChatPanel'
 import { ExecutionView } from './ExecutionPanel'
 import type { Proposal } from './flow'
-import { expiresIn, tokenPrefix } from './format'
+import { expiresIn, questionBadge, tokenPrefix } from './format'
 import SpecCard from './SpecCard'
 
 const spec: TaskSpec = {
@@ -104,6 +105,35 @@ describe('ExecutionView', () => {
     expect(refusal).toContain('confirmation_invalid')
     expect(refusal).toContain('(mismatch)')
     expect(refusal).toContain('Nothing reached Revit; the token is not consumed.')
+  })
+})
+
+describe('ChatPanel questions', () => {
+  const questions: Question[] = [
+    { id: 'q_level_name', param: 'level_name', text: 'Which level?', why: "level_name = 'L9' does not exist in the snapshot",
+      options: [{ label: 'L1 (0mm)', value: 'L1', source: 'tool:levels' }, { label: 'L2 (3600mm)', value: 'L2', source: 'tool:levels' }],
+      allow_other: true, kind: 'model_fact', blocks: ['spec', 'execute'] },
+    { id: 'q_type_name', param: 'type_name', text: 'Which type?', why: 'two types match', options: [],
+      allow_other: true, kind: 'user_intent', blocks: ['spec', 'execute'] },
+    { id: 'q_height', param: 'height', text: 'Height?', options: [] },                       // a 0.3 server: no kind
+  ]
+  const transcript = { messages: [], sessionId: null, streaming: false }
+
+  it('shows each kind as a badge with what it holds up, every question with its options', () => {
+    const html = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} questions={questions} onAnswer={noop} />)
+    expect(html).toContain('<span class="source-pill kind-pill kind-model_fact" title="not found in the model: check the model before answering; holds up: spec, execute">model fact</span>')
+    expect(html).toContain('<span class="source-pill kind-pill kind-user_intent" title="only the designer can answer this; holds up: spec, execute">designer</span>')
+    expect(html.match(/kind-pill/g)).toHaveLength(2)                    // no badge without a kind
+    for (const text of ['Which level?', 'Which type?', 'Height?', 'L1 (0mm)', 'L2 (3600mm)', 'two types match']) expect(html).toContain(text)
+    expect(html.match(/class="option-button"/g)).toHaveLength(2)
+    expect(html.match(/no options from the model/g)).toHaveLength(2)
+  })
+
+  it('questionBadge: known kinds, an unknown one as it is, none without a kind', () => {
+    expect(questionBadge('model_fact', ['spec', 'execute'])).toEqual({ label: 'model fact', title: 'not found in the model: check the model before answering; holds up: spec, execute' })
+    expect(questionBadge('technical')).toEqual({ label: 'technical', title: 'a technical question' })
+    expect(questionBadge('later_kind', [])).toEqual({ label: 'later kind', title: 'later_kind' })
+    expect(questionBadge(undefined, ['spec'])).toBeNull()
   })
 })
 

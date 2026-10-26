@@ -20,6 +20,22 @@ describe('parseSseFrame', () => {
     expect(parseSseFrame(frame)).toEqual({ type: 'spec', spec, card: 'Task: run create_wall', errors: [], reconcile })
   })
 
+  it('passes the questions of reconcile through as they come: kind, blocks and any newer key', () => {
+    const questions = [
+      { id: 'q_level_name', param: 'level_name', text: 'Which level?', why: "level_name = 'L9' does not exist in the snapshot",
+        options: [{ label: 'L1 (0mm)', value: 'L1', source: 'tool:levels' }], allow_other: true, kind: 'model_fact', blocks: ['spec', 'execute'] },
+      { id: 'q_type_name', param: 'type_name', text: 'Which type?', why: 'ambiguous', options: [], allow_other: true,
+        kind: 'user_intent', blocks: ['spec', 'execute'], later_key: 1 },
+      { id: 'q_height', param: 'height', text: 'Height?', why: 'required', options: [], allow_other: true },   // a 0.3 server
+    ]
+    const reconcile = { conflicts: [{ param: 'level_name', claimed: 'L9', kind: 'not_found', available: ['L1'], message: 'm' }],
+      questions, interpretations_required: [], ready: false }
+    const event = parseSseFrame(`event: spec\ndata: ${JSON.stringify({ spec, card: 'c', errors: [], reconcile })}`)
+    expect(event).toEqual({ type: 'spec', spec, card: 'c', errors: [], reconcile })
+    if (event?.type !== 'spec') throw new Error('not a spec event')
+    expect(event.reconcile?.questions.map(q => q.kind)).toEqual(['model_fact', 'user_intent', undefined])
+  })
+
   it('keeps reconcile null and carries reconcile_error when Revit was not reachable', () => {
     const data = { spec, card: 'Task: x', errors: [{ code: 'missing_param', param: 'height', message: 'm' }],
       reconcile: null, reconcile_error: { error: 'revit_unreachable', message: 'connect refused' } }
