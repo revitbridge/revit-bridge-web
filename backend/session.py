@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
 # Live sessions held at once. A session keeps at most MAX_HISTORY messages (tool results
-# capped at 8-16 KB, execution reports at 64 KB), so this bounds the memory sessions
+# capped at 8-16 KB, execution reports at 16 KB), so this bounds the memory sessions
 # take even when a page is reloaded in a loop; a demo host has a handful at a time.
 MAX_SESSIONS = 300
 

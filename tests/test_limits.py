@@ -55,7 +55,41 @@ def test_the_session_store_has_a_cap_and_drops_the_idlest_first(monkeypatch):
 
 # -- execution reports: bounded before they enter the session and the prompt -------------------
 
-def test_an_oversized_execution_report_is_refused(client, model):
+def test_a_large_execution_report_is_accepted_and_cut_with_a_note(client, model):
+    """A pack that lists hundreds of elements is a legitimate result: the report is taken,
+    and what goes into the session and the prompt is bounded - the result's head and a
+    note in the style of a capped tool result, the verdict fields whole."""
+    import json
+
+    rows = [{"Id": i, "Name": f"element-{i:05d}", "Category": "OST_Walls"} for i in range(1600)]
+    big = {"success": True, "error": None, "tool": "query_model_stats", "result": rows,
+           "validation": {"validator": "count_delta", "passed": True, "checks": [{"detail": "ok", "passed": True}]},
+           "evidence_id": "ev_big", "warnings": ["w1"]}
+    assert len(json.dumps(big, ensure_ascii=False)) > 100_000
+
+    model.turns.append(text_turn("reported"))
+    resp = client.post("/api/chat", json={"execution": big}, headers=HEADERS)
+    assert resp.status_code == 200, resp.text
+    frames = sse(resp.text)
+    assert frames[0] == ("execution", big)                       # the page gets its report back whole
+    sent = model.last_messages()[-1]["content"]
+    head, body = sent.split("\n", 1)
+    assert head == chat_module.EXECUTION_PREFIX
+    assert len(body) <= chat_module.EXECUTION_KEEP
+    shown = json.loads(body)                                    # still JSON, the verdict intact
+    assert {k: v for k, v in shown.items() if k != "result"} == {k: v for k, v in big.items() if k != "result"}
+    assert shown["result"].startswith('[{"Id": 0, "Name": "element-00000"')
+    assert "[execution result elided after" in shown["result"]
+    session = get_session_store().get(resp.headers["X-Session-Id"])
+    assert session.history[0]["content"] == sent and session.evidence_id == "ev_big"
+
+    # A report whose bulk is not its result is cut as text, with the same note.
+    odd = chat_module.execution_message({"success": True, "warnings": ["w" * 50_000]})
+    assert len(odd) < len(chat_module.EXECUTION_PREFIX) + chat_module.EXECUTION_KEEP + 200
+    assert odd.endswith("the evidence ledger keeps the record]")
+
+
+def test_an_absurd_execution_report_is_refused(client, model):
     big = {"success": True, "result": "x" * (chat_module.MAX_EXECUTION_CHARS + 1)}
     resp = client.post("/api/chat", json={"execution": big}, headers=HEADERS)
     assert resp.status_code == 422

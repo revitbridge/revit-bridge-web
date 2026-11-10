@@ -234,8 +234,11 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   their meaning. Add-ins that authenticate never count, however often they reconnect.
 - Growth while the host runs: interaction logs older than 90 days are purged daily, not only at
   startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
-  `execution` report over 65,536 characters of JSON is refused with 422 `invalid_args`; one
-  model call ends after 600 s even when the endpoint keeps trickling bytes.
+  `execution` report enters the session and the prompt with at most 16,384 characters of JSON
+  (a longer `result` is cut to its head with a note, the verdict fields stay whole; the page
+  still gets the whole report back), and only one over 4,194,304 characters is refused with
+  422 `invalid_args`; one model call ends after 600 s even when the endpoint keeps trickling
+  bytes.
 - Skills: a very long name is cut to a 120-byte id when a skill is created instead of failing
   with 500 (a longer id already on disk still opens, changes and deletes; one the file system
   cannot hold is 404), a skill file is replaced whole or not at all (temporary file with the
