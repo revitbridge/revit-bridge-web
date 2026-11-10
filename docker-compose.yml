@@ -5,7 +5,8 @@ services:
     container_name: revit-bridge-web
     ports:
       # Loopback by default; a reverse proxy (nginx, Caddy, Cloudflare Tunnel)
-      # terminates TLS. Set BIND_ADDRESS=0.0.0.0 to expose the port directly.
+      # terminates TLS. Set BIND_ADDRESS=0.0.0.0 to expose the port directly,
+      # and then FORWARDED_ALLOW_IPS too (see .env.example).
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-7860}:7860"
     env_file:
       - path: .env

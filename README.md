@@ -120,7 +120,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are trusted for client IPs. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1,172.16.0.0/12` in the image, `127.0.0.1` outside it | Proxies whose `X-Forwarded-*` headers are trusted for the client address (per-address rate limits, logs). The image default fits the documented setup: the port published on loopback and a reverse proxy on the Docker host, which reaches the container from the Docker bridge gateway. When `BIND_ADDRESS` is not loopback, set it to the proxy's address - or to `127.0.0.1` with no proxy in front - so a visitor cannot choose their own address. If the compose network is in `192.168.0.0/16` (`docker network inspect revit-bridge-web_default`), list its gateway instead. An explicit value always wins. |
 
 ## API v1
 

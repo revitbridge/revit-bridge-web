@@ -129,6 +129,13 @@ def main() -> None:
         port=settings.port,
         reload=False,
         proxy_headers=True,
+        # Whose X-Forwarded-For / -Proto to believe: the client address of rate limits
+        # and logs. Outside a container a local reverse proxy connects from 127.0.0.1.
+        # The image sets 127.0.0.1,172.16.0.0/12: with the port published on loopback
+        # (BIND_ADDRESS=127.0.0.1) a proxy on the Docker host arrives from the bridge
+        # gateway. When BIND_ADDRESS is not loopback, set FORWARDED_ALLOW_IPS to the
+        # proxy's address, or to 127.0.0.1 with no proxy, so a visitor cannot choose
+        # their own address. An explicit value always wins.
         forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
     )
 

@@ -33,12 +33,17 @@ COPY docker-entrypoint.sh /usr/local/bin/revit-bridge-web-entrypoint
 # DATA_DIR is this host's directory (skills, interaction logs);
 # REVIT_BRIDGE_DATA_DIR is the package's data root (user capability packs,
 # usage.json, evidence). Both live in the ./data volume.
+# FORWARDED_ALLOW_IPS: a reverse proxy on the Docker host reaches a port published
+# on loopback through the bridge gateway (172.x.0.1), so its X-Forwarded-For is
+# trusted by default; with the port bound to a public or LAN address set it in
+# .env (see .env.example). An explicit value replaces this one.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
     REVIT_BRIDGE_DATA_DIR=/app/data \
     HOST=0.0.0.0 \
-    PORT=7860
+    PORT=7860 \
+    FORWARDED_ALLOW_IPS=127.0.0.1,172.16.0.0/12
 
 # The entrypoint starts as root only long enough to copy root-owned secret
 # files and fix the ownership of the data volume, then drops to uid 1000.
