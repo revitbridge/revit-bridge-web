@@ -6,7 +6,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
-Upgrading: the host needs `revit-bridge>=0.4,<0.5` (`uv sync`, or rebuild the image). The system
+Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 
@@ -88,7 +88,7 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   end without Revit.
 - `POST /spec/confirm` is rate limited per client address like `/api/chat`
   (`CHAT_RATE_LIMIT`, its own counter): 429 `{error: rate_limited}`.
-- `.env.example` lists, commented out, the other variables the host and `revit-bridge` 0.4.0
+- `.env.example` lists, commented out, the other variables the host and `revit-bridge` 0.6.0
   read: `REVIT_BRIDGE_CONFIRM_TTL`, `REVIT_BRIDGE_GUIDANCE_COMPANY` / `_PROJECT`,
   `REVIT_BRIDGE_CAPABILITIES_DIR` / `_EVIDENCE_DIR`, and `DATA_DIR` / `HOST` (both pinned by
   `docker-compose.yml`).
@@ -98,7 +98,18 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 ### Changed
 
-- Requires `revit-bridge>=0.4,<0.5` (0.4.0 in `uv.lock`; the image installs it from PyPI).
+- Requires `revit-bridge>=0.6,<0.7` (0.6.0 in `uv.lock`; the image installs it from PyPI). From
+  0.4.0 to 0.6.0 no route, tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same
+  export and `GET /tools` lists the same eight packs. What the pages and the model now see: an
+  execution reads the levels once more after the document probe (a pack with preconditions takes
+  them from its snapshot), and its ledger line's `document` carries `fingerprint` (the snapshot
+  fingerprint; null with a `document: fingerprint skipped` warning when that read fails); a failed
+  run whose error names .NET exception types has a `hint` that points at
+  `get_guidance(stage="fix", exceptions=[...])`; a value missing from a truncated candidate list is
+  a `model_fact` question; `get_guidance` has four more lessons; the prompt's first line names
+  revit-bridge 0.6 (still 5,455 bytes). The skill list has 40 entries instead of 29: the phase
+  skills `revit-task-brief`, `revit-addin-test` and `revit-addin-release` with their references,
+  and `revit-addin-dev`'s `coding-rules`, all off.
 - The system prompt no longer carries every `SKILL.md` in the wheel: of 0.4's three skills only
   `revit-core` is on by default, followed by one line that sends the model to `get_guidance` for
   the lessons and names the other categories. The `revit-bridge` protocol is listed but off: it
@@ -173,7 +184,7 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   `422 {"error": "invalid_pack", "problems": [...]}` when the package rejects the pack
   (an undeclared `{placeholder}` in the code, a malformed parameter, an unknown
   validator) instead of 500.
-- `CLAUDE.md` gave the package constraint as `revit-bridge>=0.1.0`; it is `>=0.4,<0.5`.
+- `CLAUDE.md` gave the package constraint as `revit-bridge>=0.1.0`; it is `>=0.6,<0.7`.
 
 ### Removed
 
