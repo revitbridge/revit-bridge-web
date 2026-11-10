@@ -49,8 +49,10 @@ RUN useradd -m -u 1000 appuser && \
 
 EXPOSE 7860
 
+# No proxy for the probe: HTTP_PROXY from .env is for outbound model calls, and a
+# request for 127.0.0.1 through it fails and marks the container unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/health')" || exit 1
+    CMD python -c "import urllib.request as u; u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:7860/health', timeout=4)" || exit 1
 
 ENTRYPOINT ["/usr/local/bin/revit-bridge-web-entrypoint"]
 CMD ["python", "-m", "backend.main"]
