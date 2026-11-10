@@ -71,8 +71,9 @@ its connection.
    delete it. *Skills*: Markdown protocols that are appended to the model's system prompt - the
    package's `revit-core` (the contract every snippet follows) is on; the `revit-bridge` protocol
    (written for the MCP server's tools; this host's protocol is the package's `host_instructions()`),
-   `revit-addin-dev`, the references and the lessons are listed but off (the model asks for lessons
-   with `get_guidance`); add, upload or import more from GitHub (admin password required).
+   the add-in phase skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
+   `revit-addin-release`), the references and the lessons are listed but off (the model asks for
+   lessons with `get_guidance`); add, upload or import more from GitHub (admin password required).
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.

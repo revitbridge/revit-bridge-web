@@ -55,7 +55,8 @@ def serve(ws, count: int, handler) -> list[dict]:
 
 
 def pack_handler(levels=None, count: int = 2):
-    """A fake add-in for one ``query_levels`` run: probe, count, the pack, count."""
+    """A fake add-in for one ``query_levels`` run: probe, levels (the ledger's document
+    fingerprint, since revit-bridge 0.4.1), count, the pack, count."""
     def handler(request):
         code = request["params"]["code"]
         if "GetElementCount" in code:
@@ -76,7 +77,7 @@ def run_pack_over(client, ws, headers, token, *, tool: str = "query_levels", han
 
     thread = threading.Thread(target=run)
     thread.start()
-    serve(ws, 4, handler or pack_handler())
+    serve(ws, 5, handler or pack_handler())
     thread.join(timeout=5)
     return outcome["run"]
 
@@ -424,16 +425,18 @@ def test_execute_over_a_device_asks_the_device_and_takes_no_for_an_answer(client
                 # The designer says No on the device: JSON-RPC -32001.
                 return json.dumps({"jsonrpc": "2.0", "id": request["id"],
                                    "error": {"code": -32001, "message": "declined on device"}})
+            if "return levels;" in request["params"]["code"]:
+                return addin_reply(request, [{"Id": 1, "Name": "L1", "ElevationMm": 0.0}])
             return addin_reply(request, {"Title": "Project1", "RevitVersion": "2026"})
 
         thread = threading.Thread(target=execute)
         thread.start()
-        requests = serve(ws, 2, handler)
+        requests = serve(ws, 3, handler)
         thread.join(timeout=5)
 
-    # The code request carried the confirmation prompt, the probe did not.
-    probe, code_request = requests
-    assert "confirm" not in probe["params"]
+    # The code request carried the confirmation prompt; the probe and the levels read did not.
+    probe, levels, code_request = requests
+    assert "confirm" not in probe["params"] and "confirm" not in levels["params"]
     confirm = code_request["params"]["confirm"]
     assert confirm["kind"] == "execute_code" and "count walls" in confirm["message"]
 
@@ -458,7 +461,7 @@ def test_a_pack_run_never_asks_the_device(client, device):
 
         thread = threading.Thread(target=run)
         thread.start()
-        requests = serve(ws, 4, pack_handler())
+        requests = serve(ws, 5, pack_handler())
         thread.join(timeout=5)
     assert outcome["run"]["success"] is True
     assert all("confirm" not in r["params"] for r in requests)

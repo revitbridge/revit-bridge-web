@@ -6,9 +6,11 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: since 0.4
-  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL`` and
-  ``builtin:revit-addin-dev/SKILL``, with the Markdown under them such as
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.6
+  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL`` and the
+  add-in phase skills ``builtin:revit-task-brief/SKILL``,
+  ``builtin:revit-addin-dev/SKILL``, ``builtin:revit-addin-test/SKILL`` and
+  ``builtin:revit-addin-release/SKILL``, with the Markdown under them such as
   ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
   with a mounted checkout.
 
@@ -19,12 +21,12 @@ for an MCP host (``check_code``, ``confirm_spec``, ``execute_code`` and the
 verification tools, none of which this host gives the model); this host's
 protocol is the package's ``host_instructions()``, which the chat prompt
 always starts with. The other lessons are the model's to ask for with
-``get_guidance`` (the chat prompt says so in one line), ``revit-addin-dev``
-builds standalone add-ins this host has no tools for, and ``references/`` and
-``lessons/`` are material read on demand, not prompt text. A file's own
-``enabled`` front matter still decides for itself. A mounted ``SKILLS_DIR``
-is enabled by default throughout: mounting it is the operator's choice and
-its files are theirs to edit.
+``get_guidance`` (the chat prompt says so in one line), the add-in phase
+skills are for building a standalone add-in, which this host has no tools
+for, and ``references/`` and ``lessons/`` are material read on demand, not
+prompt text. A file's own ``enabled`` front matter still decides for itself.
+A mounted ``SKILLS_DIR`` is enabled by default throughout: mounting it is the
+operator's choice and its files are theirs to edit.
 """
 from __future__ import annotations
 
