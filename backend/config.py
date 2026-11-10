@@ -42,6 +42,7 @@ start rather than silently dropping what its operator meant to configure.
 """
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -117,6 +118,13 @@ class WebSettings:
     @property
     def log_db_path(self) -> Path:
         return self.data_dir / "interaction_logs.db"
+
+    def admin_token_ok(self, provided: str | None) -> bool:
+        """The one ``X-Admin-Token`` check of every admin route: ``ADMIN_PASSWORD`` is set
+        and ``provided`` equals it, compared in constant time."""
+        if not self.admin_password or not provided:
+            return False
+        return hmac.compare_digest(provided.encode(), self.admin_password.encode())
 
     @property
     def server_model_configured(self) -> bool:

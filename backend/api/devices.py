@@ -36,6 +36,8 @@ HEADER_DEVICE_ID = "x-device-id"
 HEADER_DEVICE_KEY = "x-device-key"
 LEGACY_SLOT_HEADERS = ("x-slot-id", "x-slot-token")
 REDEEM_LIMIT = 10                       # per address per minute, fixed (spec §3.1 item 4)
+# One answer for an unknown device, a wrong key and a revoked device, on every route.
+INVALID_DEVICE_KEY = "Unknown device, wrong X-Device-Key or revoked device"
 
 # Set per request by the device dependency; read where a Revit client or a scope is needed.
 request_device: ContextVar[str | None] = ContextVar("device_id", default=None)
@@ -78,7 +80,7 @@ async def set_device_context(connection: HTTPConnection) -> None:
         return
     key = connection.headers.get(HEADER_DEVICE_KEY) or ""
     if await run_in_threadpool(get_device_store().verify_browser, device_id, key) is None:
-        raise ApiError(403, "invalid_device_key", "Unknown device, wrong X-Device-Key or revoked device")
+        raise ApiError(403, "invalid_device_key", INVALID_DEVICE_KEY)
 
 
 def current_device() -> str | None:
@@ -150,13 +152,12 @@ def device_view(device: Device, relay_status: dict) -> dict:
 
 
 def admin_ok(connection: HTTPConnection | Request) -> bool:
-    """A configured admin password, sent as ``X-Admin-Token``."""
-    password = get_settings().admin_password
-    return bool(password) and connection.headers.get("x-admin-token") == password
+    """A configured admin password, sent as ``X-Admin-Token`` (the shared constant-time check)."""
+    return get_settings().admin_token_ok(connection.headers.get("x-admin-token"))
 
 
 async def _device_or_404(device_id: str) -> dict:
-    """The stored device dict, or 404 - the id exists or it does not."""
+    """The stored device dict, or 404 - the id exists or it does not (admin only)."""
     devices = {d.device_id: d for d in await run_in_threadpool(get_device_store().list)}
     device = devices.get(device_id)
     if device is None:
@@ -168,15 +169,17 @@ async def _authorized(request: Request, device_id: str) -> Device:
     """The device when the request holds its browser key, or the admin password.
 
     The admin token is checked first: with it the device headers are irrelevant
-    (absent, empty or wrong alike).
+    (absent, empty or wrong alike), and an unknown id is 404. Without it an
+    unknown id, a wrong key and a revoked device are the same 403, as on every
+    other device-scoped route: a browser learns nothing about devices it does
+    not hold the key for.
     """
-    found = (await _device_or_404(device_id))["device"]
     if admin_ok(request):
-        return found
+        return (await _device_or_404(device_id))["device"]
     key = request.headers.get(HEADER_DEVICE_KEY) or ""
     device = await run_in_threadpool(get_device_store().verify_browser, device_id, key)
     if device is None:
-        raise ApiError(403, "invalid_device_key", "Wrong X-Device-Key or revoked device")
+        raise ApiError(403, "invalid_device_key", INVALID_DEVICE_KEY)
     return device
 
 

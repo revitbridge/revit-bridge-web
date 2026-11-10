@@ -205,6 +205,60 @@ def test_device_view_needs_its_key_or_the_admin_password(make_client, env):
     assert view["online"] is False and view["last_seen"] is None and view["requests"] == 0
 
 
+def test_an_unknown_device_and_a_wrong_key_read_the_same(make_client, env):
+    """GET and DELETE /devices/{id}: a browser learns nothing about devices it holds no key
+    for - an unknown id is the same 403 as a wrong key. Only the admin hears 404."""
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    paired = client.post(f"{B}/devices/pair", json={}).json()
+    other = client.post(f"{B}/devices/pair", json={}).json()
+    unknown = "dev_aaaaaaaaaaaa"
+
+    for call in (client.get, client.delete):
+        answers = []
+        for device_id, key in ((paired["device_id"], other["browser_key"]), (unknown, other["browser_key"]),
+                               (paired["device_id"], ""), (unknown, "")):
+            resp = call(f"{B}/devices/{device_id}", headers={"X-Device-Key": key} if key else {})
+            answers.append((resp.status_code, resp.json()))
+        assert all(a == answers[0] for a in answers), answers
+        assert answers[0] == (403, {"error": "invalid_device_key",
+                                    "message": "Unknown device, wrong X-Device-Key or revoked device"})
+        # Driving one's own device does not make another id's existence visible either.
+        own = {"X-Device-Id": other["device_id"], "X-Device-Key": other["browser_key"]}
+        assert call(f"{B}/devices/{unknown}", headers=own).json() == answers[0][1]
+        assert call(f"{B}/devices/{paired['device_id']}", headers=own).json() == answers[0][1]
+
+    assert client.get(f"{B}/devices/{unknown}", headers=ADMIN).status_code == 404
+    assert client.delete(f"{B}/devices/{unknown}", headers=ADMIN).status_code == 404
+    assert client.get(f"{B}/devices/{paired['device_id']}", headers=ADMIN).status_code == 200
+
+
+def test_every_admin_check_compares_in_constant_time(make_client, env, monkeypatch):
+    """The device routes, the logs and the skill writes share one X-Admin-Token check."""
+    import hmac
+
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    calls: list[tuple[bytes, bytes]] = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    for path in (f"{B}/devices", "/api/logs", "/api/logs/verify"):
+        calls.clear()
+        assert client.get(path, headers={"X-Admin-Token": "wrong"}).status_code == 403, path
+        assert calls, f"{path}: X-Admin-Token compared without hmac.compare_digest"
+        calls.clear()
+        assert client.get(path, headers=ADMIN).status_code == 200, path
+        assert calls, path
+    calls.clear()
+    assert client.get(f"{B}/devices/dev_aaaaaaaaaaaa", headers=ADMIN).status_code == 404
+    assert calls
+
+
 def test_device_list_is_admin_only(make_client, env):
     client = make_client()
     assert client.post(f"{B}/devices/pair", json={"label": "One"}).status_code == 200
