@@ -44,7 +44,7 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
 
 ## Dependency on the package
 
-`pyproject.toml` requires `revit-bridge>=0.1.0` from PyPI; `uv.lock` pins the exact
+`pyproject.toml` requires `revit-bridge>=0.4,<0.5` from PyPI; `uv.lock` pins the exact
 release. When the host needs something newer, bump the constraint and `uv lock`.
 
 ## Commits
