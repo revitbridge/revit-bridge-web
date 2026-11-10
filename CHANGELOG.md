@@ -140,7 +140,7 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
-- Requires `revit-bridge>=0.6,<0.7` (0.6.0 in `uv.lock`; the image installs it from PyPI). From
+- Requires `revit-bridge>=0.6,<0.7` (0.6.1 in `uv.lock`; the image installs it from PyPI). 0.6.1 is the first release whose device store raises when `devices.json` cannot be read, which the pair, redeem and delete-device routes answer with 503. From
   0.4.0 to 0.6.0 no route, tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same
   export and `GET /tools` lists the same eight packs. What the pages and the model now see: an
   execution reads the levels once more after the document probe (a pack with preconditions takes
