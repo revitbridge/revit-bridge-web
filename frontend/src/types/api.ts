@@ -283,7 +283,8 @@ export interface EvidenceRecord {
   params: Record<string, unknown> | null
   code_sha256: string | null
   code_head: string | null
-  document: { title?: string; revit_version?: string } | null
+  // fingerprint: the snapshot fingerprint at execution time (revit-bridge 0.4.1+; null when it could not be read)
+  document: { title?: string; revit_version?: string; fingerprint?: string | null } | null
   success: boolean
   error: string | null
   result_summary: Record<string, unknown> | null

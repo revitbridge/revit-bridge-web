@@ -151,9 +151,9 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   `invalid_args` on the bridge routes only - `/api/chat`, `/api/skills` and `/api/logs`
   keep `{detail: [...]}`.
 
-- Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
-  packs read in place from the wheel, keeps user packs and `usage.json` under its own
-  data root, and no longer rewrites pack files to count executions.
+- Since `revit-bridge` 0.2.1 (the current requirement is the first entry of this list) the
+  package ships eight built-in packs read in place from the wheel, keeps user packs and
+  `usage.json` under its own data root, and no longer rewrites pack files to count executions.
 - Capability packs come straight from the package's `ToolStore`: built-in packs are
   read from the wheel, user packs live under `REVIT_BRIDGE_DATA_DIR/capabilities`
   (`/app/data` in the container, the `./data` volume). Nothing is copied on first

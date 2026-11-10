@@ -85,9 +85,9 @@ class WebSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
         """Read the environment and validate it; raise ``ConfigError`` on a
-        deployment that cannot run (e.g. tokens required but none configured,
-        a token file missing or empty) so the process exits with the reason
-        instead of answering 500 to every request."""
+        deployment that cannot run (a retired 0.1 slot variable still set, a
+        non-numeric PORT, MAX_DEVICES or CHAT_RATE_LIMIT) so the process exits
+        with the reason instead of answering 500 to every request."""
         env = os.environ if env is None else env
         _refuse_retired(env)
         skills = env.get("SKILLS_DIR", "").strip()

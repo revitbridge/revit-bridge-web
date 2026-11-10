@@ -24,7 +24,9 @@ Split deployment (SPA on a static host, API on another machine): build `frontend
 [`frontend/public/config.example.json`](frontend/public/config.example.json) and set `apiBase` to the
 API origin (and `wsBase` if the relay differs). The SPA reads that file at startup; the backend's own
 `/config.json` only describes a same-origin setup. Set `CORS_ORIGINS` on the API side to the static
-host's origin.
+host's origin. Either way the SPA must be served at the root of its origin: a path-prefix deployment
+(`https://example.com/revit/`) is not supported, because the built assets (`/assets/...`),
+`/config.json` and the API calls (`/api/...` after `apiBase`) are absolute paths.
 
 Connect a designer's Revit to the host in three steps: press **Pair a Revit** on the Connect page,
 run the install command it shows on the designer's machine with Revit closed (it carries the pairing
@@ -112,14 +114,17 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
 | `ADMIN_PASSWORD` | unset | Enables skill edits and `/api/logs` via `X-Admin-Token`. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
+| `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
 | `MAX_DEVICES` | `20` | How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
 | `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
+| `REVIT_BRIDGE_CAPABILITIES_DIR`, `REVIT_BRIDGE_EVIDENCE_DIR` | `REVIT_BRIDGE_DATA_DIR/capabilities`, `REVIT_BRIDGE_DATA_DIR/evidence` | Package overrides for the user pack and evidence directories. Leave them unset in the container: a path outside `/app/data` is not in the volume and the entrypoint does not make it writable. |
 | `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `<skill>/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. Every file in a mounted directory is on unless its front matter says `enabled: false`. |
 | `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for `get_guidance`, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
-| `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
+| `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). Without Docker, `PORT` is the port the server listens on. |
+| `HOST` | `0.0.0.0` | Interface the server listens on without Docker; `docker-compose.yml` pins it (and the container port, 7860). |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1,172.16.0.0/12` in the image, `127.0.0.1` outside it | Proxies whose `X-Forwarded-*` headers are trusted for the client address (per-address rate limits, logs). The image default fits the documented setup: the port published on loopback and a reverse proxy on the Docker host, which reaches the container from the Docker bridge gateway. When `BIND_ADDRESS` is not loopback, set it to the proxy's address - or to `127.0.0.1` with no proxy in front - so a visitor cannot choose their own address. If the compose network is in `192.168.0.0/16` (`docker network inspect revit-bridge-web_default`), list its gateway instead. An explicit value always wins. |
 
 ## API v1

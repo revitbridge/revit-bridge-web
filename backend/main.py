@@ -107,9 +107,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 def build_app_or_exit() -> FastAPI:
     """Create the app, or print the configuration error and exit with 2.
 
-    A deployment whose environment cannot work (slot tokens demanded but not
-    provided, a token file missing or empty, a non-numeric port) must fail at
-    startup with the reason, not answer 500 to every request.
+    A deployment whose environment cannot work (a retired 0.1 slot variable
+    still set, a non-numeric port or limit) must fail at startup with the
+    reason, not answer 500 to every request.
     """
     try:
         return create_app()

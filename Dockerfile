@@ -45,8 +45,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PORT=7860 \
     FORWARDED_ALLOW_IPS=127.0.0.1,172.16.0.0/12
 
-# The entrypoint starts as root only long enough to copy root-owned secret
-# files and fix the ownership of the data volume, then drops to uid 1000.
+# The entrypoint starts as root only long enough to make the data volume
+# writable for appuser, then drops to it (uid 1000).
 RUN useradd -m -u 1000 appuser && \
     mkdir -p /app/data && \
     chown -R appuser:appuser /app && \
