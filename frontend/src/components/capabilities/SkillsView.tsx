@@ -1,13 +1,12 @@
 /* Skills: Markdown protocols that go into the model's system prompt. */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import { skillsApi } from '../../api/skills'
 import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
 import type { Skill } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
+import Markdown from '../shared/Markdown'
 
 export default function SkillsView() {
   const admin = getConfig().features.admin
@@ -136,7 +135,7 @@ export default function SkillsView() {
             </div>
           </div>
           {view.description && <p className="section-copy">{view.description}</p>}
-          <div className="markdown-body skill-content"><ReactMarkdown remarkPlugins={[remarkGfm]}>{view.content || '(empty)'}</ReactMarkdown></div>
+          <SkillContent content={view.content} />
         </Modal>
       )}
 
@@ -144,6 +143,11 @@ export default function SkillsView() {
       {showImport && <ImportSkillModal onClose={() => setShowImport(false)} onDone={() => { setShowImport(false); refresh() }} />}
     </div>
   )
+}
+
+/* A skill's text: its Markdown without images, links in a new tab (shared/Markdown). */
+export function SkillContent({ content }: { content?: string }) {
+  return <div className="markdown-body skill-content"><Markdown>{content || '(empty)'}</Markdown></div>
 }
 
 function Modal({ children, onClose, width }: { children: React.ReactNode; onClose: () => void; width: number }) {

