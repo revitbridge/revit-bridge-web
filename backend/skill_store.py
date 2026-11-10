@@ -34,7 +34,7 @@ import contextlib
 import logging
 import os
 import re
-import tempfile
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -63,9 +63,14 @@ def _fit(text: str, limit: int = MAX_ID_BYTES) -> str:
 def _write_atomic(path: Path, text: str) -> None:
     """Replace ``path`` with ``text`` whole or not at all: a temporary file in the same
     directory, then ``os.replace``. Text that cannot be encoded fails before any file
-    is touched; a failed write leaves the old file and no temporary file."""
+    is touched; a failed write leaves the old file and no temporary file.
+
+    The temporary file is created with mode 0o666 less the process umask - what a plain
+    ``write_text`` gives (0644 under the usual 022) - not ``mkstemp``'s 0600, which
+    ``os.replace`` would carry over and make every saved skill owner-only."""
     data = text.encode("utf-8")
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".skill-", suffix=".tmp")
+    tmp = path.parent / f".skill-{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)

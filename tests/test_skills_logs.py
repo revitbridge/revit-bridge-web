@@ -1,6 +1,9 @@
 """Skill directory (user + read-only built-ins) and admin-gated logs."""
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from backend.api import chat as chat_module
@@ -205,6 +208,29 @@ def test_skill_ids_are_bounded(make_client, env, tmp_path):
         assert client.put(f"/api/skills/{long_id}", json={"content": "x"}, headers=ADMIN).status_code == 404
         assert client.patch(f"/api/skills/{long_id}", json={"enabled": False}, headers=ADMIN).status_code == 404
         assert client.delete(f"/api/skills/{long_id}", headers=ADMIN).status_code == 404
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_saved_skill_keeps_the_mode_a_plain_write_gives(tmp_path):
+    """The temporary file of the atomic write must not leave every skill owner-only (0600):
+    an operator editing ./data as another user reads them like any file the host writes."""
+    from backend import skill_store
+
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    user = tmp_path / "user"
+    old = os.umask(0o022)
+    try:
+        store = skill_store.SkillStore(user, empty)
+        store.save(None, {"name": "office"}, "Desks face north.")
+        plain = user / "plain.txt"
+        plain.write_text("x", encoding="utf-8")
+        expected = stat.S_IMODE(plain.stat().st_mode)
+        assert stat.S_IMODE((user / "office.md").stat().st_mode) == expected == 0o644
+        store.update("office", content="Desks face south.")          # replaced, same mode
+        assert stat.S_IMODE((user / "office.md").stat().st_mode) == expected
+    finally:
+        os.umask(old)
 
 
 def test_a_skill_file_is_replaced_whole_or_not_at_all(tmp_path, monkeypatch):
