@@ -26,10 +26,10 @@ import contextlib
 import ipaddress
 import json
 import logging
+import re
 import socket
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import httpx
 
@@ -116,16 +116,37 @@ _REFUSED_ADDRESS = (
 )
 
 
-def _endpoint_host(base_url: str) -> tuple[str, int]:
-    """The host and port of an endpoint URL; 400 when the URL does not parse."""
+_INVALID_URL = "X-LLM-Base-Url is not a valid URL"
+_HOST_LABEL = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?")
+
+
+def completions_url(base_url: str) -> str:
+    """The address one completion is POSTed to."""
+    return f"{base_url}/chat/completions"
+
+
+def _valid_host(host: str) -> bool:
+    """An IP literal or a DNS name (labels of letters, digits, ``-`` and ``_``)."""
+    if ":" in host:                                  # IPv6, without its brackets
+        return _literal_address(host) is not None
+    name = host[:-1] if host.endswith(".") else host
+    return 0 < len(name) <= 253 and all(_HOST_LABEL.fullmatch(label) for label in name.split("."))
+
+
+def _endpoint(base_url: str) -> tuple[str, str, int]:
+    """``(scheme, host, port)`` of the URL httpx will request, parsed by httpx itself, so
+    the host checked is the host connected to; 400 for anything httpx would refuse
+    (control characters), a host that is no IP literal or DNS name (a space, ``%``,
+    an empty label) or a port out of range."""
     try:
-        parsed = urlparse(base_url)
-        host, port = parsed.hostname, parsed.port   # .port raises on a port out of range
-    except ValueError:
-        raise LLMError("X-LLM-Base-Url is not a valid URL", status=400) from None
-    if not host:
-        raise LLMError("X-LLM-Base-Url is not a valid URL", status=400)
-    return host, port or (443 if parsed.scheme == "https" else 80)
+        url = httpx.URL(completions_url(base_url))
+        host = url.raw_host.decode("ascii")
+    except (httpx.InvalidURL, ValueError, UnicodeError):
+        raise LLMError(_INVALID_URL, status=400) from None
+    port = url.port
+    if not host or not _valid_host(host) or (port is not None and not 0 < port < 65536):
+        raise LLMError(_INVALID_URL, status=400)
+    return url.scheme, host, port or (443 if url.scheme == "https" else 80)
 
 
 def _literal_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
@@ -158,8 +179,7 @@ def _check_base_url(base_url: str, settings: WebSettings) -> None:
     loopback addresses, are opt-in for local setups via ``LLM_ALLOW_HTTP=1``.
     A literal address is judged here; a name is resolved by ``resolve_llm``.
     """
-    host, _ = _endpoint_host(base_url)
-    scheme = urlparse(base_url).scheme
+    scheme, host, _ = _endpoint(base_url)
     if scheme == "https" or (scheme == "http" and settings.llm_allow_http):
         if (not settings.llm_allow_http and _literal_address(host) is not None
                 and not is_public_address(host)):
@@ -192,7 +212,7 @@ async def resolve_llm(headers: Mapping[str, str], settings: WebSettings) -> LLMS
     llm = LLMSettings.resolve(headers, settings)
     if not llm.custom_endpoint or settings.llm_allow_http:
         return llm
-    host, port = _endpoint_host(llm.base_url)
+    _, host, port = _endpoint(llm.base_url)
     if _literal_address(host) is not None:
         return llm                                  # judged by _check_base_url already
     try:
@@ -284,7 +304,7 @@ async def stream_completion(
             "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
             status=400,
         )
-    url = f"{llm.base_url}/chat/completions"
+    url = completions_url(llm.base_url)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
         "Content-Type": "application/json",
@@ -338,6 +358,10 @@ async def stream_completion(
                     yield token
                 for fragment in delta.get("tool_calls") or []:
                     _merge_tool_call(calls, fragment)
+    except httpx.InvalidURL:
+        # Not an HTTPError. A browser URL was checked at the gate (_endpoint); this is
+        # the second line, and the only one for the server's own LLM_BASE_URL.
+        raise LLMError("Model endpoint URL is not a valid URL", status=400) from None
     except httpx.HTTPError as exc:
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)

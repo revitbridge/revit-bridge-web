@@ -214,6 +214,46 @@ def test_llm_allow_http_also_lifts_the_address_check(make_client, env, recorder,
     assert asked == []                      # nothing resolved: the opt-in covers names too
 
 
+# -- R1: what httpx would refuse to request is refused at the gate ---------------------------
+
+UNREQUESTABLE = ["https://8.8.8.8/a\tb", "https://8.8.8.8/a\x00b", "https://8.8.8.8/a\x1fb",
+                 "https://8.8.8.8/a\x7fb", "https://exa mple/v1", "https://exa%20mple/v1",
+                 "https://8.8.8.8:99999/v1", "https://a..b/v1"]
+
+
+@pytest.mark.parametrize("url", UNREQUESTABLE)
+def test_a_url_httpx_would_refuse_is_a_400_at_the_gate(url):
+    for settings in (SERVER, RELAXED):           # malformed is malformed, opt-in or not
+        with pytest.raises(LLMError) as exc:
+            LLMSettings.resolve({"x-llm-base-url": url, "x-llm-key": "k"}, settings)
+        assert exc.value.status == 400 and "not a valid URL" in str(exc.value)
+
+
+@pytest.mark.parametrize("url", ["https://8.8.8.8/a\tb", "https://exa mple/v1", "http://exa mple/v1"])
+def test_a_url_httpx_would_refuse_never_reaches_the_transport(make_client, env, recorder, url):
+    env.setenv("LLM_ALLOW_HTTP", "1" if url.startswith("http:") else "0")
+    client = make_client()
+    recorder.model.turns.append(text_turn("never"))
+    resp = client.post("/api/chat", json={"message": "hi", "bridge": False},
+                       headers={"X-LLM-Base-Url": url, "X-LLM-Model": "m", "X-LLM-Key": "k"})
+    assert resp.status_code == 400, resp.text
+    assert "not a valid URL" in resp.json()["detail"]
+    assert recorder.sent == []
+
+
+def test_an_unrequestable_server_url_is_a_model_error_not_a_crash(recorder):
+    """LLM_BASE_URL is not checked at the gate; the request itself still fails as an LLMError."""
+    import asyncio
+
+    async def collect():
+        settings = LLMSettings(base_url="https://8.8.8.8/a\tb", model="m", api_key="k")
+        return [t async for t in llm_module.stream_completion(settings, [{"role": "user", "content": "x"}])]
+
+    with pytest.raises(LLMError) as exc:
+        asyncio.run(collect())
+    assert "not a valid URL" in str(exc.value) and recorder.sent == []
+
+
 # -- B2: a malformed endpoint is a 400, not a crash ------------------------------------------
 
 @pytest.mark.parametrize("url", ["https://[::1", "https://example.com:99999/v1", "https://[not-an-ip]/v1"])
