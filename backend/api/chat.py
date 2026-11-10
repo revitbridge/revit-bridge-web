@@ -53,7 +53,7 @@ from backend.api.errors import ApiError
 from backend.api.model_tools import GET_GUIDANCE, TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
 from backend.config import get_settings
 from backend.llm import (
-    SSE_DONE, LLMError, LLMSettings, assistant_message, format_sse, format_sse_event,
+    SSE_DONE, LLMError, assistant_message, format_sse, format_sse_event, resolve_llm,
     stream_completion, tool_message,
 )
 from backend.log_store import get_client_ip, log_and_stream
@@ -154,7 +154,7 @@ async def chat(req: ChatRequest, request: Request):
 
     settings = get_settings()
     try:
-        llm = LLMSettings.resolve(request.headers, settings)
+        llm = await resolve_llm(request.headers, settings)
     except LLMError as exc:
         raise HTTPException(exc.status, str(exc)) from None
     if not llm.configured:

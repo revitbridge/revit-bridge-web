@@ -35,7 +35,10 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
 - The frontend reads `/config.json` (`apiBase`, `wsBase`, `features`) at runtime. No
   `VITE_API_BASE_URL` or any other build-time address.
 - Bring your own model: `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` first, then
-  `LLM_*` environment variables. Keys are never written to disk, logs or error messages.
+  `LLM_*` environment variables - except the key: `LLM_API_KEY` only ever goes to
+  `LLM_BASE_URL`, so a request with its own `X-LLM-Base-Url` must bring `X-LLM-Key`.
+  A browser-supplied endpoint must be https on a public address unless `LLM_ALLOW_HTTP=1`.
+  Keys are never written to disk, logs or error messages.
 - Configuration comes only from environment variables (see `.env.example`); no config files.
 - Web API contract changes are a planning decision: stop and record `BLOCKED` in the notes log.
 - `docs/` holds exactly one file, `docs/api-v1.json`. Deployment details stay in the notes repo.

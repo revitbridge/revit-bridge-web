@@ -8,6 +8,19 @@ from backend import config, log_store, relay, skill_store, session
 from backend.api import devices
 
 
+@pytest.fixture(autouse=True)
+def _no_dns(monkeypatch):
+    """No test resolves a name: the host name in a browser-supplied model endpoint answers
+    one global address (the model transport is mocked, nothing connects to it). Tests of
+    the endpoint check install their own answers."""
+    from backend import llm
+
+    async def public(host: str, port: int) -> list[str]:
+        return ["93.184.215.14"]
+
+    monkeypatch.setattr(llm, "resolve_addresses", public)
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Point the host at a private data dir and no Revit; returns monkeypatch."""

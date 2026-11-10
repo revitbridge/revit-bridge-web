@@ -2,7 +2,11 @@
 
 Bring your own model. The browser sends ``X-LLM-Base-Url`` / ``X-LLM-Model``
 / ``X-LLM-Key`` with each request; when a header is absent the server-side
-``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` fill in. Settings live for
+``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` fill in - except that the
+server's key only ever goes to the server's own ``LLM_BASE_URL``: a request
+that names its own endpoint must bring its own key. A browser-supplied
+endpoint must be an https URL on a public address (``LLM_ALLOW_HTTP=1`` lifts
+both rules for a model on the operator's own network). Settings live for
 one request only: nothing is written to disk and the key never appears in a
 log line, an error message or a ``repr``.
 
@@ -17,8 +21,11 @@ rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 """
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import logging
+import socket
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -50,6 +57,7 @@ class LLMSettings:
     model: str
     api_key: str = field(repr=False)
     source: str = "server"  # "browser" when any header supplied a value
+    custom_endpoint: bool = False  # base_url came from X-LLM-Base-Url
 
     @property
     def configured(self) -> bool:
@@ -57,15 +65,32 @@ class LLMSettings:
 
     @classmethod
     def resolve(cls, headers: Mapping[str, str], settings: WebSettings) -> LLMSettings:
-        """Browser headers first, then the server defaults."""
+        """Browser headers first, then the server defaults - but never the server's key
+        with the browser's endpoint.
+
+        ``X-LLM-Base-Url`` present: the request goes there with ``X-LLM-Key`` (400 when
+        it is missing - even when the URL is the server's own, written differently) and
+        ``X-LLM-Model`` or the server's model name. Absent: the request goes to
+        ``LLM_BASE_URL`` with ``X-LLM-Key`` or ``LLM_API_KEY`` and ``X-LLM-Model`` or
+        ``LLM_MODEL``; a visitor's own key or model choice may use the server's endpoint.
+        No network here: a name in the URL is checked by ``resolve_llm``.
+        """
         base_url = (headers.get(HEADER_BASE_URL) or "").strip().rstrip("/")
         model = (headers.get(HEADER_MODEL) or "").strip()
         api_key = (headers.get(HEADER_KEY) or "").strip()
         from_browser = bool(base_url or model or api_key)
         if base_url:
             _check_base_url(base_url, settings)
+            if not api_key:
+                raise LLMError(
+                    "X-LLM-Key is required with X-LLM-Base-Url: the server's key is only "
+                    "sent to the server's own model endpoint",
+                    status=400,
+                )
+            return cls(base_url=base_url, model=model or settings.llm_model, api_key=api_key,
+                       source="browser", custom_endpoint=True)
         return cls(
-            base_url=base_url or settings.llm_base_url,
+            base_url=settings.llm_base_url,
             model=model or settings.llm_model,
             api_key=api_key or settings.llm_api_key,
             source="browser" if from_browser else "server",
@@ -81,23 +106,98 @@ class LLMSettings:
         }
 
 
+_REFUSED_ADDRESS = (
+    "X-LLM-Base-Url must not point at a loopback, private, link-local, multicast or "
+    "reserved address (set LLM_ALLOW_HTTP=1 on the server for a model on its own network)"
+)
+
+
+def _endpoint_host(base_url: str) -> tuple[str, int]:
+    """The host and port of an endpoint URL; 400 when the URL does not parse."""
+    try:
+        parsed = urlparse(base_url)
+        host, port = parsed.hostname, parsed.port   # .port raises on a port out of range
+    except ValueError:
+        raise LLMError("X-LLM-Base-Url is not a valid URL", status=400) from None
+    if not host:
+        raise LLMError("X-LLM-Base-Url is not a valid URL", status=400)
+    return host, port or (443 if parsed.scheme == "https" else 80)
+
+
+def _literal_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """``host`` as an IP address (an IPv6 zone id dropped), or None for a name."""
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return None
+
+
+def is_public_address(address: str) -> bool:
+    """Whether a browser-supplied endpoint may reach ``address``: a globally routable
+    unicast address. Loopback, private, link-local, multicast, unspecified, reserved and
+    shared (100.64/10) addresses are not; an IPv4-mapped IPv6 address is judged as the
+    IPv4 address it carries; anything that does not parse is not."""
+    ip = _literal_address(address)
+    if ip is None:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not (ip.is_loopback or ip.is_private or ip.is_link_local
+                                 or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
+
+
 def _check_base_url(base_url: str, settings: WebSettings) -> None:
-    """A browser-supplied endpoint must be an absolute https URL.
+    """A browser-supplied endpoint must be an absolute https URL on a public address.
 
     The server would otherwise POST to whatever address a visitor names
-    (metadata services, internal hosts). Plain http is opt-in for local
-    setups via ``LLM_ALLOW_HTTP=1``.
+    (metadata services, internal hosts). Plain http, and with it private and
+    loopback addresses, are opt-in for local setups via ``LLM_ALLOW_HTTP=1``.
+    A literal address is judged here; a name is resolved by ``resolve_llm``.
     """
-    parsed = urlparse(base_url)
-    if parsed.scheme == "https" and parsed.netloc:
-        return
-    if parsed.scheme == "http" and parsed.netloc and settings.llm_allow_http:
+    host, _ = _endpoint_host(base_url)
+    scheme = urlparse(base_url).scheme
+    if scheme == "https" or (scheme == "http" and settings.llm_allow_http):
+        if (not settings.llm_allow_http and _literal_address(host) is not None
+                and not is_public_address(host)):
+            raise LLMError(_REFUSED_ADDRESS, status=400)
         return
     raise LLMError(
         "X-LLM-Base-Url must be an absolute https:// URL "
         "(set LLM_ALLOW_HTTP=1 on the server to allow http://)",
         status=400,
     )
+
+
+async def resolve_addresses(host: str, port: int) -> list[str]:
+    """Every address ``host`` resolves to; the resolver runs off the event loop."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def resolve_llm(headers: Mapping[str, str], settings: WebSettings) -> LLMSettings:
+    """``LLMSettings.resolve``, then the name in a browser-supplied endpoint resolved:
+    every address it answers must be public (``is_public_address``), and a name that
+    does not resolve is refused too (400). ``LLM_ALLOW_HTTP=1`` skips this, as it skips
+    the literal-address check; the server's own ``LLM_BASE_URL`` is never checked.
+
+    This does not defeat DNS rebinding: httpx resolves the name again when it
+    connects, and a name that answers a public address now may answer a private one
+    then. It stops the plain cases - a private address, ``localhost``, a name that
+    points inside the network - which are what a visitor can type.
+    """
+    llm = LLMSettings.resolve(headers, settings)
+    if not llm.custom_endpoint or settings.llm_allow_http:
+        return llm
+    host, port = _endpoint_host(llm.base_url)
+    if _literal_address(host) is not None:
+        return llm                                  # judged by _check_base_url already
+    try:
+        addresses = await resolve_addresses(host, port)
+    except (OSError, UnicodeError):
+        raise LLMError(f"X-LLM-Base-Url: cannot resolve host {host!r}", status=400) from None
+    if not addresses or not all(is_public_address(a) for a in addresses):
+        raise LLMError(_REFUSED_ADDRESS, status=400)
+    return llm
 
 
 # -- function calling ------------------------------------------------------------

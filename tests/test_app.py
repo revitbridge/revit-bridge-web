@@ -41,8 +41,11 @@ def test_settings_defaults_come_from_env_only():
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 20,
         "slotTokenRequired": False, "maxSlots": 20}}
-    s = WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k", "CORS_ORIGINS": "https://a, https://b"})
+    s = WebSettings.from_env({"LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
+                              "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
+    # Without its URL the server's key could only go to a visitor's endpoint: not a server model.
+    assert not WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k"}).server_model_configured
 
 
 def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path):
