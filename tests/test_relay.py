@@ -238,6 +238,178 @@ def test_stray_reply_before_ours_is_skipped_not_misattributed():
     assert resp.success and resp.result == {"message": "new"}
 
 
+class _SilentAddin(_InstantAddin):
+    """Takes every request and never answers (a confirmation dialog nobody clicks)."""
+
+    def __init__(self, relay, device_id: str):
+        super().__init__(relay, device_id, lambda req: [])
+
+
+def test_a_busy_device_refuses_a_waiter_after_its_timeout_instead_of_queueing():
+    """The lock wait is bounded by the request's own timeout: the waiter fails as a
+    transport failure (nothing reached Revit), not after the holder is done."""
+    import asyncio
+    import time
+
+    from backend.relay import DeviceRelay
+
+    async def scenario():
+        relay = DeviceRelay(max_devices=1)
+        ws = _SilentAddin(relay, DEV)
+        assert relay.register(DEV, ws) is None
+        holder = asyncio.create_task(relay.send_command(DEV, "send_code_to_revit", {"code": "a"}, timeout=3.0))
+        await asyncio.sleep(0.05)                              # the holder has the lock and waits
+        t0 = time.monotonic()
+        with pytest.raises(ConnectionError) as exc:
+            await relay.send_command(DEV, "say_hello", {}, timeout=0.3)
+        waited = time.monotonic() - t0
+        holder.cancel()
+        await asyncio.gather(holder, return_exceptions=True)
+        return waited, str(exc.value), len(ws.sent), relay.get_connection(DEV).lock.locked()
+
+    waited, message, sent, still_locked = asyncio.run(scenario())
+    assert waited < 1.5 and "busy" in message
+    assert sent == 1                                           # the waiter never reached the add-in
+    assert still_locked is False                               # nothing leaked the lock
+
+
+def test_a_busy_device_caps_its_queue(monkeypatch):
+    import asyncio
+    import time
+
+    from backend import relay as relay_module
+
+    monkeypatch.setattr(relay_module, "DEVICE_QUEUE_LIMIT", 2)
+
+    async def scenario():
+        relay = relay_module.DeviceRelay(max_devices=1)
+        ws = _SilentAddin(relay, DEV)
+        assert relay.register(DEV, ws) is None
+        tasks = [asyncio.create_task(relay.send_command(DEV, "say_hello", {}, timeout=3.0)) for _ in range(3)]
+        await asyncio.sleep(0.05)                              # one holds the lock, two wait
+        t0 = time.monotonic()
+        with pytest.raises(ConnectionError) as exc:
+            await relay.send_command(DEV, "say_hello", {}, timeout=3.0)
+        refused_after = time.monotonic() - t0
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        conn = relay.get_connection(DEV)
+        return refused_after, str(exc.value), conn.waiting, conn.lock.locked()
+
+    refused_after, message, waiting, locked = asyncio.run(scenario())
+    assert refused_after < 0.5 and "busy" in message
+    assert waiting == 0 and locked is False
+
+
+def _office(count: int) -> list[tuple[str, str]]:
+    """``count`` redeemed devices straight from the store (the HTTP routes have their own limits)."""
+    from backend.api.devices import get_device_store
+
+    store = get_device_store()
+    devices = []
+    for i in range(count):
+        pairing = store.create_pairing(f"pc-{i}")
+        devices.append((pairing.device_id, store.redeem(pairing.code, "0.2.0").device_token))
+    return devices
+
+
+def _attempt(client, device_id: str, auth: dict | None, *, expect_close: bool) -> int | None:
+    """One add-in handshake. ``expect_close``: the server is expected to close the socket
+    (a refusal); otherwise wait until the device is registered, leave, and wait until the
+    relay has let it go. Returns the close code, or None for a connection that held."""
+    import time
+
+    from starlette.websockets import WebSocketDisconnect
+
+    from backend.relay import get_relay
+
+    try:
+        with client.websocket_connect(f"{B}/ws/{device_id}") as ws:
+            if auth is not None:
+                ws.send_text(json.dumps(auth))
+            if expect_close:
+                ws.receive_text()
+                return None
+            deadline = time.monotonic() + 5
+            while get_relay().get_connection(device_id) is None:
+                assert time.monotonic() < deadline, f"{device_id} never registered"
+                time.sleep(0.002)
+    except WebSocketDisconnect as exc:
+        return exc.code
+    deadline = time.monotonic() + 5
+    while device_id in get_relay()._devices:
+        assert time.monotonic() < deadline, f"{device_id} never left"
+        time.sleep(0.002)
+    return None
+
+
+def test_an_office_of_valid_add_ins_is_never_limited(make_client, env):
+    """Twenty add-ins behind one address reconnect every 5 s for two minutes (24 rounds);
+    five of them find a stale socket still holding their device and are answered 4002 each
+    time, as after a network blip. None of it is a failed authentication, so none of it
+    is refused before accept (1008)."""
+    from contextlib import ExitStack
+
+    from tests.test_devices import connect
+
+    env.setenv("MAX_DEVICES", "40")
+    client = make_client()
+    devices = _office(20)
+    stale, fresh = devices[:5], devices[5:]
+    codes: list[int | None] = []
+    with ExitStack() as held:
+        for device_id, token in stale:                          # the sockets a blip left behind
+            held.enter_context(connect(client, device_id, token))
+        for _ in range(24):
+            for device_id, token in stale:
+                codes.append(_attempt(client, device_id, {"type": "auth", "device_id": device_id, "token": token},
+                                      expect_close=True))
+            for device_id, token in fresh:
+                codes.append(_attempt(client, device_id, {"type": "auth", "device_id": device_id, "token": token},
+                                      expect_close=False))
+    assert 1008 not in codes, f"limited after {codes.index(1008)} valid handshakes"
+    assert codes.count(4002) == 24 * 5 and codes.count(None) == 24 * 15
+
+
+def test_failed_handshakes_from_one_address_are_limited(client, device, monkeypatch):
+    """Failing authentication - a wrong token, no auth message in time - is what is
+    counted; past HANDSHAKE_FAILURE_LIMIT in a minute the address is refused before
+    accept (1008, HTTP 403 on a real server) and the close codes keep their meaning."""
+    from backend import ratelimit
+    from backend.api import bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "HANDSHAKE_FAILURE_LIMIT", 3)
+    monkeypatch.setattr(bridge_module, "HANDSHAKE_TIMEOUT", 0.2)
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(ratelimit.handshake_failures, "_clock", lambda: clock["now"])
+    _, device_id, token = device
+    wrong = {"type": "auth", "device_id": device_id, "token": "wrong"}
+
+    assert _attempt(client, device_id, wrong, expect_close=True) == 4003
+    assert _attempt(client, "dev_aaaaaaaaaaaa", {"type": "auth", "device_id": "dev_aaaaaaaaaaaa",
+                                                 "token": "x"}, expect_close=True) == 4003
+    assert _attempt(client, device_id, None, expect_close=True) == 4003          # nothing sent in time
+    assert _attempt(client, device_id, wrong, expect_close=True) == 1008         # refused, not judged
+    clock["now"] += 61                                                           # the minute is over
+    assert _attempt(client, device_id, {"type": "auth", "device_id": device_id, "token": token},
+                    expect_close=False) is None
+
+
+def test_unauthenticated_sockets_from_one_address_are_capped(client, device, monkeypatch):
+    """Sockets that have not authenticated yet are counted per address while they wait;
+    past PENDING_HANDSHAKE_LIMIT the next one is refused before accept."""
+    from backend.api import bridge as bridge_module
+
+    monkeypatch.setattr(bridge_module, "PENDING_HANDSHAKE_LIMIT", 2)
+    _, device_id, token = device
+    with client.websocket_connect(f"{B}/ws/{device_id}"), client.websocket_connect(f"{B}/ws/{device_id}"):
+        assert _attempt(client, device_id, None, expect_close=True) == 1008
+    # Both waiting sockets are gone: a valid add-in gets through.
+    assert _attempt(client, device_id, {"type": "auth", "device_id": device_id, "token": token},
+                    expect_close=False) is None
+
+
 def test_the_relay_says_why_it_refused_a_connection():
     from backend.relay import DeviceRelay
 

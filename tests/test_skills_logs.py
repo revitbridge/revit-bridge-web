@@ -1,6 +1,11 @@
 """Skill directory (user + read-only built-ins) and admin-gated logs."""
 from __future__ import annotations
 
+import os
+import stat
+
+import pytest
+
 from backend.api import chat as chat_module
 
 ADMIN = {"X-Admin-Token": "hunter2"}
@@ -175,6 +180,119 @@ def test_skill_crud_and_prompt_injection(make_client, env, tmp_path):
 
     assert client.delete(f"/api/skills/{skill_id}", headers=ADMIN).json()["deleted"] == skill_id
     assert client.get(f"/api/skills/{skill_id}").status_code == 404
+
+
+def test_skill_ids_are_bounded(make_client, env, tmp_path):
+    """A very long name is cut to a file name every file system takes; an id that is not
+    on disk is 404 however long, never an OSError (500)."""
+    from backend.skill_store import MAX_ID_BYTES
+
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    env.setenv("SKILLS_DIR", str(empty))
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+
+    created = client.post("/api/skills", json={"name": "x" * 300, "content": "Long."}, headers=ADMIN)
+    assert created.status_code == 200, created.text
+    skill_id = created.json()["id"]
+    assert skill_id == "x" * MAX_ID_BYTES
+    again = client.post("/api/skills", json={"name": "x" * 300, "content": "Again."}, headers=ADMIN).json()["id"]
+    assert again.endswith("-2") and len(again.encode()) <= MAX_ID_BYTES
+    wide = client.post("/api/skills", json={"name": "楼层" * 100, "content": "Wide."}, headers=ADMIN).json()["id"]
+    assert len(wide.encode()) <= MAX_ID_BYTES and wide.startswith("楼层")
+    assert client.get(f"/api/skills/{skill_id}").json()["content"] == "Long."
+
+    for long_id in ("y" * 300, "z" * (MAX_ID_BYTES + 1)):
+        assert client.get(f"/api/skills/{long_id}").status_code == 404
+        assert client.put(f"/api/skills/{long_id}", json={"content": "x"}, headers=ADMIN).status_code == 404
+        assert client.patch(f"/api/skills/{long_id}", json={"enabled": False}, headers=ADMIN).status_code == 404
+        assert client.delete(f"/api/skills/{long_id}", headers=ADMIN).status_code == 404
+
+
+def test_a_long_id_already_on_disk_can_still_be_opened_changed_and_deleted(make_client, env, tmp_path):
+    """The id bound applies to ids being created; a file main could write (a 150-character
+    name) is listed, so it must also open, change, toggle and delete."""
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    env.setenv("SKILLS_DIR", str(empty))
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    assert client.get("/api/skills").json() == {"skills": []}          # the store makes its directory
+    long_id = "a" * 150
+    (tmp_path / "data" / "skills" / f"{long_id}.md").write_text(
+        "---\nname: long\nenabled: true\n---\n\nOld rule.\n", encoding="utf-8")
+
+    assert [s["id"] for s in client.get("/api/skills").json()["skills"]] == [long_id]
+    assert client.get(f"/api/skills/{long_id}").json()["content"] == "Old rule."
+    assert client.put(f"/api/skills/{long_id}", json={"content": "New rule."}, headers=ADMIN).json()["content"] == "New rule."
+    assert client.patch(f"/api/skills/{long_id}", json={"enabled": False}, headers=ADMIN).json()["enabled"] is False
+    assert client.delete(f"/api/skills/{long_id}", headers=ADMIN).json()["deleted"] == long_id
+    assert client.get("/api/skills").json() == {"skills": []}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_saved_skill_keeps_the_mode_a_plain_write_gives(tmp_path):
+    """The temporary file of the atomic write must not leave every skill owner-only (0600):
+    an operator editing ./data as another user reads them like any file the host writes."""
+    from backend import skill_store
+
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    user = tmp_path / "user"
+    old = os.umask(0o022)
+    try:
+        store = skill_store.SkillStore(user, empty)
+        store.save(None, {"name": "office"}, "Desks face north.")
+        plain = user / "plain.txt"
+        plain.write_text("x", encoding="utf-8")
+        expected = stat.S_IMODE(plain.stat().st_mode)
+        assert stat.S_IMODE((user / "office.md").stat().st_mode) == expected == 0o644
+        store.update("office", content="Desks face south.")          # replaced, same mode
+        assert stat.S_IMODE((user / "office.md").stat().st_mode) == expected
+    finally:
+        os.umask(old)
+
+
+def test_a_skill_file_is_replaced_whole_or_not_at_all(tmp_path, monkeypatch):
+    from backend import skill_store
+
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    user = tmp_path / "user"
+    store = skill_store.SkillStore(user, empty)
+    store.save(None, {"name": "office"}, "Desks face north.")
+
+    # Text that cannot be written (a lone surrogate from a JSON escape) leaves the old file.
+    with pytest.raises(UnicodeEncodeError):
+        store.update("office", content="half \ud800 written")
+    assert store.get("office")["content"] == "Desks face north."
+
+    # A failure at the last step leaves the old file and no temporary file behind.
+    def refuse(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(skill_store.os, "replace", refuse)
+    with pytest.raises(OSError):
+        store.update("office", content="Desks face south.")
+    assert store.get("office")["content"] == "Desks face north."
+    assert sorted(p.name for p in user.iterdir()) == ["office.md"]
+
+
+def test_an_unreadable_skill_file_is_not_a_500(make_client, env, tmp_path):
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    env.setenv("SKILLS_DIR", str(empty))
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    assert client.get("/api/skills").json() == {"skills": []}          # the store makes its directory
+    skills = tmp_path / "data" / "skills"
+    (skills / "latin1.md").write_bytes("---\nname: caf\xe9\n---\n\nCaf\xe9.\n".encode("latin-1"))
+    assert client.get("/api/skills").json() == {"skills": []}        # the list skips it
+    assert client.get("/api/skills/latin1").status_code == 404           # and so does the detail
+    assert client.put("/api/skills/latin1", json={"content": "x"}, headers=ADMIN).status_code == 404
+    assert client.delete("/api/skills/latin1", headers=ADMIN).status_code == 200   # it can still go
+    assert chat_module.build_system_prompt(bridge=True)                  # the prompt is unaffected
 
 
 def test_skill_import_accepts_only_github(make_client, env):

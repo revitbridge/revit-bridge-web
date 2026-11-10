@@ -34,7 +34,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
@@ -53,9 +53,9 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api import devices as devices_api
-from backend.api.errors import ApiError, responses, revit_unreachable
+from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
 from backend.config import get_settings
-from backend.ratelimit import client_key, confirm_limiter
+from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 
 _log = logging.getLogger("backend.bridge")
@@ -63,6 +63,17 @@ _log = logging.getLogger("backend.bridge")
 PUBLIC_PATHS = {"/api/v1/bridge/service-health", "/api/v1/bridge/slots"}
 HOST = "web"                      # what the evidence ledger records as the host
 HANDSHAKE_TIMEOUT = 10.0          # seconds an add-in has to send its auth message
+# What stops unauthenticated sockets piling up, per client address. Only FAILED
+# handshakes count (a wrong token, an unknown or revoked device, no auth message in
+# time): an add-in that authenticates is never counted, however often it reconnects -
+# also when it is then answered 4002 (a stale socket still holds its device) or 4001.
+# A revoked add-in stops reconnecting after its 4003, so 20 failures a minute from one
+# address is a client guessing, not an office of add-ins.
+HANDSHAKE_FAILURE_LIMIT = 20
+# Sockets accepted but not yet authenticated, at once, per address. An add-in sends its
+# auth message right after connecting, so it is pending for milliseconds.
+PENDING_HANDSHAKE_LIMIT = 64
+_pending_handshakes: dict[str, int] = {}
 CONFIRM_CHANNEL = "host_ui"       # confirmations come from the page, never from the model
 MAX_EVIDENCE = 200
 
@@ -132,6 +143,19 @@ async def get_revit_client():
 
 def unknown_tool(name: str) -> ApiError:
     return ApiError(404, "unknown_tool", f"Tool '{name}' not found", tool=name)
+
+
+async def require_admin(x_admin_token: str | None = Header(None)) -> None:
+    """Changing a capability pack takes the admin password: its code later runs in a
+    designer's Revit once they confirm its card. The same check as every admin route
+    (``WebSettings.admin_token_ok``), in this router's error shape, as ``GET /devices``:
+    503 ``admin_disabled`` without ``ADMIN_PASSWORD``, 403 ``admin_required`` for a
+    missing or wrong token. A device key does not stand in for it."""
+    settings = get_settings()
+    if not settings.admin_password:
+        raise ApiError(503, "admin_disabled", "Set ADMIN_PASSWORD to change capability packs")
+    if not settings.admin_token_ok(x_admin_token):
+        raise ApiError(403, "admin_required", "Wrong or missing X-Admin-Token")
 
 
 def parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
@@ -343,9 +367,11 @@ async def get_tool(name: str):
     return _tool_detail(tool)
 
 
-@router.put("/tools/{name}", responses=responses(400, 403, 404, 422))
+@router.put("/tools/{name}", dependencies=[Depends(require_admin)],
+            responses=admin_responses(400, 403, 404, 422, 503))
 async def update_tool(name: str, req: UpdateToolRequest):
-    """Change editable fields; the package validates the result as a v1 pack (422 with problems)."""
+    """Change editable fields (admin password required); the package validates the result
+    as a v1 pack (422 with problems)."""
     updates = req.model_dump(exclude_unset=True)
     if "code_template" in updates:
         safe, warnings = sandbox.review(updates["code_template"] or "")
@@ -360,8 +386,10 @@ async def update_tool(name: str, req: UpdateToolRequest):
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}
 
 
-@router.delete("/tools/{name}", responses=responses(403, 404, 422))
+@router.delete("/tools/{name}", dependencies=[Depends(require_admin)],
+               responses=admin_responses(403, 404, 422, 503))
 async def delete_tool(name: str):
+    """Delete a user pack or hide a built-in one (admin password required)."""
     if ToolStore().delete(name):
         return {"status": "deleted", "name": name}
     raise unknown_tool(name)
@@ -465,9 +493,11 @@ async def execute_code(req: ExecuteRequest):
     return _execution_payload(result)
 
 
-@router.post("/solidify", responses=responses(400, 403, 422))
+@router.post("/solidify", dependencies=[Depends(require_admin)],
+             responses=admin_responses(400, 403, 422, 503))
 async def solidify_tool(req: SolidifyRequest):
-    """``ToolStore.solidify``: save working code as a v1 pack; best-effort sync to the add-in."""
+    """``ToolStore.solidify``: save working code as a v1 pack (admin password required);
+    best-effort sync to the add-in."""
     safe, warnings = sandbox.review(req.code)
     if not safe:
         raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
@@ -630,15 +660,36 @@ async def revit_ws_endpoint(ws: WebSocket, device_id: str):
     store, else the socket closes with 4003 - an unknown device, a revoked one
     and a wrong token are indistinguishable from outside. 4002 means that
     device is already connected, 4001 that the relay is full.
+
+    An address with ``HANDSHAKE_FAILURE_LIMIT`` failed handshakes in the last minute,
+    or with ``PENDING_HANDSHAKE_LIMIT`` sockets still unauthenticated, is refused
+    before the upgrade (a real server answers HTTP 403): no close code at all, so
+    4001/4002/4003 keep their meaning and the add-in retries as after any failed
+    connection. Add-ins that authenticate never count against either. The token is
+    only read after the upgrade, so a valid add-in that shares its address with a
+    client that keeps failing is refused with it until those failures are a minute old.
     """
     relay = get_relay()
-    await ws.accept()
-
+    address = client_key(ws)
+    if (handshake_failures.count(address) >= HANDSHAKE_FAILURE_LIMIT
+            or _pending_handshakes.get(address, 0) >= PENDING_HANDSHAKE_LIMIT):
+        _log.warning("add-in handshakes from %s refused before accepting: too many failed or pending", address)
+        await ws.close(code=1008, reason="Too many failed connection attempts from this address")
+        return
+    _pending_handshakes[address] = _pending_handshakes.get(address, 0) + 1
     try:
-        first = await asyncio.wait_for(ws.receive_text(), timeout=HANDSHAKE_TIMEOUT)
-    except Exception:  # noqa: BLE001 - no handshake in time
-        first = None
-    if not await _handshake_ok(first, device_id):
+        await ws.accept()
+        try:
+            first = await asyncio.wait_for(ws.receive_text(), timeout=HANDSHAKE_TIMEOUT)
+        except Exception:  # noqa: BLE001 - no handshake in time
+            first = None
+        authenticated = await _handshake_ok(first, device_id)
+    finally:
+        _pending_handshakes[address] -= 1
+        if not _pending_handshakes[address]:
+            del _pending_handshakes[address]
+    if not authenticated:
+        handshake_failures.record(address)
         await ws.close(code=4003, reason="Invalid device token")
         return
 
@@ -649,10 +700,18 @@ async def revit_ws_endpoint(ws: WebSocket, device_id: str):
     if refused is not None:
         await ws.close(code=4001, reason=f"Too many connected devices (max {relay.max_devices})")
         return
-    await run_in_threadpool(devices_api.get_device_store().touch, device_id)
 
     _log.info("Revit add-in connected for device %s", device_id)
     try:
+        # Registered: from here on every way out unregisters (finally). ``touch`` only
+        # records last_seen, so a device store that cannot be read right now (a
+        # revit-bridge that raises OSError rather than overwrite devices.json) costs
+        # the add-in nothing: it stays connected and the next connection records it.
+        try:
+            await run_in_threadpool(devices_api.get_device_store().touch, device_id)
+        except OSError as exc:
+            _log.warning("device %s connected, last_seen not recorded: device store unreadable (%s)",
+                         device_id, exc)
         while True:
             relay.resolve_response(device_id, await ws.receive_text())
     except WebSocketDisconnect:

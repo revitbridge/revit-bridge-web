@@ -189,15 +189,18 @@ export function createPairingFlow(deps: PairingDeps = {}) {
 
   async function adminRevoke(deviceId: string) {
     setBusy(deviceId, 'Revoking...')
+    let refused = ''
     try {
       await api.revoke(deviceId, '')            // the admin token authorises this one
       session().forgetDevice(deviceId)
     } catch (e: unknown) {
-      setState({ adminError: describe(e) })
+      refused = describe(e)
     } finally {
       setBusy(deviceId, '')
     }
     await loadAdmin()
+    // the reload clears adminError; a refused revoke (say a 503: try again) must stay on screen
+    if (refused) setState({ adminError: refused })
   }
 
   return { store, pair, cancelPairing, refresh, select, revoke, loadAdmin, adminRevoke }

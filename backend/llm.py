@@ -2,7 +2,11 @@
 
 Bring your own model. The browser sends ``X-LLM-Base-Url`` / ``X-LLM-Model``
 / ``X-LLM-Key`` with each request; when a header is absent the server-side
-``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` fill in. Settings live for
+``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` fill in - except that the
+server's key only ever goes to the server's own ``LLM_BASE_URL``: a request
+that names its own endpoint must bring its own key. A browser-supplied
+endpoint must be an https URL on a public address (``LLM_ALLOW_HTTP=1`` lifts
+both rules for a model on the operator's own network). Settings live for
 one request only: nothing is written to disk and the key never appears in a
 log line, an error message or a ``repr``.
 
@@ -17,11 +21,15 @@ rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import ipaddress
 import json
 import logging
+import re
+import socket
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import httpx
 
@@ -34,6 +42,9 @@ HEADER_MODEL = "x-llm-model"
 HEADER_KEY = "x-llm-key"
 
 DEFAULT_TIMEOUT = 120.0
+# One completion from request to last byte. 4096 tokens at a slow 7 tokens a second
+# take under 10 minutes; DEFAULT_TIMEOUT still bounds every single read.
+MODEL_CALL_DEADLINE = 600.0
 
 
 class LLMError(Exception):
@@ -50,6 +61,7 @@ class LLMSettings:
     model: str
     api_key: str = field(repr=False)
     source: str = "server"  # "browser" when any header supplied a value
+    custom_endpoint: bool = False  # base_url came from X-LLM-Base-Url
 
     @property
     def configured(self) -> bool:
@@ -57,15 +69,32 @@ class LLMSettings:
 
     @classmethod
     def resolve(cls, headers: Mapping[str, str], settings: WebSettings) -> LLMSettings:
-        """Browser headers first, then the server defaults."""
+        """Browser headers first, then the server defaults - but never the server's key
+        with the browser's endpoint.
+
+        ``X-LLM-Base-Url`` present: the request goes there with ``X-LLM-Key`` (400 when
+        it is missing - even when the URL is the server's own, written differently) and
+        ``X-LLM-Model`` or the server's model name. Absent: the request goes to
+        ``LLM_BASE_URL`` with ``X-LLM-Key`` or ``LLM_API_KEY`` and ``X-LLM-Model`` or
+        ``LLM_MODEL``; a visitor's own key or model choice may use the server's endpoint.
+        No network here: a name in the URL is checked by ``resolve_llm``.
+        """
         base_url = (headers.get(HEADER_BASE_URL) or "").strip().rstrip("/")
         model = (headers.get(HEADER_MODEL) or "").strip()
         api_key = (headers.get(HEADER_KEY) or "").strip()
         from_browser = bool(base_url or model or api_key)
         if base_url:
             _check_base_url(base_url, settings)
+            if not api_key:
+                raise LLMError(
+                    "X-LLM-Key is required with X-LLM-Base-Url: the server's key is only "
+                    "sent to the server's own model endpoint",
+                    status=400,
+                )
+            return cls(base_url=base_url, model=model or settings.llm_model, api_key=api_key,
+                       source="browser", custom_endpoint=True)
         return cls(
-            base_url=base_url or settings.llm_base_url,
+            base_url=settings.llm_base_url,
             model=model or settings.llm_model,
             api_key=api_key or settings.llm_api_key,
             source="browser" if from_browser else "server",
@@ -81,23 +110,163 @@ class LLMSettings:
         }
 
 
+_REFUSED_ADDRESS = (
+    "X-LLM-Base-Url must not point at a loopback, private, link-local, multicast or "
+    "reserved address (set LLM_ALLOW_HTTP=1 on the server for a model on its own network)"
+)
+
+
+_INVALID_URL = "X-LLM-Base-Url is not a valid URL"
+_HOST_LABEL = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?")
+
+
+def completions_url(base_url: str) -> str:
+    """The address one completion is POSTed to."""
+    return f"{base_url}/chat/completions"
+
+
+def _valid_host(host: str) -> bool:
+    """An IP literal or a DNS name (labels of letters, digits, ``-`` and ``_``)."""
+    if ":" in host:                                  # IPv6, without its brackets
+        return _literal_address(host) is not None
+    name = host[:-1] if host.endswith(".") else host
+    return 0 < len(name) <= 253 and all(_HOST_LABEL.fullmatch(label) for label in name.split("."))
+
+
+def _endpoint(base_url: str) -> tuple[str, str, int]:
+    """``(scheme, host, port)`` of the URL httpx will request, parsed by httpx itself, so
+    the host checked is the host connected to; 400 for anything httpx would refuse
+    (control characters), a host that is no IP literal or DNS name (a space, ``%``,
+    an empty label) or a port out of range."""
+    try:
+        url = httpx.URL(completions_url(base_url))
+        host = url.raw_host.decode("ascii")
+    except (httpx.InvalidURL, ValueError, UnicodeError):
+        raise LLMError(_INVALID_URL, status=400) from None
+    port = url.port
+    if not host or not _valid_host(host) or (port is not None and not 0 < port < 65536):
+        raise LLMError(_INVALID_URL, status=400)
+    return url.scheme, host, port or (443 if url.scheme == "https" else 80)
+
+
+_LEGACY_IPV4_PART = re.compile(r"0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*")
+_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _legacy_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    """The IPv4 address a numeric host means to the system resolver (inet_aton), which
+    is what the connection would use: one to four parts, each decimal, octal (leading
+    0) or hex (0x), the last filling the remaining bytes - ``127.1``, ``0x7f.1``,
+    ``2130706433``. None for anything else."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or not all(_LEGACY_IPV4_PART.fullmatch(p) for p in parts):
+        return None
+    values = [int(p, 16) if p[:2] in ("0x", "0X") else int(p, 8) if p.startswith("0") else int(p)
+              for p in parts]
+    *head, last = values
+    if any(v > 255 for v in head) or last >= 256 ** (4 - len(head)):
+        return None
+    return ipaddress.IPv4Address(sum(v << (24 - 8 * i) for i, v in enumerate(head)) + last)
+
+
+def _literal_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """``host`` as an IP address (an IPv6 zone id and a trailing dot dropped, inet_aton's
+    short forms read as IPv4), or None for a name."""
+    bare = host.split("%", 1)[0]
+    if bare.endswith(".") and ":" not in bare:
+        bare = bare[:-1]
+    try:
+        return ipaddress.ip_address(bare)
+    except ValueError:
+        return _legacy_ipv4(bare)
+
+
+def _is_localhost(host: str) -> bool:
+    """``localhost`` and every name under it are loopback by definition (RFC 6761)."""
+    name = host.rstrip(".").lower()
+    return name == "localhost" or name.endswith(".localhost")
+
+
+def _routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return ip.is_global and not (ip.is_loopback or ip.is_private or ip.is_link_local
+                                 or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
+
+
+def is_public_address(address: str) -> bool:
+    """Whether a browser-supplied endpoint may reach ``address``: a globally routable
+    unicast address. Loopback, private, link-local, multicast, unspecified, reserved and
+    shared (100.64/10) addresses are not; an IPv4-mapped IPv6 address is judged as the
+    IPv4 address it carries, and an address that carries one (6to4, Teredo, NAT64
+    64:ff9b::/96) only passes when that IPv4 address passes too; anything that does not
+    parse is not."""
+    ip = _literal_address(address)
+    if ip is None:
+        return False
+    candidates: list = [ip]
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            candidates = [ip.ipv4_mapped]
+        else:
+            if ip.sixtofour is not None:
+                candidates.append(ip.sixtofour)
+            if ip.teredo is not None:
+                candidates.extend(ip.teredo)
+            if ip in _NAT64:
+                candidates.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return all(_routable(c) for c in candidates)
+
+
 def _check_base_url(base_url: str, settings: WebSettings) -> None:
-    """A browser-supplied endpoint must be an absolute https URL.
+    """A browser-supplied endpoint must be an absolute https URL on a public address.
 
     The server would otherwise POST to whatever address a visitor names
-    (metadata services, internal hosts). Plain http is opt-in for local
-    setups via ``LLM_ALLOW_HTTP=1``.
+    (metadata services, internal hosts). Plain http, and with it private and
+    loopback addresses, are opt-in for local setups via ``LLM_ALLOW_HTTP=1``.
+    A literal address is judged here; a name is resolved by ``resolve_llm``.
     """
-    parsed = urlparse(base_url)
-    if parsed.scheme == "https" and parsed.netloc:
-        return
-    if parsed.scheme == "http" and parsed.netloc and settings.llm_allow_http:
+    scheme, host, _ = _endpoint(base_url)
+    if scheme == "https" or (scheme == "http" and settings.llm_allow_http):
+        if not settings.llm_allow_http and (
+                _is_localhost(host) or (_literal_address(host) is not None and not is_public_address(host))):
+            raise LLMError(_REFUSED_ADDRESS, status=400)
         return
     raise LLMError(
         "X-LLM-Base-Url must be an absolute https:// URL "
         "(set LLM_ALLOW_HTTP=1 on the server to allow http://)",
         status=400,
     )
+
+
+async def resolve_addresses(host: str, port: int) -> list[str]:
+    """Every address ``host`` resolves to; the resolver runs off the event loop."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [info[4][0] for info in infos]
+
+
+async def resolve_llm(headers: Mapping[str, str], settings: WebSettings) -> LLMSettings:
+    """``LLMSettings.resolve``, then the name in a browser-supplied endpoint resolved:
+    every address it answers must be public (``is_public_address``), and a name that
+    does not resolve is refused too (400). ``LLM_ALLOW_HTTP=1`` skips this, as it skips
+    the literal-address check; the server's own ``LLM_BASE_URL`` is never checked.
+
+    This does not defeat DNS rebinding: httpx resolves the name again when it
+    connects, and a name that answers a public address now may answer a private one
+    then. It stops the plain cases - a private address, ``localhost``, a name that
+    points inside the network - which are what a visitor can type.
+    """
+    llm = LLMSettings.resolve(headers, settings)
+    if not llm.custom_endpoint or settings.llm_allow_http:
+        return llm
+    _, host, port = _endpoint(llm.base_url)
+    if _literal_address(host) is not None:
+        return llm                                  # judged by _check_base_url already
+    try:
+        addresses = await resolve_addresses(host, port)
+    except (OSError, UnicodeError):
+        raise LLMError(f"X-LLM-Base-Url: cannot resolve host {host!r}", status=400) from None
+    if not addresses or not all(is_public_address(a) for a in addresses):
+        raise LLMError(_REFUSED_ADDRESS, status=400)
+    return llm
 
 
 # -- function calling ------------------------------------------------------------
@@ -127,6 +296,16 @@ def tool_message(call: ToolCall, result) -> dict:
     """A tool result for the next request; ``result`` is JSON-encoded unless it is text."""
     content = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
     return {"role": "tool", "tool_call_id": call.id, "content": content}
+
+
+async def _before(deadline: float, awaitable):
+    """``await awaitable``, but no later than ``deadline`` (event loop time)."""
+    try:
+        async with asyncio.timeout_at(deadline):
+            return await awaitable
+    except TimeoutError:
+        raise LLMError(f"Model endpoint did not finish within {MODEL_CALL_DEADLINE:g}s",
+                       status=502) from None
 
 
 def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
@@ -170,7 +349,7 @@ async def stream_completion(
             "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
             status=400,
         )
-    url = f"{llm.base_url}/chat/completions"
+    url = completions_url(llm.base_url)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
         "Content-Type": "application/json",
@@ -189,32 +368,51 @@ async def stream_completion(
         payload["tool_choice"] = "auto"
     calls: dict[int, dict] = {}          # index -> {id, name, arguments}
     client_timeout = httpx.Timeout(timeout, connect=15.0)
+    # httpx's timeouts are per read: an endpoint that sends a byte now and then would
+    # hold the call forever. Every wait below also stops at this deadline.
+    deadline = asyncio.get_running_loop().time() + MODEL_CALL_DEADLINE
     try:
-        async with httpx.AsyncClient(timeout=client_timeout) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", "replace")[:300]
-                    raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
-                                   status=502)
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    token = delta.get("content")
-                    if token:
-                        yield token
-                    for fragment in delta.get("tool_calls") or []:
-                        _merge_tool_call(calls, fragment)
+        # Redirects are never followed: a checked public endpoint must not be able to send
+        # the request (and the key) on to an address nobody checked.
+        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client, \
+                contextlib.AsyncExitStack() as stack:
+            resp = await _before(deadline, stack.enter_async_context(
+                client.stream("POST", url, headers=headers, json=payload)))
+            if 300 <= resp.status_code < 400:
+                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed",
+                               status=502)
+            if resp.status_code >= 400:
+                body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")[:300]
+                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
+                               status=502)
+            lines = resp.aiter_lines()
+            while True:
+                try:
+                    line = await _before(deadline, anext(lines))
+                except StopAsyncIteration:
+                    break
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                token = delta.get("content")
+                if token:
+                    yield token
+                for fragment in delta.get("tool_calls") or []:
+                    _merge_tool_call(calls, fragment)
+    except httpx.InvalidURL:
+        # Not an HTTPError. A browser URL was checked at the gate (_endpoint); this is
+        # the second line, and the only one for the server's own LLM_BASE_URL.
+        raise LLMError("Model endpoint URL is not a valid URL", status=400) from None
     except httpx.HTTPError as exc:
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)

@@ -20,8 +20,11 @@ subset the browser needs so one frontend build works on any address.
     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
                                 server-side defaults for the model; request
                                 headers X-LLM-Base-Url / X-LLM-Model / X-LLM-Key
-                                take precedence and are never stored
+                                take precedence and are never stored. LLM_API_KEY
+                                is only sent to LLM_BASE_URL: a request with its
+                                own X-LLM-Base-Url must bring X-LLM-Key
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
+                                and a loopback or private address
     ADMIN_PASSWORD              enables /api/logs and skill edits (X-Admin-Token)
     MAX_DEVICES                 how many paired add-ins may be connected at once
                                 (default 20)
@@ -39,6 +42,7 @@ start rather than silently dropping what its operator meant to configure.
 """
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -81,9 +85,9 @@ class WebSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
         """Read the environment and validate it; raise ``ConfigError`` on a
-        deployment that cannot run (e.g. tokens required but none configured,
-        a token file missing or empty) so the process exits with the reason
-        instead of answering 500 to every request."""
+        deployment that cannot run (a retired 0.1 slot variable still set, a
+        non-numeric PORT, MAX_DEVICES or CHAT_RATE_LIMIT) so the process exits
+        with the reason instead of answering 500 to every request."""
         env = os.environ if env is None else env
         _refuse_retired(env)
         skills = env.get("SKILLS_DIR", "").strip()
@@ -115,9 +119,18 @@ class WebSettings:
     def log_db_path(self) -> Path:
         return self.data_dir / "interaction_logs.db"
 
+    def admin_token_ok(self, provided: str | None) -> bool:
+        """The one ``X-Admin-Token`` check of every admin route: ``ADMIN_PASSWORD`` is set
+        and ``provided`` equals it, compared in constant time."""
+        if not self.admin_password or not provided:
+            return False
+        return hmac.compare_digest(provided.encode(), self.admin_password.encode())
+
     @property
     def server_model_configured(self) -> bool:
-        return bool(self.llm_api_key and self.llm_model)
+        """The server's model runs without any browser setting. A key without a server
+        URL is not that: the key never goes to an endpoint the browser names."""
+        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 
     def config_json(self) -> dict:
         """What the SPA fetches at startup (``/config.json``).

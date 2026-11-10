@@ -1,8 +1,6 @@
 """``/api/logs`` - interaction log queries; admin only (``X-Admin-Token``)."""
 from __future__ import annotations
 
-import hmac
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
@@ -13,21 +11,19 @@ router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 
 async def verify_admin(x_admin_token: str | None = Header(None)) -> None:
-    password = get_settings().admin_password
-    if not password:
+    settings = get_settings()
+    if not settings.admin_password:
         raise HTTPException(503, "Admin password not configured")
-    provided = x_admin_token or ""
-    if not provided or not hmac.compare_digest(provided.encode(), password.encode()):
+    if not settings.admin_token_ok(x_admin_token):
         raise HTTPException(403, "Unauthorized")
 
 
 @router.get("/verify")
 async def verify_token(x_admin_token: str | None = Header(None)):
-    password = get_settings().admin_password
-    if not password:
+    settings = get_settings()
+    if not settings.admin_password:
         return JSONResponse(status_code=503, content={"valid": False})
-    provided = x_admin_token or ""
-    if not provided or not hmac.compare_digest(provided.encode(), password.encode()):
+    if not settings.admin_token_ok(x_admin_token):
         return JSONResponse(status_code=403, content={"valid": False})
     return {"valid": True}
 

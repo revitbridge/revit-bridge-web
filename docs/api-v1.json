@@ -987,7 +987,7 @@
           "bridge"
         ],
         "summary": "Update Tool",
-        "description": "Change editable fields; the package validates the result as a v1 pack (422 with problems).",
+        "description": "Change editable fields (admin password required); the package validates the result\nas a v1 pack (422 with problems).",
         "operationId": "update_tool_api_v1_bridge_tools__name__put",
         "parameters": [
           {
@@ -997,6 +997,22 @@
             "schema": {
               "type": "string",
               "title": "Name"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
             }
           }
         ],
@@ -1030,7 +1046,7 @@
             }
           },
           "403": {
-            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1051,6 +1067,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1066,6 +1092,7 @@
           "bridge"
         ],
         "summary": "Delete Tool",
+        "description": "Delete a user pack or hide a built-in one (admin password required).",
         "operationId": "delete_tool_api_v1_bridge_tools__name__delete",
         "parameters": [
           {
@@ -1075,6 +1102,22 @@
             "schema": {
               "type": "string",
               "title": "Name"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
             }
           }
         ],
@@ -1088,7 +1131,7 @@
             }
           },
           "403": {
-            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1109,6 +1152,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1569,17 +1622,35 @@
           "bridge"
         ],
         "summary": "Solidify Tool",
-        "description": "``ToolStore.solidify``: save working code as a v1 pack; best-effort sync to the add-in.",
+        "description": "``ToolStore.solidify``: save working code as a v1 pack (admin password required);\nbest-effort sync to the add-in.",
         "operationId": "solidify_tool_api_v1_bridge_solidify_post",
+        "parameters": [
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SolidifyRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1601,7 +1672,7 @@
             }
           },
           "403": {
-            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1612,6 +1683,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1938,6 +2019,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -1991,6 +2082,16 @@
           },
           "429": {
             "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2151,6 +2252,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
             "content": {
               "application/json": {
                 "schema": {

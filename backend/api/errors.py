@@ -47,6 +47,35 @@ def responses(*statuses: int) -> dict:
     return {status: {"model": ErrorBody, "description": _DESCRIPTIONS[status]} for status in statuses}
 
 
+# The routes that change capability packs: 403 and 503 come from the admin check first.
+_ADMIN_DESCRIPTIONS = {
+    403: "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
+    503: "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
+}
+
+
+def admin_responses(*statuses: int) -> dict:
+    """``responses()`` for a route that needs the admin password: 403 and 503 say why."""
+    declared = responses(*statuses)
+    for status in (403, 503):
+        declared[status] = {"model": ErrorBody, "description": _ADMIN_DESCRIPTIONS[status]}
+    return declared
+
+
+# The routes that write the device store (pair, redeem, revoke). revit-bridge raises
+# OSError when devices.json cannot be read for about half a second (a scanner, another
+# process holding it) - before anything is written - instead of writing an empty store.
+DEVICE_STORE_UNAVAILABLE = "device_store_unavailable"
+_DEVICE_STORE_DESCRIPTION = "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)"
+
+
+def device_store_responses(*statuses: int) -> dict:
+    """``responses()`` for a route that writes the device store, plus its 503."""
+    declared = responses(*statuses)
+    declared[503] = {"model": ErrorBody, "description": _DEVICE_STORE_DESCRIPTION}
+    return declared
+
+
 class ApiError(Exception):
     """Raise anywhere under a route; the handler turns it into the JSON response."""
 
@@ -57,6 +86,11 @@ class ApiError(Exception):
         if message is not None:
             self.payload["message"] = message
         self.payload.update(extra)
+
+
+def device_store_unavailable() -> ApiError:
+    """503 for an OSError from a DeviceStore write (see ``device_store_responses``)."""
+    return ApiError(503, DEVICE_STORE_UNAVAILABLE, "The device store could not be read just now; try again in a moment")
 
 
 def revit_unreachable(exc: BaseException | None = None, **extra) -> ApiError:

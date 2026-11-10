@@ -24,7 +24,9 @@ Split deployment (SPA on a static host, API on another machine): build `frontend
 [`frontend/public/config.example.json`](frontend/public/config.example.json) and set `apiBase` to the
 API origin (and `wsBase` if the relay differs). The SPA reads that file at startup; the backend's own
 `/config.json` only describes a same-origin setup. Set `CORS_ORIGINS` on the API side to the static
-host's origin.
+host's origin. Either way the SPA must be served at the root of its origin: a path-prefix deployment
+(`https://example.com/revit/`) is not supported, because the built assets (`/assets/...`),
+`/config.json` and the API calls (`/api/...` after `apiBase`) are absolute paths.
 
 Connect a designer's Revit to the host in three steps: press **Pair a Revit** on the Connect page,
 run the install command it shows on the designer's machine with Revit closed (it carries the pairing
@@ -63,12 +65,12 @@ its connection.
    code but the model did not change as claimed. The tamper demo changes one confirmed value and
    runs again under the same token: `confirmation_invalid`, nothing reaches Revit. The result then
    goes back to the model for a faithful report, and code that worked can be solidified into a v1
-   pack. The *Compare with no bridge* switch sends the same sentence a second time with
+   pack (with the admin password). The *Compare with no bridge* switch sends the same sentence a second time with
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
 3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
-   delete it. *Skills*: Markdown protocols that are appended to the model's system prompt - the
+   delete it with the admin password. *Skills*: Markdown protocols that are appended to the model's system prompt - the
    package's `revit-core` (the contract every snippet follows) is on; the `revit-bridge` protocol
    (written for the MCP server's tools; this host's protocol is the package's `host_instructions()`),
    the add-in phase skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
@@ -107,20 +109,23 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. Unset = visitors must bring their own. |
-| `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints (local models). |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
+| `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
-| `ADMIN_PASSWORD` | unset | Enables skill edits and `/api/logs` via `X-Admin-Token`. |
+| `ADMIN_PASSWORD` | unset | Enables, via `X-Admin-Token` (the password entered on the Connect page): changing capability packs (edit, delete, solidify), skill edits, the list of every device and `/api/logs`. Unset, none of these work: packs and skills are read-only through the web UI (packs still run). A single-user local install sets any password in `.env`, restarts (`docker compose up -d`) and enters it on the Connect page. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
+| `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
 | `MAX_DEVICES` | `20` | How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
 | `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
+| `REVIT_BRIDGE_CAPABILITIES_DIR`, `REVIT_BRIDGE_EVIDENCE_DIR` | `REVIT_BRIDGE_DATA_DIR/capabilities`, `REVIT_BRIDGE_DATA_DIR/evidence` | Package overrides for the user pack and evidence directories. Leave them unset in the container: a path outside `/app/data` is not in the volume and the entrypoint does not make it writable. |
 | `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `<skill>/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. Every file in a mounted directory is on unless its front matter says `enabled: false`. |
 | `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for `get_guidance`, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
 | `PUBLIC_WS_BASE` | unset | Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
-| `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment). |
-| `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). |
-| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are trusted for client IPs. |
+| `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
+| `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). Without Docker, `PORT` is the port the server listens on. |
+| `HOST` | `0.0.0.0` | Interface the server listens on without Docker; `docker-compose.yml` pins it (and the container port, 7860). |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1,172.16.0.0/12` in the image, `127.0.0.1` outside it | Proxies whose `X-Forwarded-*` headers are trusted for the client address (per-address rate limits, logs). The image default fits the documented setup: the port published on loopback and a reverse proxy on the Docker host, which reaches the container from the Docker bridge gateway. When `BIND_ADDRESS` is not loopback, set it to the proxy's address - or to `127.0.0.1` with no proxy in front - so a visitor cannot choose their own address. If the compose network is in `192.168.0.0/16` (`docker network inspect revit-bridge-web_default`), list its gateway instead. An explicit value always wins. |
 
 ## API v1
 
@@ -131,7 +136,10 @@ package's flow: `GET /snapshot` and `POST /query` read the model; `GET /tools`,
 turns the designer's confirmation into a one-time token; `POST /tools/{name}/run` and `POST /execute`
 run only with that token (sandbox review, preconditions, validator and the evidence ledger are the
 package's; the ledger records `host: "web"`); `GET /evidence` and `POST /evidence/{id}/validate` show
-and re-check what ran. A request the route refuses as such is 400, a body that parsed but is not
+and re-check what ran. A pack's code runs in a designer's Revit once they confirm its card, so the
+routes that change packs - `PUT` and `DELETE /tools/{name}`, `POST /solidify` - take the admin
+password as `X-Admin-Token` (403 `admin_required` without the right one, 503 `admin_disabled` when
+`ADMIN_PASSWORD` is unset); reading, choosing, confirming and running a pack do not. A request the route refuses as such is 400, a body that parsed but is not
 valid 422, a Revit that cannot be reached before the run is 503 (a transport failure during the run
 is the package's `success: false` without consuming the token), and a refusal by the gate, a failed
 precondition or a failed validation is 200 with `success: false`; error bodies are
@@ -141,7 +149,9 @@ Pairing and devices: `POST /devices/pair` returns `{code, device_id, expires_at,
 install_command}`; the add-in calls `POST /devices/redeem` with the code (no headers) and receives
 `{device_id, device_token, ws_url}`; `GET /devices/{id}` and `DELETE /devices/{id}` take the browser
 key (or the admin password), `GET /devices` is admin only, and `GET /slots` publishes
-`{max_devices, connected}`. Pick a Revit with `X-Device-Id` + `X-Device-Key`; without them a request
+`{max_devices, connected}`. When the device store (`auth/devices.json`) cannot be read for a moment,
+pair, redeem and revoke answer 503 `device_store_unavailable`: nothing changed (a code is not
+consumed), so the same call can simply be repeated. Pick a Revit with `X-Device-Id` + `X-Device-Key`; without them a request
 drives the local add-in over TCP. Every confirmation and every ledger line belongs to that device
 (`scope`), so a browser sees and re-validates only its own device's evidence, and a token confirmed
 for one device is refused on another. Ad-hoc code (`POST /execute`) also asks the designer on the

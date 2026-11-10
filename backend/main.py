@@ -45,10 +45,13 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     )
 
     if settings.cors_origins:
+        # Credentials only for an explicit origin list: with "*" the middleware would
+        # echo any origin back as allowed with credentials. Nothing here needs them
+        # anyway - device keys, the admin token and model keys travel as headers.
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(settings.cors_origins),
-            allow_credentials=True,
+            allow_credentials="*" not in settings.cors_origins,
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["X-Session-Id"],
@@ -81,8 +84,16 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
         @app.get("/{rest:path}", include_in_schema=False)
         async def spa_fallback(rest: str = ""):
-            candidate = (dist / rest).resolve()
-            if rest and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
+            if rest == "api" or rest.startswith("api/"):
+                # A mistyped API address is a 404, not the SPA page with 200 (registered
+                # last, so every real route, /config.json and /health match first).
+                raise errors.ApiError(404, "not_found", f"No API route GET /{rest}")
+            try:
+                candidate = (dist / rest).resolve()
+                found = bool(rest) and candidate.is_file() and candidate.is_relative_to(dist.resolve())
+            except (ValueError, OSError):              # a NUL byte or a name the OS refuses
+                found = False
+            if found:
                 return FileResponse(candidate)
             return FileResponse(dist / "index.html")
 
@@ -96,9 +107,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 def build_app_or_exit() -> FastAPI:
     """Create the app, or print the configuration error and exit with 2.
 
-    A deployment whose environment cannot work (slot tokens demanded but not
-    provided, a token file missing or empty, a non-numeric port) must fail at
-    startup with the reason, not answer 500 to every request.
+    A deployment whose environment cannot work (a retired 0.1 slot variable
+    still set, a non-numeric port or limit) must fail at startup with the
+    reason, not answer 500 to every request.
     """
     try:
         return create_app()
@@ -118,6 +129,13 @@ def main() -> None:
         port=settings.port,
         reload=False,
         proxy_headers=True,
+        # Whose X-Forwarded-For / -Proto to believe: the client address of rate limits
+        # and logs. Outside a container a local reverse proxy connects from 127.0.0.1.
+        # The image sets 127.0.0.1,172.16.0.0/12: with the port published on loopback
+        # (BIND_ADDRESS=127.0.0.1) a proxy on the Docker host arrives from the bridge
+        # gateway. When BIND_ADDRESS is not loopback, set FORWARDED_ALLOW_IPS to the
+        # proxy's address, or to 127.0.0.1 with no proxy, so a visitor cannot choose
+        # their own address. An explicit value always wins.
         forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
     )
 

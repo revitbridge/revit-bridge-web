@@ -4,9 +4,8 @@
    reconcile.ready. */
 
 import { useEffect, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import type { Question } from '../../types/api'
+import Markdown from '../shared/Markdown'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
 
@@ -51,7 +50,7 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
         {transcript.messages.map((m, i) => (
           <div key={i} className={`chat-bubble ${m.role}`}>
             {m.role === 'assistant'
-              ? <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || '...'}</ReactMarkdown></div>
+              ? <div className="markdown-body"><Markdown>{m.content || '...'}</Markdown></div>
               : m.content}
           </div>
         ))}

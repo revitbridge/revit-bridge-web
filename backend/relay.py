@@ -16,10 +16,17 @@ device with no add-in, an add-in that leaves mid-request or a socket that
 cannot be written raise ``ConnectionError`` (the package then consumes no
 token and writes no ledger line - nothing reached Revit); only a reply that
 does not arrive in time is ``RevitResponse(success=False, "Timeout ...")``.
+
+A device busy with another request is a ``ConnectionError`` too, before
+anything is sent: a request waits for its turn at most its own timeout, and
+at most ``DEVICE_QUEUE_LIMIT`` requests wait at once (a confirmation dialog
+holds the device for up to ``CONFIRM_TIMEOUT_SECONDS``, and nothing else may
+pile up behind it without bound). The routes answer 503 ``revit_unreachable``.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -33,6 +40,9 @@ from revit_bridge.revit.client import CONFIRM_TIMEOUT_SECONDS
 
 _log = logging.getLogger("backend.relay")
 
+# Requests that may wait for one device's turn at once; one more is refused at once.
+DEVICE_QUEUE_LIMIT = 16
+
 
 @dataclass
 class DeviceConnection:
@@ -43,6 +53,7 @@ class DeviceConnection:
     pending: asyncio.Future | None = field(default=None, repr=False)
     connected_at: float = field(default_factory=time.time)
     request_count: int = 0
+    waiting: int = 0                     # requests waiting for the lock right now
 
     @property
     def connected(self) -> bool:
@@ -116,6 +127,30 @@ class DeviceRelay:
 
     # -- messages --------------------------------------------------------------
 
+    @contextlib.asynccontextmanager
+    async def _turn(self, conn: DeviceConnection, timeout: float):
+        """Hold the device for one request. Waiting is bounded: at most ``timeout`` seconds
+        and at most ``DEVICE_QUEUE_LIMIT`` waiters; past either the request fails with
+        ``ConnectionError`` before anything is sent (the device is busy, nothing reached
+        Revit). ``asyncio.Lock.acquire`` is cancellation-safe, so a timed-out or
+        cancelled waiter never leaves the lock taken."""
+        if conn.waiting >= DEVICE_QUEUE_LIMIT:
+            raise ConnectionError(f"Device '{conn.device_id}' is busy: "
+                                  f"{conn.waiting} requests are already waiting for it")
+        conn.waiting += 1
+        try:
+            async with asyncio.timeout(timeout):
+                await conn.lock.acquire()
+        except TimeoutError:
+            raise ConnectionError(f"Device '{conn.device_id}' is busy: "
+                                  f"no turn within {timeout}s") from None
+        finally:
+            conn.waiting -= 1
+        try:
+            yield
+        finally:
+            conn.lock.release()
+
     def resolve_response(self, device_id: str, data: str) -> None:
         """A message arrived from the add-in: it is the reply we are waiting for."""
         conn = self._devices.get(device_id)
@@ -130,14 +165,15 @@ class DeviceRelay:
     ) -> RevitResponse:
         """Send one JSON-RPC 2.0 request to the device and await its reply.
 
-        Raises ``ConnectionError`` when the device has no add-in connected, the
-        add-in leaves before answering or the socket cannot be written.
+        Raises ``ConnectionError`` when the device has no add-in connected, is busy
+        past ``timeout`` (see ``_turn``), the add-in leaves before answering or the
+        socket cannot be written.
         """
         conn = self.get_connection(device_id)
         if not conn:
             raise ConnectionError(f"Device '{device_id}' has no connected Revit add-in")
 
-        async with conn.lock:
+        async with self._turn(conn, timeout):
             request_id = f"{int(time.time() * 1000)}{random.randint(100000, 999999)}"
             payload = {"jsonrpc": "2.0", "method": method, "params": params or {}, "id": request_id}
             loop = asyncio.get_running_loop()

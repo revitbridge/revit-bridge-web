@@ -31,11 +31,13 @@ def test_browser_base_url_must_be_https_unless_allowed():
         LLMSettings.resolve({"x-llm-base-url": "http://169.254.169.254/v1"}, SERVER)
     assert exc.value.status == 400
     with pytest.raises(LLMError):
-        LLMSettings.resolve({"x-llm-base-url": "ftp://x"}, SERVER)
-    ok = LLMSettings.resolve({"x-llm-base-url": "https://api.example/v1/"}, SERVER)
+        LLMSettings.resolve({"x-llm-base-url": "ftp://x", "x-llm-key": "k"}, SERVER)
+    # A browser endpoint brings its own key (tests/test_model_endpoint.py): the server's never goes there.
+    ok = LLMSettings.resolve({"x-llm-base-url": "https://api.example/v1/", "x-llm-key": "k"}, SERVER)
     assert ok.base_url == "https://api.example/v1"
     relaxed = WebSettings.from_env({"LLM_ALLOW_HTTP": "1"})
-    assert LLMSettings.resolve({"x-llm-base-url": "http://localhost:11434/v1"}, relaxed).base_url.startswith("http://")
+    assert LLMSettings.resolve({"x-llm-base-url": "http://localhost:11434/v1", "x-llm-key": "k"},
+                               relaxed).base_url.startswith("http://")
 
 
 def test_chat_refuses_without_a_model(client):

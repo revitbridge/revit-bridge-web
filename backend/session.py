@@ -1,5 +1,6 @@
 """In-memory chat sessions: the model's message history plus what the host loop
-knows about the task, per session id, two-hour idle TTL.
+knows about the task, per session id, two-hour idle TTL and at most
+``MAX_SESSIONS`` at once (a new one pushes out the one idle the longest).
 
 A session holds the messages the model saw (user, assistant with its
 ``tool_calls``, tool results), the ``snapshot_fingerprint`` of the last
@@ -18,6 +19,10 @@ from dataclasses import dataclass, field
 
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
+# Live sessions held at once. A session keeps at most MAX_HISTORY messages (tool results
+# capped at 8-16 KB, execution reports at 16 KB), so this bounds the memory sessions
+# take even when a page is reloaded in a loop; a demo host has a handful at a time.
+MAX_SESSIONS = 300
 
 
 @dataclass
@@ -73,6 +78,9 @@ class SessionStore:
                 session.touch()
                 return session
             # Unknown or missing id: always mint a server-side id (no fixation).
+            while len(self._sessions) >= MAX_SESSIONS:
+                idlest = min(self._sessions.values(), key=lambda s: s.last_active)
+                del self._sessions[idlest.session_id]
             session = Session(session_id=uuid.uuid4().hex)
             self._sessions[session.session_id] = session
             return session

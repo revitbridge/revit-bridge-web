@@ -107,29 +107,35 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
     assert height["unit"] == "mm" and height["default"] == 3000 and height["required"] is False
 
 
-def test_tool_detail_update_and_delete_are_unchanged(client, tmp_path):
+def test_tool_detail_update_and_delete_are_unchanged(make_client, env, tmp_path):
+    # Changing a pack takes the admin password (tests/test_pack_admin.py); reading does not.
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    admin = {"X-Admin-Token": "hunter2"}
     detail = client.get(f"{B}/tools/create_wall").json()
     assert detail["display_name"] == "Create Wall" and detail["validator"]["kind"] == "count_delta"
     assert client.get(f"{B}/tools/nope").json() == {"error": "unknown_tool", "message": "Tool 'nope' not found", "tool": "nope"}
     assert client.get(f"{B}/tools/nope").status_code == 404
 
-    updated = client.put(f"{B}/tools/query_levels", json={"description": "levels, sorted"})
+    updated = client.put(f"{B}/tools/query_levels", json={"description": "levels, sorted"}, headers=admin)
     assert updated.status_code == 200 and updated.json()["description"] == "levels, sorted"
     user_file = tmp_path / "data" / "capabilities" / "query_levels.yaml"
     assert user_file.is_file()
     written = user_file.read_bytes()
-    invalid = client.put(f"{B}/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"})
+    invalid = client.put(f"{B}/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"},
+                         headers=admin)
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
     assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
     # The refused update wrote nothing: the served pack and the file are what the valid update left.
     assert "{level_name}" not in client.get(f"{B}/tools/query_levels").json()["code_template"]
     assert user_file.read_bytes() == written
-    blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
+    blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
+                         headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
     assert user_file.read_bytes() == written
 
-    assert client.delete(f"{B}/tools/query_levels").json() == {"status": "deleted", "name": "query_levels"}
-    assert client.delete(f"{B}/tools/query_levels").status_code == 404
+    assert client.delete(f"{B}/tools/query_levels", headers=admin).json() == {"status": "deleted", "name": "query_levels"}
+    assert client.delete(f"{B}/tools/query_levels", headers=admin).status_code == 404
     assert len(client.get(f"{B}/tools").json()) == 7
 
 
@@ -335,7 +341,11 @@ def test_execute_runs_confirmed_code_through_the_package(revit, client, monkeypa
     assert bridge_module.get_gate().peek(token).used_at is None
 
 
-def test_solidify_takes_v1_parameters_and_a_validator(client, tmp_path):
+def test_solidify_takes_v1_parameters_and_a_validator(make_client, env, tmp_path):
+    # Solidifying takes the admin password (tests/test_pack_admin.py).
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    admin = {"X-Admin-Token": "hunter2"}
     resp = client.post(f"{B}/solidify", json={
         "name": "count_walls",
         "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();",
@@ -343,7 +353,7 @@ def test_solidify_takes_v1_parameters_and_a_validator(client, tmp_path):
         "parameters": [],
         "validator": {"kind": "count_delta", "category": "OST_Walls", "expected": 0},
         "source_query": "how many walls",
-    })
+    }, headers=admin)
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"status": "solidified", "name": "count_walls", "display_name": "Count Walls",
                            "version": "1.0.0", "revit_synced": False}
@@ -351,11 +361,12 @@ def test_solidify_takes_v1_parameters_and_a_validator(client, tmp_path):
     listed = next(t for t in client.get(f"{B}/tools").json() if t["name"] == "count_walls")
     assert listed["validator"] == "count_delta"
 
-    invalid = client.post(f"{B}/solidify", json={"name": "interpolated", "code": "var l = \"{level_name}\"; return 1;"})
+    invalid = client.post(f"{B}/solidify", json={"name": "interpolated", "code": "var l = \"{level_name}\"; return 1;"},
+                          headers=admin)
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
     assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
 
-    blocked = client.post(f"{B}/solidify", json={"name": "evil", "code": "System.IO.File.Delete(\"x\");"})
+    blocked = client.post(f"{B}/solidify", json={"name": "evil", "code": "System.IO.File.Delete(\"x\");"}, headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
 

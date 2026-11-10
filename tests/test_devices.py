@@ -205,6 +205,60 @@ def test_device_view_needs_its_key_or_the_admin_password(make_client, env):
     assert view["online"] is False and view["last_seen"] is None and view["requests"] == 0
 
 
+def test_an_unknown_device_and_a_wrong_key_read_the_same(make_client, env):
+    """GET and DELETE /devices/{id}: a browser learns nothing about devices it holds no key
+    for - an unknown id is the same 403 as a wrong key. Only the admin hears 404."""
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    paired = client.post(f"{B}/devices/pair", json={}).json()
+    other = client.post(f"{B}/devices/pair", json={}).json()
+    unknown = "dev_aaaaaaaaaaaa"
+
+    for call in (client.get, client.delete):
+        answers = []
+        for device_id, key in ((paired["device_id"], other["browser_key"]), (unknown, other["browser_key"]),
+                               (paired["device_id"], ""), (unknown, "")):
+            resp = call(f"{B}/devices/{device_id}", headers={"X-Device-Key": key} if key else {})
+            answers.append((resp.status_code, resp.json()))
+        assert all(a == answers[0] for a in answers), answers
+        assert answers[0] == (403, {"error": "invalid_device_key",
+                                    "message": "Unknown device, wrong X-Device-Key or revoked device"})
+        # Driving one's own device does not make another id's existence visible either.
+        own = {"X-Device-Id": other["device_id"], "X-Device-Key": other["browser_key"]}
+        assert call(f"{B}/devices/{unknown}", headers=own).json() == answers[0][1]
+        assert call(f"{B}/devices/{paired['device_id']}", headers=own).json() == answers[0][1]
+
+    assert client.get(f"{B}/devices/{unknown}", headers=ADMIN).status_code == 404
+    assert client.delete(f"{B}/devices/{unknown}", headers=ADMIN).status_code == 404
+    assert client.get(f"{B}/devices/{paired['device_id']}", headers=ADMIN).status_code == 200
+
+
+def test_every_admin_check_compares_in_constant_time(make_client, env, monkeypatch):
+    """The device routes, the logs and the skill writes share one X-Admin-Token check."""
+    import hmac
+
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    calls: list[tuple[bytes, bytes]] = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        calls.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    for path in (f"{B}/devices", "/api/logs", "/api/logs/verify"):
+        calls.clear()
+        assert client.get(path, headers={"X-Admin-Token": "wrong"}).status_code == 403, path
+        assert calls, f"{path}: X-Admin-Token compared without hmac.compare_digest"
+        calls.clear()
+        assert client.get(path, headers=ADMIN).status_code == 200, path
+        assert calls, path
+    calls.clear()
+    assert client.get(f"{B}/devices/dev_aaaaaaaaaaaa", headers=ADMIN).status_code == 404
+    assert calls
+
+
 def test_device_list_is_admin_only(make_client, env):
     client = make_client()
     assert client.post(f"{B}/devices/pair", json={"label": "One"}).status_code == 200
@@ -317,6 +371,99 @@ def test_a_handshake_that_never_comes_is_closed(client, device, monkeypatch):
         code = exc.code
     assert code == 4003
     assert client.get(f"{B}/slots").json()["connected"] == 0
+
+
+STORE_UNAVAILABLE = {"error": "device_store_unavailable",
+                     "message": "The device store could not be read just now; try again in a moment"}
+
+
+def test_an_unreadable_device_store_is_a_503_for_pair_redeem_and_revoke(client, device, monkeypatch, tmp_path):
+    """The next revit-bridge 0.6.x raises OSError from create_pairing / redeem / revoke when
+    devices.json cannot be read for about half a second - before it writes anything. The
+    three routes answer their documented 503; nothing changed, so the same calls work after."""
+    from revit_bridge.auth import DeviceStore
+
+    headers, device_id, _ = device
+    waiting = client.post(f"{B}/devices/pair", json={"label": "waiting"}).json()   # a code not redeemed yet
+    stored = tmp_path / "data" / "auth" / "devices.json"
+    before = stored.read_bytes()
+
+    def unreadable(self, *args, **kwargs):
+        raise OSError("devices.json is held by another process")
+
+    with monkeypatch.context() as patched:
+        for method in ("create_pairing", "redeem", "revoke"):
+            patched.setattr(DeviceStore, method, unreadable)
+        answers = [
+            client.post(f"{B}/devices/pair", json={"label": "new"}),
+            client.post(f"{B}/devices/redeem", json={"code": waiting["code"], "addin_version": "0.2.0"}),
+            client.delete(f"{B}/devices/{device_id}", headers=headers),
+        ]
+    for resp in answers:
+        assert (resp.status_code, resp.json()) == (503, STORE_UNAVAILABLE), resp.request.url
+    assert stored.read_bytes() == before
+
+    # Nothing was consumed or revoked: the code redeems and the device still answers its key.
+    redeemed = client.post(f"{B}/devices/redeem", json={"code": waiting["code"]})
+    assert redeemed.status_code == 200 and redeemed.json()["device_id"] == waiting["device_id"]
+    assert client.get(f"{B}/devices/{device_id}", headers=headers).json()["revoked"] is False
+    assert client.post(f"{B}/devices/pair", json={}).status_code == 200
+    assert client.delete(f"{B}/devices/{device_id}", headers=headers).json()["status"] == "revoked"
+
+
+def test_the_contract_lists_the_device_store_503(client):
+    """503 is documented where the device store is written, and the operations that newly
+    document a 503 in this release are exactly these three and the three pack writes."""
+    spec = client.get("/openapi.json").json()
+    for path, method in ((f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"),
+                         (f"{B}/devices/{{device_id}}", "delete")):
+        described = spec["paths"][path][method]["responses"]["503"]
+        assert "device_store_unavailable" in described["description"], (path, method)
+        assert described["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorBody"}
+    with_503 = {(path, method) for path, item in spec["paths"].items() for method, op in item.items()
+                if "503" in op["responses"]}
+    before = {  # the operations that documented 503 before this change set
+        (f"{B}/snapshot", "get"), (f"{B}/query", "post"), (f"{B}/tools/{{name}}/choices", "get"),
+        (f"{B}/tools/{{name}}/run", "post"), (f"{B}/spec/reconcile", "post"), (f"{B}/execute", "post"),
+        (f"{B}/evidence/{{evidence_id}}/validate", "post"), (f"{B}/trigger-selection", "post"),
+        (f"{B}/devices", "get"),
+    }
+    assert with_503 - before == {
+        (f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"), (f"{B}/devices/{{device_id}}", "delete"),
+        (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
+    }
+    assert before <= with_503
+    assert "503" not in spec["paths"][f"{B}/devices/{{device_id}}"]["get"]["responses"]
+
+
+def test_an_unreadable_device_store_does_not_cost_a_connected_add_in_its_socket(client, device, monkeypatch):
+    """``DeviceStore.touch`` only records last_seen. When the store cannot be read (the next
+    revit-bridge 0.6.x raises OSError instead of overwriting devices.json) the add-in stays
+    connected and served; when it leaves, the relay forgets it - no stale entry."""
+    from revit_bridge.auth import DeviceStore
+
+    from backend.relay import get_relay
+
+    def unreadable(self, device_id):
+        raise OSError("devices.json is locked by another process")
+
+    monkeypatch.setattr(DeviceStore, "touch", unreadable)
+    headers, device_id, token = device
+    health: dict = {}
+    with connect(client, device_id, token) as ws:
+        thread = threading.Thread(target=lambda: health.update(
+            client.get(f"{B}/revit-health", headers=headers).json()))
+        thread.start()
+        serve(ws, 1, lambda r: json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": {"message": "hi"}}))
+        thread.join(timeout=5)
+        assert health["revit_connected"] is True
+    deadline = time.monotonic() + 5
+    while device_id in get_relay()._devices:
+        assert time.monotonic() < deadline, "the relay kept a stale entry"
+        time.sleep(0.01)
+    assert client.get(f"{B}/slots").json()["connected"] == 0
+    with connect(client, device_id, token):                     # and it can come back
+        assert client.get(f"{B}/slots").json()["connected"] == 1
 
 
 def test_the_relay_is_capped_by_max_devices(make_client, env):

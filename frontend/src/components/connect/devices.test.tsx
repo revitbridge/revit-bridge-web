@@ -64,6 +64,16 @@ describe('PairPanel', () => {
     expect(html).not.toContain('>bk<')
   })
 
+  it('after a refused pairing shows the reason and keeps the label and the button for a retry', () => {
+    const html = renderToStaticMarkup(
+      <PairPanel pairing={null} waiting={false} gaveUp={false} label="studio-01" onLabelChange={noop} onPair={noop} onCancel={noop}
+        error="device_store_unavailable: The device store could not be read just now; try again in a moment" />,
+    )
+    expect(html).toContain('device_store_unavailable: The device store could not be read just now; try again in a moment')
+    expect(html).toContain('value="studio-01"')
+    expect(html).toMatch(/<button class="btn-primary">Pair a Revit<\/button>/)
+  })
+
   it('tells the designer what to do when nobody redeemed the code', () => {
     const html = renderToStaticMarkup(
       <PairPanel pairing={null} waiting={false} gaveUp error="" label="" onLabelChange={noop} onPair={noop} onCancel={noop} />,

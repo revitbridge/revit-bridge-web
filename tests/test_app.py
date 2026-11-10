@@ -41,8 +41,77 @@ def test_settings_defaults_come_from_env_only():
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 20,
         "slotTokenRequired": False, "maxSlots": 20}}
-    s = WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k", "CORS_ORIGINS": "https://a, https://b"})
+    s = WebSettings.from_env({"LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
+                              "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
+    # Without its URL the server's key could only go to a visitor's endpoint: not a server model.
+    assert not WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k"}).server_model_configured
+
+
+def _spa(tmp_path):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>spa</title>", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    return dist
+
+
+def test_the_spa_fallback_never_answers_500_and_keeps_api_typos_out(env, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from backend.main import create_app
+
+    client = TestClient(create_app(frontend_dist=_spa(tmp_path)))
+    # A NUL byte in the path is the SPA page, not a crash.
+    nul = client.get("/%00")
+    assert nul.status_code == 200 and "spa" in nul.text
+    assert client.get("/a%00b/c").status_code == 200
+
+    # An unknown address under /api is a JSON 404 in the bridge's error shape, not the page.
+    for path in ("/api", "/api/", "/api/nope", "/api/v1/bridge/nope", "/api/v1/bridge/tool"):
+        resp = client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.headers["content-type"].startswith("application/json"), path
+        assert resp.json()["error"] == "not_found", path
+
+    # Nothing real is shadowed: routes, the runtime config, files of the build, the SPA itself.
+    assert client.get("/health").json()["status"] == "ok"
+    assert client.get("/config.json").json()["apiBase"] == ""
+    assert "paths" in client.get("/openapi.json").json()
+    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS
+    assert client.get("/api/skills").status_code == 200
+    assert client.get("/favicon.svg").text == "<svg/>"
+    assert client.get("/assets/app.js").text == "console.log(1)"
+    for page in ("/", "/task", "/capabilities/packs", "/apiary"):
+        resp = client.get(page)
+        assert resp.status_code == 200 and "spa" in resp.text, page
+    # Traversal stays inside the build.
+    assert "spa" in client.get("/..%2f..%2fpyproject.toml").text
+
+
+def test_cors_wildcard_never_allows_credentials(make_client, env):
+    """Authentication is header-based; a wildcard must not turn into "any origin, with credentials"."""
+    preflight = {"Origin": "https://evil.example", "Access-Control-Request-Method": "POST",
+                 "Access-Control-Request-Headers": "x-device-key"}
+
+    env.setenv("CORS_ORIGINS", "*")
+    client = make_client()
+    resp = client.options("/api/v1/bridge/query", headers=preflight)
+    assert resp.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in resp.headers
+    simple = client.get("/health", headers={"Origin": "https://evil.example", "Cookie": "a=b"})
+    assert simple.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in simple.headers
+
+    # An explicit list keeps credentials, for its own origins only.
+    env.setenv("CORS_ORIGINS", "https://spa.example")
+    client = make_client()
+    ok = client.options("/api/v1/bridge/query", headers={**preflight, "Origin": "https://spa.example"})
+    assert ok.headers["access-control-allow-origin"] == "https://spa.example"
+    assert ok.headers["access-control-allow-credentials"] == "true"
+    refused = client.options("/api/v1/bridge/query", headers=preflight)
+    assert "access-control-allow-origin" not in refused.headers
 
 
 def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path):
@@ -63,8 +132,12 @@ def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path)
     assert client.get("/api/v1/bridge/tools/nope").status_code == 404
 
 
-def test_pack_edits_land_in_the_user_directory(client, tmp_path):
-    resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"})
+def test_pack_edits_land_in_the_user_directory(make_client, env, tmp_path):
+    # Editing and deleting packs take the admin password (tests/test_pack_admin.py).
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    admin = {"X-Admin-Token": "hunter2"}
+    resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"}, headers=admin)
     assert resp.status_code == 200
     assert resp.json()["description"] == "levels, sorted"
     assert resp.json()["revit_synced"] is False  # no Revit in tests
@@ -73,11 +146,11 @@ def test_pack_edits_land_in_the_user_directory(client, tmp_path):
     assert client.get("/api/v1/bridge/tools/query_levels").json()["description"] == "levels, sorted"
 
     blocked = client.put("/api/v1/bridge/tools/query_levels",
-                         json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
+                         json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"}, headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
     # Deleting removes the user copy and hides the built-in one behind a marker.
-    assert client.delete("/api/v1/bridge/tools/query_levels").json()["status"] == "deleted"
+    assert client.delete("/api/v1/bridge/tools/query_levels", headers=admin).json()["status"] == "deleted"
     assert not (user_dir / "query_levels.yaml").exists()
     assert (user_dir / "query_levels.disabled").is_file()
     assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS - 1

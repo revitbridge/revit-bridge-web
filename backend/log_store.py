@@ -22,6 +22,9 @@ _log = logging.getLogger("backend.logs")
 
 RETENTION_DAYS = 90
 MAX_TEXT = 10_000
+# Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
+# first write after the interval: a container that runs for months stays bounded.
+PURGE_INTERVAL_SECONDS = 24 * 60 * 60
 
 
 class InteractionLogStore:
@@ -31,6 +34,7 @@ class InteractionLogStore:
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._next_purge = 0.0
         self._init_db()
         self._purge_old(RETENTION_DAYS)
 
@@ -62,6 +66,7 @@ class InteractionLogStore:
         _log.info("interaction logs at %s", self._db_path)
 
     def _purge_old(self, retention_days: int) -> None:
+        self._next_purge = time.monotonic() + PURGE_INTERVAL_SECONDS
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
             deleted = self.delete_before(cutoff.strftime("%Y-%m-%d %H:%M:%S"))
@@ -76,6 +81,8 @@ class InteractionLogStore:
             user_agent: str | None = None, user_input: str | None = None,
             assistant_output: str | None = None, model: str | None = None,
             duration_ms: int | None = None, status: str = "ok") -> None:
+        if time.monotonic() >= self._next_purge:
+            self._purge_old(RETENTION_DAYS)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         if user_input is not None:
             user_input = user_input[:MAX_TEXT]

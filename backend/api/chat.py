@@ -53,7 +53,7 @@ from backend.api.errors import ApiError
 from backend.api.model_tools import GET_GUIDANCE, TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
 from backend.config import get_settings
 from backend.llm import (
-    SSE_DONE, LLMError, LLMSettings, assistant_message, format_sse, format_sse_event,
+    SSE_DONE, LLMError, assistant_message, format_sse, format_sse_event, resolve_llm,
     stream_completion, tool_message,
 )
 from backend.log_store import get_client_ip, log_and_stream
@@ -71,6 +71,16 @@ TOOL_RESULT_KEEP = 8192      # characters of a tool result kept in the session a
 # recommend and index reply measured fits); only mode "read" of many ids runs longer.
 GUIDANCE_RESULT_KEEP = 16384
 ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {total} in the turn that produced it]"
+# An execution report (an ExecutionResult the page got from /run or /execute), as JSON
+# text, enters the session and every later prompt. Up to EXECUTION_KEEP characters go in
+# as they are; a longer report keeps its verdict fields whole and its ``result`` (a pack
+# listing hundreds of elements runs past 100 KB) is cut to its head with
+# EXECUTION_ELISION_NOTE, in the style of a capped tool result. Only a report beyond
+# MAX_EXECUTION_CHARS - no legitimate result, protection against abuse - is refused (422).
+EXECUTION_KEEP = 16_384
+MAX_EXECUTION_CHARS = 4_194_304
+EXECUTION_ELISION_NOTE = ("[execution result elided after {kept} characters; the page received all "
+                          "{total} and the evidence ledger keeps the record]")
 
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
@@ -118,9 +128,26 @@ def build_system_prompt(bridge: bool = True) -> str:
     return "\n\n".join(parts)
 
 
-def execution_message(execution: dict) -> str:
-    """The fixed first line, then the ExecutionResult JSON as the page received it."""
-    return f"{EXECUTION_PREFIX}\n{json.dumps(execution, ensure_ascii=False)}"
+def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
+    """The fixed first line, then the ExecutionResult JSON as the page received it - at
+    most ``keep`` characters of it. Past that the ``result`` field becomes its head plus
+    ``EXECUTION_ELISION_NOTE`` (a string), so success, error, validation, evidence_id
+    and warnings reach the model whole and the text is still JSON; only a report whose
+    other fields alone are too long is cut as text."""
+    text = json.dumps(execution, ensure_ascii=False)
+    if len(text) > keep and "result" in execution:
+        result = json.dumps(execution["result"], ensure_ascii=False)
+        room = max(0, keep - (len(text) - len(result)) - len(EXECUTION_ELISION_NOTE) - 16)
+        for _ in range(8):           # escaping the head as a JSON string makes it longer
+            note = EXECUTION_ELISION_NOTE.format(kept=room, total=len(result))
+            text = json.dumps({**execution, "result": f"{result[:room]} {note}"}, ensure_ascii=False)
+            if len(text) <= keep or room == 0:
+                break
+            room = max(0, room - (len(text) - keep))
+    if len(text) > keep:
+        note = EXECUTION_ELISION_NOTE.format(kept=keep, total=len(text))
+        text = f"{text[:keep]}\n{note}"
+    return f"{EXECUTION_PREFIX}\n{text}"
 
 
 def result_keep(tool: str) -> int:
@@ -147,6 +174,11 @@ async def chat(req: ChatRequest, request: Request):
         raise ApiError(422, "invalid_args", "message is empty")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
+    if req.execution is not None:
+        size = len(json.dumps(req.execution, ensure_ascii=False))
+        if size > MAX_EXECUTION_CHARS:
+            raise ApiError(422, "invalid_args",
+                           f"execution is too large: {size} characters as JSON, at most {MAX_EXECUTION_CHARS}")
     if req.bridge:
         # The model's tools reach Revit through the selected device: the same header
         # checks as the bridge routes (403 on a wrong or revoked device key).
@@ -154,7 +186,7 @@ async def chat(req: ChatRequest, request: Request):
 
     settings = get_settings()
     try:
-        llm = LLMSettings.resolve(request.headers, settings)
+        llm = await resolve_llm(request.headers, settings)
     except LLMError as exc:
         raise HTTPException(exc.status, str(exc)) from None
     if not llm.configured:

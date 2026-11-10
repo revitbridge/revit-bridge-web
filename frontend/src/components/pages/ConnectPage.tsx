@@ -98,7 +98,7 @@ export default function ConnectPage({ deps }: { deps?: PairingDeps }) {
           Bring your own model: any OpenAI-compatible endpoint. These values stay in this browser tab
           (<code>sessionStorage</code>) and travel as request headers; the server never stores them.
           {config.features.serverModel
-            ? ' Leave a field empty to use the server default for it.'
+            ? ' Leave a field empty to use the server default for it; a base URL of your own needs your own key (the server\'s key only goes to its own endpoint).'
             : ' This host has no server-side model configured, so a key is required.'}
         </p>
         <div className="form-grid">
@@ -115,7 +115,8 @@ export default function ConnectPage({ deps }: { deps?: PairingDeps }) {
           <label className="form-wide">
             <span className="label-text">API key</span>
             <input type="password" className="input-field" value={llmKey} onChange={e => setLlm({ llmKey: e.target.value.trim() })}
-              placeholder={config.features.serverModel ? 'Optional: server default is used when empty' : 'Required on this host'} autoComplete="off" />
+              placeholder={!config.features.serverModel ? 'Required on this host'
+                : llmBaseUrl ? 'Required with your own base URL' : 'Optional: server default is used when empty'} autoComplete="off" />
           </label>
         </div>
         <button className="btn-ghost" onClick={() => setLlm({ llmBaseUrl: '', llmModel: '', llmKey: '' })}>Clear model settings</button>
@@ -125,7 +126,7 @@ export default function ConnectPage({ deps }: { deps?: PairingDeps }) {
         <>
           <section className="card section">
             <h3 className="heading-display section-title">Admin</h3>
-            <p className="section-copy">Needed to list every device, to add, edit or delete skills and to read interaction logs.</p>
+            <p className="section-copy">Needed to list every device, to add, edit or delete skills, to edit, delete or save capability packs and to read interaction logs.</p>
             <input type="password" className="input-field" value={adminToken} onChange={e => setAdminToken(e.target.value)}
               placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
           </section>

@@ -25,7 +25,7 @@ from starlette.requests import HTTPConnection
 
 from revit_bridge.auth import Device, DeviceError, DeviceStore
 
-from backend.api.errors import ApiError, responses
+from backend.api.errors import ApiError, device_store_responses, device_store_unavailable, responses
 from backend.config import get_settings
 from backend.ratelimit import client_key, pair_limiter, redeem_limiter
 from backend.relay import get_relay
@@ -36,6 +36,8 @@ HEADER_DEVICE_ID = "x-device-id"
 HEADER_DEVICE_KEY = "x-device-key"
 LEGACY_SLOT_HEADERS = ("x-slot-id", "x-slot-token")
 REDEEM_LIMIT = 10                       # per address per minute, fixed (spec §3.1 item 4)
+# One answer for an unknown device, a wrong key and a revoked device, on every route.
+INVALID_DEVICE_KEY = "Unknown device, wrong X-Device-Key or revoked device"
 
 # Set per request by the device dependency; read where a Revit client or a scope is needed.
 request_device: ContextVar[str | None] = ContextVar("device_id", default=None)
@@ -78,7 +80,7 @@ async def set_device_context(connection: HTTPConnection) -> None:
         return
     key = connection.headers.get(HEADER_DEVICE_KEY) or ""
     if await run_in_threadpool(get_device_store().verify_browser, device_id, key) is None:
-        raise ApiError(403, "invalid_device_key", "Unknown device, wrong X-Device-Key or revoked device")
+        raise ApiError(403, "invalid_device_key", INVALID_DEVICE_KEY)
 
 
 def current_device() -> str | None:
@@ -150,13 +152,12 @@ def device_view(device: Device, relay_status: dict) -> dict:
 
 
 def admin_ok(connection: HTTPConnection | Request) -> bool:
-    """A configured admin password, sent as ``X-Admin-Token``."""
-    password = get_settings().admin_password
-    return bool(password) and connection.headers.get("x-admin-token") == password
+    """A configured admin password, sent as ``X-Admin-Token`` (the shared constant-time check)."""
+    return get_settings().admin_token_ok(connection.headers.get("x-admin-token"))
 
 
 async def _device_or_404(device_id: str) -> dict:
-    """The stored device dict, or 404 - the id exists or it does not."""
+    """The stored device dict, or 404 - the id exists or it does not (admin only)."""
     devices = {d.device_id: d for d in await run_in_threadpool(get_device_store().list)}
     device = devices.get(device_id)
     if device is None:
@@ -168,15 +169,17 @@ async def _authorized(request: Request, device_id: str) -> Device:
     """The device when the request holds its browser key, or the admin password.
 
     The admin token is checked first: with it the device headers are irrelevant
-    (absent, empty or wrong alike).
+    (absent, empty or wrong alike), and an unknown id is 404. Without it an
+    unknown id, a wrong key and a revoked device are the same 403, as on every
+    other device-scoped route: a browser learns nothing about devices it does
+    not hold the key for.
     """
-    found = (await _device_or_404(device_id))["device"]
     if admin_ok(request):
-        return found
+        return (await _device_or_404(device_id))["device"]
     key = request.headers.get(HEADER_DEVICE_KEY) or ""
     device = await run_in_threadpool(get_device_store().verify_browser, device_id, key)
     if device is None:
-        raise ApiError(403, "invalid_device_key", "Wrong X-Device-Key or revoked device")
+        raise ApiError(403, "invalid_device_key", INVALID_DEVICE_KEY)
     return device
 
 
@@ -195,8 +198,12 @@ def register(router) -> None:
         if not redeem_limiter.allow(client_key(request), REDEEM_LIMIT):
             raise ApiError(429, "rate_limited", "Too many redeem attempts from this address; try again in a minute")
 
+    # pair, redeem and revoke write the device store; an OSError from the package means it
+    # could not read devices.json and wrote nothing (503 device_store_unavailable, retry).
+    # The docstrings stay as they are: they are the operations' descriptions in the export.
+
     @router.post("/devices/pair", dependencies=[Depends(pair_rate_limit)],
-                 responses=responses(422, 429))
+                 responses=device_store_responses(422, 429))
     async def pair_device(req: PairRequest, request: Request):
         """``DeviceStore.create_pairing``: a code for the add-in and the browser key for this tab.
 
@@ -204,7 +211,10 @@ def register(router) -> None:
         browser keeps the key (session storage) - it is what lets this tab
         drive and revoke that Revit.
         """
-        pairing = await run_in_threadpool(get_device_store().create_pairing, req.label.strip())
+        try:
+            pairing = await run_in_threadpool(get_device_store().create_pairing, req.label.strip())
+        except OSError:
+            raise device_store_unavailable() from None
         return {
             "code": pairing.code,
             "device_id": pairing.device_id,
@@ -214,7 +224,7 @@ def register(router) -> None:
         }
 
     @router.post("/devices/redeem", dependencies=[Depends(redeem_rate_limit)],
-                 responses=responses(404, 422, 429))
+                 responses=device_store_responses(404, 422, 429))
     async def redeem_pairing(req: RedeemRequest, request: Request):
         """``DeviceStore.redeem``: the add-in turns the code into its device token.
 
@@ -226,6 +236,8 @@ def register(router) -> None:
             redeemed = await run_in_threadpool(get_device_store().redeem, req.code, req.addin_version)
         except DeviceError:
             raise ApiError(404, "invalid_code", "This pairing code is not valid any more") from None
+        except OSError:
+            raise device_store_unavailable() from None        # the code was not consumed
         _log.info("device %s redeemed a pairing (add-in %s)", redeemed.device.device_id,
                   redeemed.device.addin_version or "unknown")
         return {
@@ -252,11 +264,14 @@ def register(router) -> None:
         device = await _authorized(request, device_id)
         return device_view(device, get_relay().device_status(device_id))
 
-    @router.delete("/devices/{device_id}", responses=responses(403, 404, 422))
+    @router.delete("/devices/{device_id}", responses=device_store_responses(403, 404, 422))
     async def revoke_device(device_id: str, request: Request):
         """Revoke the device and close its socket: no more requests, key and token dead."""
         await _authorized(request, device_id)
-        await run_in_threadpool(get_device_store().revoke, device_id)
+        try:
+            await run_in_threadpool(get_device_store().revoke, device_id)
+        except OSError:
+            raise device_store_unavailable() from None        # not revoked: the socket stays
         closed = await get_relay().disconnect(device_id, code=4003, reason="device revoked")
         _log.info("device %s revoked (socket closed: %s)", device_id, closed)
         return {"status": "revoked", "device_id": device_id, "disconnected": closed}
