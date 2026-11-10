@@ -38,6 +38,10 @@ the Docker host itself is reached over TCP (`host.docker.internal:18080`) withou
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<your-host> -Pair XXXX-XXXX
 ```
 
+The add-in supports Revit 2020, 2021 and 2023-2026, and each Revit year is its own installation. A
+pairing code pairs one of them: on a machine with several Revit years the installer asks which year
+to pair (add `-RevitVersion <year>` to name it), and a second year needs a second code.
+
 A **device** is one add-in installation. The add-in holds its own token, the browser that paired it
 holds a key; neither can stand in for the other, and revoking the device invalidates both and closes
 its connection.
