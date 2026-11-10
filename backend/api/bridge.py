@@ -700,10 +700,18 @@ async def revit_ws_endpoint(ws: WebSocket, device_id: str):
     if refused is not None:
         await ws.close(code=4001, reason=f"Too many connected devices (max {relay.max_devices})")
         return
-    await run_in_threadpool(devices_api.get_device_store().touch, device_id)
 
     _log.info("Revit add-in connected for device %s", device_id)
     try:
+        # Registered: from here on every way out unregisters (finally). ``touch`` only
+        # records last_seen, so a device store that cannot be read right now (a
+        # revit-bridge that raises OSError rather than overwrite devices.json) costs
+        # the add-in nothing: it stays connected and the next connection records it.
+        try:
+            await run_in_threadpool(devices_api.get_device_store().touch, device_id)
+        except OSError as exc:
+            _log.warning("device %s connected, last_seen not recorded: device store unreadable (%s)",
+                         device_id, exc)
         while True:
             relay.resolve_response(device_id, await ws.receive_text())
     except WebSocketDisconnect:

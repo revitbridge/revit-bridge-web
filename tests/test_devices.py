@@ -373,6 +373,36 @@ def test_a_handshake_that_never_comes_is_closed(client, device, monkeypatch):
     assert client.get(f"{B}/slots").json()["connected"] == 0
 
 
+def test_an_unreadable_device_store_does_not_cost_a_connected_add_in_its_socket(client, device, monkeypatch):
+    """``DeviceStore.touch`` only records last_seen. When the store cannot be read (the next
+    revit-bridge 0.6.x raises OSError instead of overwriting devices.json) the add-in stays
+    connected and served; when it leaves, the relay forgets it - no stale entry."""
+    from revit_bridge.auth import DeviceStore
+
+    from backend.relay import get_relay
+
+    def unreadable(self, device_id):
+        raise OSError("devices.json is locked by another process")
+
+    monkeypatch.setattr(DeviceStore, "touch", unreadable)
+    headers, device_id, token = device
+    health: dict = {}
+    with connect(client, device_id, token) as ws:
+        thread = threading.Thread(target=lambda: health.update(
+            client.get(f"{B}/revit-health", headers=headers).json()))
+        thread.start()
+        serve(ws, 1, lambda r: json.dumps({"jsonrpc": "2.0", "id": r["id"], "result": {"message": "hi"}}))
+        thread.join(timeout=5)
+        assert health["revit_connected"] is True
+    deadline = time.monotonic() + 5
+    while device_id in get_relay()._devices:
+        assert time.monotonic() < deadline, "the relay kept a stale entry"
+        time.sleep(0.01)
+    assert client.get(f"{B}/slots").json()["connected"] == 0
+    with connect(client, device_id, token):                     # and it can come back
+        assert client.get(f"{B}/slots").json()["connected"] == 1
+
+
 def test_the_relay_is_capped_by_max_devices(make_client, env):
     from starlette.websockets import WebSocketDisconnect
 
