@@ -373,6 +373,69 @@ def test_a_handshake_that_never_comes_is_closed(client, device, monkeypatch):
     assert client.get(f"{B}/slots").json()["connected"] == 0
 
 
+STORE_UNAVAILABLE = {"error": "device_store_unavailable",
+                     "message": "The device store could not be read just now; try again in a moment"}
+
+
+def test_an_unreadable_device_store_is_a_503_for_pair_redeem_and_revoke(client, device, monkeypatch, tmp_path):
+    """The next revit-bridge 0.6.x raises OSError from create_pairing / redeem / revoke when
+    devices.json cannot be read for about half a second - before it writes anything. The
+    three routes answer their documented 503; nothing changed, so the same calls work after."""
+    from revit_bridge.auth import DeviceStore
+
+    headers, device_id, _ = device
+    waiting = client.post(f"{B}/devices/pair", json={"label": "waiting"}).json()   # a code not redeemed yet
+    stored = tmp_path / "data" / "auth" / "devices.json"
+    before = stored.read_bytes()
+
+    def unreadable(self, *args, **kwargs):
+        raise OSError("devices.json is held by another process")
+
+    with monkeypatch.context() as patched:
+        for method in ("create_pairing", "redeem", "revoke"):
+            patched.setattr(DeviceStore, method, unreadable)
+        answers = [
+            client.post(f"{B}/devices/pair", json={"label": "new"}),
+            client.post(f"{B}/devices/redeem", json={"code": waiting["code"], "addin_version": "0.2.0"}),
+            client.delete(f"{B}/devices/{device_id}", headers=headers),
+        ]
+    for resp in answers:
+        assert (resp.status_code, resp.json()) == (503, STORE_UNAVAILABLE), resp.request.url
+    assert stored.read_bytes() == before
+
+    # Nothing was consumed or revoked: the code redeems and the device still answers its key.
+    redeemed = client.post(f"{B}/devices/redeem", json={"code": waiting["code"]})
+    assert redeemed.status_code == 200 and redeemed.json()["device_id"] == waiting["device_id"]
+    assert client.get(f"{B}/devices/{device_id}", headers=headers).json()["revoked"] is False
+    assert client.post(f"{B}/devices/pair", json={}).status_code == 200
+    assert client.delete(f"{B}/devices/{device_id}", headers=headers).json()["status"] == "revoked"
+
+
+def test_the_contract_lists_the_device_store_503(client):
+    """503 is documented where the device store is written, and the operations that newly
+    document a 503 in this release are exactly these three and the three pack writes."""
+    spec = client.get("/openapi.json").json()
+    for path, method in ((f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"),
+                         (f"{B}/devices/{{device_id}}", "delete")):
+        described = spec["paths"][path][method]["responses"]["503"]
+        assert "device_store_unavailable" in described["description"], (path, method)
+        assert described["content"]["application/json"]["schema"] == {"$ref": "#/components/schemas/ErrorBody"}
+    with_503 = {(path, method) for path, item in spec["paths"].items() for method, op in item.items()
+                if "503" in op["responses"]}
+    before = {  # the operations that documented 503 before this change set
+        (f"{B}/snapshot", "get"), (f"{B}/query", "post"), (f"{B}/tools/{{name}}/choices", "get"),
+        (f"{B}/tools/{{name}}/run", "post"), (f"{B}/spec/reconcile", "post"), (f"{B}/execute", "post"),
+        (f"{B}/evidence/{{evidence_id}}/validate", "post"), (f"{B}/trigger-selection", "post"),
+        (f"{B}/devices", "get"),
+    }
+    assert with_503 - before == {
+        (f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"), (f"{B}/devices/{{device_id}}", "delete"),
+        (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
+    }
+    assert before <= with_503
+    assert "503" not in spec["paths"][f"{B}/devices/{{device_id}}"]["get"]["responses"]
+
+
 def test_an_unreadable_device_store_does_not_cost_a_connected_add_in_its_socket(client, device, monkeypatch):
     """``DeviceStore.touch`` only records last_seen. When the store cannot be read (the next
     revit-bridge 0.6.x raises OSError instead of overwriting devices.json) the add-in stays

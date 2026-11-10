@@ -22,11 +22,16 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   `admin_disabled` when `ADMIN_PASSWORD` is unset. Before, any visitor could create, edit or
   delete a pack - the built-in ones included - and a pack's code runs in a designer's Revit
   once they confirm its card. Listing, reading, choices, missing-params, confirming and running
-  packs are unchanged. `docs/api-v1.json` changes for these three operations only (the header,
-  503, the 403 text). The Capabilities page hides *Edit pack* and *Delete*, and the task page's
+  packs are unchanged. In `docs/api-v1.json` these three operations change (the header, 503,
+  the 403 text). The Capabilities page hides *Edit pack* and *Delete*, and the task page's
   *Save as pack* stays off, until the admin password is entered on the Connect page; a host
   without `ADMIN_PASSWORD` cannot change packs through the web UI. The model's tools never
   could (it has no writing tool; a test keeps it so).
+- **Three more routes gained a documented status:** `POST /api/v1/bridge/devices/pair`,
+  `POST /api/v1/bridge/devices/redeem` and `DELETE /api/v1/bridge/devices/{device_id}` now
+  declare 503 `device_store_unavailable` (see *Fixed*). That 503 is the only change to those
+  three operations in `docs/api-v1.json`; with the three pack routes above they are the only
+  operations whose contract this round of fixes changes.
 - The server's model key no longer leaves for a visitor's endpoint. A request with only
   `X-LLM-Base-Url` used to go there with `LLM_API_KEY` in its `Authorization` header. The key
   now only ever goes to `LLM_BASE_URL`: a request that names its own base URL must send
@@ -236,10 +241,14 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   failed handshakes in a minute (wrong token, no auth message in time) or 64 sockets still
   waiting to authenticate is refused before the upgrade, so the close codes 4001/4002/4003 keep
   their meaning. Add-ins that authenticate never count, however often they reconnect.
-- An add-in that connects while the device store cannot be read (a later revit-bridge 0.6.x
-  raises `OSError` instead of overwriting `devices.json`) stays connected; only its last-seen
-  time goes unrecorded. Before, the error closed the socket and left the device registered in
-  the relay.
+- A device store that cannot be read for a moment (a later revit-bridge 0.6.x raises `OSError`
+  after half a second instead of overwriting `devices.json`, before it writes anything):
+  pairing, redeeming a code and revoking a device answer 503 `{error:
+  "device_store_unavailable", message}` - nothing changed, the code is not consumed, try again
+  - instead of an unhandled 500; the Connect page shows the message and keeps the label and
+  the device for a retry (an admin revoke's message no longer vanishes when the list reloads).
+  An add-in that connects meanwhile stays connected; only its last-seen time goes unrecorded.
+  Before, the error closed the socket and left the device registered in the relay.
 - Growth while the host runs: interaction logs older than 90 days are purged daily, not only at
   startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
   `execution` report enters the session and the prompt with at most 16,384 characters of JSON

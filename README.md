@@ -149,7 +149,9 @@ Pairing and devices: `POST /devices/pair` returns `{code, device_id, expires_at,
 install_command}`; the add-in calls `POST /devices/redeem` with the code (no headers) and receives
 `{device_id, device_token, ws_url}`; `GET /devices/{id}` and `DELETE /devices/{id}` take the browser
 key (or the admin password), `GET /devices` is admin only, and `GET /slots` publishes
-`{max_devices, connected}`. Pick a Revit with `X-Device-Id` + `X-Device-Key`; without them a request
+`{max_devices, connected}`. When the device store (`auth/devices.json`) cannot be read for a moment,
+pair, redeem and revoke answer 503 `device_store_unavailable`: nothing changed (a code is not
+consumed), so the same call can simply be repeated. Pick a Revit with `X-Device-Id` + `X-Device-Key`; without them a request
 drives the local add-in over TCP. Every confirmation and every ledger line belongs to that device
 (`scope`), so a browser sees and re-validates only its own device's evidence, and a token confirmed
 for one device is refused on another. Ad-hoc code (`POST /execute`) also asks the designer on the

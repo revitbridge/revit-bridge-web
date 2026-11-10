@@ -2019,6 +2019,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         }
       }
@@ -2072,6 +2082,16 @@
           },
           "429": {
             "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2232,6 +2252,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
             "content": {
               "application/json": {
                 "schema": {

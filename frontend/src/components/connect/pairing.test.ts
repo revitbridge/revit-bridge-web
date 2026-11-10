@@ -14,6 +14,8 @@ const issued: PairingResponse = {
 }
 
 const offline: DeviceStatus = { device_id: issued.device_id, label: 'studio-01', online: false, last_seen: null, requests: 0, revoked: false }
+/* What the host answers (503) when it could not read its device store; nothing changed there. */
+const STORE_UNAVAILABLE = { error: 'device_store_unavailable', message: 'The device store could not be read just now; try again in a moment' }
 const online: DeviceStatus = { ...offline, online: true, last_seen: '2026-09-23T09:01:00Z', requests: 3 }
 
 /* An API whose status() answers from a script; every call is recorded with its key. */
@@ -166,6 +168,24 @@ describe('pairing a device', () => {
     expect(useSessionStore.getState().devices).toEqual([])
   })
 
+  it('shows a 503 from an unreadable device store in the server\'s words, and a retry pairs', async () => {
+    const storeDown = new BridgeApiError(503, JSON.stringify(STORE_UNAVAILABLE))
+    const pair = vi.fn().mockRejectedValueOnce(storeDown).mockResolvedValue(issued)
+    const api = fakeApi([online], { pair })
+    const clock = fakeClock()
+    const flow = createPairingFlow({ api, wait: clock.wait, now: clock.now })
+
+    await flow.pair('studio-01')
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, gaveUp: false,
+      pairError: `device_store_unavailable: ${STORE_UNAVAILABLE.message}` })
+    expect(useSessionStore.getState().devices).toEqual([])          // nothing half-paired is remembered
+
+    await flow.pair('studio-01')                                    // the same button, the same label
+    expect(pair).toHaveBeenNthCalledWith(2, 'studio-01')
+    expect(flow.store.getState()).toMatchObject({ pairing: null, waiting: false, pairError: '' })
+    expect(useSessionStore.getState().deviceId).toBe(issued.device_id)
+  })
+
   it('stops waiting when the designer cancels', async () => {
     const api = fakeApi([offline])
     const clock = fakeClock()
@@ -241,6 +261,24 @@ describe('the device list', () => {
     expect(flow.store.getState().busy).toEqual({})
   })
 
+  it('a revoke the host could not record keeps the device, says why, and can be tried again', async () => {
+    const revoke = vi.fn().mockRejectedValueOnce(new BridgeApiError(503, JSON.stringify(STORE_UNAVAILABLE)))
+      .mockResolvedValue({ status: 'revoked' })
+    const api = fakeApi([online], { revoke })
+    const device = { device_id: 'dev_one', browser_key: 'k1', label: 'one' }
+    useSessionStore.getState().rememberDevice(device)
+    const flow = createPairingFlow({ api, wait: async () => {}, now: () => 0 })
+
+    await flow.revoke(device)
+    expect(useSessionStore.getState().devices).toEqual([device])   // not revoked, so not forgotten
+    expect(flow.store.getState()).toMatchObject({ busy: {}, listError: `device_store_unavailable: ${STORE_UNAVAILABLE.message}` })
+
+    await flow.revoke(device)
+    expect(revoke).toHaveBeenCalledTimes(2)
+    expect(useSessionStore.getState().devices).toEqual([])
+    expect(flow.store.getState().listError).toBe('')
+  })
+
   it('a device already revoked on the host is still forgotten here', async () => {
     const api = fakeApi([online], { revoke: vi.fn().mockRejectedValue(new BridgeApiError(404, JSON.stringify({ error: 'unknown_device' }))) })
     const device = { device_id: 'dev_one', browser_key: 'k1', label: 'one' }
@@ -264,6 +302,13 @@ describe('the admin view', () => {
     await flow.adminRevoke('dev_other')
     expect(api.revoke).toHaveBeenCalledWith('dev_other', '')
     expect(api.all).toHaveBeenCalledTimes(2)
+  })
+
+  it('an admin revoke the host could not record says why', async () => {
+    const api = fakeApi([online], { revoke: vi.fn().mockRejectedValue(new BridgeApiError(503, JSON.stringify(STORE_UNAVAILABLE))) })
+    const flow = createPairingFlow({ api, wait: async () => {}, now: () => 0 })
+    await flow.adminRevoke('dev_other')
+    expect(flow.store.getState()).toMatchObject({ busy: {}, adminError: `device_store_unavailable: ${STORE_UNAVAILABLE.message}` })
   })
 
   it('says why the list is refused without an admin token', async () => {

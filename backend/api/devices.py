@@ -25,7 +25,7 @@ from starlette.requests import HTTPConnection
 
 from revit_bridge.auth import Device, DeviceError, DeviceStore
 
-from backend.api.errors import ApiError, responses
+from backend.api.errors import ApiError, device_store_responses, device_store_unavailable, responses
 from backend.config import get_settings
 from backend.ratelimit import client_key, pair_limiter, redeem_limiter
 from backend.relay import get_relay
@@ -198,8 +198,12 @@ def register(router) -> None:
         if not redeem_limiter.allow(client_key(request), REDEEM_LIMIT):
             raise ApiError(429, "rate_limited", "Too many redeem attempts from this address; try again in a minute")
 
+    # pair, redeem and revoke write the device store; an OSError from the package means it
+    # could not read devices.json and wrote nothing (503 device_store_unavailable, retry).
+    # The docstrings stay as they are: they are the operations' descriptions in the export.
+
     @router.post("/devices/pair", dependencies=[Depends(pair_rate_limit)],
-                 responses=responses(422, 429))
+                 responses=device_store_responses(422, 429))
     async def pair_device(req: PairRequest, request: Request):
         """``DeviceStore.create_pairing``: a code for the add-in and the browser key for this tab.
 
@@ -207,7 +211,10 @@ def register(router) -> None:
         browser keeps the key (session storage) - it is what lets this tab
         drive and revoke that Revit.
         """
-        pairing = await run_in_threadpool(get_device_store().create_pairing, req.label.strip())
+        try:
+            pairing = await run_in_threadpool(get_device_store().create_pairing, req.label.strip())
+        except OSError:
+            raise device_store_unavailable() from None
         return {
             "code": pairing.code,
             "device_id": pairing.device_id,
@@ -217,7 +224,7 @@ def register(router) -> None:
         }
 
     @router.post("/devices/redeem", dependencies=[Depends(redeem_rate_limit)],
-                 responses=responses(404, 422, 429))
+                 responses=device_store_responses(404, 422, 429))
     async def redeem_pairing(req: RedeemRequest, request: Request):
         """``DeviceStore.redeem``: the add-in turns the code into its device token.
 
@@ -229,6 +236,8 @@ def register(router) -> None:
             redeemed = await run_in_threadpool(get_device_store().redeem, req.code, req.addin_version)
         except DeviceError:
             raise ApiError(404, "invalid_code", "This pairing code is not valid any more") from None
+        except OSError:
+            raise device_store_unavailable() from None        # the code was not consumed
         _log.info("device %s redeemed a pairing (add-in %s)", redeemed.device.device_id,
                   redeemed.device.addin_version or "unknown")
         return {
@@ -255,11 +264,14 @@ def register(router) -> None:
         device = await _authorized(request, device_id)
         return device_view(device, get_relay().device_status(device_id))
 
-    @router.delete("/devices/{device_id}", responses=responses(403, 404, 422))
+    @router.delete("/devices/{device_id}", responses=device_store_responses(403, 404, 422))
     async def revoke_device(device_id: str, request: Request):
         """Revoke the device and close its socket: no more requests, key and token dead."""
         await _authorized(request, device_id)
-        await run_in_threadpool(get_device_store().revoke, device_id)
+        try:
+            await run_in_threadpool(get_device_store().revoke, device_id)
+        except OSError:
+            raise device_store_unavailable() from None        # not revoked: the socket stays
         closed = await get_relay().disconnect(device_id, code=4003, reason="device revoked")
         _log.info("device %s revoked (socket closed: %s)", device_id, closed)
         return {"status": "revoked", "device_id": device_id, "disconnected": closed}
