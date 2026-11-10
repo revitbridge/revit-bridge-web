@@ -45,10 +45,13 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     )
 
     if settings.cors_origins:
+        # Credentials only for an explicit origin list: with "*" the middleware would
+        # echo any origin back as allowed with credentials. Nothing here needs them
+        # anyway - device keys, the admin token and model keys travel as headers.
         app.add_middleware(
             CORSMiddleware,
             allow_origins=list(settings.cors_origins),
-            allow_credentials=True,
+            allow_credentials="*" not in settings.cors_origins,
             allow_methods=["*"],
             allow_headers=["*"],
             expose_headers=["X-Session-Id"],
@@ -81,8 +84,16 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
         @app.get("/{rest:path}", include_in_schema=False)
         async def spa_fallback(rest: str = ""):
-            candidate = (dist / rest).resolve()
-            if rest and candidate.is_file() and candidate.is_relative_to(dist.resolve()):
+            if rest == "api" or rest.startswith("api/"):
+                # A mistyped API address is a 404, not the SPA page with 200 (registered
+                # last, so every real route, /config.json and /health match first).
+                raise errors.ApiError(404, "not_found", f"No API route GET /{rest}")
+            try:
+                candidate = (dist / rest).resolve()
+                found = bool(rest) and candidate.is_file() and candidate.is_relative_to(dist.resolve())
+            except (ValueError, OSError):              # a NUL byte or a name the OS refuses
+                found = False
+            if found:
                 return FileResponse(candidate)
             return FileResponse(dist / "index.html")
 

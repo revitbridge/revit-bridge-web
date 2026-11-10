@@ -48,6 +48,72 @@ def test_settings_defaults_come_from_env_only():
     assert not WebSettings.from_env({"LLM_MODEL": "m", "LLM_API_KEY": "k"}).server_model_configured
 
 
+def _spa(tmp_path):
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html><title>spa</title>", encoding="utf-8")
+    (dist / "favicon.svg").write_text("<svg/>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    return dist
+
+
+def test_the_spa_fallback_never_answers_500_and_keeps_api_typos_out(env, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from backend.main import create_app
+
+    client = TestClient(create_app(frontend_dist=_spa(tmp_path)))
+    # A NUL byte in the path is the SPA page, not a crash.
+    nul = client.get("/%00")
+    assert nul.status_code == 200 and "spa" in nul.text
+    assert client.get("/a%00b/c").status_code == 200
+
+    # An unknown address under /api is a JSON 404 in the bridge's error shape, not the page.
+    for path in ("/api", "/api/", "/api/nope", "/api/v1/bridge/nope", "/api/v1/bridge/tool"):
+        resp = client.get(path)
+        assert resp.status_code == 404, path
+        assert resp.headers["content-type"].startswith("application/json"), path
+        assert resp.json()["error"] == "not_found", path
+
+    # Nothing real is shadowed: routes, the runtime config, files of the build, the SPA itself.
+    assert client.get("/health").json()["status"] == "ok"
+    assert client.get("/config.json").json()["apiBase"] == ""
+    assert "paths" in client.get("/openapi.json").json()
+    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS
+    assert client.get("/api/skills").status_code == 200
+    assert client.get("/favicon.svg").text == "<svg/>"
+    assert client.get("/assets/app.js").text == "console.log(1)"
+    for page in ("/", "/task", "/capabilities/packs", "/apiary"):
+        resp = client.get(page)
+        assert resp.status_code == 200 and "spa" in resp.text, page
+    # Traversal stays inside the build.
+    assert "spa" in client.get("/..%2f..%2fpyproject.toml").text
+
+
+def test_cors_wildcard_never_allows_credentials(make_client, env):
+    """Authentication is header-based; a wildcard must not turn into "any origin, with credentials"."""
+    preflight = {"Origin": "https://evil.example", "Access-Control-Request-Method": "POST",
+                 "Access-Control-Request-Headers": "x-device-key"}
+
+    env.setenv("CORS_ORIGINS", "*")
+    client = make_client()
+    resp = client.options("/api/v1/bridge/query", headers=preflight)
+    assert resp.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in resp.headers
+    simple = client.get("/health", headers={"Origin": "https://evil.example", "Cookie": "a=b"})
+    assert simple.headers["access-control-allow-origin"] == "*"
+    assert "access-control-allow-credentials" not in simple.headers
+
+    # An explicit list keeps credentials, for its own origins only.
+    env.setenv("CORS_ORIGINS", "https://spa.example")
+    client = make_client()
+    ok = client.options("/api/v1/bridge/query", headers={**preflight, "Origin": "https://spa.example"})
+    assert ok.headers["access-control-allow-origin"] == "https://spa.example"
+    assert ok.headers["access-control-allow-credentials"] == "true"
+    refused = client.options("/api/v1/bridge/query", headers=preflight)
+    assert "access-control-allow-origin" not in refused.headers
+
+
 def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path):
     tools = client.get("/api/v1/bridge/tools").json()
     names = sorted(t["name"] for t in tools)
