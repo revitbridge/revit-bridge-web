@@ -9,7 +9,9 @@ import json
 import threading
 
 import pytest
+from revit_bridge.snapshot.project import fingerprint_of, levels_of
 
+from tests.fake_revit import LEVELS_RESULT
 from tests.test_api_v1 import B, spec_for
 from tests.test_devices import addin_reply, connect, pack_handler, serve
 
@@ -46,18 +48,22 @@ def test_a_confirmed_execution_travels_over_the_device(client, device):
         def handler(request):
             if request["params"]["code"] == "return 1;":
                 return addin_reply(request, {"Status": "Created", "ElementId": 7})
+            if "return levels;" in request["params"]["code"]:
+                return addin_reply(request, LEVELS_RESULT)
             return addin_reply(request, {"Title": "Project1", "RevitVersion": "2026"})
 
         thread = threading.Thread(target=execute)
         thread.start()
-        serve(ws, 2, handler)                      # document probe, then the code
+        serve(ws, 3, handler)                      # document probe, its levels (the fingerprint), then the code
         thread.join(timeout=5)
 
     out = outcome["exec"]
     assert out["success"] is True and out["result"] == {"Status": "Created", "ElementId": 7}
     record = get_ledger().get(out["evidence_id"])
     assert record["host"] == "web" and record["scope"] == device_id
-    assert record["document"] == {"title": "Project1", "revit_version": "2026"}
+    # revit-bridge 0.4.1: the ledger's document carries the fingerprint of the levels the device answered.
+    assert record["document"] == {"title": "Project1", "revit_version": "2026",
+                                  "fingerprint": fingerprint_of("Project1", "2026", levels_of(LEVELS_RESULT))}
 
     assert client.get(f"{B}/slots").json()["connected"] == 0
     missing = client.get(f"{B}/revit-health", headers=headers).json()
@@ -79,7 +85,7 @@ def test_pack_run_over_a_device_counts_usage_in_the_data_root(client, device, tm
 
         thread = threading.Thread(target=run)
         thread.start()
-        serve(ws, 4, pack_handler([{"Id": 1, "Name": "L1", "ElevationMm": 0.0}], count=3))
+        serve(ws, 5, pack_handler([{"Id": 1, "Name": "L1", "ElevationMm": 0.0}], count=3))
         thread.join(timeout=5)
 
     out = outcome["run"]
