@@ -228,9 +228,10 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 - Requests for one device no longer queue without bound behind a long one (a confirmation
   dialog holds a device up to three minutes): a request waits for its turn at most its own
   timeout and at most 16 wait at once, then fails as `revit_unreachable` (503) with nothing
-  sent and no token consumed. The add-in's WebSocket handshake is limited to 60 attempts a
-  minute per address, refused before the upgrade so the close codes 4001/4002/4003 keep their
-  meaning.
+  sent and no token consumed. Unauthenticated add-in sockets cannot pile up: an address with 20
+  failed handshakes in a minute (wrong token, no auth message in time) or 64 sockets still
+  waiting to authenticate is refused before the upgrade, so the close codes 4001/4002/4003 keep
+  their meaning. Add-ins that authenticate never count, however often they reconnect.
 - Growth while the host runs: interaction logs older than 90 days are purged daily, not only at
   startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
   `execution` report over 65,536 characters of JSON is refused with 422 `invalid_args`; one

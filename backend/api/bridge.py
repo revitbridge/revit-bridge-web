@@ -55,7 +55,7 @@ from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 from backend.api import devices as devices_api
 from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
 from backend.config import get_settings
-from backend.ratelimit import client_key, confirm_limiter, handshake_limiter
+from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 
 _log = logging.getLogger("backend.bridge")
@@ -63,9 +63,17 @@ _log = logging.getLogger("backend.bridge")
 PUBLIC_PATHS = {"/api/v1/bridge/service-health", "/api/v1/bridge/slots"}
 HOST = "web"                      # what the evidence ledger records as the host
 HANDSHAKE_TIMEOUT = 10.0          # seconds an add-in has to send its auth message
-# Socket handshakes per address per minute. An add-in retries every 5 s while it is
-# refused, so this leaves room for MAX_DEVICES (20) add-ins behind one office address.
-HANDSHAKE_LIMIT = 60
+# What stops unauthenticated sockets piling up, per client address. Only FAILED
+# handshakes count (a wrong token, an unknown or revoked device, no auth message in
+# time): an add-in that authenticates is never counted, however often it reconnects -
+# also when it is then answered 4002 (a stale socket still holds its device) or 4001.
+# A revoked add-in stops reconnecting after its 4003, so 20 failures a minute from one
+# address is a client guessing, not an office of add-ins.
+HANDSHAKE_FAILURE_LIMIT = 20
+# Sockets accepted but not yet authenticated, at once, per address. An add-in sends its
+# auth message right after connecting, so it is pending for milliseconds.
+PENDING_HANDSHAKE_LIMIT = 64
+_pending_handshakes: dict[str, int] = {}
 CONFIRM_CHANNEL = "host_ui"       # confirmations come from the page, never from the model
 MAX_EVIDENCE = 200
 
@@ -653,23 +661,35 @@ async def revit_ws_endpoint(ws: WebSocket, device_id: str):
     and a wrong token are indistinguishable from outside. 4002 means that
     device is already connected, 4001 that the relay is full.
 
-    More than ``HANDSHAKE_LIMIT`` attempts a minute from one address are refused
+    An address with ``HANDSHAKE_FAILURE_LIMIT`` failed handshakes in the last minute,
+    or with ``PENDING_HANDSHAKE_LIMIT`` sockets still unauthenticated, is refused
     before the upgrade (a real server answers HTTP 403): no close code at all, so
     4001/4002/4003 keep their meaning and the add-in retries as after any failed
-    connection.
+    connection. Add-ins that authenticate never count against either. The token is
+    only read after the upgrade, so a valid add-in that shares its address with a
+    client that keeps failing is refused with it until those failures are a minute old.
     """
     relay = get_relay()
-    if not handshake_limiter.allow(client_key(ws), HANDSHAKE_LIMIT):
-        _log.warning("too many add-in handshakes from %s; refused before accepting", client_key(ws))
-        await ws.close(code=1008, reason="Too many connection attempts from this address")
+    address = client_key(ws)
+    if (handshake_failures.count(address) >= HANDSHAKE_FAILURE_LIMIT
+            or _pending_handshakes.get(address, 0) >= PENDING_HANDSHAKE_LIMIT):
+        _log.warning("add-in handshakes from %s refused before accepting: too many failed or pending", address)
+        await ws.close(code=1008, reason="Too many failed connection attempts from this address")
         return
-    await ws.accept()
-
+    _pending_handshakes[address] = _pending_handshakes.get(address, 0) + 1
     try:
-        first = await asyncio.wait_for(ws.receive_text(), timeout=HANDSHAKE_TIMEOUT)
-    except Exception:  # noqa: BLE001 - no handshake in time
-        first = None
-    if not await _handshake_ok(first, device_id):
+        await ws.accept()
+        try:
+            first = await asyncio.wait_for(ws.receive_text(), timeout=HANDSHAKE_TIMEOUT)
+        except Exception:  # noqa: BLE001 - no handshake in time
+            first = None
+        authenticated = await _handshake_ok(first, device_id)
+    finally:
+        _pending_handshakes[address] -= 1
+        if not _pending_handshakes[address]:
+            del _pending_handshakes[address]
+    if not authenticated:
+        handshake_failures.record(address)
         await ws.close(code=4003, reason="Invalid device token")
         return
 

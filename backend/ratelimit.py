@@ -4,9 +4,10 @@ Each guarded route keeps its own table, so a burst on one never blocks
 another: ``/api/chat`` (a shared server-side model key), ``/spec/confirm`` and
 ``/devices/pair`` (each call writes to the data volume) use ``CHAT_RATE_LIMIT``
 requests per minute per client address; ``/devices/redeem`` (guessing a pairing
-code) has a low fixed limit of its own, and so has the add-in's WebSocket
-handshake (an unauthenticated socket is held until the auth message or the
-handshake timeout). Addresses whose every hit is older than
+code) has a low fixed limit of its own. The add-in's WebSocket handshake counts
+only its failures (``handshake_failures``: a wrong token, no auth message in
+time), so add-ins that authenticate are never limited however often they
+reconnect. Addresses whose every hit is older than
 the window are forgotten on each check, so a table only ever holds the last
 minute's visitors.
 """
@@ -42,6 +43,20 @@ class RateLimiter:
             self._hits[key] = hits
             return True
 
+    def count(self, key: str) -> int:
+        """Hits ``key`` has in the window now, without adding one."""
+        now = self._clock()
+        with self._lock:
+            self._prune_idle(now)
+            return sum(1 for t in self._hits.get(key, []) if now - t < self.window)
+
+    def record(self, key: str) -> None:
+        """Add one hit for ``key`` whatever it already has (counting events, not gating them)."""
+        now = self._clock()
+        with self._lock:
+            self._prune_idle(now)
+            self._hits[key] = [t for t in self._hits.get(key, []) if now - t < self.window] + [now]
+
     def _prune_idle(self, now: float) -> None:
         cutoff = now - self.window
         for key in [k for k, hits in self._hits.items() if not hits or hits[-1] <= cutoff]:
@@ -60,7 +75,7 @@ chat_limiter = RateLimiter()
 confirm_limiter = RateLimiter()
 pair_limiter = RateLimiter()
 redeem_limiter = RateLimiter()
-handshake_limiter = RateLimiter()
+handshake_failures = RateLimiter()
 
 
 def client_key(request) -> str:
@@ -73,4 +88,4 @@ def reset_all() -> None:
     confirm_limiter.reset()
     pair_limiter.reset()
     redeem_limiter.reset()
-    handshake_limiter.reset()
+    handshake_failures.reset()
