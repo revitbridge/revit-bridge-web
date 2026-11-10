@@ -4,7 +4,9 @@ Each guarded route keeps its own table, so a burst on one never blocks
 another: ``/api/chat`` (a shared server-side model key), ``/spec/confirm`` and
 ``/devices/pair`` (each call writes to the data volume) use ``CHAT_RATE_LIMIT``
 requests per minute per client address; ``/devices/redeem`` (guessing a pairing
-code) has a low fixed limit of its own. Addresses whose every hit is older than
+code) has a low fixed limit of its own, and so has the add-in's WebSocket
+handshake (an unauthenticated socket is held until the auth message or the
+handshake timeout). Addresses whose every hit is older than
 the window are forgotten on each check, so a table only ever holds the last
 minute's visitors.
 """
@@ -58,6 +60,7 @@ chat_limiter = RateLimiter()
 confirm_limiter = RateLimiter()
 pair_limiter = RateLimiter()
 redeem_limiter = RateLimiter()
+handshake_limiter = RateLimiter()
 
 
 def client_key(request) -> str:
@@ -70,3 +73,4 @@ def reset_all() -> None:
     confirm_limiter.reset()
     pair_limiter.reset()
     redeem_limiter.reset()
+    handshake_limiter.reset()
