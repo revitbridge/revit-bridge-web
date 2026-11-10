@@ -153,11 +153,57 @@ def test_config_json_announces_a_server_model_only_when_it_can_run_alone():
     "https://224.0.0.1/v1", "https://240.0.0.1/v1", "https://100.64.0.1/v1",
     "https://[::1]/v1", "https://[fe80::1]/v1", "https://[fc00::1]/v1", "https://[::]/v1",
     "https://[::ffff:127.0.0.1]/v1", "https://[::ffff:10.0.0.5]/v1", "https://[ff02::1]/v1",
+    # The forms the system resolver reads as IPv4 (inet_aton): no DNS needed to refuse them.
+    "https://127.1/v1", "https://0x7f.1/v1", "https://0x7f000001/v1", "https://2130706433/v1",
+    "https://017700000001/v1", "https://127.0.0.1./v1", "https://10.1/v1",
+    # localhost is loopback by definition (RFC 6761), whatever a resolver says.
+    "https://localhost/v1", "https://localhost./v1", "https://LOCALHOST:8443/v1", "https://api.localhost/v1",
+    # IPv4 carried inside IPv6: mapped, NAT64, 6to4.
+    "https://[::ffff:7f00:1]/v1", "https://[64:ff9b::7f00:1]/v1", "https://[64:ff9b::a00:5]/v1",
+    "https://[2002:7f00:1::]/v1", "https://[2002:a00:5::1]/v1",
+    # User info is not the host.
+    "https://user@10.0.0.1/v1", "https://1.1.1.1@127.0.0.1/v1", "https://user:pw@[::1]/v1",
 ])
 def test_literal_private_addresses_are_refused(url):
     with pytest.raises(LLMError) as exc:
         LLMSettings.resolve({"x-llm-base-url": url, "x-llm-key": "k"}, SERVER)
     assert exc.value.status == 400 and "address" in str(exc.value)
+
+
+@pytest.mark.parametrize("url", ["https://8.8.8.8/v1", "https://[2001:4860:4860::8888]/v1",
+                                 "https://user@8.8.8.8/v1", "https://api.example.com/v1",
+                                 "https://localhost.example.com/v1"])
+def test_public_addresses_and_names_pass_the_literal_check(url):
+    assert LLMSettings.resolve({"x-llm-base-url": url, "x-llm-key": "k"}, SERVER).custom_endpoint
+
+
+def test_a_redirect_from_the_model_endpoint_is_not_followed(monkeypatch):
+    """A public endpoint answering 302 to an internal address must not become a request there."""
+    import asyncio
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"})
+
+    real_client = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        assert kwargs.get("follow_redirects") is False          # pinned, not left to a default
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", patched)
+
+    async def collect():
+        settings = LLMSettings(base_url="https://8.8.8.8/v1", model="m", api_key="k")
+        return [t async for t in llm_module.stream_completion(settings, [{"role": "user", "content": "x"}])]
+
+    with pytest.raises(LLMError) as exc:
+        asyncio.run(collect())
+    assert seen == ["https://8.8.8.8/v1/chat/completions"]
+    assert exc.value.status == 502 and "302" in str(exc.value) and "169.254" not in str(exc.value)
 
 
 def test_a_literal_private_address_is_never_requested(server_model, recorder):
@@ -183,7 +229,8 @@ def test_a_name_that_resolves_to_a_private_address_is_refused(server_model, reco
     assert recorder.sent == []
     assert chat("https://public.example/v1").status_code == 200
     assert recorder.sent == [("https://public.example/v1/chat/completions", "Bearer k")]
-    assert asked == ["localhost", "internal.example", "mixed.example", "unknown.example", "public.example"]
+    # localhost is refused before any lookup (RFC 6761); the others were resolved.
+    assert asked == ["internal.example", "mixed.example", "unknown.example", "public.example"]
 
 
 def test_the_server_endpoint_is_not_checked(make_client, env, recorder, monkeypatch):

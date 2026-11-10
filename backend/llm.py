@@ -149,26 +149,71 @@ def _endpoint(base_url: str) -> tuple[str, str, int]:
     return url.scheme, host, port or (443 if url.scheme == "https" else 80)
 
 
-def _literal_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    """``host`` as an IP address (an IPv6 zone id dropped), or None for a name."""
-    try:
-        return ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:
+_LEGACY_IPV4_PART = re.compile(r"0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*")
+_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+
+
+def _legacy_ipv4(host: str) -> ipaddress.IPv4Address | None:
+    """The IPv4 address a numeric host means to the system resolver (inet_aton), which
+    is what the connection would use: one to four parts, each decimal, octal (leading
+    0) or hex (0x), the last filling the remaining bytes - ``127.1``, ``0x7f.1``,
+    ``2130706433``. None for anything else."""
+    parts = host.split(".")
+    if not 1 <= len(parts) <= 4 or not all(_LEGACY_IPV4_PART.fullmatch(p) for p in parts):
         return None
+    values = [int(p, 16) if p[:2] in ("0x", "0X") else int(p, 8) if p.startswith("0") else int(p)
+              for p in parts]
+    *head, last = values
+    if any(v > 255 for v in head) or last >= 256 ** (4 - len(head)):
+        return None
+    return ipaddress.IPv4Address(sum(v << (24 - 8 * i) for i, v in enumerate(head)) + last)
+
+
+def _literal_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """``host`` as an IP address (an IPv6 zone id and a trailing dot dropped, inet_aton's
+    short forms read as IPv4), or None for a name."""
+    bare = host.split("%", 1)[0]
+    if bare.endswith(".") and ":" not in bare:
+        bare = bare[:-1]
+    try:
+        return ipaddress.ip_address(bare)
+    except ValueError:
+        return _legacy_ipv4(bare)
+
+
+def _is_localhost(host: str) -> bool:
+    """``localhost`` and every name under it are loopback by definition (RFC 6761)."""
+    name = host.rstrip(".").lower()
+    return name == "localhost" or name.endswith(".localhost")
+
+
+def _routable(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return ip.is_global and not (ip.is_loopback or ip.is_private or ip.is_link_local
+                                 or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
 
 
 def is_public_address(address: str) -> bool:
     """Whether a browser-supplied endpoint may reach ``address``: a globally routable
     unicast address. Loopback, private, link-local, multicast, unspecified, reserved and
     shared (100.64/10) addresses are not; an IPv4-mapped IPv6 address is judged as the
-    IPv4 address it carries; anything that does not parse is not."""
+    IPv4 address it carries, and an address that carries one (6to4, Teredo, NAT64
+    64:ff9b::/96) only passes when that IPv4 address passes too; anything that does not
+    parse is not."""
     ip = _literal_address(address)
     if ip is None:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return ip.is_global and not (ip.is_loopback or ip.is_private or ip.is_link_local
-                                 or ip.is_multicast or ip.is_unspecified or ip.is_reserved)
+    candidates: list = [ip]
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            candidates = [ip.ipv4_mapped]
+        else:
+            if ip.sixtofour is not None:
+                candidates.append(ip.sixtofour)
+            if ip.teredo is not None:
+                candidates.extend(ip.teredo)
+            if ip in _NAT64:
+                candidates.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return all(_routable(c) for c in candidates)
 
 
 def _check_base_url(base_url: str, settings: WebSettings) -> None:
@@ -181,8 +226,8 @@ def _check_base_url(base_url: str, settings: WebSettings) -> None:
     """
     scheme, host, _ = _endpoint(base_url)
     if scheme == "https" or (scheme == "http" and settings.llm_allow_http):
-        if (not settings.llm_allow_http and _literal_address(host) is not None
-                and not is_public_address(host)):
+        if not settings.llm_allow_http and (
+                _is_localhost(host) or (_literal_address(host) is not None and not is_public_address(host))):
             raise LLMError(_REFUSED_ADDRESS, status=400)
         return
     raise LLMError(
@@ -327,9 +372,15 @@ async def stream_completion(
     # hold the call forever. Every wait below also stops at this deadline.
     deadline = asyncio.get_running_loop().time() + MODEL_CALL_DEADLINE
     try:
-        async with httpx.AsyncClient(timeout=client_timeout) as client, contextlib.AsyncExitStack() as stack:
+        # Redirects are never followed: a checked public endpoint must not be able to send
+        # the request (and the key) on to an address nobody checked.
+        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client, \
+                contextlib.AsyncExitStack() as stack:
             resp = await _before(deadline, stack.enter_async_context(
                 client.stream("POST", url, headers=headers, json=payload)))
+            if 300 <= resp.status_code < 400:
+                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed",
+                               status=502)
             if resp.status_code >= 400:
                 body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")[:300]
                 raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
