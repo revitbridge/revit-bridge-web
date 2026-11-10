@@ -71,6 +71,10 @@ TOOL_RESULT_KEEP = 8192      # characters of a tool result kept in the session a
 # recommend and index reply measured fits); only mode "read" of many ids runs longer.
 GUIDANCE_RESULT_KEEP = 16384
 ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {total} in the turn that produced it]"
+# An execution report (an ExecutionResult the page got from /run or /execute) as JSON text:
+# it enters the session and every later prompt whole. A pack's result listing 200
+# elements is about 30 KB; a larger report is refused (422 invalid_args), not cut.
+MAX_EXECUTION_CHARS = 65_536
 
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
@@ -147,6 +151,11 @@ async def chat(req: ChatRequest, request: Request):
         raise ApiError(422, "invalid_args", "message is empty")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
+    if req.execution is not None:
+        size = len(json.dumps(req.execution, ensure_ascii=False))
+        if size > MAX_EXECUTION_CHARS:
+            raise ApiError(422, "invalid_args",
+                           f"execution is too large: {size} characters as JSON, at most {MAX_EXECUTION_CHARS}")
     if req.bridge:
         # The model's tools reach Revit through the selected device: the same header
         # checks as the bridge routes (403 on a wrong or revoked device key).

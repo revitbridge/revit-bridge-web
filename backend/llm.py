@@ -22,6 +22,7 @@ rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ipaddress
 import json
 import logging
@@ -41,6 +42,9 @@ HEADER_MODEL = "x-llm-model"
 HEADER_KEY = "x-llm-key"
 
 DEFAULT_TIMEOUT = 120.0
+# One completion from request to last byte. 4096 tokens at a slow 7 tokens a second
+# take under 10 minutes; DEFAULT_TIMEOUT still bounds every single read.
+MODEL_CALL_DEADLINE = 600.0
 
 
 class LLMError(Exception):
@@ -229,6 +233,16 @@ def tool_message(call: ToolCall, result) -> dict:
     return {"role": "tool", "tool_call_id": call.id, "content": content}
 
 
+async def _before(deadline: float, awaitable):
+    """``await awaitable``, but no later than ``deadline`` (event loop time)."""
+    try:
+        async with asyncio.timeout_at(deadline):
+            return await awaitable
+    except TimeoutError:
+        raise LLMError(f"Model endpoint did not finish within {MODEL_CALL_DEADLINE:g}s",
+                       status=502) from None
+
+
 def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
     """Fold one streamed ``tool_calls`` delta into the call it belongs to."""
     if not isinstance(fragment, dict):
@@ -289,32 +303,41 @@ async def stream_completion(
         payload["tool_choice"] = "auto"
     calls: dict[int, dict] = {}          # index -> {id, name, arguments}
     client_timeout = httpx.Timeout(timeout, connect=15.0)
+    # httpx's timeouts are per read: an endpoint that sends a byte now and then would
+    # hold the call forever. Every wait below also stops at this deadline.
+    deadline = asyncio.get_running_loop().time() + MODEL_CALL_DEADLINE
     try:
-        async with httpx.AsyncClient(timeout=client_timeout) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread()).decode("utf-8", "replace")[:300]
-                    raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
-                                   status=502)
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices") or []
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta") or {}
-                    token = delta.get("content")
-                    if token:
-                        yield token
-                    for fragment in delta.get("tool_calls") or []:
-                        _merge_tool_call(calls, fragment)
+        async with httpx.AsyncClient(timeout=client_timeout) as client, contextlib.AsyncExitStack() as stack:
+            resp = await _before(deadline, stack.enter_async_context(
+                client.stream("POST", url, headers=headers, json=payload)))
+            if resp.status_code >= 400:
+                body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")[:300]
+                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
+                               status=502)
+            lines = resp.aiter_lines()
+            while True:
+                try:
+                    line = await _before(deadline, anext(lines))
+                except StopAsyncIteration:
+                    break
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                token = delta.get("content")
+                if token:
+                    yield token
+                for fragment in delta.get("tool_calls") or []:
+                    _merge_tool_call(calls, fragment)
     except httpx.HTTPError as exc:
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)
