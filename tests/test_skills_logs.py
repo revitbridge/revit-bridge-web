@@ -183,8 +183,8 @@ def test_skill_crud_and_prompt_injection(make_client, env, tmp_path):
 
 
 def test_skill_ids_are_bounded(make_client, env, tmp_path):
-    """A very long name is cut to a file name every file system takes; a very long id is
-    simply not a skill (404), never an OSError (500)."""
+    """A very long name is cut to a file name every file system takes; an id that is not
+    on disk is 404 however long, never an OSError (500)."""
     from backend.skill_store import MAX_ID_BYTES
 
     empty = tmp_path / "no-skills"
@@ -208,6 +208,27 @@ def test_skill_ids_are_bounded(make_client, env, tmp_path):
         assert client.put(f"/api/skills/{long_id}", json={"content": "x"}, headers=ADMIN).status_code == 404
         assert client.patch(f"/api/skills/{long_id}", json={"enabled": False}, headers=ADMIN).status_code == 404
         assert client.delete(f"/api/skills/{long_id}", headers=ADMIN).status_code == 404
+
+
+def test_a_long_id_already_on_disk_can_still_be_opened_changed_and_deleted(make_client, env, tmp_path):
+    """The id bound applies to ids being created; a file main could write (a 150-character
+    name) is listed, so it must also open, change, toggle and delete."""
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
+    env.setenv("SKILLS_DIR", str(empty))
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    assert client.get("/api/skills").json() == {"skills": []}          # the store makes its directory
+    long_id = "a" * 150
+    (tmp_path / "data" / "skills" / f"{long_id}.md").write_text(
+        "---\nname: long\nenabled: true\n---\n\nOld rule.\n", encoding="utf-8")
+
+    assert [s["id"] for s in client.get("/api/skills").json()["skills"]] == [long_id]
+    assert client.get(f"/api/skills/{long_id}").json()["content"] == "Old rule."
+    assert client.put(f"/api/skills/{long_id}", json={"content": "New rule."}, headers=ADMIN).json()["content"] == "New rule."
+    assert client.patch(f"/api/skills/{long_id}", json={"enabled": False}, headers=ADMIN).json()["enabled"] is False
+    assert client.delete(f"/api/skills/{long_id}", headers=ADMIN).json()["deleted"] == long_id
+    assert client.get("/api/skills").json() == {"skills": []}
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")

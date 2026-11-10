@@ -47,9 +47,11 @@ _log = logging.getLogger("backend.skills")
 _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _ID_RE = re.compile(r"[\w\-]+")
 BUILTIN_PREFIX = "builtin:"
-# A custom skill id in UTF-8 bytes: "<id>.md" stays far below the 255-byte file name
-# limit (and the path below Windows' 260 characters in a short DATA_DIR). A longer
-# name is cut when the id is made from it; a longer id is no skill (404).
+# A custom skill id this host CREATES, in UTF-8 bytes: "<id>.md" stays far below the
+# 255-byte file name limit (and the path below Windows' 260 characters in a short
+# DATA_DIR); a longer name is cut when the id is made from it. Ids already on disk are
+# not bounded: whatever the list shows opens, changes and deletes, and an id too long
+# for the file system to hold is simply not found (404, never an OSError).
 MAX_ID_BYTES = 120
 
 
@@ -147,9 +149,17 @@ class SkillStore:
         return _fit(s).strip("-") or "unnamed"
 
     def _file_for(self, skill_id: str) -> Path:
-        if not _ID_RE.fullmatch(skill_id) or len(skill_id.encode("utf-8")) > MAX_ID_BYTES:
+        if not _ID_RE.fullmatch(skill_id):
             raise ValueError(f"Invalid skill id: {skill_id[:40]}")
         return self._dir / f"{skill_id}.md"
+
+    @staticmethod
+    def _is_file(path: Path) -> bool:
+        """``path.is_file()``, False when the OS refuses the name (too long for it)."""
+        try:
+            return path.is_file()
+        except OSError:
+            return False
 
     def _summary(self, skill_id: str, path: Path, parsed: dict, *, readonly: bool, layer: str = "") -> dict:
         meta = parsed["meta"]
@@ -237,7 +247,7 @@ class SkillStore:
             path = self._file_for(skill_id)
         except ValueError:
             return None
-        if not path.is_file():
+        if not self._is_file(path):
             return None
         text = _read_text(path)
         if text is None:                           # listed as skipped, read as absent
@@ -254,12 +264,12 @@ class SkillStore:
         if not skill_id:
             skill_id = self.slug(str(meta.get("name") or "unnamed"))
         path = self._file_for(skill_id)
-        if path.is_file() and not overwrite:
+        if self._is_file(path) and not overwrite:
             base, n = skill_id, 2
             while True:
                 suffix = f"-{n}"
                 skill_id = _fit(base, MAX_ID_BYTES - len(suffix)) + suffix
-                if not self._file_for(skill_id).is_file():
+                if not self._is_file(self._file_for(skill_id)):
                     break
                 n += 1
             path = self._file_for(skill_id)
@@ -294,7 +304,7 @@ class SkillStore:
             path = self._file_for(skill_id)
         except ValueError:
             return False
-        if path.is_file():
+        if self._is_file(path):
             path.unlink()
             _log.info("skill deleted: %s", skill_id)
             return True

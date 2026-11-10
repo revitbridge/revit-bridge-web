@@ -236,9 +236,11 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   startup; at most 300 chat sessions are kept (the one idle the longest goes first); an
   `execution` report over 65,536 characters of JSON is refused with 422 `invalid_args`; one
   model call ends after 600 s even when the endpoint keeps trickling bytes.
-- Skills: a very long name is cut to a 120-byte id instead of failing with 500, a longer id is
-  404, a skill file is replaced whole or not at all (temporary file, then rename), and a file
-  that is not UTF-8 reads as absent (404, as the list already skipped it) instead of a 500.
+- Skills: a very long name is cut to a 120-byte id when a skill is created instead of failing
+  with 500 (a longer id already on disk still opens, changes and deletes; one the file system
+  cannot hold is 404), a skill file is replaced whole or not at all (temporary file with the
+  mode a plain write gives, then rename), and a file that is not UTF-8 reads as absent (404, as
+  the list already skipped it) instead of a 500.
 - A round that offers the model no tools (`bridge: false`, or the last round of a turn) no
   longer runs `tool_calls` the model returns anyway: they are logged (`backend.chat`) and
   dropped, and the round ends with the model's text, or an empty assistant message.
