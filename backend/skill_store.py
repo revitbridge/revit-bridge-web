@@ -30,8 +30,11 @@ operator's choice and its files are theirs to edit.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +47,44 @@ _log = logging.getLogger("backend.skills")
 _FRONT_MATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _ID_RE = re.compile(r"[\w\-]+")
 BUILTIN_PREFIX = "builtin:"
+# A custom skill id in UTF-8 bytes: "<id>.md" stays far below the 255-byte file name
+# limit (and the path below Windows' 260 characters in a short DATA_DIR). A longer
+# name is cut when the id is made from it; a longer id is no skill (404).
+MAX_ID_BYTES = 120
+
+
+def _fit(text: str, limit: int = MAX_ID_BYTES) -> str:
+    """``text`` cut to at most ``limit`` UTF-8 bytes, on a character boundary."""
+    while len(text.encode("utf-8")) > limit:
+        text = text[:-1]
+    return text
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` with ``text`` whole or not at all: a temporary file in the same
+    directory, then ``os.replace``. Text that cannot be encoded fails before any file
+    is touched; a failed write leaves the old file and no temporary file."""
+    data = text.encode("utf-8")
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".skill-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _read_text(path: Path) -> str | None:
+    """The file's UTF-8 text, or None (logged) when it cannot be read as such."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        _log.warning("skill file %s is unreadable: %s", path.name, exc)
+        return None
 
 # The wheel's skills that enter the chat prompt unless their front matter says otherwise.
 # Not revit-bridge/SKILL: the MCP host's tool flow; host_instructions() is this host's.
@@ -97,11 +138,12 @@ class SkillStore:
     @staticmethod
     def slug(name: str) -> str:
         s = re.sub(r"[^\w\-]", "-", name.lower().strip())
-        return re.sub(r"-+", "-", s).strip("-") or "unnamed"
+        s = re.sub(r"-+", "-", s).strip("-")
+        return _fit(s).strip("-") or "unnamed"
 
     def _file_for(self, skill_id: str) -> Path:
-        if not _ID_RE.fullmatch(skill_id):
-            raise ValueError(f"Invalid skill id: {skill_id}")
+        if not _ID_RE.fullmatch(skill_id) or len(skill_id.encode("utf-8")) > MAX_ID_BYTES:
+            raise ValueError(f"Invalid skill id: {skill_id[:40]}")
         return self._dir / f"{skill_id}.md"
 
     def _summary(self, skill_id: str, path: Path, parsed: dict, *, readonly: bool, layer: str = "") -> dict:
@@ -178,7 +220,9 @@ class SkillStore:
             path = self._builtin_path(skill_id)
             if not path:
                 return None
-            text = path.read_text(encoding="utf-8")
+            text = _read_text(path)
+            if text is None:                       # listed as skipped, read as absent
+                return None
             parsed = parse_skill_file(text)
             rel = skill_id[len(BUILTIN_PREFIX):]
             layer = rel.split("/")[0] if "/" in rel else ""
@@ -190,7 +234,9 @@ class SkillStore:
             return None
         if not path.is_file():
             return None
-        text = path.read_text(encoding="utf-8")
+        text = _read_text(path)
+        if text is None:                           # listed as skipped, read as absent
+            return None
         parsed = parse_skill_file(text)
         return {**self._summary(skill_id, path, parsed, readonly=False),
                 "content": parsed["content"], "raw": text}
@@ -204,22 +250,28 @@ class SkillStore:
             skill_id = self.slug(str(meta.get("name") or "unnamed"))
         path = self._file_for(skill_id)
         if path.is_file() and not overwrite:
-            n = 2
-            while self._file_for(f"{skill_id}-{n}").is_file():
+            base, n = skill_id, 2
+            while True:
+                suffix = f"-{n}"
+                skill_id = _fit(base, MAX_ID_BYTES - len(suffix)) + suffix
+                if not self._file_for(skill_id).is_file():
+                    break
                 n += 1
-            skill_id = f"{skill_id}-{n}"
             path = self._file_for(skill_id)
         meta.setdefault("name", skill_id)
         meta.setdefault("enabled", True)
         meta.setdefault("version", "1.0")
-        path.write_text(build_skill_file(meta, content), encoding="utf-8")
+        _write_atomic(path, build_skill_file(meta, content))
         _log.info("skill saved: %s (%d bytes)", skill_id, path.stat().st_size)
         return self.get(skill_id)  # type: ignore[return-value]
 
     def update(self, skill_id: str, meta: dict | None = None, content: str | None = None) -> dict | None:
         if skill_id.startswith(BUILTIN_PREFIX) or not self.get(skill_id):
             return None
-        parsed = parse_skill_file(self._file_for(skill_id).read_text(encoding="utf-8"))
+        text = _read_text(self._file_for(skill_id))
+        if text is None:
+            return None
+        parsed = parse_skill_file(text)
         if meta:
             parsed["meta"].update(meta)
         if content is not None:
