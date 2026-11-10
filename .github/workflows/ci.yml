@@ -70,3 +70,20 @@ jobs:
           curl -fsS http://127.0.0.1:7860/ | grep -q "<title>revit-bridge</title>"
           docker logs web
           docker rm -f web
+      # The documented smoke: compose with its env file, the ./data bind mount and
+      # the entrypoint that fixes the volume as root, then drops to appuser.
+      - name: Compose smoke
+        run: |
+          cp .env.example .env
+          docker compose up -d --build
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7860/health >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:7860/health
+      - name: Compose logs
+        if: failure()
+        run: docker compose logs
+      - name: Compose down
+        if: always()
+        run: docker compose down -v

@@ -88,6 +88,13 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   end without Revit.
 - `POST /spec/confirm` is rate limited per client address like `/api/chat`
   (`CHAT_RATE_LIMIT`, its own counter): 429 `{error: rate_limited}`.
+- `.env.example` lists, commented out, the other variables the host and `revit-bridge` 0.4.0
+  read: `REVIT_BRIDGE_CONFIRM_TTL`, `REVIT_BRIDGE_GUIDANCE_COMPANY` / `_PROJECT`,
+  `REVIT_BRIDGE_CAPABILITIES_DIR` / `_EVIDENCE_DIR`, and `DATA_DIR` / `HOST` (both pinned by
+  `docker-compose.yml`).
+- CI's image job also runs the documented smoke: `docker compose up -d --build` with
+  `.env.example` as `.env`, then `/health`, so the env file, the `./data` bind mount and the
+  entrypoint's drop to `appuser` are exercised.
 
 ### Changed
 
@@ -166,6 +173,7 @@ prompt changes (below); questions in the `spec` event may carry `kind` and `bloc
   `422 {"error": "invalid_pack", "problems": [...]}` when the package rejects the pack
   (an undeclared `{placeholder}` in the code, a malformed parameter, an unknown
   validator) instead of 500.
+- `CLAUDE.md` gave the package constraint as `revit-bridge>=0.1.0`; it is `>=0.4,<0.5`.
 
 ### Removed
 
