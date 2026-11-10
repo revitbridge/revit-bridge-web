@@ -1,11 +1,12 @@
 /* Capability packs: pick one, load its real choices from Revit, fill parameters,
-   confirm and run under a token, edit. */
+   confirm and run under a token; edit or delete with the admin password (shared/packAdmin). */
 
 import { useCallback, useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import type { ExecutionResult, SpecError, ToolChoiceItem, ToolInfo, ToolParam } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
 import Accordion from '../shared/Accordion'
+import { usePackGate } from '../shared/packAdmin'
 import StepIndicator from '../shared/StepIndicator'
 import { taskApi } from '../task/api'
 import { ExecutionView } from '../task/ExecutionPanel'
@@ -22,6 +23,7 @@ type RunOutcome =
   | { kind: 'failed'; message: string }
 
 export default function ToolLibrary() {
+  const gate = usePackGate()
   const [tools, setTools] = useState<ToolInfo[]>([])
   const [selected, setSelected] = useState('')
   const [step, setStep] = useState(1)
@@ -137,8 +139,9 @@ export default function ToolLibrary() {
 
       <div className="flex items-center gap-2 flex-wrap">
         <button onClick={refresh} className="btn-secondary">Refresh</button>
-        <span className="section-copy small">{tools.length} pack{tools.length === 1 ? '' : 's'}</span>
+        <span className="section-copy small">{tools.length} pack{tools.length === 1 ? '' : 's'}{gate.note && `. ${gate.note}`}</span>
       </div>
+      {!selected && notice && <p className="tool-warning-status">{notice}</p>}
 
       {tools.length > 0 && (
         <div className="card table-scroll">
@@ -165,7 +168,7 @@ export default function ToolLibrary() {
                   <td className="px-3 py-1.5" style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
                   <td className="px-3 py-1.5">{t.used}</td>
                   <td className="px-3 py-1.5">
-                    <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>
+                    {gate.canEdit && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>}
                   </td>
                 </tr>
               ))}
@@ -181,7 +184,7 @@ export default function ToolLibrary() {
             <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)' }}>{detail?.display_name || selected}</span>
             <button onClick={() => load(selected)} disabled={loading} className="btn-primary">{loading ? 'Loading...' : 'Load pack'}</button>
             {detail && <button onClick={() => setShowCode(!showCode)} className="btn-secondary">{showCode ? 'Hide code' : 'View code'}</button>}
-            {detail && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
+            {detail && gate.canEdit && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
           </div>
           {detail?.description && step >= 3 && <p className="section-copy">{detail.description}</p>}
           {detail && step >= 3 && (

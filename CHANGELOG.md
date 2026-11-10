@@ -10,6 +10,21 @@ Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the im
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 
+### Security
+
+- **Changing capability packs needs the admin password.** This changes who may call three
+  routes: `PUT /api/v1/bridge/tools/{name}`, `DELETE /api/v1/bridge/tools/{name}` and
+  `POST /api/v1/bridge/solidify` now require `X-Admin-Token` (the same check as skill edits,
+  `/api/logs` and the device list) and answer 403 `admin_required` without the right one, 503
+  `admin_disabled` when `ADMIN_PASSWORD` is unset. Before, any visitor could create, edit or
+  delete a pack - the built-in ones included - and a pack's code runs in a designer's Revit
+  once they confirm its card. Listing, reading, choices, missing-params, confirming and running
+  packs are unchanged. `docs/api-v1.json` changes for these three operations only (the header,
+  503, the 403 text). The Capabilities page hides *Edit pack* and *Delete*, and the task page's
+  *Save as pack* stays off, until the admin password is entered on the Connect page; a host
+  without `ADMIN_PASSWORD` cannot change packs through the web UI. The model's tools never
+  could (it has no writing tool; a test keeps it so).
+
 ### Added
 
 - `get_guidance`, the package's lessons for writing Revit code, as a model tool: the same

@@ -40,6 +40,9 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
   A browser-supplied endpoint must be https on a public address unless `LLM_ALLOW_HTTP=1`.
   Keys are never written to disk, logs or error messages.
 - Configuration comes only from environment variables (see `.env.example`); no config files.
+- Changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`, `POST /solidify`) is
+  admin only, through the one `X-Admin-Token` check (`WebSettings.admin_token_ok`); no model
+  tool may write a pack.
 - Web API contract changes are a planning decision: stop and record `BLOCKED` in the notes log.
 - `docs/` holds exactly one file, `docs/api-v1.json`. Deployment details stay in the notes repo.
 - Scripts (`*.sh`, `*.ps1`, `*.py` tools, Dockerfile) are ASCII only.

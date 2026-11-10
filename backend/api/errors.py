@@ -47,6 +47,21 @@ def responses(*statuses: int) -> dict:
     return {status: {"model": ErrorBody, "description": _DESCRIPTIONS[status]} for status in statuses}
 
 
+# The routes that change capability packs: 403 and 503 come from the admin check first.
+_ADMIN_DESCRIPTIONS = {
+    403: "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
+    503: "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
+}
+
+
+def admin_responses(*statuses: int) -> dict:
+    """``responses()`` for a route that needs the admin password: 403 and 503 say why."""
+    declared = responses(*statuses)
+    for status in (403, 503):
+        declared[status] = {"model": ErrorBody, "description": _ADMIN_DESCRIPTIONS[status]}
+    return declared
+
+
 class ApiError(Exception):
     """Raise anywhere under a route; the handler turns it into the JSON response."""
 

@@ -132,8 +132,12 @@ def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path)
     assert client.get("/api/v1/bridge/tools/nope").status_code == 404
 
 
-def test_pack_edits_land_in_the_user_directory(client, tmp_path):
-    resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"})
+def test_pack_edits_land_in_the_user_directory(make_client, env, tmp_path):
+    # Editing and deleting packs take the admin password (tests/test_pack_admin.py).
+    env.setenv("ADMIN_PASSWORD", "hunter2")
+    client = make_client()
+    admin = {"X-Admin-Token": "hunter2"}
+    resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"}, headers=admin)
     assert resp.status_code == 200
     assert resp.json()["description"] == "levels, sorted"
     assert resp.json()["revit_synced"] is False  # no Revit in tests
@@ -142,11 +146,11 @@ def test_pack_edits_land_in_the_user_directory(client, tmp_path):
     assert client.get("/api/v1/bridge/tools/query_levels").json()["description"] == "levels, sorted"
 
     blocked = client.put("/api/v1/bridge/tools/query_levels",
-                         json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"})
+                         json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"}, headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
     # Deleting removes the user copy and hides the built-in one behind a marker.
-    assert client.delete("/api/v1/bridge/tools/query_levels").json()["status"] == "deleted"
+    assert client.delete("/api/v1/bridge/tools/query_levels", headers=admin).json()["status"] == "deleted"
     assert not (user_dir / "query_levels.yaml").exists()
     assert (user_dir / "query_levels.disabled").is_file()
     assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS - 1

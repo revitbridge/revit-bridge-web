@@ -34,7 +34,7 @@ import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
@@ -53,7 +53,7 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api import devices as devices_api
-from backend.api.errors import ApiError, responses, revit_unreachable
+from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
 from backend.config import get_settings
 from backend.ratelimit import client_key, confirm_limiter, handshake_limiter
 from backend.relay import WebSocketRevitClient, get_relay
@@ -135,6 +135,19 @@ async def get_revit_client():
 
 def unknown_tool(name: str) -> ApiError:
     return ApiError(404, "unknown_tool", f"Tool '{name}' not found", tool=name)
+
+
+async def require_admin(x_admin_token: str | None = Header(None)) -> None:
+    """Changing a capability pack takes the admin password: its code later runs in a
+    designer's Revit once they confirm its card. The same check as every admin route
+    (``WebSettings.admin_token_ok``), in this router's error shape, as ``GET /devices``:
+    503 ``admin_disabled`` without ``ADMIN_PASSWORD``, 403 ``admin_required`` for a
+    missing or wrong token. A device key does not stand in for it."""
+    settings = get_settings()
+    if not settings.admin_password:
+        raise ApiError(503, "admin_disabled", "Set ADMIN_PASSWORD to change capability packs")
+    if not settings.admin_token_ok(x_admin_token):
+        raise ApiError(403, "admin_required", "Wrong or missing X-Admin-Token")
 
 
 def parse_snapshot(data: dict | None) -> ProjectSnapshot | None:
@@ -346,9 +359,11 @@ async def get_tool(name: str):
     return _tool_detail(tool)
 
 
-@router.put("/tools/{name}", responses=responses(400, 403, 404, 422))
+@router.put("/tools/{name}", dependencies=[Depends(require_admin)],
+            responses=admin_responses(400, 403, 404, 422, 503))
 async def update_tool(name: str, req: UpdateToolRequest):
-    """Change editable fields; the package validates the result as a v1 pack (422 with problems)."""
+    """Change editable fields (admin password required); the package validates the result
+    as a v1 pack (422 with problems)."""
     updates = req.model_dump(exclude_unset=True)
     if "code_template" in updates:
         safe, warnings = sandbox.review(updates["code_template"] or "")
@@ -363,8 +378,10 @@ async def update_tool(name: str, req: UpdateToolRequest):
     return {"status": "updated", **_tool_detail(tool), "revit_synced": await _sync_to_revit(tool)}
 
 
-@router.delete("/tools/{name}", responses=responses(403, 404, 422))
+@router.delete("/tools/{name}", dependencies=[Depends(require_admin)],
+               responses=admin_responses(403, 404, 422, 503))
 async def delete_tool(name: str):
+    """Delete a user pack or hide a built-in one (admin password required)."""
     if ToolStore().delete(name):
         return {"status": "deleted", "name": name}
     raise unknown_tool(name)
@@ -468,9 +485,11 @@ async def execute_code(req: ExecuteRequest):
     return _execution_payload(result)
 
 
-@router.post("/solidify", responses=responses(400, 403, 422))
+@router.post("/solidify", dependencies=[Depends(require_admin)],
+             responses=admin_responses(400, 403, 422, 503))
 async def solidify_tool(req: SolidifyRequest):
-    """``ToolStore.solidify``: save working code as a v1 pack; best-effort sync to the add-in."""
+    """``ToolStore.solidify``: save working code as a v1 pack (admin password required);
+    best-effort sync to the add-in."""
     safe, warnings = sandbox.review(req.code)
     if not safe:
         raise ApiError(400, "blocked", "Code review failed", warnings=warnings)

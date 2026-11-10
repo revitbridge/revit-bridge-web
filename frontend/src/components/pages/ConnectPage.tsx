@@ -126,7 +126,7 @@ export default function ConnectPage({ deps }: { deps?: PairingDeps }) {
         <>
           <section className="card section">
             <h3 className="heading-display section-title">Admin</h3>
-            <p className="section-copy">Needed to list every device, to add, edit or delete skills and to read interaction logs.</p>
+            <p className="section-copy">Needed to list every device, to add, edit or delete skills, to edit, delete or save capability packs and to read interaction logs.</p>
             <input type="password" className="input-field" value={adminToken} onChange={e => setAdminToken(e.target.value)}
               placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
           </section>

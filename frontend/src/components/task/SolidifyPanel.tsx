@@ -1,10 +1,12 @@
 /* Panel 6: code that worked becomes a v1 pack - POST /solidify with the parameter draft;
-   the server's problems (schema, sandbox) are listed one per line. */
+   the server's problems (schema, sandbox) are listed one per line. Saving needs the
+   admin password (shared/packAdmin); the draft can be read and edited without it. */
 
 import { useEffect, useState } from 'react'
 import type { SolidifyRequest, SolidifyResponse, TaskSpec } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
+import { usePackGate } from '../shared/packAdmin'
 import { draftPack } from './solidifyDraft'
 
 interface Props {
@@ -14,6 +16,7 @@ interface Props {
 }
 
 export default function SolidifyPanel({ spec, evidenceId, solidify }: Props) {
+  const gate = usePackGate()
   const [form, setForm] = useState(() => toForm(draftPack(spec)))
   const [busy, setBusy] = useState(false)
   const [problems, setProblems] = useState<string[]>([])
@@ -64,6 +67,7 @@ export default function SolidifyPanel({ spec, evidenceId, solidify }: Props) {
       <p className="section-copy small" style={{ marginTop: 0 }}>
         The code that just worked, saved as a capability pack (v1: every parameter with a source, required and unit).
         Edit the draft; the server validates it and lists every problem.
+        {gate.note && ` ${gate.note}`}
       </p>
       <div className="form-grid">
         <label><span className="label-text">Pack name</span>
@@ -83,7 +87,7 @@ export default function SolidifyPanel({ spec, evidenceId, solidify }: Props) {
         <pre className="command-block">{spec.action.code}</pre>
       </details>
       <div className="flex gap-2 items-center" style={{ marginTop: 10 }}>
-        <button className="btn-primary" onClick={submit} disabled={busy || !form.name.trim()}>{busy ? 'Saving...' : 'Save as pack'}</button>
+        <button className="btn-primary" onClick={submit} disabled={busy || !form.name.trim() || !gate.canEdit}>{busy ? 'Saving...' : 'Save as pack'}</button>
         {saved && <span className="tool-review-status" style={{ margin: 0 }}>Saved <code>{saved.name}</code> v{saved.version ?? '1.0.0'}{saved.revit_synced ? ', registered in Revit' : ''}. It is on the Capabilities page.</span>}
       </div>
       {problems.length > 0 && (
