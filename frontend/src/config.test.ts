@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { parseRuntimeConfig } from './config'
 
+const NO_MODELS = { models: { analyst: null, planner: null, supervisor: null }, modelsFile: false }
+
 describe('parseRuntimeConfig', () => {
   it('reads apiBase / wsBase / features and strips trailing slashes', () => {
     const cfg = parseRuntimeConfig(JSON.stringify({
@@ -10,16 +12,31 @@ describe('parseRuntimeConfig', () => {
     }), 'application/json')
     expect(cfg.apiBase).toBe('https://api.example.com')
     expect(cfg.wsBase).toBe('wss://api.example.com/api/v1/bridge/ws')
-    expect(cfg.features).toEqual({ mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 3 })
+    expect(cfg.features).toEqual({ mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 3, ...NO_MODELS })
   })
 
   it('reads the deploy mode; a config that does not say local is a cloud host, as before modes', () => {
     const local = parseRuntimeConfig(JSON.stringify({ features: { mode: 'local', admin: false, maxDevices: 0 } }))
-    expect(local.features).toEqual({ mode: 'local', byoModel: true, serverModel: false, admin: false, maxDevices: 0 })
+    expect(local.features).toEqual({ mode: 'local', byoModel: true, serverModel: false, admin: false, maxDevices: 0, ...NO_MODELS })
     expect(parseRuntimeConfig(JSON.stringify({ features: { mode: 'cloud' } })).features.mode).toBe('cloud')
     expect(parseRuntimeConfig(JSON.stringify({ features: { mode: 'remote' } })).features.mode).toBe('cloud')
     expect(parseRuntimeConfig(JSON.stringify({ features: {} })).features.mode).toBe('cloud')
     expect(parseRuntimeConfig('{}').features.mode).toBe('cloud')
+  })
+
+  it('reads the model name of each role and where the names come from; anything else is no name', () => {
+    const file = parseRuntimeConfig(JSON.stringify({ features: {
+      models: { analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }, modelsFile: true } }))
+    expect(file.features.models).toEqual({ analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' })
+    expect(file.features.modelsFile).toBe(true)
+    const odd = parseRuntimeConfig(JSON.stringify({ features: {
+      models: { analyst: 7, planner: '', supervisor: null, reviewer: 'x' }, modelsFile: 'yes' } }))
+    expect(odd.features.models).toEqual({ analyst: null, planner: null, supervisor: null })
+    expect(odd.features.modelsFile).toBe(false)
+    expect(parseRuntimeConfig(JSON.stringify({ features: { models: 'main' } })).features.models)
+      .toEqual({ analyst: null, planner: null, supervisor: null })
+    // An older host without the fields: no names, not from a file.
+    expect(parseRuntimeConfig('{}').features).toMatchObject(NO_MODELS)
   })
 
   it('accepts the static config.example.json shape a split deployment ships', async () => {

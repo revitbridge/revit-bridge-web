@@ -55,7 +55,7 @@ def env(tmp_path, monkeypatch):
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
                 "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT",
-                "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER"):
+                "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER", "MODELS_FILE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DEPLOY_MODE", "cloud")
     monkeypatch.setenv("ADMIN_PASSWORD", FIXTURE_ADMIN_PASSWORD)
@@ -74,11 +74,12 @@ def local_env(env):
 
 
 def _reset() -> None:
-    from backend import ratelimit
+    from backend import models_file, ratelimit
     from backend.api import bridge
     ratelimit.reset_all()
     bridge.reset_bridge_state()
     config.reset_settings()
+    models_file.reset_models()
     skill_store.reset_skill_store()
     log_store.reset_log_store()
     relay.reset_relay()
