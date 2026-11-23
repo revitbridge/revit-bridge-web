@@ -262,7 +262,7 @@ def test_every_admin_check_compares_in_constant_time(make_client, env, monkeypat
 def test_device_list_is_admin_only(make_client, env):
     client = make_client()
     assert client.post(f"{B}/devices/pair", json={"label": "One"}).status_code == 200
-    assert client.get(f"{B}/devices").status_code == 503          # no ADMIN_PASSWORD configured
+    assert client.get(f"{B}/devices").status_code == 403          # no X-Admin-Token (a cloud host has ADMIN_PASSWORD)
 
     env.setenv("ADMIN_PASSWORD", "hunter2")
     client = make_client()
@@ -413,7 +413,8 @@ def test_an_unreadable_device_store_is_a_503_for_pair_redeem_and_revoke(client, 
 
 def test_the_contract_lists_the_device_store_503(client):
     """503 is documented where the device store is written, and the operations that newly
-    document a 503 in this release are exactly these three and the three pack writes."""
+    document a 503 since 0.1 are exactly these three, the four pack writes (admin_disabled)
+    and the workbench's compile, dry run and choices (revit_unreachable)."""
     spec = client.get("/openapi.json").json()
     for path, method in ((f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"),
                          (f"{B}/devices/{{device_id}}", "delete")):
@@ -431,6 +432,7 @@ def test_the_contract_lists_the_device_store_503(client):
     assert with_503 - before == {
         (f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"), (f"{B}/devices/{{device_id}}", "delete"),
         (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
+        (f"{B}/tools/import", "post"), (f"{B}/check", "post"), (f"{B}/dry-run", "post"), (f"{B}/choices", "post"),
     }
     assert before <= with_503
     assert "503" not in spec["paths"][f"{B}/devices/{{device_id}}"]["get"]["responses"]

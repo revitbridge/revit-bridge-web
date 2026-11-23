@@ -1,12 +1,15 @@
 """FastAPI application: API + the built SPA on one port.
 
-    python -m backend.main          # serves http://0.0.0.0:7860
+    uv run revit-bridge-web         # local mode: http://127.0.0.1:7860
+    python -m backend.main          # the same (the image's command)
 
 Routes: ``/health``, ``/config.json``, ``/api/chat``, ``/api/skills``,
-``/api/logs``, ``/api/v1/bridge/*`` and the SPA from ``frontend/dist``.
+``/api/logs``, ``/api/usage``, ``/api/v1/bridge/*`` and the SPA from ``frontend/dist``. The
+relay and device routes exist on a ``DEPLOY_MODE=cloud`` host only.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -20,8 +23,9 @@ from fastapi.staticfiles import StaticFiles
 
 from revit_bridge.capabilities import ToolStore
 
-from backend.api import bridge, chat, errors, logs, skills
-from backend.config import ConfigError, get_settings
+from backend.api import bridge, chat, errors, logs, skills, usage
+from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
+from backend.localguard import LocalModeGuard, host_names_for
 from backend.upgrade import quarantine_legacy_packs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -31,12 +35,20 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 APP_VERSION = "0.1.0"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+_log = logging.getLogger("backend")
+
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     settings = get_settings()
-    # A data volume written by the 0.1 host holds copies of the old built-in
-    # packs where the package now keeps user packs; park them aside.
-    quarantine_legacy_packs(ToolStore().user_dir)
+    # A data volume written by the 0.1 host holds copies of the old built-in packs
+    # in DATA_DIR/capabilities, where the package keeps user packs when its data root
+    # is that volume (the image); park them aside. Only there: a host started without
+    # REVIT_BRIDGE_DATA_DIR shares the package's per-user directory with the MCP server
+    # and other hosts, whose v0 packs are theirs and stay where they are.
+    user_dir = ToolStore().user_dir
+    if own_capabilities_dir(user_dir, settings):
+        quarantine_legacy_packs(user_dir)
+    _log.info("user tools (capability packs) are read from and saved to %s", user_dir)
     app = FastAPI(
         title="revit-bridge-web",
         version=APP_VERSION,
@@ -56,12 +68,21 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
             allow_headers=["*"],
             expose_headers=["X-Session-Id"],
         )
+    if not settings.cloud:
+        # A local host has no password: only a browser on this machine, talking to it
+        # directly, gets through (backend/localguard.py). CORS is never on here.
+        app.add_middleware(LocalModeGuard, host_names=host_names_for(settings.exposed),
+                           check_peer=not settings.in_container)
 
     errors.install(app)
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(logs.router)
+    app.include_router(usage.router)
     app.include_router(bridge.router)
+    # The relay, pairing and the device list only on a cloud host; a local host
+    # answers their paths 404 cloud_mode_only.
+    app.include_router(bridge.relay_router if settings.cloud else bridge.cloud_only_router)
 
     @app.get("/health", tags=["meta"])
     async def health():
@@ -97,18 +118,40 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
                 return FileResponse(candidate)
             return FileResponse(dist / "index.html")
 
-        logging.getLogger("backend").info("frontend served from %s", dist)
+        _log.info("frontend served from %s", dist)
     else:
-        logging.getLogger("backend").warning("frontend build not found at %s - API only", dist)
+        _log.warning("frontend build not found at %s - API only", dist)
 
+    log_deploy_mode(settings)
     return app
+
+
+def own_capabilities_dir(user_dir: Path, settings: WebSettings) -> bool:
+    """The package's user pack directory is this host's ``DATA_DIR/capabilities`` (the 0.1
+    host's copy target), not a directory shared with other hosts."""
+    own = settings.data_dir / "capabilities"
+    try:
+        return user_dir.resolve() == own.resolve()
+    except OSError:
+        return user_dir == own
+
+
+def log_deploy_mode(settings: WebSettings) -> None:
+    """One line for the mode, one per cloud-only variable a local host was given anyway."""
+    if settings.cloud:
+        _log.info("deploy mode: cloud - device relay, pairing and the admin password are on")
+        return
+    _log.info("deploy mode: local - this machine only; no relay, no pairing, no admin password")
+    for name in settings.unused_variables:
+        _log.warning("%s is set but not used: %s", name, CLOUD_ONLY_VARIABLES[name])
 
 
 def build_app_or_exit() -> FastAPI:
     """Create the app, or print the configuration error and exit with 2.
 
     A deployment whose environment cannot work (a retired 0.1 slot variable
-    still set, a non-numeric port or limit) must fail at startup with the
+    still set, a non-numeric port or limit, a local host other machines could
+    reach, a cloud host without ADMIN_PASSWORD) must fail at startup with the
     reason, not answer 500 to every request.
     """
     try:
@@ -118,10 +161,38 @@ def build_app_or_exit() -> FastAPI:
         raise SystemExit(2) from None
 
 
-app = build_app_or_exit()
+def __getattr__(name: str):
+    """``uvicorn backend.main:app`` still finds an app. It is built on first access, not
+    on import, so ``main()`` can apply ``--host`` / ``--port`` before the environment is
+    read and checked (and importing this module never exits)."""
+    if name == "app":
+        built = build_app_or_exit()
+        globals()["app"] = built
+        return built
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-def main() -> None:
+def parse_arguments(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="revit-bridge-web",
+        description="Serve the revit-bridge-web API and the built frontend (frontend/dist). "
+                    "Every setting is an environment variable (see .env.example); "
+                    "these options override HOST and PORT.")
+    parser.add_argument("--host", help="interface to listen on (HOST; default 127.0.0.1 in local mode, "
+                                       "which accepts loopback only)")
+    parser.add_argument("--port", type=int, help="port to listen on (PORT; default 7860)")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    """``revit-bridge-web`` (``[project.scripts]``) and ``python -m backend.main``."""
+    args = parse_arguments(argv)
+    if args.host is not None:
+        os.environ["HOST"] = args.host
+    if args.port is not None:
+        os.environ["PORT"] = str(args.port)
+    reset_settings()
+    app = build_app_or_exit()
     settings = get_settings()
     uvicorn.run(
         app,

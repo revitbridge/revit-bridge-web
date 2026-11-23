@@ -10,7 +10,16 @@ describe('parseRuntimeConfig', () => {
     }), 'application/json')
     expect(cfg.apiBase).toBe('https://api.example.com')
     expect(cfg.wsBase).toBe('wss://api.example.com/api/v1/bridge/ws')
-    expect(cfg.features).toEqual({ byoModel: true, serverModel: false, admin: true, maxDevices: 3 })
+    expect(cfg.features).toEqual({ mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 3 })
+  })
+
+  it('reads the deploy mode; a config that does not say local is a cloud host, as before modes', () => {
+    const local = parseRuntimeConfig(JSON.stringify({ features: { mode: 'local', admin: false, maxDevices: 0 } }))
+    expect(local.features).toEqual({ mode: 'local', byoModel: true, serverModel: false, admin: false, maxDevices: 0 })
+    expect(parseRuntimeConfig(JSON.stringify({ features: { mode: 'cloud' } })).features.mode).toBe('cloud')
+    expect(parseRuntimeConfig(JSON.stringify({ features: { mode: 'remote' } })).features.mode).toBe('cloud')
+    expect(parseRuntimeConfig(JSON.stringify({ features: {} })).features.mode).toBe('cloud')
+    expect(parseRuntimeConfig('{}').features.mode).toBe('cloud')
   })
 
   it('accepts the static config.example.json shape a split deployment ships', async () => {
@@ -18,6 +27,7 @@ describe('parseRuntimeConfig', () => {
     const cfg = parseRuntimeConfig(JSON.stringify(example.default))
     expect(cfg.apiBase).toBe('https://api.example.com')
     expect(cfg.features.maxDevices).toBe(20)
+    expect(cfg.features.mode).toBe('cloud')          // a split deployment is a cloud host
   })
 
   it('refuses the SPA fallback page a static host returns instead of the file', () => {

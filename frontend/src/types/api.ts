@@ -1,5 +1,7 @@
 /* Shared API types (mirrors docs/api-v1.json). */
 
+import type { StageEvent, ToolEvent, TraceEvent, UsageEvent } from './hostv2'
+
 export interface RevitHealthResponse {
   revit_connected: boolean
   latency_ms: number | null
@@ -78,7 +80,9 @@ export interface ToolParam {
   choices_from?: string
 }
 
-/* One item of GET /tools: the package's list_tools shape. */
+/* One item of GET /tools: the package's list_tools shape, plus where the pack comes from:
+   builtin (the wheel's, read-only) or user (a file in the user capabilities directory);
+   directory only on a local host. */
 export interface ToolInfo {
   name: string
   description: string
@@ -87,6 +91,9 @@ export interface ToolInfo {
   preconditions: Array<Record<string, unknown>>
   validator: string | null
   used: number
+  builtin: boolean
+  origin: 'builtin' | 'user'
+  directory?: string
 }
 
 /* GET /tools/{name}: the full pack. */
@@ -153,6 +160,7 @@ export interface Skill {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
+  trace?: TraceEvent[]                  // assistant: the stage / tool / usage events of its turn, in order
 }
 
 /* -- the host loop (POST /api/chat), spec 10.10 ------------------------------------ */
@@ -245,6 +253,7 @@ export type HostEvent =
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
       reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
+  | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
   | { type: 'error'; detail: string }
   | { type: 'done' }
 

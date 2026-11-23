@@ -5,25 +5,46 @@ services:
     container_name: revit-bridge-web
     ports:
       # Loopback by default; a reverse proxy (nginx, Caddy, Cloudflare Tunnel)
-      # terminates TLS. Set BIND_ADDRESS=0.0.0.0 to expose the port directly,
-      # and then FORWARDED_ALLOW_IPS too (see .env.example).
+      # terminates TLS. A cloud host may set BIND_ADDRESS=0.0.0.0 to expose the
+      # port directly, and then FORWARDED_ALLOW_IPS too (see .env.example); a
+      # local host refuses to start on anything but loopback.
       - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-7860}:7860"
     env_file:
       - path: .env
         required: false
     environment:
+      # local (the default): this machine only - no relay, no pairing, no admin
+      # password. cloud: the relay, pairing and ADMIN_PASSWORD, which is then
+      # required. See README.
+      DEPLOY_MODE: ${DEPLOY_MODE:-local}
+      # The address the port above is published on, the same expression: inside
+      # the container the app listens on 0.0.0.0, so this is what local mode checks.
+      BIND_ADDRESS: ${BIND_ADDRESS:-127.0.0.1}
       # This host's files (skills, interaction logs) and the package's data
       # root (user capability packs, usage.json, evidence): the ./data volume.
       DATA_DIR: /app/data
       REVIT_BRIDGE_DATA_DIR: /app/data
+      # Share your tools with the coding frameworks on this machine (the
+      # revit-bridge MCP server that Claude Code and other hosts start): uncomment
+      # the next line and the second volume below, and set SHARED_CAPABILITIES_DIR
+      # in .env to the machine's tool directory - the package's user capabilities
+      # directory, by default
+      #   Windows: C:/Users/<you>/AppData/Local/revit-bridge/capabilities
+      #   Linux:   /home/<you>/.local/share/revit-bridge/capabilities
+      # Tools saved on this page are files there, and the MCP server's tools are
+      # listed here on the next request. It is mounted outside /app/data on purpose:
+      # the entrypoint never changes the owner of your directory, so on Linux the
+      # app (uid 1000) needs write access to it as it is. Without these two lines
+      # the tools stay in ./data/capabilities, as before.
+      # REVIT_BRIDGE_CAPABILITIES_DIR: /shared/capabilities
       # Inside the container the app always listens on 7860; PORT in .env only
       # chooses the published host port above.
       PORT: 7860
       HOST: 0.0.0.0
-      # How many paired add-ins may be connected at once. Their credentials are
-      # created by the pairing flow and stored (hashed) in the data volume, so
-      # there is no secret to mount.
-      MAX_DEVICES: ${MAX_DEVICES:-20}
+      # Cloud only: how many paired add-ins may be connected at once (empty = 20).
+      # Their credentials are created by the pairing flow and stored (hashed) in
+      # the data volume, so there is no secret to mount.
+      MAX_DEVICES: ${MAX_DEVICES:-}
       # A local add-in on the Docker host is reachable as host.docker.internal.
       REVIT_BRIDGE_HOST: ${REVIT_BRIDGE_HOST:-host.docker.internal}
       REVIT_BRIDGE_PORT: ${REVIT_BRIDGE_PORT:-18080}
@@ -31,5 +52,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+      # - ${SHARED_CAPABILITIES_DIR:?set SHARED_CAPABILITIES_DIR in .env}:/shared/capabilities
     mem_limit: 1g
     restart: unless-stopped
