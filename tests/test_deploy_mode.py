@@ -670,3 +670,104 @@ def test_a_cloud_host_keeps_its_own_protection(make_client, env):
     assert client.request("DELETE", f"{B}/tools/create_beam", headers=evil).status_code == 403
     assert client.request("DELETE", f"{B}/tools/create_beam",
                           headers={**evil, "X-Admin-Token": FIXTURE_ADMIN_PASSWORD}).status_code == 200
+
+
+# -- Sec-Fetch-Site, WebSocket Origin, ASCII ports -------------------------------------------
+
+# What another site's page makes a browser send, on every method: GETs that reach Revit,
+# body-less POSTs, the page itself, the runtime config.
+FOREIGN_FETCHES = [("GET", f"{B}/snapshot"), ("GET", f"{B}/tools/create_wall/choices"),
+                   ("POST", f"{B}/trigger-selection"), ("POST", f"{B}/evidence/ev_x/validate"),
+                   ("POST", f"{B}/query"), ("DELETE", f"{B}/tools/create_beam"),
+                   ("GET", "/config.json"), ("GET", "/health"), ("GET", f"{B}/tools")]
+
+
+@pytest.mark.parametrize("site", ["cross-site", "same-site", "CROSS-SITE"])
+def test_another_site_s_page_is_refused_before_revit_is_touched(revit, make_client, local_env, site):
+    """Sec-Fetch-Site cross-site / same-site (a page on another origin of this machine, say
+    localhost:3000, is same-site) is refused on every method, with or without Origin."""
+    client = make_client(**LOCAL)
+    for method, path in FOREIGN_FETCHES:
+        for extra in ({}, {"Origin": "http://127.0.0.1:7860"}):
+            resp = client.request(method, path, headers={"Sec-Fetch-Site": site, **extra})
+            assert refused(resp, "local_mode_origin"), (site, method, path, resp.status_code)
+            assert f"(Sec-Fetch-Site: {site.lower()})" in resp.json()["message"]
+    assert revit.requests == []                                   # nothing reached the add-in
+    assert "create_beam" in {t["name"] for t in client.get(f"{B}/tools").json()}
+
+
+def test_the_page_itself_and_non_browser_clients_still_reach_revit(revit, make_client, local_env):
+    """same-origin (the host's own page), none (a typed address or a bookmark) and no header
+    at all (curl, the bench runner) pass."""
+    client = make_client(**LOCAL)
+    for headers in ({"Sec-Fetch-Site": "same-origin"}, {"Sec-Fetch-Site": "none"}, {}):
+        snap = client.get(f"{B}/snapshot", headers=headers)
+        assert snap.status_code == 200 and snap.json()["document"]["title"] == "Project1", headers
+    assert revit.requests                                          # these did reach the add-in
+    own = {"Sec-Fetch-Site": "same-origin", "Origin": "http://127.0.0.1:7860"}
+    assert client.delete("/api/logs?before=2030-01-01", headers=own).status_code == 200
+
+
+def test_a_cloud_host_ignores_sec_fetch_site(client):
+    for site in ("cross-site", "same-site"):
+        assert client.get(f"{B}/tools", headers={"Sec-Fetch-Site": site}).status_code == 200
+        assert client.get("/config.json", headers={"Sec-Fetch-Site": site}).status_code == 200
+
+
+@pytest.mark.parametrize("origin", ["http://evil.example", "http://localhost:3000", "http://localhost:7860", "null"])
+def test_a_websocket_from_another_origin_is_refused(make_client, local_env, origin):
+    """Browsers apply no same-origin rule to WebSockets: the guard checks Origin there too.
+    (The only local WebSocket path answers 404 behind it, which is what an own-origin or
+    an Origin-less upgrade reaches.)"""
+    client = make_client(**LOCAL)
+    url = f"ws://127.0.0.1:7860{B}/ws/dev_aaaaaaaaaaaa"
+    with pytest.raises(WebSocketDenialResponse) as denied:
+        with client.websocket_connect(url, headers={"Origin": origin}):
+            pass
+    assert denied.value.status_code == 403 and denied.value.json()["error"] == "local_mode_origin"
+    assert "takes connections only from its own page" in denied.value.json()["message"]
+    for headers in ({"Origin": "http://127.0.0.1:7860"}, {}):
+        with pytest.raises(WebSocketDenialResponse) as through:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert through.value.status_code == 404 and through.value.json()["error"] == "cloud_mode_only"
+
+
+def test_a_future_websocket_route_would_be_guarded():
+    """A WebSocket route added to a local host later sits behind the same checks."""
+    from starlette.applications import Starlette
+    from starlette.routing import WebSocketRoute
+    from starlette.testclient import TestClient
+
+    from backend.localguard import LocalModeGuard
+
+    async def echo(ws):
+        await ws.accept()
+        await ws.send_text("hi")
+        await ws.close()
+
+    client = TestClient(LocalModeGuard(Starlette(routes=[WebSocketRoute("/echo", echo)])), **LOCAL)
+    url = "ws://127.0.0.1:7860/echo"
+    for headers in ({"Origin": "http://127.0.0.1:7860", "Sec-Fetch-Site": "same-origin"}, {}):
+        with client.websocket_connect(url, headers=headers) as ws:
+            assert ws.receive_text() == "hi"
+    for headers in ({"Origin": "http://evil.example"},
+                    {"Origin": "http://127.0.0.1:7860", "Sec-Fetch-Site": "cross-site"}):
+        with pytest.raises(WebSocketDenialResponse) as denied:
+            with client.websocket_connect(url, headers=headers):
+                pass
+        assert denied.value.status_code == 403 and denied.value.json()["error"] == "local_mode_origin"
+
+
+def test_a_port_must_be_ascii_digits():
+    """str.isdigit() alone takes a superscript two (a latin-1 byte on the wire), an
+    Arabic-Indic three or fullwidth digits."""
+    from backend.localguard import LocalModeGuard, host_name
+
+    assert host_name("127.0.0.1:7860") == "127.0.0.1" and host_name("[::1]:0080") == "[::1]"
+    for host in ("127.0.0.1:\u00b2", "127.0.0.1:7\u00b2", "localhost:\u0663", "[::1]:\uff17\uff18"):
+        assert host_name(host) is None, ascii(host)
+    guard = LocalModeGuard(app=None)
+    scope = {"type": "http", "method": "GET", "client": ("127.0.0.1", 1), "headers": [(b"host", b"127.0.0.1:\xb2")]}
+    assert guard.refusal(scope)[0] == "local_mode_host"
+    assert guard.refusal({**scope, "headers": [(b"host", b"127.0.0.1:7860")]}) is None

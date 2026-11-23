@@ -18,16 +18,24 @@ order, and the first that fails answers 403 ``{error, message}``:
    (``uvicorn --host 0.0.0.0``) and a client wrote ``Host: 127.0.0.1`` itself.
    Inside the image the peer is Docker's gateway, so that part is skipped; what
    reaches the container there is limited by the published BIND_ADDRESS.
-3. ``local_mode_origin``: a POST, PUT, PATCH or DELETE that carries ``Origin``
-   (every browser sends it on these) must come from the host's own origin,
-   ``http://`` plus the Host header. Some state-changing routes take no body
-   (``DELETE /tools/{name}``, ``DELETE /api/skills/{id}``, ``POST
-   /trigger-selection``...), so a cross-site form post would otherwise reach
-   them; JSON bodies are refused as ``text/plain`` or form data anyway, and CORS
-   stays same-origin (``CORS_ORIGINS`` refuses to start in local mode).
+3. ``local_mode_origin``, two ways:
+   - any request - every method, WebSocket upgrades too - whose ``Sec-Fetch-Site``
+     is ``cross-site`` or ``same-site``: a browser says so for a request another
+     site's page started, including the GETs that reach Revit (``/snapshot``,
+     ``/tools/{name}/choices``) and body-less POSTs (``/trigger-selection``,
+     ``/evidence/{id}/validate``). ``same-origin``, ``none`` (typed address,
+     bookmark) and no header at all (curl, the bench runner) pass;
+   - a POST, PUT, PATCH or DELETE, or a WebSocket upgrade, that carries ``Origin``
+     (every browser sends it on these) must come from the host's own origin,
+     ``http://`` plus the Host header. Browsers apply no same-origin rule to
+     WebSockets, and some state-changing routes take no body (``DELETE
+     /tools/{name}``, ``DELETE /api/skills/{id}``...), so a cross-site form post
+     would otherwise reach them; JSON bodies are refused as ``text/plain`` or form
+     data anyway, and CORS stays same-origin (``CORS_ORIGINS`` refuses to start in
+     local mode).
 
-Requests without ``Origin`` (curl, scripts on this machine) are not refused by
-3; 1 and 2 still apply. A cloud host does not install this guard.
+Requests without ``Origin`` and ``Sec-Fetch-Site`` (curl, scripts on this machine)
+are not refused by 3; 1 and 2 still apply. A cloud host does not install this guard.
 """
 from __future__ import annotations
 
@@ -47,6 +55,8 @@ FORWARDING_HEADERS = (b"forwarded", b"x-forwarded-for", b"x-forwarded-host", b"x
                       b"x-real-ip", b"cf-connecting-ip")
 LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost", "[::1]")
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Sec-Fetch-Site values that mean another site's page started the request.
+FOREIGN_FETCH_SITES = frozenset({"cross-site", "same-site"})
 
 
 def host_name(host_header: str) -> str | None:
@@ -61,7 +71,9 @@ def host_name(host_header: str) -> str | None:
     else:
         name, colon, port = value.partition(":")
         rest = colon + port
-    if not name or (rest and not (rest.startswith(":") and rest[1:].isdigit())):
+    port = rest[1:]
+    # ASCII digits only: str.isdigit() alone also takes a superscript two (a latin-1 byte) or an Arabic-Indic three.
+    if not name or (rest and not (rest.startswith(":") and port.isascii() and port.isdigit())):
         return None
     return name
 
@@ -127,10 +139,17 @@ class LocalModeGuard:
         if self.check_peer and not (client and is_loopback(str(client[0]))):
             return NOT_LOCAL, "This host runs in local mode and answers this machine only"
 
-        if scope["type"] == "http" and scope.get("method", "").upper() in STATE_CHANGING_METHODS:
+        fetch_site = headers.get(b"sec-fetch-site", b"").decode("latin-1").strip().lower()
+        if fetch_site in FOREIGN_FETCH_SITES:
+            return FOREIGN_ORIGIN, (f"This host runs in local mode and answers only its own page; another "
+                                    f"site's page started this request (Sec-Fetch-Site: {fetch_site})")
+
+        websocket = scope["type"] == "websocket"
+        if websocket or scope.get("method", "").upper() in STATE_CHANGING_METHODS:
             origin = headers.get(b"origin")
             if origin is not None and origin.decode("latin-1").strip().lower() != f"http://{host.strip().lower()}":
-                return FOREIGN_ORIGIN, (f"This host runs in local mode and takes changes only from its own "
+                what = "connections" if websocket else "changes"
+                return FOREIGN_ORIGIN, (f"This host runs in local mode and takes {what} only from its own "
                                         f"page (http://{host}); this request came from "
                                         f"{origin.decode('latin-1')!r}")
         return None
