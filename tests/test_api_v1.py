@@ -97,7 +97,10 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
     tools = client.get(f"{B}/tools").json()
     assert len(tools) == 8
     wall = next(t for t in tools if t["name"] == "create_wall")
-    assert set(wall) == {"name", "description", "version", "parameters", "preconditions", "validator", "used"}
+    # The MCP shape plus where the pack comes from (no directory on a cloud host).
+    assert set(wall) == {"name", "description", "version", "parameters", "preconditions", "validator", "used",
+                         "builtin", "origin"}
+    assert all(t["builtin"] is True and t["origin"] == "builtin" for t in tools)
     assert wall["version"] == "1.0.0" and wall["validator"] == "count_delta" and wall["used"] == 0
     assert wall["preconditions"][0] == {"kind": "levels_min", "value": 1}
     level = next(p for p in wall["parameters"] if p["name"] == "level_name")
@@ -107,8 +110,13 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
     assert height["unit"] == "mm" and height["default"] == 3000 and height["required"] is False
 
 
-def test_tool_detail_update_and_delete_are_unchanged(make_client, env, tmp_path):
+COUNT_WALLS = {"name": "count_walls", "description": "How many walls", "parameters": [],
+               "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();"}
+
+
+def test_tool_detail_update_and_delete_of_a_user_pack(make_client, env, tmp_path):
     # Changing a pack takes the admin password (tests/test_pack_admin.py); reading does not.
+    # Built-in packs are read-only (tests/test_workbench.py): this edits a user pack.
     env.setenv("ADMIN_PASSWORD", "hunter2")
     client = make_client()
     admin = {"X-Admin-Token": "hunter2"}
@@ -117,26 +125,27 @@ def test_tool_detail_update_and_delete_are_unchanged(make_client, env, tmp_path)
     assert client.get(f"{B}/tools/nope").json() == {"error": "unknown_tool", "message": "Tool 'nope' not found", "tool": "nope"}
     assert client.get(f"{B}/tools/nope").status_code == 404
 
-    updated = client.put(f"{B}/tools/query_levels", json={"description": "levels, sorted"}, headers=admin)
-    assert updated.status_code == 200 and updated.json()["description"] == "levels, sorted"
-    user_file = tmp_path / "data" / "capabilities" / "query_levels.yaml"
+    assert client.post(f"{B}/solidify", json=COUNT_WALLS, headers=admin).status_code == 200
+    updated = client.put(f"{B}/tools/count_walls", json={"description": "walls, counted"}, headers=admin)
+    assert updated.status_code == 200 and updated.json()["description"] == "walls, counted"
+    user_file = tmp_path / "data" / "capabilities" / "count_walls.yaml"
     assert user_file.is_file()
     written = user_file.read_bytes()
-    invalid = client.put(f"{B}/tools/query_levels", json={"code_template": "var l = \"{level_name}\"; return 1;"},
+    invalid = client.put(f"{B}/tools/count_walls", json={"code_template": "var l = \"{level_name}\"; return 1;"},
                          headers=admin)
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
     assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
     # The refused update wrote nothing: the served pack and the file are what the valid update left.
-    assert "{level_name}" not in client.get(f"{B}/tools/query_levels").json()["code_template"]
+    assert "{level_name}" not in client.get(f"{B}/tools/count_walls").json()["code_template"]
     assert user_file.read_bytes() == written
-    blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
+    blocked = client.put(f"{B}/tools/count_walls", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
                          headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
     assert user_file.read_bytes() == written
 
-    assert client.delete(f"{B}/tools/query_levels", headers=admin).json() == {"status": "deleted", "name": "query_levels"}
-    assert client.delete(f"{B}/tools/query_levels", headers=admin).status_code == 404
-    assert len(client.get(f"{B}/tools").json()) == 7
+    assert client.delete(f"{B}/tools/count_walls", headers=admin).json() == {"status": "deleted", "name": "count_walls"}
+    assert client.delete(f"{B}/tools/count_walls", headers=admin).status_code == 404
+    assert not user_file.exists() and len(client.get(f"{B}/tools").json()) == 8
 
 
 def test_tool_choices_come_from_revit(revit, client):

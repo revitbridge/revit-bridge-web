@@ -6,12 +6,29 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
-Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the image). The system
+Upgrading: **a host that other machines reach must set `DEPLOY_MODE=cloud` in its `.env` before it
+is upgraded**, and keep `ADMIN_PASSWORD` (a cloud host now refuses to start without it). That
+includes a host published on loopback behind a reverse proxy or a tunnel on the same machine. The
+host now starts as a local host by default (`DEPLOY_MODE=local`): this machine only, no relay, no
+pairing, no admin password. Local mode does not detect every proxy: a reverse proxy that adds no
+forwarding header and rewrites `Host` to the loopback address - nginx's default `location / {
+proxy_pass http://127.0.0.1:7860; }` - passes all of its checks, and the host would then serve pack
+edits, skill edits and the logs without a password to anyone the proxy lets in. The only
+protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal of a local host that
+finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
+that ran without it does not. See *Added* and *Changed* (deploy modes).
+
+The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
+
+**The model in the chat no longer writes code** (see *Changed*): it runs saved tools only, and code
+becomes a tool on the workbench. Built-in packs are now read-only: a client that edited, hid or
+replaced one gets 409 `builtin_read_only` (see *Changed*). Started with `uv run revit-bridge-web`,
+the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Security
 
@@ -54,6 +71,126 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Added
 
+- The workbench's routes (`docs/api-v1.json` gains five operations): `POST /api/v1/bridge/check`
+  is the package's `check_code` (compile in Revit, never run, with the lessons for the errors as the
+  MCP tool adds them) and `POST /api/v1/bridge/dry-run` its `dry_run_code` (run in the open model and
+  always rolled back: no confirmation, no token; one `dry_run` ledger line). Each takes
+  `{code, parameters?}` or `{pack, values}` - a draft in the pack format whose template the package
+  fills (saved and rendered in a store of fresh temporary directories; 422 `invalid_pack` or
+  `render_failed` with the package's messages); any other field, the package's `include` (files on
+  the host's machine) among them, is 422. The replies are the package's as they are; code the
+  sandbox refuses is answered before Revit is needed, no add-in is 503 `revit_unreachable`, and a
+  cloud host counts both against `/spec/confirm`'s rate limit (429 `rate_limited`; a local host
+  does not limit them). `POST /api/v1/bridge/choices` `{choices_from}` returns `[{label, value}]`
+  from the package's `get_tool_choices`. `GET /api/v1/bridge/tools/{name}/export` returns the pack
+  file as stored (`text/yaml`); `POST /api/v1/bridge/tools/import` takes one as YAML text (at most
+  256 KB, checked on `Content-Length` before the body is read; YAML aliases, nesting too deep to read
+  and keys that are not text are 422 `invalid_pack`), validates it as the package validates a pack
+  file (422 `invalid_pack`, 400 `blocked`) and stores it as sent; an existing user pack is replaced
+  only with `?overwrite=true` (409 `pack_exists`). Only the current (v1) format imports: an older v0
+  file has to be saved once in the current format first. The import is a pack write: admin password
+  on a cloud host, none on a local one.
+- `GET /api/v1/bridge/tools` and the model's `list_tools` mark each pack `builtin` (true for the
+  wheel's) and its `origin` (`"builtin"` or `"user"`); on a local host the page's listing also has
+  `directory`, where the file is. Both are read from disk on every call.
+- Every tool name from a request or from the model is checked before the store sees it: ASCII
+  letters, digits and `_`, not starting with a digit (the shape of the pack schema's parameter
+  names, `IDENTIFIER_RE`, without its Unicode letters), at most 100 characters, and no
+  Windows device name (`con`, `nul`, `prn`, `aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case; on Windows
+  `ToolStore().load("con")` blocks). 422 `invalid_tool_name` from the routes (paths, `POST /solidify`,
+  the import, the specs of `/spec/confirm` and `/spec/reconcile`), a result with that error from the
+  model's `missing_params`, `get_tool_choices`, `reconcile` and `propose_spec`.
+- The Capabilities page has a *Workbench* tab, also at `/capabilities/workbench` (a link opens it):
+  for now a note that the workbench editor is being wired in, and your own tools with *Export*,
+  *Delete* and *Import*. `frontend/src/api/workbench.ts` is the one HTTP client of the workbench
+  (check, dry run, choices, save, list, load, remove, export, import); it sends a draft with
+  parameters as `{pack, values}` and asks `/choices` for the options.
+- What the host loop does is visible and counted. `/api/chat` sends three more SSE events next
+  to the ones it already sent (whose names, shapes and order are unchanged): `event: stage`
+  `{role, model, status}` (`start` before the first model call, `end` before `done` or `error`;
+  the role is `planner`), `event: tool` `{id, role, name, args, status, ms?, size?, preview?,
+  error?}` (`running` when a tool call starts, then `ok` or `error` with the same `id`; `size` is
+  the result's length in characters, `preview` its first 2000) and `event: usage` `{role, model,
+  round, input, output, cache_read, cache_write, ms}` after every model call. A client that
+  ignores unknown events sees no difference. A turn with `bridge: false` sends `stage` and
+  `usage` but no `tool`. Arguments whose JSON text runs past 8000 characters go out as
+  `{"_truncated": true, "_chars": <length>, "_head": <first 2000 characters>}`; a tool that raised
+  reports only the exception's type name (the text goes to the server log); `stage` `end` is sent
+  however the turn ends, as long as the client is still there.
+- Token usage: every model request asks for it (`stream_options.include_usage`) and the four
+  numbers are read from the provider's `usage` object - OpenAI, DeepSeek
+  (`prompt_cache_hit_tokens`), the Gemini and Anthropic OpenAI-compatibility endpoints, gateways
+  such as OpenRouter, new-api and LiteLLM. `input` is the whole prompt with cached tokens
+  included, `cache_read` and `cache_write` the parts served from and written to the provider's
+  cache, `output` the completion - thinking tokens included also where the provider counts them
+  only in `total_tokens` (Gemini's compatibility endpoint; `output` is then `total_tokens -
+  input`). A number the provider does not report, or one that is not an integer from 0 to 2^53,
+  is `null`, never 0, and every sum over calls is unknown as soon as one call lacks that number
+  (or the sum passes 2^53). Usage objects of one stream are merged field by field. An endpoint
+  that answers a 4xx other than 401 / 403 naming `stream_options` is asked once more without
+  it; when that is accepted, that address and model are not asked again until the host
+  restarts. Known limit: a gateway that always sends `prompt_tokens_details.cached_tokens`
+  (new-api sends 0 when the upstream reported nothing) shows a cache read of 0 rather than
+  unknown.
+- Each model call is a row in the new `llm_calls` table of the interaction log database (session,
+  turn, round, role, model name, the four counts, duration, time, run label), created on an
+  existing database at startup and purged with the logs after 90 days. No message text, endpoint
+  address or key is stored there. The optional request header `X-Run-Label` (1-64 characters of
+  `A-Z a-z 0-9 _ . -`, not `.` or `..`; anything else 422 `invalid_args`) names a measured run.
+  `GET /api/usage?session_id=` lists the calls of one chat session and `GET /api/usage/runs`
+  sums them per run label (calls, the four counts, time, first and last call); both follow the
+  `/api/logs` rule (no password on a local host, `X-Admin-Token` on a cloud one). In
+  `docs/api-v1.json`: these two operations with their schemas, and the header on `/api/chat`.
+- Task page: above every reply of the bridge transcript, its tool activity - one row per tool
+  call with the arguments, status, time and result size, expandable to the full arguments and
+  the result preview, errors in red - and below the chat a collapsible token panel for this turn
+  and this session (input, cache read, hit rate, cache write, output, calls; *unknown* where the
+  provider reported nothing). With *Compare with no bridge* on, the no-bridge session has its own
+  token panel and no timeline. A row or stage still open when the turn's stream ended (stopped,
+  broken off) is marked *interrupted*.
+- Deploy modes: `DEPLOY_MODE=local` (default) or `cloud`. A local host serves this machine only:
+  it refuses to start when other machines could reach it (`HOST` not loopback; in the image, where
+  the server listens on `0.0.0.0`, a `BIND_ADDRESS` not loopback or not passed in), and it has no
+  relay, no pairing and no admin password. A cloud host is the host as it was, and refuses to start
+  without `ADMIN_PASSWORD`. Both refusals print the reason and exit 2. `/config.json` reports
+  `features.mode`. A local host also refuses to start with `ADMIN_PASSWORD` set (a cloud
+  deployment missing `DEPLOY_MODE=cloud` fails closed instead of running without a password) or
+  with `CORS_ORIGINS` set; `MAX_DEVICES` and `PUBLIC_WS_BASE` given to it are not an error, one
+  startup log line names each as unused.
+- The request guard of a local host (`backend/localguard.py`), in front of every path (API, static
+  files, `/config.json`, `/health`, WebSocket upgrades): 403 `{"error": "local_mode_no_proxy"}` for a
+  request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+  `X-Real-IP` or `CF-Connecting-IP`; 403 `local_mode_host` for a `Host` other than `127.0.0.1`,
+  `localhost` or `[::1]` with any port (plus the loopback address configured as `HOST` /
+  `BIND_ADDRESS` when it is another one), the guard against DNS rebinding, and - outside a container -
+  for a peer address that is not loopback (a server started as `uvicorn backend.main:app --host
+  0.0.0.0` is covered too); 403 `local_mode_origin` for any request whose `Sec-Fetch-Site` is
+  `cross-site` or `same-site` (another site's page started it: GETs that reach Revit such as
+  `/snapshot`, body-less POSTs such as `/trigger-selection`, any method) - except a top-level
+  navigation to the page shell or a static file (GET or HEAD, `Sec-Fetch-Mode: navigate`,
+  `Sec-Fetch-Dest: document`, not `/api/...`, `/config.json`, `/openapi.json`, `/docs`, `/redoc`
+  or `/health`), so a link to the host in a README or a chat tool opens it - and for a POST, PUT,
+  PATCH, DELETE or WebSocket upgrade whose `Origin` is not `http://` plus the request's `Host`.
+  Every local response carries `Content-Security-Policy: frame-ancestors 'self'` and
+  `X-Frame-Options: SAMEORIGIN`: no other page may frame the UI, which has no password.
+  Routes without a body (`DELETE /tools/{name}`, `DELETE /api/skills/{id}`, `POST
+  /trigger-selection`...) would otherwise take a cross-site form post; routes with a JSON body
+  already refuse `text/plain` and form data with 422. A port in `Host` must be ASCII digits. A cloud
+  host has no such guard: forwarding headers and public host names are normal behind its proxy.
+  Known limits: a reverse proxy that adds no forwarding header and sends a loopback `Host` (nginx's
+  default) is not detected; a request relayed by a forward proxy running on the same machine looks
+  like a direct browser (loopback peer, rewritten `Host`, no forwarding headers), so a local proxy
+  that accepts connections from other machines exposes the host to them - keep such a proxy bound
+  to loopback or do not run the host beside it; in Docker the peer-address check is off, so the port
+  must be published on the same loopback address as `BIND_ADDRESS` (`-p 127.0.0.1:7860:7860`).
+- `npm run dev`: the Vite proxy presents its own pages (`http://localhost:5173`) with the target's
+  origin, so the dev page can still make changes on a local host; any other `Origin` passes through
+  unchanged and is refused.
+- `uv run revit-bridge-web`: the API and the built frontend on `127.0.0.1:7860` without Docker
+  (`--host` / `--port` override `HOST` / `PORT` and go through the same check). `pyproject.toml`
+  now builds the project (hatchling) so `uv sync` installs it editable with this script; `uv.lock`
+  changes only the project's own source line. `python -m backend.main` (the image) is unchanged;
+  importing `backend.main` no longer builds the app (`uvicorn backend.main:app` still finds one).
 - `get_guidance`, the package's lessons for writing Revit code, as a model tool: the same
   arguments (`mode`, `stage`, `skill_categories`, `revit_categories`, `symbols`, `errors`,
   `exceptions`, `revit_version`, `ids`, `seen_hashes`) and JSON reply as the MCP tool, computed in
@@ -140,7 +277,76 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
-- Requires `revit-bridge>=0.6,<0.7` (0.6.1 in `uv.lock`; the image installs it from PyPI). 0.6.1 is the first release whose device store raises when `devices.json` cannot be read, which the pair, redeem and delete-device routes answer with 503. From
+- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,444 bytes of
+  definitions instead of 5,147), and the system prompt is the package's `host_instructions()` and
+  one paragraph of this host's: here the model never writes or proposes code, uses saved tools only
+  and, when none fits, says so and links `[workbench](/capabilities/workbench)` (4,288 bytes instead
+  of 6,007: no skills, no `get_guidance` pointer). `propose_spec` with an `execute_code` spec shows no
+  card and answers `{accepted: false, errors: [{code: "code_not_offered", ...}], reconcile: null}`.
+  The Skills page and `/api/skills` stay; the skills no longer enter the prompt. The task page loses
+  the free-code execution, the code branch of the tamper demo and the *Solidify* panel; running a
+  pack, the spec card, the tamper demo for a value, the timeline and the token panel are unchanged.
+- **Built-in packs are read-only.** `PUT` and `DELETE /api/v1/bridge/tools/{name}` on a pack from
+  the wheel, and `POST /solidify` or the import under a built-in's name, are 409 `builtin_read_only`
+  (before, an edit copied the built-in into the user directory and a delete hid it behind a
+  `.disabled` marker) - as long as the user directory has no file of that name. A user file that
+  already carries a built-in's name is the designer's own: it can be edited, replaced (import with
+  `overwrite=true`, solidify) and deleted, and deleting it brings the built-in back. The
+  Capabilities page offers *Edit* and *Delete* for your own packs only; the task page neither
+  confirms nor runs a spec that is not `run_tool`, and the Skills page no longer says skills enter
+  the prompt.
+- **Your tools are shared with the package's MCP server** when the host runs without a container
+  (`uv run revit-bridge-web`): it sets no `REVIT_BRIDGE_DATA_DIR`, so the package uses its per-user
+  directory, the one its MCP server uses. The 0.1 repair at startup (moving v0 pack files to
+  `legacy-0.1/`) now runs only on the host's own `DATA_DIR/capabilities`, never on a shared
+  directory, where another host's v0 packs stay where they are. `docker-compose.yml` keeps the tools
+  in `./data` as before and has a commented mount (`SHARED_CAPABILITIES_DIR`,
+  `REVIT_BRIDGE_CAPABILITIES_DIR=/shared/capabilities`) to share the machine's directory instead;
+  `.env.example` no longer sets `REVIT_BRIDGE_DATA_DIR` (compose and the image pin it).
+- A chat session keeps the system prompt its first turn was sent with (one per `bridge` value):
+  every later call of the session starts with the same bytes - system message, then the tool
+  definitions, which were already constant - so a provider's prompt cache keeps matching. A
+  skill enabled, edited or turned off meanwhile reaches the next session (*New session* on the
+  task page), not the open one. The prompt's text itself is unchanged.
+- On a local host: the add-in socket and the device routes (`/api/v1/bridge/ws/{device_id}`,
+  `/devices`, `/devices/pair`, `/devices/redeem`, `/devices/{device_id}`) are not mounted and answer
+  404 `{"error": "cloud_mode_only", "message": ...}` - the socket before the upgrade; `X-Device-Id`
+  / `X-Device-Key` (and the 0.1 slot headers) are not read, so every request, the chat's tools
+  included, drives the add-in on this machine and its confirmations and evidence are `local`; the
+  admin checks of pack changes, skill writes and `/api/logs` pass without a token
+  (`/api/logs/verify` answers `{valid: true}`); `/config.json` has `admin: false`, `maxDevices: 0`
+  and an empty `wsBase`; `GET /slots` is `{max_devices: 0, connected: 0}`; `GET /service-health`
+  has `remote_relay_ready: false` and `websocket_endpoint: null`; `GET /revit-health` no longer adds
+  "0 paired device(s) connected" to its detail. A cloud host answers all of these as before.
+- The Connect page of a local host shows the local add-in's check and the model settings only - no
+  pairing, no device lists, no admin password field (the components render on a cloud host) - and
+  no request carries a device header or the admin token there; pack edit and delete, *Save as
+  pack* and the skill editor work without a password. A cloud host's pages are unchanged. A
+  `config.json` without `features.mode` (an older static one) is read as a cloud host;
+  `frontend/public/config.example.json` says `"mode": "cloud"` and `"admin": true`.
+- `docker-compose.yml` sets `DEPLOY_MODE` (default `local`) and passes `BIND_ADDRESS` into the
+  container with the same default as the published port; `MAX_DEVICES` is passed empty unless set
+  (empty means 20 on a cloud host), so a local host does not report it as unused. The image sets
+  `REVIT_BRIDGE_WEB_CONTAINER=1`. Running the image with `docker run` in local mode needs
+  `-p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1` (CI's image smoke does that, and checks both
+  refusals).
+- `docs/api-v1.json` is exported from a cloud host (`DEPLOY_MODE=cloud ADMIN_PASSWORD=...` before
+  the export command; CI does the same) and is unchanged: every route is still there.
+- Requires `revit-bridge>=0.8,<0.9` (0.8.2 in `uv.lock`; the image installs it from PyPI). From
+  0.6.1 to 0.8.2 nothing the host imports changed its name, signature or reply, and no route,
+  tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export, `GET /tools` lists
+  the same eight packs, and the model's tool definitions and `get_guidance` replies are the same
+  byte for byte (the MCP tool's docstring did not change). The tools 0.7 added to the MCP server
+  (`dry_run_code`, `test_addin_command`, `zoom_view`, `capture_view`) are not the model's here.
+  What the model and the pages now see: the prompt's first line names revit-bridge 0.8, and
+  `revit-core` (on by default) has a new section, "Keep Revit interactive", so with the bridge the
+  prompt is 6,007 bytes instead of 5,455. The skill list has 44 entries instead of 40: the journal
+  skill `revit-journal-analysis` and its three references, all off. The package's JSON stores this
+  host writes through it (`usage.json`, `auth/devices.json`) no longer lose an update or end up
+  corrupt when two writers meet (0.8.0). When the host and an MCP server share one
+  `REVIT_BRIDGE_DATA_DIR`, the Evidence page can also list the server's new ledger lines (`action`
+  `dry_run`, `addin_test`, `zoom_view` or `capture_view`; no pack, no *Validate*).
+- Before that, in this cycle: `revit-bridge>=0.6,<0.7` (0.6.1). 0.6.1 is the first release whose device store raises when `devices.json` cannot be read, which the pair, redeem and delete-device routes answer with 503. From
   0.4.0 to 0.6.0 no route, tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same
   export and `GET /tools` lists the same eight packs. What the pages and the model now see: an
   execution reads the levels once more after the document probe (a pack with preconditions takes
@@ -158,7 +364,8 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   describes the MCP server's tool flow (`check_code`, `confirm_spec`, `execute_code`, the
   verification tools), and this host's protocol is the package's `host_instructions()`, which
   opens the prompt. `revit-addin-dev`, references and lessons are listed but off too. A file's
-  own `enabled: true` still turns it on. With the bridge the prompt is 5,455 bytes (UTF-8); with
+  own `enabled: true` still turns it on. With the bridge the prompt is 6,007 bytes (UTF-8, with
+  revit-bridge 0.8.2; 5,455 with 0.6.1); with
   the `revit-bridge` protocol in it, it was 22,348 bytes, and concatenating every `SKILL.md` of
   0.4.0 would have made it 28,918 bytes (13,837 with 0.3.0). A mounted `SKILLS_DIR` is
   unchanged: every file on unless it says otherwise.
@@ -275,6 +482,9 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 - `CLAUDE.md` gave the package constraint as `revit-bridge>=0.1.0`; it is `>=0.6,<0.7`.
 
 ### Removed
+
+- The model's `get_guidance` tool and the skills and lesson pointer in the chat's system prompt
+  (the model here writes no code); the task page's code execution path and *Solidify* panel.
 
 - `X-Slot-Id` / `X-Slot-Token` (an `X-Slot-*` header is now 422 `invalid_args`),
   `MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*` (the host

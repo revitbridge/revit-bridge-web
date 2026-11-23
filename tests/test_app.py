@@ -24,6 +24,7 @@ def test_health_and_config_json(make_client, env):
         "apiBase": "",  # served by the backend, the SPA is same-origin by construction
         "wsBase": "wss://relay.example/api/v1/bridge/ws",
         "features": {
+            "mode": "cloud",
             "byoModel": True,
             "serverModel": False,
             "admin": True,
@@ -36,12 +37,14 @@ def test_health_and_config_json(make_client, env):
 
 
 def test_settings_defaults_come_from_env_only():
-    s = WebSettings.from_env({})
+    # A cloud host needs ADMIN_PASSWORD (DEPLOY_MODE); the local defaults are in test_deploy_mode.py.
+    s = WebSettings.from_env({"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "pw"})
     assert (s.host, s.port, s.max_devices, s.cors_origins) == ("0.0.0.0", 7860, 20, ())
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
-        "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 20,
+        "mode": "cloud", "byoModel": True, "serverModel": False, "admin": True, "maxDevices": 20,
         "slotTokenRequired": False, "maxSlots": 20}}
-    s = WebSettings.from_env({"LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
+    s = WebSettings.from_env({"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "pw",     # CORS_ORIGINS: cloud only
+                              "LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
                               "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
     # Without its URL the server's key could only go to a visitor's endpoint: not a server model.
@@ -137,24 +140,30 @@ def test_pack_edits_land_in_the_user_directory(make_client, env, tmp_path):
     env.setenv("ADMIN_PASSWORD", "hunter2")
     client = make_client()
     admin = {"X-Admin-Token": "hunter2"}
-    resp = client.put("/api/v1/bridge/tools/query_levels", json={"description": "levels, sorted"}, headers=admin)
-    assert resp.status_code == 200
-    assert resp.json()["description"] == "levels, sorted"
-    assert resp.json()["revit_synced"] is False  # no Revit in tests
     user_dir = tmp_path / "data" / "capabilities"
-    assert (user_dir / "query_levels.yaml").is_file()  # the built-in copy is untouched
-    assert client.get("/api/v1/bridge/tools/query_levels").json()["description"] == "levels, sorted"
+    saved = client.post("/api/v1/bridge/solidify", headers=admin, json={
+        "name": "count_walls", "description": "How many walls", "parameters": [],
+        "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();"})
+    assert saved.status_code == 200 and (user_dir / "count_walls.yaml").is_file()
+    resp = client.put("/api/v1/bridge/tools/count_walls", json={"description": "walls, counted"}, headers=admin)
+    assert resp.status_code == 200
+    assert resp.json()["description"] == "walls, counted"
+    assert resp.json()["revit_synced"] is False  # no Revit in tests
+    assert client.get("/api/v1/bridge/tools/count_walls").json()["description"] == "walls, counted"
 
-    blocked = client.put("/api/v1/bridge/tools/query_levels",
+    blocked = client.put("/api/v1/bridge/tools/count_walls",
                          json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"}, headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
 
-    # Deleting removes the user copy and hides the built-in one behind a marker.
-    assert client.delete("/api/v1/bridge/tools/query_levels", headers=admin).json()["status"] == "deleted"
-    assert not (user_dir / "query_levels.yaml").exists()
-    assert (user_dir / "query_levels.disabled").is_file()
-    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS - 1
-    assert client.get("/api/v1/bridge/tools/query_levels").status_code == 404
+    # Deleting removes the user file; a built-in pack is neither copied nor hidden.
+    assert client.delete("/api/v1/bridge/tools/count_walls", headers=admin).json()["status"] == "deleted"
+    assert not (user_dir / "count_walls.yaml").exists()
+    for method in ("put", "delete"):
+        kwargs = {"json": {"description": "levels, sorted"}} if method == "put" else {}
+        refused = getattr(client, method)("/api/v1/bridge/tools/query_levels", headers=admin, **kwargs)
+        assert refused.status_code == 409 and refused.json()["error"] == "builtin_read_only"
+    assert not list(user_dir.glob("query_levels*"))           # no copy, no .disabled marker
+    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS
 
 
 def test_health_routes_without_revit(client):
@@ -176,7 +185,9 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/snapshot", "/api/v1/bridge/query",
         "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/choices",
         "/api/v1/bridge/tools/{name}/missing-params", "/api/v1/bridge/tools/{name}/run",
+        "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import",
         "/api/v1/bridge/spec/reconcile", "/api/v1/bridge/spec/confirm",
+        "/api/v1/bridge/check", "/api/v1/bridge/dry-run", "/api/v1/bridge/choices",
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
         "/api/v1/bridge/evidence", "/api/v1/bridge/evidence/{evidence_id}/validate",
         "/api/v1/bridge/trigger-selection",

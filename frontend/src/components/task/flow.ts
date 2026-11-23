@@ -4,13 +4,16 @@
    the page), the v1 calls from an injected FlowApi, so the whole
    sequence - brief, spec card, confirm, run, tamper, report - runs under
    vitest with a scripted stream and no fetch. The confirmation token lives in
-   this store only: never in localStorage or sessionStorage. */
+   this store only: never in localStorage or sessionStorage. Only saved tools
+   run here (run_tool): the model in this host proposes no code. */
 
 import { createStore } from 'zustand/vanilla'
 import type {
   ChatMessage, ConfirmResponse, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   SpecError, TaskSpec,
 } from '../../types/api'
+import type { TraceEvent, UsageEvent } from '../../types/hostv2'
+import { interruptOpen } from '../hostv2/trace/events'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
@@ -21,7 +24,6 @@ export interface FlowApi {
   reconcile(spec: TaskSpec): Promise<ReconcileResult>
   confirm(spec: TaskSpec): Promise<ConfirmResponse>
   runTool(name: string, params: Record<string, unknown>, token: string): Promise<ExecutionResult>
-  execute(code: string, parameters: unknown[], token: string): Promise<ExecutionResult>
 }
 
 export interface FlowDeps {
@@ -51,8 +53,8 @@ export interface Confirmation extends ConfirmResponse {
   used: boolean        // an execution reached Revit under it
 }
 
-/* The tamper demo: one parameter value or the code changed after confirmation. */
-export type Tamper = { param: string; value: string } | { code: string }
+/* The tamper demo: one parameter value changed after confirmation. */
+export type Tamper = { param: string; value: string }
 
 export interface TaskState {
   bridge: Transcript
@@ -85,6 +87,13 @@ export const initialState = (): TaskState => ({
 })
 
 export const SPEC_ONLY_REPLY = '(the model proposed a spec: see the card below)'
+
+/* A spec whose action is not a saved tool: not confirmed, nothing runs (the server refuses
+   such a proposal too; this is the page's own guard). */
+export const NOT_OFFERED: SpecError = {
+  code: 'code_not_offered', param: null,
+  message: 'This host runs saved tools only: a spec that is not run_tool is not confirmed or run here.',
+}
 const GATE_REFUSALS: readonly string[] = ['confirmation_required', 'confirmation_invalid']
 
 /* A gate refusal: nothing reached Revit and the token is still whole. */
@@ -116,6 +125,17 @@ export function interpretationsOf(p: Proposal): Interpretation[] {
   return shown
 }
 
+/* The token usage of a transcript: the model calls of its latest turn (the last assistant
+   message) and of the whole session, as the usage events reported them. */
+export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEvent[] } {
+  const perReply = t.messages
+    .filter(m => m.role === 'assistant')
+    .map(m => (m.trace ?? []).filter((e): e is UsageEvent => e.type === 'usage'))
+  return { turn: perReply.at(-1) ?? [], session: perReply.flat() }
+}
+
+const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
+
 export function canConfirm(s: TaskState): boolean {
   return !!s.proposal && s.proposal.reconcile?.ready === true && !s.proposal.reconciling && !s.confirming && !s.bridge.streaming
 }
@@ -134,20 +154,23 @@ export function createTaskFlow(deps: FlowDeps) {
   const push = (side: Side, message: ChatMessage) =>
     patch(side, t => ({ ...t, messages: [...t.messages, message] }))
 
-  /* One stream into one transcript; a spec event is handed to onSpec. */
+  /* One stream into one transcript; a spec event is handed to onSpec. The stage, tool and
+     usage events stay with the assistant message of their turn (its trace), in order. */
   async function consume(side: Side, request: HostRequest, onSpec?: (e: SpecEvent) => void) {
     patch(side, t => ({ ...t, streaming: true, messages: [...t.messages, { role: 'assistant', content: '' }] }))
     let reply = ''
     let sawSpec = false
-    const show = (text: string) => patch(side, t => {
+    const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
-      messages[messages.length - 1] = { role: 'assistant', content: text }
+      messages[messages.length - 1] = fn(messages[messages.length - 1])
       return { ...t, messages }
     })
+    const show = (text: string) => update(m => ({ ...m, content: text }))
     try {
       for await (const evt of deps.events(request, controller?.signal)) {
         if (evt.type === 'session') { patch(side, t => ({ ...t, sessionId: evt.id })); continue }
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
+        if (isTraceEvent(evt)) { update(m => ({ ...m, trace: [...(m.trace ?? []), evt] })); continue }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
         if (evt.type === 'execution') continue          // the echo of what the page sent
         if (evt.type === 'error') {
@@ -164,7 +187,14 @@ export function createTaskFlow(deps: FlowDeps) {
       }
     }
     if (!reply) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
-    patch(side, t => ({ ...t, streaming: false }))
+    // However the stream ended (done, error, abort, broken off): a tool or stage still open
+    // will never be closed by the server now - mark it interrupted.
+    patch(side, t => {
+      const last = t.messages.at(-1)
+      const trace = last?.role === 'assistant' && last.trace ? interruptOpen(last.trace) : undefined
+      if (!last || !trace || trace === last.trace) return { ...t, streaming: false }
+      return { ...t, streaming: false, messages: [...t.messages.slice(0, -1), { ...last, trace }] }
+    })
   }
 
   const onSpec = (evt: SpecEvent) => setState({
@@ -232,6 +262,10 @@ export function createTaskFlow(deps: FlowDeps) {
     const s = getState()
     if (!canConfirm(s) || !s.proposal) return
     const spec = s.proposal.draft
+    if (spec.action.kind !== 'run_tool') {
+      setState({ confirmErrors: [NOT_OFFERED] })
+      return
+    }
     setState({ confirming: true, confirmErrors: [] })
     try {
       const issued = await deps.api.confirm(spec)
@@ -249,18 +283,12 @@ export function createTaskFlow(deps: FlowDeps) {
 
   async function runProjection(kind: 'genuine' | 'tampered', tamper?: Tamper): Promise<ExecutionResult | null> {
     const c = getState().confirmation
-    if (!c || getState().running) return null
+    if (!c || getState().running || c.spec.action.kind !== 'run_tool') return null
     setState({ running: true })
     try {
-      let result: ExecutionResult
-      if (c.spec.action.kind === 'run_tool') {
-        const params = paramsOf(c.spec)
-        if (tamper && 'param' in tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
-        result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
-      } else {
-        const code = tamper && 'code' in tamper ? tamper.code : c.spec.action.code ?? ''
-        result = await deps.api.execute(code, c.spec.action.code_parameters ?? [], c.token)
-      }
+      const params = paramsOf(c.spec)
+      if (tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
+      const result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
       setState(s => ({
         execution: result, executionKind: kind, reported: false, running: false,
         // a gate refusal consumed nothing; anything else reached Revit and the token is spent

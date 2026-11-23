@@ -1,5 +1,6 @@
 /* Capability packs: pick one, load its real choices from Revit, fill parameters,
-   confirm and run under a token; edit or delete with the admin password (shared/packAdmin). */
+   confirm and run under a token; edit or delete your own with the admin password
+   (shared/packAdmin) - the built-in packs are read-only. */
 
 import { useCallback, useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
@@ -168,7 +169,7 @@ export default function ToolLibrary() {
                   <td className="px-3 py-1.5" style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
                   <td className="px-3 py-1.5">{t.used}</td>
                   <td className="px-3 py-1.5">
-                    {gate.canEdit && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>}
+                    {gate.canEdit && !t.builtin && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>}
                   </td>
                 </tr>
               ))}
@@ -184,7 +185,7 @@ export default function ToolLibrary() {
             <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)' }}>{detail?.display_name || selected}</span>
             <button onClick={() => load(selected)} disabled={loading} className="btn-primary">{loading ? 'Loading...' : 'Load pack'}</button>
             {detail && <button onClick={() => setShowCode(!showCode)} className="btn-secondary">{showCode ? 'Hide code' : 'View code'}</button>}
-            {detail && gate.canEdit && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
+            {detail && gate.canEdit && !tools.find(t => t.name === selected)?.builtin && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
           </div>
           {detail?.description && step >= 3 && <p className="section-copy">{detail.description}</p>}
           {detail && step >= 3 && (

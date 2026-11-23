@@ -16,6 +16,13 @@ protocol: ``tools`` go out with the request, streamed ``tool_calls`` deltas
 as one ``list[ToolCall]`` once the model is done, and ``tool`` role messages
 carry the results back in the next request.
 
+Token usage: every request asks for it (``stream_options.include_usage``) and
+the stream's ``usage`` objects are read into a ``CallStats`` the caller passes
+in (``parse_usage``: four numbers, ``None`` for what the provider did not
+report, never 0; merged field by field). An endpoint that refuses the option
+with a 4xx naming it is asked again once without it; when that is accepted the
+endpoint and model are remembered for the life of the process.
+
 Ported from the streaming half of the former ``pipeline/llm_client.py``,
 rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 """
@@ -308,6 +315,163 @@ async def _before(deadline: float, awaitable):
                        status=502) from None
 
 
+# -- token usage -----------------------------------------------------------------
+
+@dataclass
+class Usage:
+    """The token counts of one model call, normalised across providers; ``None`` is a
+    number the provider did not report (never read as 0).
+
+    ``input`` is every prompt token of the call, cached ones included; ``cache_read`` is
+    the part of it served from the provider's prompt cache and ``cache_write`` the part
+    written to it. Which provider field feeds which number: ``parse_usage``."""
+    input: int | None = None
+    output: int | None = None
+    cache_read: int | None = None
+    cache_write: int | None = None
+
+    def as_dict(self) -> dict:
+        return {"input": self.input, "output": self.output,
+                "cache_read": self.cache_read, "cache_write": self.cache_write}
+
+    def merged(self, later: Usage) -> Usage:
+        """This usage updated by a later ``usage`` object of the same stream, field by field:
+        a number in ``later`` replaces this one, a ``None`` there erases nothing. A provider
+        that repeats a running total still ends with its last total."""
+        return Usage(*(new if new is not None else old for old, new in zip(
+            (self.input, self.output, self.cache_read, self.cache_write),
+            (later.input, later.output, later.cache_read, later.cache_write))))
+
+
+@dataclass
+class CallStats:
+    """What ``stream_completion`` learned about one call, filled in as the call goes.
+
+    ``accepted``: the endpoint answered 2xx, so the call may have cost tokens even when
+    the stream broke later. ``asked_usage``: the request that was answered carried
+    ``stream_options.include_usage``. ``retried``: the first attempt was refused for that
+    option and the call was sent again without it."""
+    usage: Usage = field(default_factory=Usage)
+    accepted: bool = False
+    asked_usage: bool = False
+    retried: bool = False
+
+
+# The largest count taken as a number: beyond it a value is not a token count (and could
+# not be summed safely in SQLite or represented exactly in the browser).
+MAX_COUNT = 2 ** 53
+
+
+def _count(value) -> int | None:
+    """A token count as the JSON gave it: an integer from 0 to ``MAX_COUNT`` (``12.0`` is
+    12), else None - negatives, fractions, booleans, text and absurd sizes are unknown."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if isinstance(value, int) and 0 <= value <= MAX_COUNT:
+        return value
+    return None
+
+
+def _first(*values: int | None) -> int | None:
+    return next((v for v in values if v is not None), None)
+
+
+def _sub(usage: dict, key: str) -> dict:
+    value = usage.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def parse_usage(raw) -> Usage:
+    """One provider ``usage`` object as ``Usage``; anything absent or not a count is None.
+
+    - OpenAI-compatible (OpenAI, DeepSeek, Gemini's and Anthropic's compatibility
+      endpoints, gateways such as OpenRouter or new-api): ``prompt_tokens`` is the whole
+      prompt, cached tokens included (DeepSeek: hit + miss). Cache reads come from
+      ``prompt_tokens_details.cached_tokens``, else DeepSeek's ``prompt_cache_hit_tokens``,
+      else a relayed ``cache_read_input_tokens``; cache writes from
+      ``prompt_tokens_details.cache_write_tokens``, else new-api's
+      ``prompt_tokens_details.cached_creation_tokens``, else a relayed
+      ``cache_creation_input_tokens``. Output is ``completion_tokens``.
+    - Anthropic's own shape relayed as is (no ``prompt_tokens``; ``input_tokens`` next to
+      ``cache_read_input_tokens`` / ``cache_creation_input_tokens``): ``input_tokens``
+      counts only the uncached tail, so ``input`` is the sum of the three - unknown when
+      either cache count is missing.
+    - Responses-style (``input_tokens`` with ``input_tokens_details``): ``input_tokens`` is
+      the whole prompt, reads and writes in its details. Output is ``output_tokens``.
+
+    Output, every shape: ``completion_tokens`` (``output_tokens``), unless ``total_tokens``
+    is a valid count larger than input + that - then ``total_tokens - input``. Gemini's
+    compatibility endpoint leaves the thinking tokens out of ``completion_tokens`` and
+    counts them only in ``total_tokens``; they are billed as output. Reasoning tokens a
+    provider lists in ``completion_tokens_details.reasoning_tokens`` are never added on
+    top: OpenAI's ``completion_tokens`` already includes them (and its total is input +
+    completion, so the rule changes nothing there).
+    """
+    if not isinstance(raw, dict):
+        return Usage()
+    completion = _first(_count(raw.get("completion_tokens")), _count(raw.get("output_tokens")))
+    prompt_details, input_details = _sub(raw, "prompt_tokens_details"), _sub(raw, "input_tokens_details")
+    # The cache counts, whichever names this provider uses (a chunk may carry them alone).
+    read = _first(_count(prompt_details.get("cached_tokens")), _count(raw.get("prompt_cache_hit_tokens")),
+                  _count(raw.get("cache_read_input_tokens")), _count(input_details.get("cached_tokens")))
+    write = _first(_count(prompt_details.get("cache_write_tokens")),
+                   _count(prompt_details.get("cached_creation_tokens")),
+                   _count(raw.get("cache_creation_input_tokens")), _count(input_details.get("cache_write_tokens")))
+    prompt = _count(raw.get("prompt_tokens"))
+    if prompt is not None:
+        whole = prompt
+    elif "cache_read_input_tokens" in raw or "cache_creation_input_tokens" in raw:
+        # Anthropic's own shape: input_tokens is only the tail after the cached prefix.
+        tail = _count(raw.get("input_tokens"))
+        anthropic_read = _count(raw.get("cache_read_input_tokens"))
+        anthropic_write = _count(raw.get("cache_creation_input_tokens"))
+        parts = (tail, anthropic_read, anthropic_write)
+        whole = _count(sum(parts)) if None not in parts else None
+        read, write = anthropic_read, anthropic_write
+    else:
+        whole = _count(raw.get("input_tokens"))
+    usage = Usage(input=whole, output=completion, cache_read=read, cache_write=write)
+    total = _count(raw.get("total_tokens"))
+    if None not in (total, usage.input, completion) and total > usage.input + completion:
+        usage.output = total - usage.input              # thinking counted only in the total
+    return usage
+
+
+# (completion URL, model) pairs that refused ``stream_options``: a 4xx naming it, and the
+# same call accepted without it. Later calls of that pair go out without the option. In
+# memory for the life of the process, bounded (oldest forgotten first). Keyed by model
+# too: one gateway may put several providers behind one address.
+USAGE_OPTION = {"include_usage": True}
+_REFUSES_USAGE_OPTION: dict[tuple[str, str], None] = {}
+_REFUSES_USAGE_OPTION_MAX = 256
+
+
+def _refuses_usage_option(url: str, model: str) -> bool:
+    return (url, model) in _REFUSES_USAGE_OPTION
+
+
+def _remember_refusal(url: str, model: str) -> None:
+    _REFUSES_USAGE_OPTION[(url, model)] = None
+    while len(_REFUSES_USAGE_OPTION) > _REFUSES_USAGE_OPTION_MAX:
+        del _REFUSES_USAGE_OPTION[next(iter(_REFUSES_USAGE_OPTION))]
+
+
+def reset_usage_option_memory() -> None:
+    _REFUSES_USAGE_OPTION.clear()
+
+
+def _names_usage_option(status: int, body: str) -> bool:
+    """A 4xx whose body names the option may be the endpoint not taking it - worth one
+    retry without it. Never 401 or 403: those are about the key, whatever the body says."""
+    text = body.lower()
+    return 400 <= status < 500 and status not in (401, 403) and (
+        "stream_options" in text or "include_usage" in text)
+
+
 def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
     """Fold one streamed ``tool_calls`` delta into the call it belongs to."""
     if not isinstance(fragment, dict):
@@ -334,11 +498,20 @@ async def stream_completion(
     temperature: float = 0.3,
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
+    stats: CallStats | None = None,
 ) -> AsyncIterator[str | list[ToolCall]]:
     """Stream one chat completion: content deltas as they arrive (``str``) and,
     when the model called tools, one ``list[ToolCall]`` at the end, assembled
     from the streamed fragments (each call's ``id`` and ``name`` arrive once,
     its ``arguments`` in pieces, all keyed by ``index``).
+
+    ``stats``, when given, is filled in as the call goes: whether the endpoint
+    accepted it, and the token usage the stream's ``usage`` objects carried
+    (``parse_usage``, merged field by field; all ``None`` when there was none). The
+    request asks for usage with ``stream_options.include_usage``; an endpoint that
+    answers a 4xx naming that option (not 401 / 403) is asked once more without it
+    (``stats.retried``), and only when that retry is accepted is the endpoint and
+    model remembered and not asked again while the process runs.
 
     Raises ``LLMError`` when the endpoint answers with an error status; the
     message carries the status and a short body excerpt, never the request.
@@ -349,6 +522,7 @@ async def stream_completion(
             "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
             status=400,
         )
+    stats = stats if stats is not None else CallStats()
     url = completions_url(llm.base_url)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
@@ -366,6 +540,7 @@ async def stream_completion(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
+    ask_usage = not _refuses_usage_option(url, llm.model)
     calls: dict[int, dict] = {}          # index -> {id, name, arguments}
     client_timeout = httpx.Timeout(timeout, connect=15.0)
     # httpx's timeouts are per read: an endpoint that sends a byte now and then would
@@ -374,41 +549,66 @@ async def stream_completion(
     try:
         # Redirects are never followed: a checked public endpoint must not be able to send
         # the request (and the key) on to an address nobody checked.
-        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client, \
-                contextlib.AsyncExitStack() as stack:
-            resp = await _before(deadline, stack.enter_async_context(
-                client.stream("POST", url, headers=headers, json=payload)))
-            if 300 <= resp.status_code < 400:
-                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed",
-                               status=502)
-            if resp.status_code >= 400:
-                body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")[:300]
-                raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body}",
-                               status=502)
-            lines = resp.aiter_lines()
+        async with httpx.AsyncClient(timeout=client_timeout, follow_redirects=False) as client:
             while True:
-                try:
-                    line = await _before(deadline, anext(lines))
-                except StopAsyncIteration:
-                    break
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = choices[0].get("delta") or {}
-                token = delta.get("content")
-                if token:
-                    yield token
-                for fragment in delta.get("tool_calls") or []:
-                    _merge_tool_call(calls, fragment)
+                body_json = {**payload, "stream_options": USAGE_OPTION} if ask_usage else payload
+                async with contextlib.AsyncExitStack() as stack:
+                    resp = await _before(deadline, stack.enter_async_context(
+                        client.stream("POST", url, headers=headers, json=body_json)))
+                    if 300 <= resp.status_code < 400:
+                        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed",
+                                       status=502)
+                    if resp.status_code >= 400:
+                        body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")
+                        if ask_usage and _names_usage_option(resp.status_code, body):
+                            # Perhaps the provider does not take the option: once more without
+                            # it. Remembered only if that attempt is accepted (below).
+                            _log.info("model endpoint answered HTTP %d naming stream_options (%s): "
+                                      "asking once more without it", resp.status_code, llm.model)
+                            ask_usage = False
+                            stats.retried = True
+                            continue
+                        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body[:300]}",
+                                       status=502)
+                    stats.accepted = True
+                    stats.asked_usage = ask_usage
+                    if stats.retried:
+                        _remember_refusal(url, llm.model)
+                        _log.info("model endpoint takes the call without stream_options (%s): not asking "
+                                  "this endpoint and model for usage again; read only if it sends it anyway",
+                                  llm.model)
+                    lines = resp.aiter_lines()
+                    while True:
+                        try:
+                            line = await _before(deadline, anext(lines))
+                        except StopAsyncIteration:
+                            break
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        if isinstance(chunk.get("usage"), dict):
+                            # OpenAI sends it once, in a chunk with no choices; some providers
+                            # repeat a running total, some split it over chunks. A later number
+                            # replaces an earlier one; a missing one erases nothing.
+                            stats.usage = stats.usage.merged(parse_usage(chunk["usage"]))
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta") or {}
+                        token = delta.get("content")
+                        if token:
+                            yield token
+                        for fragment in delta.get("tool_calls") or []:
+                            _merge_tool_call(calls, fragment)
+                break
     except httpx.InvalidURL:
         # Not an HTTPError. A browser URL was checked at the gate (_endpoint); this is
         # the second line, and the only one for the server's own LLM_BASE_URL.

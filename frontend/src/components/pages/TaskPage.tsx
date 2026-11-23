@@ -1,5 +1,6 @@
-/* Task: the demo sequence 1-7 - snapshot, brief, (no-bridge comparison), spec card,
-   confirm and run under a token, the model's report, solidify. The state and the
+/* Task: the demo sequence 1-6 - snapshot, brief, (no-bridge comparison), spec card,
+   confirm and run a saved tool under a token, the model's report. The model here writes
+   no code: a tool it lacks is made on the workbench (Capabilities). The state and the
    moves live in components/task/flow.ts; this page only lays them out. */
 
 import { useState } from 'react'
@@ -8,13 +9,13 @@ import { chatEvents } from '../../api/chat'
 import { taskApi } from '../task/api'
 import ChatPanel from '../task/ChatPanel'
 import ExecutionPanel from '../task/ExecutionPanel'
-import { canConfirm, createTaskFlow, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
+import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
+import { TokenPanel } from '../hostv2/trace'
 import SnapshotPanel from '../task/SnapshotPanel'
-import SolidifyPanel from '../task/SolidifyPanel'
 import SpecCard from '../task/SpecCard'
 import StepIndicator from '../shared/StepIndicator'
 
-const STEPS = ['Snapshot', 'Brief', 'Spec card', 'Confirm and run', 'Report', 'Solidify']
+const STEPS = ['Snapshot', 'Brief', 'Spec card', 'Confirm and run', 'Report']
 
 /* One flow for the tab's lifetime, so switching pages keeps the conversation. */
 let sharedFlow: TaskFlow | null = null
@@ -25,7 +26,6 @@ function flowFor(events?: EventSource): TaskFlow {
 }
 
 function stepOf(s: TaskState): number {
-  if (s.execution?.success && s.confirmation?.spec.action.kind === 'execute_code') return 6
   if (s.reported) return 5
   if (s.confirmation) return 4
   if (s.proposal) return 3
@@ -38,7 +38,6 @@ export default function TaskPage({ events }: { events?: EventSource }) {
   const state = useStore(flow.store)
   const busy = state.bridge.streaming || state.baseline.streaming
   const questions = state.proposal?.reconcile?.questions ?? []
-  const solidifiable = state.execution?.success && state.confirmation?.spec.action.kind === 'execute_code' ? state.confirmation.spec : null
 
   return (
     <div className="page">
@@ -63,12 +62,19 @@ export default function TaskPage({ events }: { events?: EventSource }) {
           <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions}
             onSend={t => flow.send(t)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
             placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
-            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below." />
+            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below."
+            showTrace />
           {state.compare && (
             <ChatPanel title="Without the bridge (baseline)" transcript={state.baseline}
               hint="The same brief goes here with bridge=false. Nothing it says can be executed." />
           )}
         </div>
+        {(state.bridge.messages.length > 0 || (state.compare && state.baseline.messages.length > 0)) && (
+          <div className={`task-columns task-tokens${state.compare ? ' two' : ''}`}>
+            <TokenPanel title="Tokens" {...usageOf(state.bridge)} />
+            {state.compare && <TokenPanel title="Tokens without the bridge" {...usageOf(state.baseline)} />}
+          </div>
+        )}
       </section>
 
       {state.proposal && (
@@ -82,10 +88,6 @@ export default function TaskPage({ events }: { events?: EventSource }) {
         <ExecutionPanel confirmation={state.confirmation} execution={state.execution} executionKind={state.executionKind}
           running={state.running} reported={state.reported} canReport={!!state.bridge.sessionId && !state.bridge.streaming}
           onRun={() => flow.run()} onTamper={t => flow.runTampered(t)} onReport={() => flow.report()} />
-      )}
-
-      {solidifiable && (
-        <SolidifyPanel spec={solidifiable} evidenceId={state.execution?.evidence_id} solidify={taskApi.solidify} />
       )}
     </div>
   )

@@ -5,9 +5,11 @@
    A paired Revit is a device: the browser holds its key, the add-in holds its
    own token, and neither can stand in for the other. The selected device rides
    on every request as X-Device-Id / X-Device-Key; no device selected means the
-   local add-in over TCP. */
+   local add-in over TCP. A local host (features.mode) has no devices and no
+   admin password: neither header is sent there, whatever this tab still holds. */
 
 import { create } from 'zustand'
+import { isLocalHost } from '../config'
 
 const KEYS = {
   deviceId: 'rb_device_id',
@@ -119,6 +121,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
 /* Headers derived from the session, used by the API client. */
 export function deviceHeaders(): Record<string, string> {
+  if (isLocalHost()) return {}                // a local host reads no device header
   const { deviceId, browserKey } = useSessionStore.getState()
   if (!deviceId || !browserKey) return {}     // no device: the host's local add-in
   return { 'X-Device-Id': deviceId, 'X-Device-Key': browserKey }
@@ -134,6 +137,7 @@ export function llmHeaders(): Record<string, string> {
 }
 
 export function adminHeaders(): Record<string, string> {
+  if (isLocalHost()) return {}                // nothing to prove on a local host
   const { adminToken } = useSessionStore.getState()
   return adminToken ? { 'X-Admin-Token': adminToken } : {}
 }

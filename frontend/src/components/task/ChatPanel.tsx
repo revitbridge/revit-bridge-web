@@ -1,10 +1,12 @@
 /* Panels 2 and 3: the brief and the model's questions; the same transcript
    without the bridge when the comparison is on. A question's kind is a badge
    and what it holds up its tooltip: shown only, the spec card gates on
-   reconcile.ready. */
+   reconcile.ready. With showTrace each reply has its tool activity above it
+   (the trace of its turn: one row per tool call, expandable). */
 
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import type { Question } from '../../types/api'
+import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
@@ -19,9 +21,10 @@ interface Props {
   disabled?: boolean
   placeholder?: string
   hint?: string
+  showTrace?: boolean                    // the tool activity above each reply (the bridge side)
 }
 
-export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint }: Props) {
+export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint, showTrace }: Props) {
   const [input, setInput] = useState('')
   const scroll = useRef<HTMLDivElement>(null)
 
@@ -48,11 +51,14 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
       <div className="chat-scroll" ref={scroll}>
         {transcript.messages.length === 0 && hint && <p className="section-copy small chat-hint">{hint}</p>}
         {transcript.messages.map((m, i) => (
-          <div key={i} className={`chat-bubble ${m.role}`}>
-            {m.role === 'assistant'
-              ? <div className="markdown-body"><Markdown>{m.content || '...'}</Markdown></div>
-              : m.content}
-          </div>
+          <Fragment key={i}>
+            {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
+            <div className={`chat-bubble ${m.role}`}>
+              {m.role === 'assistant'
+                ? <div className="markdown-body"><Markdown>{m.content || '...'}</Markdown></div>
+                : m.content}
+            </div>
+          </Fragment>
         ))}
         {questions.length > 0 && onAnswer && (
           <div className="question-list">

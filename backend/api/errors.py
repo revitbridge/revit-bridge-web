@@ -31,6 +31,8 @@ _DESCRIPTIONS = {
     400: "Refused as requested (confirmation_required, invalid_category, unknown_kind, blocked, no_validator)",
     403: "Slot header missing or wrong (missing_slot, invalid_slot_token)",
     404: "Not found (unknown_tool, unknown_evidence)",
+    409: "Would change what must stay (builtin_read_only: built-in packs are read-only; "
+         "pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
     422: "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
     429: "Too many requests from this address (rate_limited)",
     500: "The package failed (snapshot_failed, query_failed)",

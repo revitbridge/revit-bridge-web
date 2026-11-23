@@ -1,7 +1,8 @@
-"""Changing capability packs is admin only: PUT/DELETE /tools/{name} and POST /solidify.
+"""Changing capability packs is admin only on a cloud host: PUT/DELETE /tools/{name},
+POST /solidify and POST /tools/import.
 
 A pack's code later runs in a designer's Revit once they confirm its card, so
-creating, editing or deleting one takes the admin password - the same
+creating, editing, importing or deleting one takes the admin password - the same
 X-Admin-Token check as the skill writes, /api/logs and the device list.
 Reading, choosing, asking, confirming and running stay open as before.
 """
@@ -9,44 +10,57 @@ from __future__ import annotations
 
 import pytest
 
+from backend.config import ConfigError
 from tests.test_api_v1 import B, WALL, confirm, spec_for
 
 ADMIN = {"X-Admin-Token": "hunter2"}
 SOLIDIFY = {"name": "count_walls", "description": "How many walls", "parameters": [],
             "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();"}
+# A v1 pack file, as GET /tools/{name}/export gives one.
+IMPORT_YAML = """\
+schema_version: 1
+name: count_doors
+display_name: Count Doors
+description: How many doors
+version: 1.0.0
+code_template: return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Doors).GetElementCount();
+parameters: []
+"""
 
 
 def writes():
-    """The three pack-changing calls, each with a body that would succeed."""
+    """The pack-changing calls, each with a body that would succeed once count_walls exists."""
     return [
-        ("put", f"{B}/tools/query_levels", {"description": "changed"}),
-        ("delete", f"{B}/tools/create_beam", None),
+        ("put", f"{B}/tools/count_walls", {"description": "changed"}),
+        ("delete", f"{B}/tools/count_walls", None),
         ("post", f"{B}/solidify", SOLIDIFY),
+        ("post", f"{B}/tools/import", IMPORT_YAML),
     ]
 
 
 def call(client, method: str, path: str, body, headers=None):
     kwargs = {"headers": headers or {}}
-    if body is not None:
+    if isinstance(body, str):
+        kwargs["content"] = body
+        kwargs["headers"] = {"Content-Type": "text/yaml", **kwargs["headers"]}
+    elif body is not None:
         kwargs["json"] = body
     return getattr(client, method)(path, **kwargs)
 
 
 def untouched(client, tmp_path):
     names = {t["name"] for t in client.get(f"{B}/tools").json()}
-    assert "create_beam" in names and "count_walls" not in names and len(names) == 8
+    assert "create_beam" in names and not names & {"count_walls", "count_doors"} and len(names) == 8
     assert client.get(f"{B}/tools/query_levels").json()["description"] != "changed"
     assert not list((tmp_path / "data" / "capabilities").glob("*.yaml"))
 
 
-def test_without_admin_password_packs_cannot_be_changed(client, tmp_path):
-    for method, path, body in writes():
-        for headers in ({}, ADMIN):
-            resp = call(client, method, path, body, headers)
-            assert resp.status_code == 503, (method, path, resp.text)
-            assert resp.json() == {"error": "admin_disabled",
-                                   "message": "Set ADMIN_PASSWORD to change capability packs"}
-    untouched(client, tmp_path)
+def test_without_admin_password_packs_cannot_be_changed(make_client, env):
+    # A cloud host without ADMIN_PASSWORD no longer starts (DEPLOY_MODE): the 503
+    # admin_disabled such a host answered is now a refusal at startup.
+    env.delenv("ADMIN_PASSWORD")
+    with pytest.raises(ConfigError, match="ADMIN_PASSWORD"):
+        make_client()
 
 
 @pytest.fixture
@@ -71,18 +85,24 @@ def test_without_the_right_token_packs_cannot_be_changed(admin_client, device_pa
 
 def test_with_the_admin_password_packs_change(admin_client, tmp_path):
     client = admin_client
-    updated = client.put(f"{B}/tools/query_levels", json={"description": "changed"}, headers=ADMIN)
-    assert updated.status_code == 200 and updated.json()["description"] == "changed"
-    assert client.delete(f"{B}/tools/create_beam", headers=ADMIN).json() == {"status": "deleted", "name": "create_beam"}
     solid = client.post(f"{B}/solidify", json=SOLIDIFY, headers=ADMIN)
     assert solid.status_code == 200 and solid.json()["name"] == "count_walls"
+    updated = client.put(f"{B}/tools/count_walls", json={"description": "changed"}, headers=ADMIN)
+    assert updated.status_code == 200 and updated.json()["description"] == "changed"
+    imported = call(client, "post", f"{B}/tools/import", IMPORT_YAML, ADMIN)
+    assert imported.status_code == 200 and imported.json()["name"] == "count_doors"
     names = {t["name"] for t in client.get(f"{B}/tools").json()}
-    assert "create_beam" not in names and "count_walls" in names
+    assert {"count_walls", "count_doors", "create_beam"} <= names
     # The route's own refusals still come after the admin check.
-    blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
+    blocked = client.put(f"{B}/tools/count_walls", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
                          headers=ADMIN)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
+    assert client.delete(f"{B}/tools/count_walls", headers=ADMIN).json() == {"status": "deleted", "name": "count_walls"}
     assert client.delete(f"{B}/tools/nope", headers=ADMIN).status_code == 404
+    # The admin password changes user packs only: built-in packs are read-only for everyone.
+    assert client.put(f"{B}/tools/query_levels", json={"description": "x"}, headers=ADMIN).status_code == 409
+    assert client.delete(f"{B}/tools/create_beam", headers=ADMIN).json()["error"] == "builtin_read_only"
+    assert "create_beam" in {t["name"] for t in client.get(f"{B}/tools").json()}
 
 
 def test_anyone_still_lists_reads_asks_and_runs_packs(revit, admin_client):
@@ -99,7 +119,8 @@ def test_anyone_still_lists_reads_asks_and_runs_packs(revit, admin_client):
 
 def test_the_contract_says_so(client):
     spec = client.get("/openapi.json").json()
-    for path, method in ((f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post")):
+    for path, method in ((f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
+                         (f"{B}/tools/import", "post")):
         op = spec["paths"][path][method]
         assert {"403", "503"} <= set(op["responses"]), (path, method)
         assert "admin_required" in op["responses"]["403"]["description"]
@@ -118,8 +139,9 @@ def test_the_model_has_no_door_to_the_packs(client, tmp_path, monkeypatch):
     from tests.fake_model import FakeModel, text_turn, tool_turn
 
     assert TOOL_NAMES == {"get_project_snapshot", "query", "list_tools", "get_tool_choices", "missing_params",
-                          "reconcile", "get_guidance", "propose_spec"}
-    fake = FakeModel([tool_turn(("solidify", SOLIDIFY), ("delete_tool", {"name": "create_beam"})), text_turn("no")])
+                          "reconcile", "propose_spec"}
+    fake = FakeModel([tool_turn(("solidify", SOLIDIFY), ("delete_tool", {"name": "create_beam"}),
+                                ("import_tool", {"yaml": IMPORT_YAML})), text_turn("no")])
     real_client = httpx.AsyncClient
     monkeypatch.setattr(llm_module.httpx, "AsyncClient",
                         lambda *a, **k: real_client(*a, **{**k, "transport": fake.transport}))
@@ -128,6 +150,7 @@ def test_the_model_has_no_door_to_the_packs(client, tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert fake.tool_results("solidify")[0]["error"] == "unknown_tool"
     assert fake.tool_results("delete_tool")[0]["error"] == "unknown_tool"
+    assert fake.tool_results("import_tool")[0]["error"] == "unknown_tool"
     untouched(client, tmp_path)
 
 
