@@ -6,7 +6,7 @@ import { loadRuntimeConfig } from '../config'
 import { useSessionStore } from '../store'
 import { BridgeApiError } from '../components/shared/http'
 import {
-  choicesFrom, choicesQuery, draftParameter, packParameter, parseValidator, positional, workbenchApi,
+  choicesFromOf, draftPack, draftParameter, packParameter, parseValidator, sampleValues, workbenchApi,
   type ToolParamDraft, type WorkbenchApi,
 } from './workbench'
 
@@ -49,22 +49,42 @@ describe('workbenchApi', () => {
       ['check', 'choices', 'dryRun', 'exportYaml', 'importYaml', 'list', 'load', 'remove', 'save'])
   })
 
-  it('check sends the code to /check and returns the package reply as it is', async () => {
+  it('check sends a draft with parameters as pack + sample values, and returns the package reply as it is', async () => {
     const reply = { schema_version: 1, checked: true, compiled: false, diagnostics: [{ id: 'CS1061', line: 2 }] }
     const calls = stubFetch({ body: reply })
-    expect(await workbenchApi.check('return wall.Lenght;', [level, height])).toEqual(reply)
+    expect(await workbenchApi.check('return {height} + wall.Lenght;', [level, height, wall])).toEqual(reply)
     expect(calls[0].url).toBe('/api/v1/bridge/check')
     expect(calls[0].init.method).toBe('POST')
-    expect(body(calls[0])).toEqual({ code: 'return wall.Lenght;', parameters: [] })
+    expect(body(calls[0])).toEqual({
+      pack: draftPack('return {height} + wall.Lenght;', [level, height, wall]),
+      values: { level_name: '', height: 3000, wall_id: 0 },
+    })
   })
 
-  it('dryRun sends the values in declaration order, no token', async () => {
+  it('check and dryRun send a draft without parameters as code', async () => {
+    const calls = stubFetch({ body: {} })
+    await workbenchApi.check('return 1;', [])
+    await workbenchApi.dryRun('return 1;', [], {})
+    expect(calls.map(body)).toEqual([{ code: 'return 1;' }, { code: 'return 1;' }])
+  })
+
+  it('dryRun sends the draft as pack with the designer values, no token', async () => {
     const reply = { success: true, rolled_back: true, changes: { modified: { count: 3 } } }
     const calls = stubFetch({ body: reply })
-    expect(await workbenchApi.dryRun('code', [level, height, wall], { height: 500, level_name: 'L1' })).toEqual(reply)
+    expect(await workbenchApi.dryRun('code {height}', [level, height, wall], { height: 500, level_name: 'L1', wall_id: 7 })).toEqual(reply)
     expect(calls[0].url).toBe('/api/v1/bridge/dry-run')
-    expect(body(calls[0])).toEqual({ code: 'code', parameters: ['L1', 500, null] })
+    expect(body(calls[0])).toEqual({ pack: draftPack('code {height}', [level, height, wall]), values: { height: 500, level_name: 'L1', wall_id: 7 } })
     expect(body(calls[0])).not.toHaveProperty('token')
+    expect(body(calls[0])).not.toHaveProperty('code')
+  })
+
+  it('a draft pack is the v1 pack format the server validates', () => {
+    expect(draftPack('return {height};', [height])).toEqual({
+      schema_version: 1, name: 'workbench_draft', version: '1.0.0', code_template: 'return {height};',
+      parameters: [{ name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', default: 3000, required: false }],
+    })
+    expect(sampleValues([{ ...level }, { ...height, default: undefined }, { ...wall }, { name: 'b', type: 'bool', description: '', source: 'designer', required: true }]))
+      .toEqual({ level_name: '', height: 0, wall_id: 0, b: false })
   })
 
   it('a refusal comes back as a BridgeApiError in the server words', async () => {
@@ -74,28 +94,24 @@ describe('workbenchApi', () => {
     expect((err as BridgeApiError).message).toBe('503: revit_unreachable: refused')
   })
 
-  it('choices reads the model through /query, with the values get_tool_choices gives a pack', async () => {
-    const calls = stubFetch(
-      { body: { kind: 'levels', items: [{ id: 1, name: 'L1', elevation_mm: 0 }, { id: 2, name: 'L2', elevation_mm: 3500 }] } },
-      { body: { kind: 'family_types', items: [{ id: 7, family: 'Basic Wall', name: 'Generic - 200mm', category: 'Walls' }] } },
-      { body: { kind: 'elements', items: [{ id: 4242, name: 'Generic - 200mm', category: 'Walls' }] } },
-    )
-    expect(await workbenchApi.choices(level)).toEqual([{ label: 'L1 (0mm)', value: 'L1' }, { label: 'L2 (3500mm)', value: 'L2' }])
+  it('choices asks /choices with the parameter choices_from and returns the server options as they are', async () => {
+    const levels = [{ label: 'L1 (0.0mm)', value: 'L1' }, { label: 'L2 (3500.0mm)', value: 'L2' }]
+    const calls = stubFetch({ body: levels }, { body: [{ label: 'Generic - 200mm', value: 'Generic - 200mm' }] },
+      { body: [{ label: 'Wall (ID: 4242)', value: 4242 }] })
+    expect(await workbenchApi.choices(level)).toEqual(levels)
     expect(await workbenchApi.choices(wallType)).toEqual([{ label: 'Generic - 200mm', value: 'Generic - 200mm' }])
-    expect(await workbenchApi.choices(wall)).toEqual([{ label: 'Generic - 200mm (ID: 4242)', value: 4242 }])
+    expect(await workbenchApi.choices(wall)).toEqual([{ label: 'Wall (ID: 4242)', value: 4242 }])
     expect(calls.map(body)).toEqual([
-      { kind: 'levels', args: {} },
-      { kind: 'family_types', args: { categories: ['OST_Walls'] } },
-      { kind: 'elements', args: { category: 'OST_Walls', limit: 200 } },
+      { choices_from: 'levels' }, { choices_from: 'family_types:OST_Walls' }, { choices_from: 'elements:OST_Walls' },
     ])
-    expect(calls.every(c => c.url === '/api/v1/bridge/query')).toBe(true)
+    expect(calls.every(c => c.url === '/api/v1/bridge/choices')).toBe(true)
   })
 
-  it('choices of a designer value asks nothing; a query error is thrown', async () => {
-    const calls = stubFetch({ body: { error: 'revit_error', kind: 'levels', message: 'no document' } })
+  it('choices of a designer value asks nothing; a refusal is a BridgeApiError', async () => {
+    const calls = stubFetch({ status: 503, body: { error: 'revit_unreachable', message: 'refused' } })
     expect(await workbenchApi.choices(height)).toEqual([])
     expect(calls).toHaveLength(0)
-    await expect(workbenchApi.choices(level)).rejects.toThrow('revit_error: no document')
+    await expect(workbenchApi.choices(level)).rejects.toThrow('503: revit_unreachable: refused')
   })
 
   it('save posts the draft as a v1 pack to /solidify with the admin token', async () => {
@@ -199,10 +215,8 @@ describe('the mapping helpers', () => {
     }
   })
 
-  it('positional, choicesQuery, choicesFrom and parseValidator', () => {
-    expect(positional([level, height], { height: 1 })).toEqual([null, 1])
-    expect(choicesQuery(height)).toBeNull()
-    expect(choicesFrom(level, {})).toEqual([])
+  it('choicesFromOf and parseValidator', () => {
+    expect([level, height, wallType, wall].map(choicesFromOf)).toEqual(['levels', null, 'family_types:OST_Walls', 'elements:OST_Walls'])
     expect(parseValidator('  ')).toBeNull()
     expect(parseValidator(undefined)).toBeNull()
     expect(() => parseValidator('[1]')).toThrow('JSON object')

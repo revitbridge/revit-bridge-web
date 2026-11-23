@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeApiError } from '../shared/http'
 import { sumUsage } from '../hostv2/trace'
-import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
+import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, NOT_OFFERED, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
 import type { ExecutionResult, HostEvent, HostRequest, Question, ReconcileResult, TaskSpec } from '../../types/api'
 
 const spec: TaskSpec = {
@@ -227,6 +227,23 @@ describe('the task flow', () => {
     expect(s.confirmation?.used).toBe(false)     // a mismatch consumes nothing
     expect(s.reported).toBe(false)
     expect(host.requests).toHaveLength(1)        // no report went to the model
+  })
+
+  it('a spec that is not a saved tool is neither confirmed nor run', async () => {
+    const codeSpec: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 1;', code_parameters: [] }, parameters: [], interpretations: [] }
+    const host = scriptedHost([{ type: 'spec', spec: codeSpec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
+    const api = fakeApi()
+    const flow = createTaskFlow({ events: host.events, api })
+    await flow.send('brief')
+    await flow.confirm()
+    await flow.run()
+    await flow.runTampered({ param: 'x', value: '1' })
+    const s = flow.store.getState()
+    expect(api.calls).toEqual([])                                   // no /spec/confirm, no /tools//run
+    expect(s.confirmation).toBeNull()
+    expect(s.execution).toBeNull()
+    expect(s.confirmErrors).toEqual([NOT_OFFERED])
+    expect(NOT_OFFERED.code).toBe('code_not_offered')
   })
 
   it('a 422 from /spec/confirm lists the spec errors; a 400 from /run is shown in the result shape', async () => {

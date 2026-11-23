@@ -4,11 +4,9 @@
    text is copied below from the component's specification until the component's own types are
    merged; the names must stay as they are). Each method is a thin call of a v1 route:
 
-   check      POST /check     {code, parameters: []}     the package's check_code reply as it is
-   dryRun     POST /dry-run   {code, parameters}         the package's dry_run_code reply as it is;
-                                                         parameters = the values in declaration order
-   choices    POST /query     levels | family_types | elements, read as get_tool_choices reads
-                              them (value: the level's name, the type's name, the element's id)
+   check      POST /check     the package's check_code reply as it is
+   dryRun     POST /dry-run   the package's dry_run_code reply as it is (no token)
+   choices    POST /choices   {choices_from}: the package's get_tool_choices for one parameter
    save       POST /solidify  the draft as a v1 pack (parameters with source, choices_from, unit)
    list       GET  /tools     {name, description, builtin, origin, directory?} (read from disk)
    load       GET  /tools/{name}             the pack as a draft
@@ -16,11 +14,12 @@
    exportYaml GET  /tools/{name}/export      the pack file as stored (text)
    importYaml POST /tools/import[?overwrite=true]  a pack file (text)
 
-   The routes pass the snippet and its object[] parameters to the package unchanged: they do not
-   fill a pack's {placeholders}. Code checked or dry-run here reads its inputs from
-   `parameters[i]`; a pack's code template is filled by name when the pack runs. Filling a draft's
-   placeholders for a dry run is the package's to offer (an open question for planning), so this
-   client does not do it.
+   A draft with parameters is a pack template: its code reads them as {name} placeholders, the
+   way a saved pack does. check and dryRun send it as {pack, values} (draftPack below) and the
+   server has the package fill the template - with `values` for a dry run, and for a compile check
+   with sample values (each parameter's default, else 0, "" or false), since compiling needs
+   values but not the designer's. Nothing here escapes or substitutes anything. A draft without
+   parameters goes as {code}.
 
    Errors are BridgeApiError (components/shared/http.ts): the server's {error, message?, ...}
    kept, the message "<status>: <error>: <message>". */
@@ -29,7 +28,7 @@ import { getConfig } from '../config'
 import { adminHeaders, deviceHeaders } from '../store'
 import { BridgeApiError, del, get, post, request } from '../components/shared/http'
 import type {
-  PackParameter, QueryAnswer, SolidifyRequest, SolidifyResponse, ToolDetail, ToolInfo, ToolParam,
+  PackParameter, SolidifyRequest, SolidifyResponse, ToolDetail, ToolInfo, ToolParam,
 } from '../types/api'
 
 /* -- the workbench component's interface (copied; do not rename) --------------------------- */
@@ -119,25 +118,26 @@ export function parseValidator(text: string | undefined): Record<string, unknown
   return parsed as Record<string, unknown>
 }
 
-/* The snippet's parameters (object[]): the values in the order the parameters are declared. */
-export function positional(parameters: ToolParamDraft[], values: Record<string, unknown>): unknown[] {
-  return parameters.map(p => (p.name in values ? values[p.name] : null))
+/* The name a draft has while it is checked or dry-run (the workbench passes no name then;
+   the server only fills the template with it, in a temporary store). */
+export const DRAFT_NAME = 'workbench_draft'
+
+/* A draft as the pack the server's /check and /dry-run take (the v1 pack format). */
+export function draftPack(code: string, parameters: ToolParamDraft[]): Record<string, unknown> {
+  return { schema_version: 1, name: DRAFT_NAME, version: '1.0.0', code_template: code, parameters: parameters.map(packParameter) }
 }
 
-/* The read-only query that lists a parameter's real options, or null for a designer's value. */
-export function choicesQuery(p: ToolParamDraft): { kind: string; args: Record<string, unknown> } | null {
-  if (p.source === 'levels') return { kind: 'levels', args: {} }
-  if (p.source === 'family_types') return { kind: 'family_types', args: { categories: [p.category ?? ''] } }
-  if (p.source === 'elements') return { kind: 'elements', args: { category: p.category ?? '', limit: 200 } }
+/* Values that compile: each parameter's default, else a neutral value of its type. */
+export function sampleValues(parameters: ToolParamDraft[]): Record<string, unknown> {
+  const neutral = { string: '', double: 0, int: 0, bool: false } as const
+  return Object.fromEntries(parameters.map(p => [p.name, empty(p.default) ? neutral[p.type] : p.default]))
+}
+
+/* The choices_from of a draft parameter whose options come from the model; null for a designer's value. */
+export function choicesFromOf(p: ToolParamDraft): string | null {
+  if (p.source === 'levels') return 'levels'
+  if (p.source === 'family_types' || p.source === 'elements') return `${p.source}:${p.category ?? ''}`
   return null
-}
-
-/* The query's items as options, with the values a pack receives from get_tool_choices. */
-export function choicesFrom(p: ToolParamDraft, answer: QueryAnswer): { label: string; value: unknown }[] {
-  const items = answer.items ?? []
-  if (p.source === 'levels') return items.map(i => ({ label: `${String(i.name)} (${String(i.elevation_mm ?? 0)}mm)`, value: i.name }))
-  if (p.source === 'elements') return items.map(i => ({ label: `${String(i.name)} (ID: ${String(i.id)})`, value: i.id }))
-  return items.map(i => ({ label: String(i.name), value: i.name }))
 }
 
 /* GET as text: the export is the pack file, not JSON. */
@@ -149,20 +149,17 @@ async function getText(path: string): Promise<string> {
 }
 
 export const workbenchApi = {
-  check: (code: string, parameters: ToolParamDraft[]): Promise<unknown> => {
-    void parameters                       // compiling needs no values: object[] is empty
-    return post<unknown>(`${B}/check`, { code, parameters: [] })
-  },
+  check: (code: string, parameters: ToolParamDraft[]): Promise<unknown> =>
+    post<unknown>(`${B}/check`, parameters.length
+      ? { pack: draftPack(code, parameters), values: sampleValues(parameters) }
+      : { code }),
 
   dryRun: (code: string, parameters: ToolParamDraft[], values: Record<string, unknown>): Promise<unknown> =>
-    post<unknown>(`${B}/dry-run`, { code, parameters: positional(parameters, values) }),
+    post<unknown>(`${B}/dry-run`, parameters.length ? { pack: draftPack(code, parameters), values } : { code }),
 
   choices: async (param: ToolParamDraft): Promise<{ label: string; value: unknown }[]> => {
-    const query = choicesQuery(param)
-    if (!query) return []
-    const answer = await post<QueryAnswer>(`${B}/query`, query)
-    if (answer.error) throw new Error(`${answer.error}${answer.message ? `: ${answer.message}` : ''}`)
-    return choicesFrom(param, answer)
+    const from = choicesFromOf(param)
+    return from ? post<{ label: string; value: unknown }[]>(`${B}/choices`, { choices_from: from }) : []
   },
 
   save: async (draft: ToolDraft): Promise<{ name: string }> => {

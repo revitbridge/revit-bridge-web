@@ -87,6 +87,13 @@ export const initialState = (): TaskState => ({
 })
 
 export const SPEC_ONLY_REPLY = '(the model proposed a spec: see the card below)'
+
+/* A spec whose action is not a saved tool: not confirmed, nothing runs (the server refuses
+   such a proposal too; this is the page's own guard). */
+export const NOT_OFFERED: SpecError = {
+  code: 'code_not_offered', param: null,
+  message: 'This host runs saved tools only: a spec that is not run_tool is not confirmed or run here.',
+}
 const GATE_REFUSALS: readonly string[] = ['confirmation_required', 'confirmation_invalid']
 
 /* A gate refusal: nothing reached Revit and the token is still whole. */
@@ -255,6 +262,10 @@ export function createTaskFlow(deps: FlowDeps) {
     const s = getState()
     if (!canConfirm(s) || !s.proposal) return
     const spec = s.proposal.draft
+    if (spec.action.kind !== 'run_tool') {
+      setState({ confirmErrors: [NOT_OFFERED] })
+      return
+    }
     setState({ confirming: true, confirmErrors: [] })
     try {
       const issued = await deps.api.confirm(spec)
@@ -272,7 +283,7 @@ export function createTaskFlow(deps: FlowDeps) {
 
   async function runProjection(kind: 'genuine' | 'tampered', tamper?: Tamper): Promise<ExecutionResult | null> {
     const c = getState().confirmation
-    if (!c || getState().running) return null
+    if (!c || getState().running || c.spec.action.kind !== 'run_tool') return null
     setState({ running: true })
     try {
       const params = paramsOf(c.spec)

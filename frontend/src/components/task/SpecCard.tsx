@@ -58,18 +58,11 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       <p className="section-copy small" style={{ margin: 0 }}>
         {spec.action.kind === 'run_tool'
           ? <>Pack <code>{spec.action.tool}</code> (run_tool)</>
-          : <>execute_code ({(spec.action.code ?? '').split('\n').length} lines)</>}
+          : <>{spec.action.kind}: not offered here - this host runs saved tools only</>}
         {spec.snapshot_fingerprint && <> | snapshot <code>{spec.snapshot_fingerprint}</code></>}
       </p>
 
       <SpecTable spec={draft} conflicts={conflicts} />
-
-      {spec.action.kind === 'execute_code' && (
-        <details className="spec-details">
-          <summary className="label-text">Code</summary>
-          <pre className="command-block">{spec.action.code}</pre>
-        </details>
-      )}
 
       {interpretations.length > 0 && (
         <div className="spec-block">

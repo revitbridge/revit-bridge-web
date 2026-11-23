@@ -1,4 +1,5 @@
-/* Skills: Markdown protocols that go into the model's system prompt. */
+/* Skills: Markdown protocols for writing Revit code. They are guidance for the coding
+   frameworks; the chat's model here writes no code and its prompt has no skills. */
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { skillsApi } from '../../api/skills'
@@ -65,7 +66,7 @@ export default function SkillsView() {
   return (
     <div className="space-y-4">
       <p className="section-copy small">
-        {builtin} built-in · {custom} custom · {active} active. Every enabled skill is appended to the system prompt.
+        {builtin} built-in · {custom} custom · {active} enabled. Skills are guidance for writing code; they are not part of the chat's prompt.
         {!local && admin && !adminToken && ' Enter the admin password on the Connect page to add or change skills.'}
         {!local && !admin && ' This host has no admin password configured; skills are read-only here.'}
       </p>

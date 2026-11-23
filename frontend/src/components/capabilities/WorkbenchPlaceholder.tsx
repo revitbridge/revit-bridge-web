@@ -16,7 +16,8 @@ function download(name: string, text: string) {
   link.href = url
   link.download = `${name}.yaml`
   link.click()
-  URL.revokeObjectURL(url)
+  // Revoked once the browser has taken the download, not before (some start it asynchronously).
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
 export default function WorkbenchPlaceholder({ api = workbenchApi }: { api?: Api }) {
