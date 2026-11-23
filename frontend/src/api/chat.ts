@@ -2,12 +2,56 @@
 
    chatEvents() yields every event of one turn (HostEvent, spec 10.10): the session
    id, reply tokens, the spec card the model proposed, the execution the page
-   reported, a model error, done. chatStream() is the older text-only view of the
-   same stream (session / token / error) and stays as it was. */
+   reported, what the host did (stage, tool, usage), a model error, done.
+   chatStream() is the older text-only view of the same stream (session / token /
+   error) and stays as it was. */
 
 import { apiStream } from './client'
 import { llmHeaders } from '../store'
 import type { ExecutionResult, HostEvent, HostRequest, ReconcileResult, SpecError, TaskSpec } from '../types/api'
+import type { Role, ToolEvent } from '../types/hostv2'
+
+const ROLES: readonly string[] = ['analyst', 'planner', 'supervisor']
+const TOOL_STATES: readonly string[] = ['running', 'ok', 'error']
+
+const isRole = (value: unknown): value is Role => typeof value === 'string' && ROLES.includes(value)
+
+/* A token count as the server sent it; anything that is not a finite number (null, absent,
+   text) is unknown - null, never 0. */
+const count = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null
+
+/* event: stage / tool / usage (plan 2.2); null when the frame is not one of them or is malformed. */
+function traceEvent(event: string, parsed: unknown): HostEvent | null {
+  if (!isRecord(parsed) || !isRole(parsed.role)) return null
+  const role = parsed.role
+  const model = typeof parsed.model === 'string' ? parsed.model : ''
+  if (event === 'stage') {
+    if (parsed.status !== 'start' && parsed.status !== 'end') return null
+    return { type: 'stage', role, model, status: parsed.status }
+  }
+  if (event === 'tool') {
+    const id = parsed.id
+    if ((typeof id !== 'string' && typeof id !== 'number') || typeof parsed.status !== 'string'
+      || !TOOL_STATES.includes(parsed.status)) return null
+    const tool: ToolEvent = {
+      type: 'tool', id: String(id), role, name: String(parsed.name ?? ''),
+      args: isRecord(parsed.args) ? parsed.args : {}, status: parsed.status as ToolEvent['status'],
+    }
+    const ms = count(parsed.ms)
+    const size = count(parsed.size)
+    if (ms !== null) tool.ms = ms
+    if (size !== null) tool.size = size
+    if (typeof parsed.preview === 'string') tool.preview = parsed.preview
+    if (typeof parsed.error === 'string') tool.error = parsed.error
+    return tool
+  }
+  return {
+    type: 'usage', role, model, round: count(parsed.round) ?? 0,
+    input: count(parsed.input), output: count(parsed.output),
+    cache_read: count(parsed.cache_read), cache_write: count(parsed.cache_write),
+    ms: count(parsed.ms) ?? 0,
+  }
+}
 
 export type ChatEvent =
   | { type: 'session'; id: string }
@@ -48,6 +92,7 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (!isRecord(parsed)) return null
     return { type: 'execution', execution: parsed as unknown as ExecutionResult }
   }
+  if (event === 'stage' || event === 'tool' || event === 'usage') return traceEvent(event, parsed)
   if (event === '' && typeof parsed === 'string') return { type: 'token', text: parsed }
   return null
 }

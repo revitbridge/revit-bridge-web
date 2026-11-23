@@ -11,6 +11,7 @@ import type {
   ChatMessage, ConfirmResponse, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   SpecError, TaskSpec,
 } from '../../types/api'
+import type { TraceEvent, UsageEvent } from '../../types/hostv2'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
@@ -116,6 +117,17 @@ export function interpretationsOf(p: Proposal): Interpretation[] {
   return shown
 }
 
+/* The token usage of a transcript: the model calls of its latest turn (the last assistant
+   message) and of the whole session, as the usage events reported them. */
+export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEvent[] } {
+  const perReply = t.messages
+    .filter(m => m.role === 'assistant')
+    .map(m => (m.trace ?? []).filter((e): e is UsageEvent => e.type === 'usage'))
+  return { turn: perReply.at(-1) ?? [], session: perReply.flat() }
+}
+
+const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
+
 export function canConfirm(s: TaskState): boolean {
   return !!s.proposal && s.proposal.reconcile?.ready === true && !s.proposal.reconciling && !s.confirming && !s.bridge.streaming
 }
@@ -134,20 +146,23 @@ export function createTaskFlow(deps: FlowDeps) {
   const push = (side: Side, message: ChatMessage) =>
     patch(side, t => ({ ...t, messages: [...t.messages, message] }))
 
-  /* One stream into one transcript; a spec event is handed to onSpec. */
+  /* One stream into one transcript; a spec event is handed to onSpec. The stage, tool and
+     usage events stay with the assistant message of their turn (its trace), in order. */
   async function consume(side: Side, request: HostRequest, onSpec?: (e: SpecEvent) => void) {
     patch(side, t => ({ ...t, streaming: true, messages: [...t.messages, { role: 'assistant', content: '' }] }))
     let reply = ''
     let sawSpec = false
-    const show = (text: string) => patch(side, t => {
+    const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
-      messages[messages.length - 1] = { role: 'assistant', content: text }
+      messages[messages.length - 1] = fn(messages[messages.length - 1])
       return { ...t, messages }
     })
+    const show = (text: string) => update(m => ({ ...m, content: text }))
     try {
       for await (const evt of deps.events(request, controller?.signal)) {
         if (evt.type === 'session') { patch(side, t => ({ ...t, sessionId: evt.id })); continue }
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
+        if (isTraceEvent(evt)) { update(m => ({ ...m, trace: [...(m.trace ?? []), evt] })); continue }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
         if (evt.type === 'execution') continue          // the echo of what the page sent
         if (evt.type === 'error') {

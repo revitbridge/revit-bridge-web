@@ -64,11 +64,38 @@ describe('groupTraceEvents', () => {
       { type: 'stage', role: 'planner', model: 'other', status: 'start' },
       tool({ id: 'last' }),
     ])
+    // 'after' is a planner tool once the planner stage has closed: it goes to the stage
+    // still open around it (analyst), not to a detached group.
     expect(groups.map(group => group.tools.map(event => event.id)))
-      .toEqual([['before'], ['tool-1'], ['during'], ['after'], ['last']])
+      .toEqual([['before'], ['tool-1', 'after'], ['during'], ['last']])
     expect(groups[0].stage).toBeUndefined()
-    expect(groups[3].stage).toBeUndefined()
-    expect(groups[4].stage?.model).toBe('other')
+    expect(groups[3].stage?.model).toBe('other')
+  })
+
+  it('keeps a tool whose role differs from the open stage inside that stage', () => {
+    const groups = groupTraceEvents([
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },
+      tool({ id: 'mine' }),
+      tool({ id: 'odd', role: 'supervisor' }),
+      tool({ id: 'odd', role: 'supervisor', status: 'ok' }),
+      { type: 'stage', role: 'planner', model: 'large', status: 'end' },
+      tool({ id: 'outside', role: 'supervisor' }),
+    ])
+    expect(groups.map(group => [group.stage?.role, group.tools.map(event => [event.id, event.status])])).toEqual([
+      ['planner', [['mine', 'running'], ['odd', 'ok']]],
+      [undefined, [['outside', 'running']]],
+    ])
+  })
+
+  it('puts a mismatched tool in the stage opened last when several are open', () => {
+    const groups = groupTraceEvents([
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },
+      { type: 'stage', role: 'analyst', model: 'small', status: 'start' },
+      tool({ id: 'x', role: 'supervisor' }),
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },   // the planner opens again
+      tool({ id: 'y', role: 'supervisor' }),
+    ])
+    expect(groups.map(group => group.tools.map(event => event.id))).toEqual([[], ['x'], ['y']])
   })
 })
 
@@ -93,6 +120,18 @@ describe('sumUsage', () => {
       .toMatchObject({ input: null, cache_read: null, cache_hit_rate: null })
   })
 
+  it('treats a field that is missing altogether as unknown, never NaN', () => {
+    const missing = { ...usage() } as Partial<UsageEvent>
+    delete missing.cache_write
+    delete missing.input
+    const total = sumUsage([usage(), missing as UsageEvent])
+    expect(total).toMatchObject({ input: null, cache_write: null, output: 40, cache_read: 50, calls: 2, cache_hit_rate: null })
+    expect(Object.values(total).some(value => typeof value === 'number' && Number.isNaN(value))).toBe(false)
+    const noMs = { ...usage() } as Partial<UsageEvent>
+    delete noMs.ms
+    expect(sumUsage([noMs as UsageEvent]).ms).toBe(0)
+  })
+
   it('represents empty totals as zero calls and tokens with an undefined hit rate', () => {
     expect(sumUsage([])).toEqual({ input: 0, output: 0, cache_read: 0, cache_write: 0, ms: 0, calls: 0, cache_hit_rate: null })
     expect(sumUsage([usage({ input: 0, cache_read: 0 })]).cache_hit_rate).toBeNull()
@@ -110,7 +149,8 @@ describe('TraceTimeline', () => {
     expect(html.match(/<li /g)).toHaveLength(1)
     expect(html).toContain('is-ok')
     expect(html).toContain('0 ms')
-    expect(html).toContain('0 bytes')
+    expect(html).toContain('0 characters')        // size is the result's length in characters
+    expect(html).not.toContain('bytes')
     expect(html).not.toContain('<h3')
     expect(html).not.toContain('hostv2-trace-running')
   })
@@ -175,6 +215,16 @@ describe('TokenPanel', () => {
     expect(html).not.toContain('scope="row">supervisor')
     for (const text of ['25.0%', '30.0%', '28.3%']) expect(html).toContain(text)
     expect(html).toContain('<td data-label="Cache write">unknown</td>')
+  })
+
+  it('shows unknown, not NaN, when a usage event lacks a field', () => {
+    const partial = { ...usage() } as Partial<UsageEvent>
+    delete partial.input
+    const html = renderToStaticMarkup(<TokenPanel title="Tokens without the bridge" turn={[partial as UsageEvent]} session={[usage(), partial as UsageEvent]} />)
+    expect(html).toContain('<strong>Tokens without the bridge</strong>')
+    expect(html).toContain('This turn: unknown in / 20 out (1 calls)')
+    expect(html).toContain('<td data-label="Input">unknown</td>')
+    expect(html).not.toMatch(/NaN|Infinity/)
   })
 
   it('shows actual zero totals for an empty turn and session without NaN or Infinity', () => {

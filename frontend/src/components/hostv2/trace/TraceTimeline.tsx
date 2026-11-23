@@ -15,7 +15,7 @@ function ToolRow({ tool }: { tool: ToolEvent }) {
             {tool.status}
           </span>
           <span className="hostv2-trace-metric">{tool.ms === undefined ? 'time unknown' : `${tool.ms} ms`}</span>
-          <span className="hostv2-trace-metric">{tool.size === undefined ? 'size unknown' : `${tool.size} bytes`}</span>
+          <span className="hostv2-trace-metric">{tool.size === undefined ? 'size unknown' : `${tool.size.toLocaleString('en-US')} characters`}</span>
         </summary>
         <div className="hostv2-trace-detail">
           <h4>Parameters</h4>
