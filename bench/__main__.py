@@ -192,7 +192,7 @@ def print_results(result: dict) -> None:
         if not check["available"]:
             state = f"host totals unavailable ({check['reason']})"
         elif check["match"]:
-            state = "matches the host's /api/usage/runs"
+            state = "matches the host's /api/usage/runs" + (" (per role too)" if check.get("host_by_role") else "")
         else:
             state = "DIFFERS from the host's /api/usage/runs in " + ", ".join(check["mismatches"])
         print(f"Run {run['label']}: {state}")

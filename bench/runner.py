@@ -23,6 +23,7 @@ import httpx
 
 from .metrics import (
     ROLE_FIELDS, accepted, evaluate, merge_tools, models_by_role, role_usage, run_totals, sum_usage, summarize,
+    total,
 )
 from .sse import iter_events
 
@@ -232,18 +233,42 @@ def host_runs(client: httpx.Client, base: str) -> tuple[dict | None, str | None]
         return None, f"{type(exc).__name__}: {exc}"[:ERROR_TEXT]
 
 
+def host_roles(row: dict) -> dict | None:
+    """The host's ``by_role`` parts (one per role and model) summed per role, unknown
+    staying unknown; None when the host does not report ``by_role``."""
+    parts = row.get("by_role")
+    if not isinstance(parts, list):
+        return None
+    grouped: dict[str, list[dict]] = {}
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("role"), str):
+            grouped.setdefault(part["role"], []).append(part)
+    return {role: {field: total([part.get(field) for part in items]) for field in ROLE_FIELDS}
+            for role, items in grouped.items()}
+
+
 def cross_check(run: dict, runs_by_label: dict | None, unavailable: str | None) -> dict:
-    """The repeat's totals from the ``usage`` events against the host's line for its label.
-    Unknown equals only unknown."""
+    """The repeat's totals from the ``usage`` events against the host's line for its label,
+    and per role against its ``by_role`` when the host gives one. Unknown equals only
+    unknown. The bench's own numbers never come from here."""
     if runs_by_label is None:
         return {"available": False, "reason": unavailable}
     row = runs_by_label.get(run["label"])
     if row is None:
-        return {"available": True, "host": None, "match": run["totals"]["calls"] is None,
+        return {"available": True, "host": None, "host_by_role": None, "match": run["totals"]["calls"] is None,
                 "mismatches": [] if run["totals"]["calls"] is None else ["label missing on the host"]}
     host = {field: row.get(field) for field in ROLE_FIELDS}
     mismatches = [field for field in ROLE_FIELDS if host[field] != run["totals"][field]]
-    return {"available": True, "host": host, "match": not mismatches, "mismatches": mismatches}
+    by_role = host_roles(row)
+    if by_role is not None:
+        for role in dict.fromkeys([*run["by_role"], *by_role]):
+            ours, theirs = run["by_role"].get(role), by_role.get(role)
+            if ours is None or theirs is None:
+                mismatches.append(f"{role} (only on the {'host' if ours is None else 'bench'})")
+                continue
+            mismatches += [f"{role}.{field}" for field in ROLE_FIELDS if ours[field] != theirs[field]]
+    return {"available": True, "host": host, "host_by_role": by_role, "match": not mismatches,
+            "mismatches": mismatches}
 
 
 def host_features(client: httpx.Client, base: str) -> dict | None:

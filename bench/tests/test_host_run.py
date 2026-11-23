@@ -114,6 +114,8 @@ def test_a_full_run_with_repeats_against_the_host(host):
     # the host's line for each label is what the events said, unknowns included
     for run in result["runs"]:
         assert run["host_usage"]["available"] and run["host_usage"]["match"], run["host_usage"]
+        # per role as well: the host's by_role (role and model) summed per role
+        assert set(run["host_usage"]["host_by_role"]) == {"planner"}
     assert first["totals"]["calls"] == 10 and first["totals"]["cache_read"] is None
 
     # repeats: the levels task's second call differed

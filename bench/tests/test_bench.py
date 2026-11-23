@@ -443,6 +443,31 @@ def test_host_totals_cross_check_match_mismatch_and_unavailable():
     assert check == {"available": False, "reason": "HTTP 401: admin_required - admin token"}
 
 
+def test_the_cross_check_compares_roles_when_the_host_gives_by_role():
+    from bench.runner import cross_check
+    run = {"label": "r-1",
+           "totals": {"calls": 3, "input": 300, "output": 60, "cache_read": None, "cache_write": 0, "ms": 30},
+           "by_role": {"planner": {"calls": 2, "input": 200, "output": 40, "cache_read": None, "cache_write": 0,
+                                   "ms": 20, "tool_calls": 1},
+                       "supervisor": {"calls": 1, "input": 100, "output": 20, "cache_read": 0, "cache_write": 0,
+                                      "ms": 10, "tool_calls": 0}}}
+    part = {"role": "planner", "model": "big", "calls": 1, "input": 100, "output": 20, "cache_read": None,
+            "cache_write": 0, "ms": 10}
+    row = {"run_label": "r-1", "calls": 3, "input": 300, "output": 60, "cache_read": None, "cache_write": 0,
+           "ms": 30, "by_role": [part, {**part, "model": "other", "cache_read": 5},
+                                 {**part, "role": "supervisor", "cache_read": 0}]}
+    check = cross_check(run, {"r-1": row}, None)
+    # two models of the planner add up; one unknown cache count makes the planner's unknown
+    assert check["match"], check["mismatches"]
+    assert check["host_by_role"]["planner"] == {"calls": 2, "input": 200, "output": 40, "cache_read": None,
+                                                "cache_write": 0, "ms": 20}
+    row["by_role"][2] = {**part, "role": "supervisor", "cache_read": None}
+    row["by_role"].append({**part, "role": "analyst"})
+    check = cross_check(run, {"r-1": row}, None)
+    assert check["mismatches"] == ["supervisor.cache_read", "analyst (only on the host)"]
+    assert cross_check(run, {"r-1": {k: v for k, v in row.items() if k != "by_role"}}, None)["host_by_role"] is None
+
+
 def test_a_label_the_host_already_has_is_refused_before_any_chat():
     host = FakeHost([], runs=[run_rows("taken-2", 1, 1)])
     with host.client() as client, pytest.raises(ValueError, match="taken-2"):
