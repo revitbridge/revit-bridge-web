@@ -1,7 +1,14 @@
 /* Runtime configuration: fetched from /config.json before the app renders.
    One build serves any address; nothing about the deployment is baked in. */
 
+/* local: this machine only - no pairing, no devices, no admin password; the pages
+   talk to the add-in on this machine. cloud: pairing, the device list and the
+   admin password. A config that does not say (an older host, a static
+   config.json written before modes) reads as cloud: the pages as they were. */
+export type DeployMode = 'local' | 'cloud'
+
 export interface RuntimeFeatures {
+  mode: DeployMode
   byoModel: boolean
   serverModel: boolean
   admin: boolean
@@ -17,7 +24,7 @@ export interface RuntimeConfig {
 const DEFAULTS: RuntimeConfig = {
   apiBase: '',
   wsBase: '',
-  features: { byoModel: true, serverModel: false, admin: false, maxDevices: 20 },
+  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20 },
 }
 
 let current: RuntimeConfig = DEFAULTS
@@ -29,10 +36,11 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
     throw new Error('/config.json is not JSON (a static host answered with a page instead of the file)')
   }
   const data = JSON.parse(body)
+  const features = { ...DEFAULTS.features, ...(data.features || {}) }
   return {
     apiBase: String(data.apiBase || '').replace(/\/+$/, ''),
     wsBase: String(data.wsBase || '').replace(/\/+$/, ''),
-    features: { ...DEFAULTS.features, ...(data.features || {}) },
+    features: { ...features, mode: features.mode === 'local' ? 'local' : 'cloud' },
   }
 }
 
@@ -54,4 +62,9 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
 
 export function getConfig(): RuntimeConfig {
   return current
+}
+
+/* A local host: no device headers, no admin token, no pairing on the Connect page. */
+export function isLocalHost(): boolean {
+  return current.features.mode === 'local'
 }

@@ -4,6 +4,13 @@ Only the conversation text, the model name, timing and the client address
 are stored. Request headers - and therefore the model key - never reach
 this module. Execution evidence (what changed in Revit) is the package's
 ``evidence`` ledger in a later phase, not this table.
+
+``llm_calls`` (same database) has one row per model call of the chat: session,
+turn, round, role, model name, the four token counts (``NULL`` where the
+provider reported none), duration and the optional run label of the request
+(``X-Run-Label``). No message text, no endpoint address, no key. The table is
+created on an existing database at startup like the first one; rows age out
+with the interaction logs (``RETENTION_DAYS``).
 """
 from __future__ import annotations
 
@@ -22,6 +29,24 @@ _log = logging.getLogger("backend.logs")
 
 RETENTION_DAYS = 90
 MAX_TEXT = 10_000
+MAX_MODEL_NAME = 200
+# The largest token count kept as a number (backend.llm.MAX_COUNT): a count beyond it, or a
+# sum that passes it, is unknown - never an overflow, never a dropped row.
+MAX_COUNT = 2 ** 53
+_TOKEN_COLUMNS = ("input", "output", "cache_read", "cache_write")
+
+
+def _token_count(value) -> int | None:
+    """``value`` as a count from 0 to ``MAX_COUNT`` (an integral float is fine), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    return value if 0 <= value <= MAX_COUNT else None
+_CALL_COLUMNS = ("session_id, turn, round, role, model, input, output, cache_read, cache_write, "
+                 "ms, created_at, run_label")
 # Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
 # first write after the interval: a container that runs for months stays bounded.
 PURGE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -63,15 +88,38 @@ class InteractionLogStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ts ON interaction_logs(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_module ON interaction_logs(module)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ip ON interaction_logs(client_ip)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS llm_calls (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at  TEXT NOT NULL,
+                    session_id  TEXT NOT NULL,
+                    turn        INTEGER NOT NULL,
+                    round       INTEGER NOT NULL,
+                    role        TEXT NOT NULL,
+                    model       TEXT,
+                    input       INTEGER,
+                    output      INTEGER,
+                    cache_read  INTEGER,
+                    cache_write INTEGER,
+                    ms          INTEGER NOT NULL,
+                    run_label   TEXT
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_label ON llm_calls(run_label)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(created_at)")
         _log.info("interaction logs at %s", self._db_path)
 
     def _purge_old(self, retention_days: int) -> None:
         self._next_purge = time.monotonic() + PURGE_INTERVAL_SECONDS
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-            deleted = self.delete_before(cutoff.strftime("%Y-%m-%d %H:%M:%S"))
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime("%Y-%m-%d %H:%M:%S")
+            deleted = self.delete_before(cutoff)
             if deleted:
                 _log.info("purged %d log(s) older than %d days", deleted, retention_days)
+            calls = self.delete_calls_before(cutoff)
+            if calls:
+                _log.info("purged %d model call record(s) older than %d days", calls, retention_days)
         except Exception as exc:  # noqa: BLE001
             _log.warning("log retention purge failed: %s", exc)
 
@@ -167,6 +215,68 @@ class InteractionLogStore:
         with self._lock:
             with contextlib.closing(self._conn()) as conn, conn:
                 return conn.execute("DELETE FROM interaction_logs WHERE timestamp < ?", (date_str,)).rowcount
+
+    def delete_calls_before(self, date_str: str) -> int:
+        """Model calls recorded before ``date_str`` (the retention purge; no route deletes them)."""
+        with self._lock:
+            with contextlib.closing(self._conn()) as conn, conn:
+                return conn.execute("DELETE FROM llm_calls WHERE created_at < ?", (date_str,)).rowcount
+
+    # -- model calls -------------------------------------------------------------
+
+    def record_call(self, *, session_id: str, turn: int, round: int, role: str, model: str | None,
+                    usage: dict, ms: int, run_label: str | None = None) -> None:
+        """One model call; ``usage`` is ``{input, output, cache_read, cache_write}`` with
+        ``None`` kept as ``NULL``; a value that is not a count from 0 to ``MAX_COUNT`` is
+        stored as ``NULL`` too, so the row is kept. A failed write is logged, never raised."""
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        counts = [_token_count(usage.get(c)) for c in _TOKEN_COLUMNS]
+        ms = _token_count(ms) or 0
+        with self._lock:
+            try:
+                with contextlib.closing(self._conn()) as conn, conn:
+                    conn.execute(
+                        """INSERT INTO llm_calls
+                           (created_at, session_id, turn, round, role, model,
+                            input, output, cache_read, cache_write, ms, run_label)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (ts, session_id, turn, round, role, (model or "")[:MAX_MODEL_NAME] or None,
+                         *counts, ms, run_label),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                _log.error("failed to write a model call: %s", exc)
+
+    def calls_of_session(self, session_id: str) -> list[dict]:
+        """Every model call of one session, oldest first."""
+        with contextlib.closing(self._conn()) as conn:
+            rows = conn.execute(
+                f"SELECT {_CALL_COLUMNS} FROM llm_calls WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def runs(self) -> list[dict]:
+        """One line per run label: the number of calls, each token column's sum (``None``
+        when any call of the run lacks that number, or when the sum passes ``MAX_COUNT``),
+        the total time, first and last call. Summed with ``TOTAL`` (a float), which never
+        raises SQLite's integer overflow the way ``SUM`` does."""
+        sums = ", ".join(
+            f"CASE WHEN COUNT({c}) = COUNT(*) THEN TOTAL({c}) END AS {c}" for c in _TOKEN_COLUMNS)
+        with contextlib.closing(self._conn()) as conn:
+            rows = conn.execute(
+                f"""SELECT run_label, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms,
+                           MIN(created_at) AS first_at, MAX(created_at) AS last_at
+                    FROM llm_calls WHERE run_label IS NOT NULL
+                    GROUP BY run_label ORDER BY MIN(id)"""
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            for column in _TOKEN_COLUMNS:
+                item[column] = _token_count(item[column])
+            item["ms"] = int(item["ms"])
+            result.append(item)
+        return result
 
 
 def _sse_frames(chunk: str):

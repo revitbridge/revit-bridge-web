@@ -8,19 +8,33 @@ requires-python = ">=3.11"
 # The host only imports revit_bridge; every Revit interaction goes through it.
 # The one model client (backend/llm.py) speaks OpenAI-compatible HTTP via httpx.
 dependencies = [
-  "revit-bridge>=0.6,<0.7",
+  "revit-bridge>=0.8,<0.9",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "httpx>=0.27",
   "pyyaml>=6",
 ]
 
+[project.scripts]
+# `uv run revit-bridge-web`: the API and the built SPA (frontend/dist next to
+# backend/, so build the frontend first) on 127.0.0.1:7860 in local mode.
+revit-bridge-web = "backend.main:main"
+
 [dependency-groups]
 dev = ["pytest>=8"]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
 [tool.uv]
-# Runs from the source tree (python -m backend.main); nothing to build.
-package = false
+# `uv sync` installs the project editable so the script above exists; it still
+# runs from the source tree. The image skips it (--no-install-project) and runs
+# python -m backend.main.
+package = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

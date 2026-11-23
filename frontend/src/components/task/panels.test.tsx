@@ -3,6 +3,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
+import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
 import { ExecutionView } from './ExecutionPanel'
 import type { Proposal } from './flow'
@@ -71,6 +72,13 @@ describe('SpecCard', () => {
     const html = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: { conflicts: [], questions: [], interpretations_required: [], ready: true } }), true)
     expect(html).toMatch(/<button class="btn-primary">Confirm<\/button>/)
     expect(html).toContain('data-ready="true"')
+  })
+
+  it('a spec that is not a saved tool says it is not offered here and shows no code', () => {
+    const code: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 42;', code_parameters: [] } }
+    const html = render(proposalFrom({ type: 'spec', spec: code, card: 'c', errors: [], reconcile: null }), false)
+    expect(html).toContain('execute_code: not offered here - this host runs saved tools only')
+    expect(html).not.toContain('return 42;')
   })
 })
 
@@ -146,6 +154,38 @@ describe('ChatPanel markdown', () => {
     expect(html).not.toContain('attacker.example')
     expect(html).toContain('[levels]')
     expect(html).toContain('<a href="https://example.com/docs" target="_blank" rel="noopener noreferrer">the docs</a>')
+  })
+})
+
+describe('ChatPanel trace', () => {
+  const trace: TraceEvent[] = [
+    { type: 'stage', role: 'planner', model: 'm-1', status: 'start' },
+    { type: 'tool', id: '1.1.1', role: 'planner', name: 'get_project_snapshot', args: { categories: ['OST_Walls'] }, status: 'running' },
+    { type: 'usage', role: 'planner', model: 'm-1', round: 1, input: 100, output: 5, cache_read: null, cache_write: null, ms: 9 },
+    { type: 'tool', id: '1.1.1', role: 'planner', name: 'get_project_snapshot', args: { categories: ['OST_Walls'] }, status: 'ok', ms: 30, size: 2048, preview: '{"levels": []}' },
+    { type: 'stage', role: 'planner', model: 'm-1', status: 'end' },
+  ]
+  const transcript = { sessionId: 's', streaming: false, messages: [
+    { role: 'user' as const, content: 'levels?' },
+    { role: 'assistant' as const, content: 'L1 and L2.', trace },
+  ] }
+
+  it('shows the tool activity above the reply it belongs to, on the bridge side only', () => {
+    const html = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} showTrace />)
+    const timeline = html.indexOf('class="hostv2-trace"')
+    expect(timeline).toBeGreaterThan(html.indexOf('levels?'))
+    expect(timeline).toBeLessThan(html.indexOf('L1 and L2.'))
+    expect(html.match(/<li /g)).toHaveLength(1)
+    for (const text of ['get_project_snapshot', 'OST_Walls', '30 ms', '2,048 characters', 'planner', 'm-1']) expect(html).toContain(text)
+    // the reply bubble stays a direct child of the scroll area, after its timeline
+    expect(html).toContain('</section><div class="chat-bubble assistant">')
+    const mirror = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} />)
+    expect(mirror).not.toContain('hostv2-trace')
+  })
+
+  it('a reply without trace events has no timeline', () => {
+    const plain = { ...transcript, messages: [transcript.messages[0], { role: 'assistant' as const, content: 'hi', trace: [] }] }
+    expect(renderToStaticMarkup(<ChatPanel title="t" transcript={plain} showTrace />)).not.toContain('hostv2-trace')
   })
 })
 

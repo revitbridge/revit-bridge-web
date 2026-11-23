@@ -1,4 +1,5 @@
-"""``/api/logs`` - interaction log queries; admin only (``X-Admin-Token``)."""
+"""``/api/logs`` - interaction log queries; admin only (``X-Admin-Token``) on a cloud
+host, open on a local one (only this machine reaches it)."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -11,7 +12,10 @@ router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 
 async def verify_admin(x_admin_token: str | None = Header(None)) -> None:
+    """The admin check of the logs and the skill writes; a local host needs no password."""
     settings = get_settings()
+    if not settings.cloud:
+        return
     if not settings.admin_password:
         raise HTTPException(503, "Admin password not configured")
     if not settings.admin_token_ok(x_admin_token):
@@ -21,6 +25,8 @@ async def verify_admin(x_admin_token: str | None = Header(None)) -> None:
 @router.get("/verify")
 async def verify_token(x_admin_token: str | None = Header(None)):
     settings = get_settings()
+    if not settings.cloud:
+        return {"valid": True}                 # every admin check passes on a local host
     if not settings.admin_password:
         return JSONResponse(status_code=503, content={"valid": False})
     if not settings.admin_token_ok(x_admin_token):

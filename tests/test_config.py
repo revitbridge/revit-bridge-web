@@ -5,6 +5,9 @@ import pytest
 
 from backend.config import ConfigError, WebSettings
 
+# MAX_DEVICES is read on a cloud host only, and a cloud host needs ADMIN_PASSWORD.
+CLOUD = {"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "hunter2"}
+
 
 def test_retired_slot_variables_refuse_to_start():
     """A stale .env must fail loudly: an ignored REQUIRE_SLOT_TOKEN=1 would be a
@@ -19,12 +22,12 @@ def test_retired_slot_variables_refuse_to_start():
             WebSettings.from_env({name: "1"})
         assert name in str(exc.value) and "devices/pair" in str(exc.value)
 
-    assert WebSettings.from_env({"MAX_DEVICES": "3"}).max_devices == 3
-    assert WebSettings.from_env({}).max_devices == 20
+    assert WebSettings.from_env({**CLOUD, "MAX_DEVICES": "3"}).max_devices == 3
+    assert WebSettings.from_env(CLOUD).max_devices == 20
 
 
 @pytest.mark.parametrize("env, needle", [
-    ({"MAX_DEVICES": "many"}, "MAX_DEVICES must be an integer"),
+    ({**CLOUD, "MAX_DEVICES": "many"}, "MAX_DEVICES must be an integer"),
     ({"PORT": "http"}, "PORT must be an integer"),
     ({"CHAT_RATE_LIMIT": "lots"}, "CHAT_RATE_LIMIT must be an integer"),
 ])

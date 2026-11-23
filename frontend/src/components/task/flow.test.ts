@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeApiError } from '../shared/http'
-import { canConfirm, coerceLike, createTaskFlow, interpretationsOf, paramsOf, SPEC_ONLY_REPLY, type FlowApi } from './flow'
+import { sumUsage } from '../hostv2/trace'
+import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, NOT_OFFERED, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
 import type { ExecutionResult, HostEvent, HostRequest, Question, ReconcileResult, TaskSpec } from '../../types/api'
 
 const spec: TaskSpec = {
@@ -45,7 +46,6 @@ function fakeApi(overrides: Partial<FlowApi> = {}): FlowApi & { calls: Array<[st
     reconcile: record('reconcile', ready),
     confirm: record('confirm', { token: 'tok_abcdef0123456789', spec_hash: 'h1', expires_at: '2026-09-22T09:10:00Z', card: 'Task: ...' }),
     runTool: record('runTool', success),
-    execute: record('execute', success),
     ...overrides,
   }
 }
@@ -229,17 +229,21 @@ describe('the task flow', () => {
     expect(host.requests).toHaveLength(1)        // no report went to the model
   })
 
-  it('execute_code runs the confirmed code with its parameters; tampered code is what gets sent', async () => {
+  it('a spec that is not a saved tool is neither confirmed nor run', async () => {
     const codeSpec: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 1;', code_parameters: [] }, parameters: [], interpretations: [] }
     const host = scriptedHost([{ type: 'spec', spec: codeSpec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
     const api = fakeApi()
     const flow = createTaskFlow({ events: host.events, api })
     await flow.send('brief')
     await flow.confirm()
-    await flow.runTampered({ code: 'return 2;' })
-    expect(api.calls[1]).toEqual(['execute', ['return 2;', [], 'tok_abcdef0123456789']])
-    // no session yet: the report is skipped, not attempted
-    expect(host.requests).toHaveLength(1)
+    await flow.run()
+    await flow.runTampered({ param: 'x', value: '1' })
+    const s = flow.store.getState()
+    expect(api.calls).toEqual([])                                   // no /spec/confirm, no /tools//run
+    expect(s.confirmation).toBeNull()
+    expect(s.execution).toBeNull()
+    expect(s.confirmErrors).toEqual([NOT_OFFERED])
+    expect(NOT_OFFERED.code).toBe('code_not_offered')
   })
 
   it('a 422 from /spec/confirm lists the spec errors; a 400 from /run is shown in the result shape', async () => {
@@ -277,6 +281,94 @@ describe('the task flow', () => {
     flow.setCompare(true)
     flow.reset()
     expect(flow.store.getState()).toMatchObject({ proposal: null, compare: true, bridge: { messages: [], sessionId: null } })
+  })
+})
+
+describe('the trace of each reply', () => {
+  const stage = (status: 'start' | 'end'): HostEvent => ({ type: 'stage', role: 'planner', model: 'm-1', status })
+  const tool = (id: string, status: 'running' | 'ok' | 'error'): HostEvent =>
+    ({ type: 'tool', id, role: 'planner', name: 'query', args: { kind: 'levels' }, status })
+  const usage = (round: number, input: number | null, cacheRead: number | null = 0): HostEvent =>
+    ({ type: 'usage', role: 'planner', model: 'm-1', round, input, output: 10, cache_read: cacheRead, cache_write: null, ms: 5 })
+
+  const traceOf = (turn: HostEvent[]) => turn.filter(e => e.type === 'stage' || e.type === 'tool' || e.type === 'usage')
+
+  it('keeps stage, tool and usage events with the assistant message of their turn, in order', async () => {
+    const turn1: HostEvent[] = [
+      { type: 'session', id: 's1' }, stage('start'), usage(1, 1000), tool('1.1.1', 'running'), tool('1.1.1', 'ok'),
+      { type: 'token', text: 'L1 and L2.' }, usage(2, 1200, 1000), stage('end'), { type: 'done' },
+    ]
+    const turn2: HostEvent[] = [stage('start'), { type: 'token', text: 'ok' }, usage(1, 1300, 1200), stage('end'), { type: 'done' }]
+    const host = scriptedHost(turn1, turn2)
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('levels?')
+    let s = flow.store.getState()
+    expect(s.bridge.messages[1]).toEqual({ role: 'assistant', content: 'L1 and L2.', trace: traceOf(turn1) })
+    expect(s.bridge.messages[0].trace).toBeUndefined()
+    await flow.send('thanks')
+    s = flow.store.getState()
+    expect(s.bridge.messages[3].trace).toEqual(traceOf(turn2))
+    expect(s.bridge.messages[1].trace).toEqual(traceOf(turn1))      // the earlier reply keeps its own
+    const { turn, session } = usageOf(s.bridge)
+    expect(turn.map(u => u.round)).toEqual([1])
+    expect(session.map(u => u.input)).toEqual([1000, 1200, 1300])
+    expect(sumUsage(session)).toMatchObject({ input: 3500, cache_read: 2200, output: 30, calls: 3, cache_write: null })
+  })
+
+  it('an unknown count stays unknown in the totals, and the no-bridge side counts its own calls', async () => {
+    const host = scriptedHost(
+      [stage('start'), usage(1, null, null), { type: 'token', text: 'asks' }, stage('end'), { type: 'done' }],
+      [stage('start'), usage(1, 400), { type: 'token', text: 'guesses' }, stage('end'), { type: 'done' }],
+    )
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    flow.setCompare(true)
+    await flow.send('brief')
+    const s = flow.store.getState()
+    const bridge = sumUsage(usageOf(s.bridge).session)
+    expect(bridge.input).toBeNull()
+    expect(bridge.cache_read).toBeNull()
+    expect(bridge.output).toBe(10)
+    expect(usageOf(s.baseline).session.map(u => u.input)).toEqual([400])
+    expect(sumUsage(usageOf(s.baseline).turn).input).toBe(400)
+  })
+
+  it('after an abort, the tool and the stage still open are marked interrupted', async () => {
+    const events = async function* (_request: HostRequest, signal?: AbortSignal): AsyncGenerator<HostEvent> {
+      yield stage('start')
+      yield usage(1, 100)
+      yield tool('1.1.1', 'running')
+      await new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))
+    }
+    const flow = createTaskFlow({ events, api: fakeApi() })
+    const sending = flow.send('levels?')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(flow.store.getState().bridge.messages[1].trace?.map(e => e.type === 'usage' ? 'usage' : e.status)).toEqual(['start', 'usage', 'running'])
+    flow.abort()
+    await sending
+    const s = flow.store.getState()
+    expect(s.bridge.streaming).toBe(false)
+    const trace = s.bridge.messages[1].trace ?? []
+    expect(trace.map(e => e.type === 'usage' ? 'usage' : e.status)).toEqual(['start', 'usage', 'running', 'interrupted', 'interrupted'])
+    expect(trace.slice(3).map(e => e.type)).toEqual(['tool', 'stage'])
+    expect(s.bridge.messages[1].content).not.toContain('Model error')   // an abort is not an error
+  })
+
+  it('a stream that breaks off closes the open rows too; a finished one is left alone', async () => {
+    const host = scriptedHost([stage('start'), tool('1.1.1', 'running')])                 // ends without done
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('x')
+    expect(flow.store.getState().bridge.messages[1].trace?.map(e => e.type === 'usage' ? 'usage' : e.status))
+      .toEqual(['start', 'running', 'interrupted', 'interrupted'])
+  })
+
+  it('a transcript with no replies has no usage; a model error keeps the trace it had', async () => {
+    expect(usageOf(initialState().bridge)).toEqual({ turn: [], session: [] })
+    const host = scriptedHost([stage('start'), usage(1, 10), stage('end'), { type: 'error', detail: 'HTTP 500' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('x')
+    const reply = flow.store.getState().bridge.messages[1]
+    expect(reply.content).toBe('**Model error:** HTTP 500')
+    expect(reply.trace?.map(e => e.type)).toEqual(['stage', 'usage', 'stage'])
   })
 })
 

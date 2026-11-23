@@ -5,7 +5,11 @@ knows about the task, per session id, two-hour idle TTL and at most
 A session holds the messages the model saw (user, assistant with its
 ``tool_calls``, tool results), the ``snapshot_fingerprint`` of the last
 snapshot the model took, the last ``spec`` it proposed and the most recent
-``evidence_id`` the page reported back. It never holds a confirmation
+``evidence_id`` the page reported back. It also keeps the system prompt its
+first turn was sent with (per ``bridge`` value), so every later call of the
+session starts with the same bytes and a provider's prefix cache keeps
+matching, and counts its turns (``llm_calls`` and the trace events number
+them). It never holds a confirmation
 token: the token lives in the browser's memory and the gate's ``pending/``
 directory is the server-side record. Model settings travel with every
 request as headers (see ``backend.llm``), so nothing secret is held here.
@@ -35,6 +39,21 @@ class Session:
     snapshot_fingerprint: str | None = None
     spec: dict | None = None
     evidence_id: str | None = None
+    # bridge (True / False) -> the system prompt of this session's first turn in that mode
+    system_prompts: dict[bool, str] = field(default_factory=dict)
+    turns: int = 0
+
+    def system_prompt(self, bridge: bool, build) -> str:
+        """The session's system prompt for ``bridge``: built by ``build(bridge)`` on first
+        use, then the same text for the rest of the session (a skill edited meanwhile
+        reaches the next session)."""
+        if bridge not in self.system_prompts:
+            self.system_prompts[bridge] = build(bridge)
+        return self.system_prompts[bridge]
+
+    def next_turn(self) -> int:
+        self.turns += 1
+        return self.turns
 
     def touch(self) -> None:
         self.last_active = time.time()

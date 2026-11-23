@@ -6,27 +6,28 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.6
-  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL`` and the
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.8
+  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL``, the
   add-in phase skills ``builtin:revit-task-brief/SKILL``,
   ``builtin:revit-addin-dev/SKILL``, ``builtin:revit-addin-test/SKILL`` and
-  ``builtin:revit-addin-release/SKILL``, with the Markdown under them such as
-  ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
+  ``builtin:revit-addin-release/SKILL``, and the journal skill
+  ``builtin:revit-journal-analysis/SKILL``, with the Markdown under them such
+  as ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
   with a mounted checkout.
 
-Every enabled skill is concatenated into the chat system prompt. Of the
-wheel's skills only ``PROMPT_SKILLS`` are enabled by default: ``revit-core``,
-the contract every snippet follows. The ``revit-bridge`` protocol is written
-for an MCP host (``check_code``, ``confirm_spec``, ``execute_code`` and the
-verification tools, none of which this host gives the model); this host's
-protocol is the package's ``host_instructions()``, which the chat prompt
-always starts with. The other lessons are the model's to ask for with
-``get_guidance`` (the chat prompt says so in one line), the add-in phase
-skills are for building a standalone add-in, which this host has no tools
-for, and ``references/`` and ``lessons/`` are material read on demand, not
-prompt text. A file's own ``enabled`` front matter still decides for itself.
-A mounted ``SKILLS_DIR`` is enabled by default throughout: mounting it is the
-operator's choice and its files are theirs to edit.
+The Skills page lists, edits, enables and disables them. They no longer enter
+the chat's system prompt: the model in this host writes no code, and the skills
+are guidance for writing it (``active_prompt`` still gives the enabled skills'
+text, for whoever needs it). Of the wheel's skills only ``PROMPT_SKILLS`` are
+enabled by default: ``revit-core``, the contract every snippet follows. The
+``revit-bridge`` protocol is written for an MCP host (``check_code``,
+``confirm_spec``, ``execute_code`` and the verification tools); this host's
+protocol is the package's ``host_instructions()`` plus its own paragraph (see
+``backend.api.chat``). The add-in phase skills are for building a standalone
+add-in, and ``references/`` and ``lessons/`` are material read on demand. A
+file's own ``enabled`` front matter still decides for itself. A mounted
+``SKILLS_DIR`` is enabled by default throughout: mounting it is the operator's
+choice and its files are theirs to edit.
 """
 from __future__ import annotations
 

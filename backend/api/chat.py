@@ -17,15 +17,40 @@ the page reported an execution (first frame of that turn), ``event: error``
 for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
+What the host did is visible in three more events (they add to the stream and
+change nothing else in it):
+
+- ``event: stage`` ``{role, model, status}``: ``start`` after the ``execution``
+  echo and before the first model call, ``end`` after the last one (before
+  ``error`` or ``done``). The role is always ``planner`` until the roles package.
+- ``event: tool`` ``{id, role, name, args, status, ms?, size?, preview?, error?}``:
+  ``running`` when a tool call starts, then ``ok`` or ``error`` with the same
+  ``id`` when it ends (``error`` when the handler raised - ``error`` is then the
+  exception's type name only - or its result carries an ``error``); ``args`` as the
+  model gave them, or ``{_truncated, _chars, _head}`` when their JSON text is longer
+  than ``TOOL_ARGS_LIMIT``; ``size`` the result's length in characters, ``preview``
+  its first ``TOOL_PREVIEW`` characters. ``bridge: false`` runs no tools and sends
+  none. ``stage`` ``end`` is sent on every way the turn ends that can still send.
+- ``event: usage`` ``{role, model, round, input, output, cache_read, cache_write,
+  ms}`` after every model call (``round`` counts the calls of the turn from 1);
+  a number the provider did not report is ``null``. The same row goes to the
+  ``llm_calls`` table with the request's ``X-Run-Label``.
+
+Within one session the system prompt is the one its first turn was sent with
+(``Session.system_prompt``) and the tool definitions are a constant: the
+prefix a provider caches stays byte for byte the same from call to call.
+
 The system prompt with the bridge is the package's host instructions (this
-host's protocol), the enabled skills (by default the wheel's ``revit-core``;
-see ``backend.skill_store``) and one line that points to ``get_guidance`` for
-every other lesson category.
+host's protocol) and one paragraph of this host's own, ``HOST_PARAGRAPH``: the
+model here never writes or proposes code, uses saved tools only and, when none
+fits, says so and points to the workbench. The package's text still speaks of
+``execute_code`` and the snippet contract (a variant without code comes with a
+later release); the paragraph after it is what this host holds the model to.
+Skills are no longer part of the prompt (the Skills page still lists and edits
+them), and there is no ``get_guidance``.
 
 A tool result stays in the session up to ``TOOL_RESULT_KEEP`` characters after
-the turn that produced it (head plus a one-line note); a ``get_guidance``
-reply up to ``GUIDANCE_RESULT_KEEP``, so the lessons a task started with stay
-whole in the turns that write and fix its code.
+the turn that produced it (head plus a one-line note).
 
 ``bridge: false`` is the comparison mode of the task page: one fixed base
 prompt, no tools, no skills, no execution feedback - what a model would do
@@ -37,29 +62,32 @@ the round ends with the model's text, or an empty assistant message.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
+import time
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from revit_bridge import host_instructions
-from revit_bridge.guidance import CATEGORIES
 
 from backend.api.bridge import set_device_context
 from backend.api.errors import ApiError
-from backend.api.model_tools import GET_GUIDANCE, TOOL_DEFINITIONS, ToolOutcome, call_tool, parse_arguments
+from backend.api.model_tools import (
+    TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
+)
 from backend.config import get_settings
 from backend.llm import (
-    SSE_DONE, LLMError, assistant_message, format_sse, format_sse_event, resolve_llm,
+    SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, resolve_llm,
     stream_completion, tool_message,
 )
-from backend.log_store import get_client_ip, log_and_stream
+from backend.log_store import get_client_ip, get_log_store, log_and_stream
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import get_session_store
-from backend.skill_store import get_skill_store
 
 router = APIRouter(prefix="/api", tags=["chat"])
 _log = logging.getLogger("backend.chat")
@@ -67,9 +95,6 @@ _log = logging.getLogger("backend.chat")
 HISTORY_WINDOW = 40          # messages sent to the model, cut at a user turn
 MAX_TOOL_ROUNDS = 8          # tool-call rounds per turn before the model must answer in text
 TOOL_RESULT_KEEP = 8192      # characters of a tool result kept in the session after its turn
-# get_guidance's replies: the package budgets recommend (orient is about 12.4 KB, every
-# recommend and index reply measured fits); only mode "read" of many ids runs longer.
-GUIDANCE_RESULT_KEEP = 16384
 ELISION_NOTE = "[tool result elided after {kept} characters; the model saw all {total} in the turn that produced it]"
 # An execution report (an ExecutionResult the page got from /run or /execute), as JSON
 # text, enters the session and every later prompt. Up to EXECUTION_KEEP characters go in
@@ -85,13 +110,19 @@ EXECUTION_ELISION_NOTE = ("[execution result elided after {kept} characters; the
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
 
-# The lessons that are not in the prompt: one line instead of every category's text.
-GUIDANCE_POINTER = (
-    "The lessons are not in this prompt, neither revit-core's nor those of the other categories ("
-    + ", ".join(c for c in CATEGORIES if c != "revit-core")
-    + '): call get_guidance - stage "orient" at the start of a task, '
-    '"write" before you write C# (symbols, revit_categories), "fix" after a failed execution '
-    '(errors, symbols); mode "index" lists every lesson.'
+# This host's own paragraph after the package's host instructions (which still describe
+# execute_code and the snippet contract): the model here never writes code. The link is
+# the workbench page's path as a relative Markdown link, which the chat renders as a link.
+HOST_PARAGRAPH = (
+    "## In this host: saved tools only, no code\n"
+    "This host runs only saved tools (capability packs). Here you never write, show or propose C# "
+    "code: there is no execute_code and no get_guidance, and propose_spec refuses an execute_code "
+    "spec. Everything above about writing code, the snippet contract and execute_code does not "
+    "apply here. Pick a tool from list_tools, fill its parameters (missing_params, get_tool_choices, "
+    "reconcile) and propose a run_tool spec. When no saved tool fits the request, write no code: "
+    "tell the designer that no tool here does this, describe in one sentence the tool they would "
+    f"need, and point them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - "
+    "a new tool is tried and saved there, then it is in list_tools."
 )
 
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
@@ -99,6 +130,56 @@ BASE_PROMPT = (
     "You are an assistant to an architect who works in Autodesk Revit. Answer their "
     "questions and requests as helpfully as you can, in their language."
 )
+
+# The one role of the host loop until the roles package splits it (stage/tool/usage events).
+ROLE = "planner"
+TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool`` event
+TOOL_ERROR_TEXT = 500        # characters of the error text in a closing ``tool`` event
+# Arguments whose JSON text is longer than TOOL_ARGS_LIMIT go out in both tool events as
+# {"_truncated": true, "_chars": <length>, "_head": <first TOOL_ARGS_HEAD characters>}.
+TOOL_ARGS_LIMIT = 8000
+TOOL_ARGS_HEAD = 2000
+
+
+def shown_arguments(raw: str, args: dict | None) -> dict:
+    """A tool call's arguments as its ``tool`` events carry them: the object the model gave
+    (``{"_raw": <text>}`` when that was not a JSON object), or, when its JSON text runs past
+    ``TOOL_ARGS_LIMIT`` characters, the truncation marker with the length and the head."""
+    shown = args if args is not None else {"_raw": raw}
+    text = json.dumps(shown, ensure_ascii=False)
+    if len(text) > TOOL_ARGS_LIMIT:
+        return {"_truncated": True, "_chars": len(text), "_head": text[:TOOL_ARGS_HEAD]}
+    return shown
+
+# X-Run-Label: names a run of the token bench in llm_calls.
+_RUN_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+RUN_LABEL_DOC = ("Optional name of a measured run (the token bench): stored with every model call of "
+                 "this turn in llm_calls, read back with GET /api/usage/runs. 1-64 characters of "
+                 "A-Z a-z 0-9 _ . - (not . or ..); anything else is 422 invalid_args.")
+
+
+def check_run_label(value: str | None) -> str | None:
+    """``X-Run-Label`` as sent: absent is None; 1-64 of ``A-Z a-z 0-9 _ . -``, not ``.`` or
+    ``..``, else 422 ``invalid_args``."""
+    if value is None:
+        return None
+    if not _RUN_LABEL.fullmatch(value) or value in (".", ".."):
+        raise ApiError(422, "invalid_args",
+                       "X-Run-Label must be 1-64 characters of A-Z, a-z, 0-9, '_', '.', '-' (not '.' or '..')")
+    return value
+
+
+def tool_error_text(result) -> str | None:
+    """The error a tool result reports (``{error, message?}``), as one line; None when it
+    reports none."""
+    if not isinstance(result, dict) or not result.get("error"):
+        return None
+    error = result["error"]
+    text = error if isinstance(error, str) else json.dumps(error, ensure_ascii=False)
+    message = result.get("message")
+    if isinstance(message, str) and message:
+        text = f"{text}: {message}"
+    return text[:TOOL_ERROR_TEXT]
 
 
 class ChatRequest(BaseModel):
@@ -116,16 +197,11 @@ def rate_limit(request: Request) -> None:
 
 
 def build_system_prompt(bridge: bool = True) -> str:
-    """The package's host instructions, every enabled skill and the get_guidance pointer;
-    the base prompt without the bridge."""
+    """The package's host instructions and ``HOST_PARAGRAPH``; the base prompt without the
+    bridge. No skills, no lessons: the model here writes no code."""
     if not bridge:
         return BASE_PROMPT
-    parts = [host_instructions().strip()]
-    skills = get_skill_store().active_prompt()
-    if skills:
-        parts.append("## Skills\n\n" + skills)
-    parts.append("## Guidance\n\n" + GUIDANCE_POINTER)
-    return "\n\n".join(parts)
+    return host_instructions().strip() + "\n\n" + HOST_PARAGRAPH
 
 
 def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
@@ -150,11 +226,6 @@ def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
     return f"{EXECUTION_PREFIX}\n{text}"
 
 
-def result_keep(tool: str) -> int:
-    """How much of a tool's result the session keeps after the turn that produced it."""
-    return GUIDANCE_RESULT_KEEP if tool == GET_GUIDANCE else TOOL_RESULT_KEEP
-
-
 def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
     """The tool message as the session stores it: a snapshot or an element listing can
     run to hundreds of KB, and every later turn would carry it again. The turn that
@@ -167,7 +238,8 @@ def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
 
 
 @router.post("/chat", dependencies=[Depends(rate_limit)])
-async def chat(req: ChatRequest, request: Request):
+async def chat(req: ChatRequest, request: Request,
+               x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
     if (req.message is None) == (req.execution is None):
         raise ApiError(422, "invalid_args", "send exactly one of message and execution")
     if req.message is not None and not req.message.strip():
@@ -179,6 +251,7 @@ async def chat(req: ChatRequest, request: Request):
         if size > MAX_EXECUTION_CHARS:
             raise ApiError(422, "invalid_args",
                            f"execution is too large: {size} characters as JSON, at most {MAX_EXECUTION_CHARS}")
+    run_label = check_run_label(x_run_label)
     if req.bridge:
         # The model's tools reach Revit through the selected device: the same header
         # checks as the bridge routes (403 on a wrong or revoked device key).
@@ -197,29 +270,57 @@ async def chat(req: ChatRequest, request: Request):
         )
 
     session = get_session_store().get_or_create(req.session_id)
+    turn = session.next_turn()
     text = req.message if req.message is not None else execution_message(req.execution)
     session.add({"role": "user", "content": text})
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
     tools = TOOL_DEFINITIONS if req.bridge else None
-    messages = [{"role": "system", "content": build_system_prompt(req.bridge)}]
+    # The first turn's prompt for the whole session: the cached prefix stays the same.
+    messages = [{"role": "system", "content": session.system_prompt(req.bridge, build_system_prompt)}]
     messages.extend(session.window(HISTORY_WINDOW))
+    calls_log = get_log_store()
+
+    def stage(status: str) -> str:
+        return format_sse_event("stage", {"role": ROLE, "model": llm.model, "status": status})
+
+    def tool_event(event_id: str, name: str, args: dict, status: str, **extra) -> str:
+        return format_sse_event("tool", {"id": event_id, "role": ROLE, "name": name, "args": args,
+                                         "status": status, **extra})
+
+    async def usage(round_no: int, stats: CallStats, started: float) -> str:
+        """The ``usage`` event of one model call; its ``llm_calls`` row is written first."""
+        ms = int((time.monotonic() - started) * 1000)
+        counts = stats.usage.as_dict()
+        await asyncio.to_thread(calls_log.record_call, session_id=session.session_id, turn=turn,
+                                round=round_no, role=ROLE, model=llm.model, usage=counts, ms=ms,
+                                run_label=run_label)
+        return format_sse_event("usage", {"role": ROLE, "model": llm.model, "round": round_no, **counts, "ms": ms})
 
     async def generate() -> AsyncGenerator[str, None]:
         if req.execution is not None:
             yield format_sse_event("execution", req.execution)
+        yield stage("start")
         try:
             for round_no in range(MAX_TOOL_ROUNDS + 1):
                 # The last round goes out without tools so the model has to answer in text.
                 round_tools = tools if round_no < MAX_TOOL_ROUNDS else None
                 parts: list[str] = []
                 calls = None
-                async for item in stream_completion(llm, messages, tools=round_tools):
-                    if isinstance(item, str):
-                        parts.append(item)
-                        yield format_sse(item)
-                    else:
-                        calls = item
+                stats = CallStats()
+                started = time.monotonic()
+                try:
+                    async for item in stream_completion(llm, messages, tools=round_tools, stats=stats):
+                        if isinstance(item, str):
+                            parts.append(item)
+                            yield format_sse(item)
+                        else:
+                            calls = item
+                except LLMError:
+                    if stats.accepted:          # the endpoint took the call: it may have cost tokens
+                        yield await usage(round_no + 1, stats, started)
+                    raise
+                yield await usage(round_no + 1, stats, started)
                 content = "".join(parts)
                 if calls and round_tools is None:
                     # Nothing was offered, so nothing runs: the round ends with the text.
@@ -235,22 +336,51 @@ async def chat(req: ChatRequest, request: Request):
                 assistant = assistant_message(content, calls)
                 session.add(assistant)
                 messages.append(assistant)
-                for call in calls:
+                for index, call in enumerate(calls, start=1):
+                    event_id = f"{turn}.{round_no + 1}.{index}"     # unique in the session
                     args = parse_arguments(call.arguments)
-                    if args is None:
-                        outcome = ToolOutcome({"error": "invalid_args",
-                                               "message": "arguments must be a JSON object"})
-                    else:
-                        outcome = await call_tool(call.name, args, session)
+                    shown_args = shown_arguments(call.arguments, args)
+                    yield tool_event(event_id, call.name, shown_args, "running")
+                    tool_started = time.monotonic()
+                    try:
+                        if args is None:
+                            outcome = ToolOutcome({"error": "invalid_args",
+                                                   "message": "arguments must be a JSON object"})
+                        else:
+                            outcome = await call_tool(call.name, args, session)
+                        reply = tool_message(call, outcome.result)
+                    except Exception as exc:
+                        # The turn fails as before; the row still closes. The browser gets the
+                        # exception's type only - its text (paths, internals) goes to the log.
+                        _log.error("tool %s raised in session %s", call.name, session.session_id,
+                                   exc_info=True)
+                        yield tool_event(event_id, call.name, shown_args, "error",
+                                         ms=int((time.monotonic() - tool_started) * 1000),
+                                         error=type(exc).__name__)
+                        raise
+                    result_text = reply["content"]
+                    error = tool_error_text(outcome.result)
+                    closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
+                               "preview": result_text[:TOOL_PREVIEW]}
+                    if error is not None:
+                        closing["error"] = error
+                    yield tool_event(event_id, call.name, shown_args, "error" if error else "ok", **closing)
                     if outcome.spec_event is not None:
                         yield format_sse_event("spec", outcome.spec_event)
-                    reply = tool_message(call, outcome.result)
                     # The session keeps at most the head; this turn sees all of it.
-                    session.add(kept_tool_message(reply, result_keep(call.name)))
+                    session.add(kept_tool_message(reply))
                     messages.append(reply)
         except LLMError as exc:
+            yield stage("end")
             yield format_sse_event("error", {"detail": str(exc)})
             return
+        except Exception:
+            # Anything else ends the turn as before (the response breaks off), but the stage
+            # is closed first. A generator closed by a client that went away (GeneratorExit,
+            # cancellation) can send nothing more: the page marks what stayed open.
+            yield stage("end")
+            raise
+        yield stage("end")
         yield SSE_DONE
 
     return StreamingResponse(
