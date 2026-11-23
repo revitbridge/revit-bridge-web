@@ -6,7 +6,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
-Upgrading: the host needs `revit-bridge>=0.6,<0.7` (`uv sync`, or rebuild the image). The system
+Upgrading: the host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
@@ -140,7 +140,21 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
-- Requires `revit-bridge>=0.6,<0.7` (0.6.1 in `uv.lock`; the image installs it from PyPI). 0.6.1 is the first release whose device store raises when `devices.json` cannot be read, which the pair, redeem and delete-device routes answer with 503. From
+- Requires `revit-bridge>=0.8,<0.9` (0.8.2 in `uv.lock`; the image installs it from PyPI). From
+  0.6.1 to 0.8.2 nothing the host imports changed its name, signature or reply, and no route,
+  tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export, `GET /tools` lists
+  the same eight packs, and the model's tool definitions and `get_guidance` replies are the same
+  byte for byte (the MCP tool's docstring did not change). The tools 0.7 added to the MCP server
+  (`dry_run_code`, `test_addin_command`, `zoom_view`, `capture_view`) are not the model's here.
+  What the model and the pages now see: the prompt's first line names revit-bridge 0.8, and
+  `revit-core` (on by default) has a new section, "Keep Revit interactive", so with the bridge the
+  prompt is 6,007 bytes instead of 5,455. The skill list has 44 entries instead of 40: the journal
+  skill `revit-journal-analysis` and its three references, all off. The package's JSON stores this
+  host writes through it (`usage.json`, `auth/devices.json`) no longer lose an update or end up
+  corrupt when two writers meet (0.8.0). When the host and an MCP server share one
+  `REVIT_BRIDGE_DATA_DIR`, the Evidence page can also list the server's new ledger lines (`action`
+  `dry_run`, `addin_test`, `zoom_view` or `capture_view`; no pack, no *Validate*).
+- Before that, in this cycle: `revit-bridge>=0.6,<0.7` (0.6.1). 0.6.1 is the first release whose device store raises when `devices.json` cannot be read, which the pair, redeem and delete-device routes answer with 503. From
   0.4.0 to 0.6.0 no route, tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same
   export and `GET /tools` lists the same eight packs. What the pages and the model now see: an
   execution reads the levels once more after the document probe (a pack with preconditions takes
@@ -158,7 +172,8 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   describes the MCP server's tool flow (`check_code`, `confirm_spec`, `execute_code`, the
   verification tools), and this host's protocol is the package's `host_instructions()`, which
   opens the prompt. `revit-addin-dev`, references and lessons are listed but off too. A file's
-  own `enabled: true` still turns it on. With the bridge the prompt is 5,455 bytes (UTF-8); with
+  own `enabled: true` still turns it on. With the bridge the prompt is 6,007 bytes (UTF-8, with
+  revit-bridge 0.8.2; 5,455 with 0.6.1); with
   the `revit-bridge` protocol in it, it was 22,348 bytes, and concatenating every `SKILL.md` of
   0.4.0 would have made it 28,918 bytes (13,837 with 0.3.0). A mounted `SKILLS_DIR` is
   unchanged: every file on unless it says otherwise.
