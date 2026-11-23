@@ -1,5 +1,5 @@
-/* Three pages: Connect, Task, Capabilities. /capabilities/workbench opens the Capabilities
-   page's workbench (route.ts). */
+/* The pages: Connect, Task, Capabilities, Evidence, Token. /capabilities/workbench opens the
+   Capabilities page's workbench, /token the Token page (route.ts). */
 
 import { useEffect, useState } from 'react'
 import { getConfig } from './config'
@@ -8,6 +8,7 @@ import ConnectPage from './components/pages/ConnectPage'
 import TaskPage from './components/pages/TaskPage'
 import CapabilitiesPage from './components/pages/CapabilitiesPage'
 import EvidencePage from './components/pages/EvidencePage'
+import TokenPage from './components/pages/TokenPage'
 import { currentPath, showPath, TABS, viewOf, type View } from './route'
 
 /* The header chip: the selected device's name, or the local add-in. */
@@ -57,6 +58,7 @@ export default function App({ path }: { path?: string }) {
         {active === 1 && <TaskPage />}
         {active === 2 && <CapabilitiesPage view={view.capabilities} onView={capabilities => setView({ ...view, capabilities })} />}
         {active === 3 && <EvidencePage />}
+        {active === 4 && <TokenPage />}
       </main>
     </div>
   )
