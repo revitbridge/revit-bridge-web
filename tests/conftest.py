@@ -21,9 +21,18 @@ def _no_dns(monkeypatch):
     monkeypatch.setattr(llm, "resolve_addresses", public)
 
 
+# The cloud host's ADMIN_PASSWORD in every test that does not set its own (a cloud host
+# refuses to start without one). Deliberately not the "hunter2" the tests send.
+FIXTURE_ADMIN_PASSWORD = "fixture-admin-password"
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    """Point the host at a private data dir and no Revit; returns monkeypatch."""
+    """Point the host at a private data dir and no Revit; returns monkeypatch.
+
+    The host is a cloud one (DEPLOY_MODE=cloud with FIXTURE_ADMIN_PASSWORD): the
+    suite written before deploy modes describes that host. Tests of a local host
+    use ``local_env``."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     # The package's own data root (user packs, usage.json, evidence) must not
     # be the developer's real one.
@@ -36,11 +45,23 @@ def env(tmp_path, monkeypatch):
                 "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_ALLOW_HTTP",
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
-                "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT"):
+                "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT",
+                "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DEPLOY_MODE", "cloud")
+    monkeypatch.setenv("ADMIN_PASSWORD", FIXTURE_ADMIN_PASSWORD)
     _reset()
     yield monkeypatch
     _reset()
+
+
+@pytest.fixture
+def local_env(env):
+    """A local host (DEPLOY_MODE=local, no ADMIN_PASSWORD); returns monkeypatch."""
+    env.setenv("DEPLOY_MODE", "local")
+    env.delenv("ADMIN_PASSWORD", raising=False)
+    _reset()
+    return env
 
 
 def _reset() -> None:

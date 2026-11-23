@@ -137,8 +137,8 @@ def test_skill_edits_require_the_admin_password(make_client, env, tmp_path):
     env.setenv("SKILLS_DIR", str(empty))  # override the wheel's skills with nothing
     client = make_client()
     assert client.get("/api/skills").json() == {"skills": []}
-    # No ADMIN_PASSWORD configured: mutations are unavailable, not open.
-    assert client.post("/api/skills", json={"name": "x", "content": "y"}).status_code == 503
+    # No X-Admin-Token: mutations are refused, not open (a cloud host always has ADMIN_PASSWORD).
+    assert client.post("/api/skills", json={"name": "x", "content": "y"}).status_code == 403
 
 
 def test_skill_crud_and_prompt_injection(make_client, env, tmp_path):
@@ -309,7 +309,7 @@ def test_skill_import_accepts_only_github(make_client, env):
 
 
 def test_logs_are_admin_only(make_client, env):
-    assert make_client().get("/api/logs").status_code == 503
+    assert make_client().get("/api/logs").status_code == 403      # the fixture's password, no token
     env.setenv("ADMIN_PASSWORD", "hunter2")
     client = make_client()
     assert client.get("/api/logs").status_code == 403

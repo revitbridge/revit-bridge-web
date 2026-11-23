@@ -27,9 +27,10 @@ jobs:
             echo "model SDK or vector store found in the environment" >&2
             exit 1
           fi
+      # Exported from a cloud host: every route present (a local one has no relay routes).
       - name: OpenAPI export is current
         run: |
-          uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > /tmp/api.json
+          DEPLOY_MODE=cloud ADMIN_PASSWORD=openapi-export uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > /tmp/api.json
           diff -u docs/api-v1.json /tmp/api.json
 
   frontend:
@@ -58,7 +59,11 @@ jobs:
         run: docker build -t revit-bridge-web:ci .
       - name: Smoke
         run: |
-          docker run -d --name web -p 7860:7860 revit-bridge-web:ci
+          # Local mode (the default) refuses to start unless the port is published on loopback,
+          # and a cloud host without ADMIN_PASSWORD refuses too.
+          if docker run --rm -e BIND_ADDRESS=0.0.0.0 revit-bridge-web:ci; then exit 1; fi
+          if docker run --rm -e DEPLOY_MODE=cloud revit-bridge-web:ci; then exit 1; fi
+          docker run -d --name web -p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1 revit-bridge-web:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:7860/health >/dev/null; then break; fi
             sleep 1

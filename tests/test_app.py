@@ -24,6 +24,7 @@ def test_health_and_config_json(make_client, env):
         "apiBase": "",  # served by the backend, the SPA is same-origin by construction
         "wsBase": "wss://relay.example/api/v1/bridge/ws",
         "features": {
+            "mode": "cloud",
             "byoModel": True,
             "serverModel": False,
             "admin": True,
@@ -36,10 +37,11 @@ def test_health_and_config_json(make_client, env):
 
 
 def test_settings_defaults_come_from_env_only():
-    s = WebSettings.from_env({})
+    # A cloud host needs ADMIN_PASSWORD (DEPLOY_MODE); the local defaults are in test_deploy_mode.py.
+    s = WebSettings.from_env({"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "pw"})
     assert (s.host, s.port, s.max_devices, s.cors_origins) == ("0.0.0.0", 7860, 20, ())
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
-        "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 20,
+        "mode": "cloud", "byoModel": True, "serverModel": False, "admin": True, "maxDevices": 20,
         "slotTokenRequired": False, "maxSlots": 20}}
     s = WebSettings.from_env({"LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
                               "CORS_ORIGINS": "https://a, https://b"})
