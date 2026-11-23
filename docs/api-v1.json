@@ -1395,7 +1395,7 @@
           "bridge"
         ],
         "summary": "Import Tool",
-        "description": "Store a pack file sent as YAML text in the user capabilities directory, as it is.\n\nValidated as the package validates a pack file (``validate_pack``: the v1 layout, 422\n``invalid_pack`` with the problems), its name checked (422 ``invalid_tool_name``), its\ncode reviewed by the sandbox (400 ``blocked``). A built-in pack's name is refused (409\n``builtin_read_only``), and so is the name of a user pack that exists unless\n``overwrite=true`` (409 ``pack_exists``). Admin password required on a cloud host.",
+        "description": "Store a pack file sent as YAML text in the user capabilities directory, as it is.\n\nValidated as the package validates a pack file (``validate_pack``: the v1 layout, 422\n``invalid_pack`` with the problems; YAML aliases are refused), its name checked (422\n``invalid_tool_name``), its code reviewed by the sandbox (400 ``blocked``). The name of\na built-in pack with no user file of that name is refused (409 ``builtin_read_only``);\na user file of that name - a built-in's name too - is replaced only with\n``overwrite=true`` (409 ``pack_exists`` otherwise). Admin password required on a cloud\nhost.",
         "operationId": "import_tool_api_v1_bridge_tools_import_post",
         "parameters": [
           {
@@ -1877,7 +1877,7 @@
           "bridge"
         ],
         "summary": "Check Code",
-        "description": "``checking.check_code``: compile the snippet in Revit without running it - no token,\nnothing changes. The package's reply as it is (``{schema_version, checked, compiled,\nblocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,\nenvironment, warnings}``), with the guidance lessons the MCP tool adds. As the MCP tool\ndoes, code the sandbox refuses is answered before Revit is needed (``blocked: true``);\nno Revit to ask is 503 ``revit_unreachable``, as on every route.",
+        "description": "``checking.check_code``: compile the snippet in Revit without running it - no token,\nnothing changes. The package's reply as it is (``{schema_version, checked, compiled,\nblocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,\nenvironment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +\n``values`` instead of ``code``: the draft's template filled by the package first (422\n``invalid_pack`` / ``render_failed``). As the MCP tool does, code the sandbox refuses is\nanswered before Revit is needed (``blocked: true``); no Revit to ask is 503\n``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
         "operationId": "check_code_api_v1_bridge_check_post",
         "requestBody": {
           "content": {
@@ -1918,6 +1918,16 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "No Revit add-in answers (revit_unreachable)",
             "content": {
@@ -1937,7 +1947,7 @@
           "bridge"
         ],
         "summary": "Dry Run Code",
-        "description": "``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group\nthe add-in always rolls back - nothing is kept, the undo stack is untouched, so no\nconfirmation and no token (the package's rule: the gate takes no part in a dry run).\nThe package's reply as it is (``{success, rolled_back, result, error, diagnostics,\nchanges, failures, fingerprint, evidence_id, hint, warnings}``); each request that\nreaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's\nscope. Code the sandbox refuses is answered before Revit is needed (``error:\n\"blocked\"``); no Revit to ask is 503 ``revit_unreachable``.",
+        "description": "``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group\nthe add-in always rolls back - nothing is kept, the undo stack is untouched, so no\nconfirmation and no token (the package's rule: the gate takes no part in a dry run).\nThe package's reply as it is (``{success, rolled_back, result, error, diagnostics,\nchanges, failures, fingerprint, evidence_id, hint, warnings}``); each request that\nreaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's\nscope. ``pack`` + ``values`` instead of ``code``: the draft's template filled by the\npackage first, exactly the code the saved pack would send. Code the sandbox refuses is\nanswered before Revit is needed (``error: \"blocked\"``); no Revit to ask is 503\n``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s\nlimit.",
         "operationId": "dry_run_code_api_v1_bridge_dry_run_post",
         "requestBody": {
           "content": {
@@ -1978,8 +1988,88 @@
               }
             }
           },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "503": {
             "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/choices": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Choices Of",
+        "description": "The real options of one ``choices_from`` (``levels``, ``floor_types``,\n``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's\n``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,\nasked for one parameter - so the values are what a saved pack receives. A value the\npack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504\nafter 15 s).",
+        "operationId": "choices_of_api_v1_bridge_choices_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChoicesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Revit did not answer in time (revit_timeout)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2067,7 +2157,7 @@
           "bridge"
         ],
         "summary": "Solidify Tool",
-        "description": "``ToolStore.solidify``: save working code as a v1 pack in the user capabilities\ndirectory (admin password required on a cloud host; a user pack of the same name is\nreplaced); best-effort sync to the add-in. A built-in pack's name is refused: 409\n``builtin_read_only``.",
+        "description": "``ToolStore.solidify``: save working code as a v1 pack in the user capabilities\ndirectory (admin password required on a cloud host; a user pack of the same name is\nreplaced, a user file of a built-in's name too); best-effort sync to the add-in. The\nname of a built-in pack with no user file of that name is refused: 409\n``builtin_read_only``.",
         "operationId": "solidify_tool_api_v1_bridge_solidify_post",
         "parameters": [
           {
@@ -2930,7 +3020,14 @@
       "CheckCodeRequest": {
         "properties": {
           "code": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Code"
           },
           "parameters": {
@@ -2944,14 +3041,51 @@
               }
             ],
             "title": "Parameters"
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
           }
         },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CheckCodeRequest",
+        "description": "``checking.check_code(client, code, parameters)``."
+      },
+      "ChoicesRequest": {
+        "properties": {
+          "choices_from": {
+            "type": "string",
+            "title": "Choices From"
+          }
+        },
+        "additionalProperties": false,
         "type": "object",
         "required": [
-          "code"
+          "choices_from"
         ],
-        "title": "CheckCodeRequest",
-        "description": "``checking.check_code(client, code, parameters)``: the snippet and its ``parameters``\n(the snippet's object[]), as the MCP tool takes them."
+        "title": "ChoicesRequest",
+        "description": "One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |\nelements:OST_*."
       },
       "ConfirmRequest": {
         "properties": {
@@ -2975,7 +3109,14 @@
       "DryRunRequest": {
         "properties": {
           "code": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Code"
           },
           "parameters": {
@@ -2989,14 +3130,36 @@
               }
             ],
             "title": "Parameters"
+          },
+          "pack": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack"
+          },
+          "values": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Values"
           }
         },
+        "additionalProperties": false,
         "type": "object",
-        "required": [
-          "code"
-        ],
         "title": "DryRunRequest",
-        "description": "``dry_run.dry_run_code(client, code, parameters)``. The package's ``include`` (paths\nof .cs files on the machine running the host, read and sent to Revit) is not offered:\na browser has no business naming files on the server."
+        "description": "``dry_run.dry_run_code(client, code, parameters)``."
       },
       "ErrorBody": {
         "properties": {

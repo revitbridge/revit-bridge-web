@@ -700,7 +700,7 @@ def test_a_cloud_host_keeps_its_own_protection(make_client, env):
 FOREIGN_FETCHES = [("GET", f"{B}/snapshot"), ("GET", f"{B}/tools/create_wall/choices"),
                    ("POST", f"{B}/trigger-selection"), ("POST", f"{B}/evidence/ev_x/validate"),
                    ("POST", f"{B}/query"), ("DELETE", f"{B}/tools/create_beam"),
-                   ("POST", f"{B}/check"), ("POST", f"{B}/dry-run"), ("POST", f"{B}/tools/import"),
+                   ("POST", f"{B}/check"), ("POST", f"{B}/dry-run"), ("POST", f"{B}/tools/import"), ("POST", f"{B}/choices"),
                    ("GET", f"{B}/tools/create_wall/export"),
                    ("GET", "/config.json"), ("GET", "/health"), ("GET", f"{B}/tools")]
 

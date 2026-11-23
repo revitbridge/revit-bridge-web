@@ -25,14 +25,21 @@ listed on the next request.
 
 The workbench's routes: ``POST /check`` (``checking.check_code``: compile, never
 run) and ``POST /dry-run`` (``dry_run.dry_run_code``: run and always roll back,
-no token - the package's rule), ``GET /tools/{name}/export`` (the pack file as
-stored) and ``POST /tools/import`` (a pack file, validated as the package
-validates a pack file).
+no token - the package's rule), each taking either ``code`` (a snippet) or
+``pack`` + ``values`` (a draft pack whose template the package fills, see
+``render_draft``); ``POST /choices`` (the real options of one ``choices_from``,
+from the code ``get_tool_choices`` uses); ``GET /tools/{name}/export`` (the
+pack file as stored) and ``POST /tools/import`` (a pack file, validated as the
+package validates a pack file). On a cloud host ``/check`` and ``/dry-run``
+share ``/spec/confirm``'s rate limit.
 
 Built-in packs are read-only: a name whose pack ships in the wheel and has no
-user file is never updated, hidden, replaced by a solidified pack or by an
-import (409 ``builtin_read_only``). Every tool name that comes from a request is
-checked before it reaches the file system (``require_tool_name``).
+file of that name in the user directory is never updated, hidden, replaced by a
+solidified pack or by an import (409 ``builtin_read_only``). A user file of a
+built-in's name is the designer's own: it can be updated, replaced (import with
+``overwrite=true``, solidify) and deleted, and deleting it shows the wheel's pack
+again. Every tool name that comes from a request is checked before it reaches
+the file system (``require_tool_name``).
 
 Status codes: a request the route refuses as such is 400 (``confirmation_required``,
 ``invalid_category``, ``unknown_kind``, ``blocked``, ``no_validator``), a body that
@@ -51,6 +58,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextvars import ContextVar
@@ -62,7 +70,7 @@ import yaml
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import HTTPConnection
 
 from revit_bridge import __version__ as bridge_version
@@ -70,7 +78,7 @@ from revit_bridge import checking
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.capabilities.schema import IDENTIFIER_RE, validate_pack
+from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
@@ -204,19 +212,19 @@ def unknown_tool(name: str) -> ApiError:
 # -- tool names ----------------------------------------------------------------------
 
 # A tool name becomes a file name: the store reads and writes <directory>/<name>.yaml.
-# The package's schema asks a pack name only to be a non-empty string; the host
-# accepts the schema's identifier pattern (IDENTIFIER_RE, the shape of a parameter
-# name and a {placeholder}: a letter or _, then letters, digits or _ - no dot, no
-# path separator), at most TOOL_NAME_MAX characters, and never a Windows device
-# name: on Windows con.yaml is the console in every directory, and
-# ToolStore().load("con") blocks reading it. Checked before any store call, in the
-# routes and in the model's tools.
+# The package's schema asks a pack name only to be a non-empty string. The host takes
+# the shape of the schema's parameter names (IDENTIFIER_RE: a letter or _, then
+# letters, digits or _ - no dot, no path separator) in ASCII only (IDENTIFIER_RE's \w
+# would let CJK and look-alike letters such as a Cyrillic "c" in), at most
+# TOOL_NAME_MAX characters, and never a Windows device name: on Windows con.yaml is
+# the console in every directory, and ToolStore().load("con") blocks reading it.
+# Checked before any store call, in the routes and in the model's tools.
 TOOL_NAME_MAX = 100
 INVALID_TOOL_NAME = "invalid_tool_name"
-# CON, PRN, AUX, NUL, COM0-9 and LPT0-9 (also with the superscript digits 1-3 Windows
-# reads as digits), with or without an extension, in any case.
-_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", "conin$", "conout$"} | {
-    f"{port}{digit}" for port in ("com", "lpt") for digit in "0123456789\u00b9\u00b2\u00b3"})
+_TOOL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# CON, PRN, AUX, NUL, COM0-9 and LPT0-9, in any case (no extension can occur: no dot).
+_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul"} | {
+    f"{port}{digit}" for port in ("com", "lpt") for digit in "0123456789"})
 
 
 def tool_name_problem(name: object) -> str | None:
@@ -225,9 +233,9 @@ def tool_name_problem(name: object) -> str | None:
         return "a tool name is required"
     if len(name) > TOOL_NAME_MAX:
         return f"a tool name has at most {TOOL_NAME_MAX} characters"
-    if not IDENTIFIER_RE.fullmatch(name):
-        return "a tool name starts with a letter or _ and has only letters, digits and _"
-    if name.split(".", 1)[0].lower() in _DEVICE_NAMES:
+    if not _TOOL_NAME.fullmatch(name):
+        return "a tool name starts with an ASCII letter or _ and has only ASCII letters, digits and _"
+    if name.lower() in _DEVICE_NAMES:
         return f"'{name}' is a Windows device name"
     return None
 
@@ -261,16 +269,18 @@ def ships_builtin(store: ToolStore, name: str) -> bool:
 
 
 def is_builtin(store: ToolStore, name: str) -> bool:
-    """``name`` is a built-in pack with no user file of that name: changing it would
-    copy or hide the wheel's pack. A user file of a built-in name (one an older host
-    made by editing the built-in) is the designer's own."""
+    """``name`` is a built-in pack with no user file of that name: changing, replacing or
+    deleting it would copy over or hide the wheel's pack, so it is read-only (PUT, DELETE,
+    solidify, import). A user file of a built-in name (one an older host made by editing
+    the built-in) is the designer's own."""
     return ships_builtin(store, name) and not _user_file(store, name).exists()
 
 
 def builtin_read_only(name: str) -> ApiError:
     return ApiError(409, BUILTIN_READ_ONLY,
-                    f"'{name}' is a built-in tool and built-in tools are read-only: "
-                    f"export it and import it under another name to make your own", tool=name)
+                    f"'{name}' is a built-in tool (the revit-bridge package's, with no file of yours by that "
+                    f"name) and built-in tools are read-only: export it and import it under another name to "
+                    f"make your own", tool=name)
 
 
 def _same_dir(a: Path, b: Path) -> bool:
@@ -394,19 +404,35 @@ class ExecuteRequest(BaseModel):
     token: str = ""
 
 
-class CheckCodeRequest(BaseModel):
-    """``checking.check_code(client, code, parameters)``: the snippet and its ``parameters``
-    (the snippet's object[]), as the MCP tool takes them."""
-    code: str
+class WorkbenchCodeRequest(BaseModel):
+    """What ``/check`` and ``/dry-run`` take: either ``code`` (a snippet) with its
+    ``parameters`` (the snippet's object[], as the MCP tools take them), or ``pack`` (a
+    draft in the capability pack format, as a pack file holds it) with ``values``
+    (parameter name -> value), whose template the package fills (``render_draft``). Any
+    other field is refused - the package's ``include`` (paths of .cs files on the machine
+    running the host) is not offered: a browser has no business naming files there."""
+    model_config = ConfigDict(extra="forbid")
+
+    code: str | None = None
     parameters: list | None = None
+    pack: dict | None = None
+    values: dict | None = None
 
 
-class DryRunRequest(BaseModel):
-    """``dry_run.dry_run_code(client, code, parameters)``. The package's ``include`` (paths
-    of .cs files on the machine running the host, read and sent to Revit) is not offered:
-    a browser has no business naming files on the server."""
-    code: str
-    parameters: list | None = None
+class CheckCodeRequest(WorkbenchCodeRequest):
+    """``checking.check_code(client, code, parameters)``."""
+
+
+class DryRunRequest(WorkbenchCodeRequest):
+    """``dry_run.dry_run_code(client, code, parameters)``."""
+
+
+class ChoicesRequest(BaseModel):
+    """One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |
+    elements:OST_*."""
+    model_config = ConfigDict(extra="forbid")
+
+    choices_from: str
 
 
 class SolidifyRequest(BaseModel):
@@ -614,6 +640,37 @@ async def export_tool(name: str):
 MAX_IMPORT_BYTES = 256 * 1024          # a pack file; the largest built-in is a few KB
 
 
+class PackYamlLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` without aliases: a pack file needs none, and ``*name`` lets a
+    few bytes stand for a structure many times their size (or one that contains itself)."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.AliasEvent):
+            event = self.peek_event()
+            raise yaml.composer.ComposerError(None, None, "aliases (*name) are not allowed in a pack file",
+                                              event.start_mark)
+        return super().compose_node(parent, index)
+
+
+def load_pack_yaml(text: str):
+    """The pack file's data; 422 ``invalid_pack`` for text that is not YAML, uses an alias,
+    or nests too deep to read."""
+    try:
+        return yaml.load(text, Loader=PackYamlLoader)  # noqa: S506 - a SafeLoader subclass
+    except (yaml.YAMLError, RecursionError) as exc:
+        detail = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        raise ApiError(422, "invalid_pack", problems=[f"not a YAML pack file: {detail}"]) from None
+
+
+def pack_problems(data) -> list[str]:
+    """``validate_pack``, with what it cannot check reported as a problem: keys that are
+    not text make it raise ``TypeError`` (it sorts them)."""
+    try:
+        return validate_pack(data)
+    except (TypeError, ValueError, AttributeError) as exc:
+        return [f"the pack cannot be checked ({type(exc).__name__}: {exc}); every key must be text"]
+
+
 @router.post("/tools/import", dependencies=[Depends(require_admin)],
              responses=admin_responses(400, 403, 409, 422, 503),
              openapi_extra={"requestBody": {"required": True, "description": "A capability pack file (YAML text)",
@@ -622,22 +679,24 @@ async def import_tool(request: Request, overwrite: bool = False):
     """Store a pack file sent as YAML text in the user capabilities directory, as it is.
 
     Validated as the package validates a pack file (``validate_pack``: the v1 layout, 422
-    ``invalid_pack`` with the problems), its name checked (422 ``invalid_tool_name``), its
-    code reviewed by the sandbox (400 ``blocked``). A built-in pack's name is refused (409
-    ``builtin_read_only``), and so is the name of a user pack that exists unless
-    ``overwrite=true`` (409 ``pack_exists``). Admin password required on a cloud host."""
+    ``invalid_pack`` with the problems; YAML aliases are refused), its name checked (422
+    ``invalid_tool_name``), its code reviewed by the sandbox (400 ``blocked``). The name of
+    a built-in pack with no user file of that name is refused (409 ``builtin_read_only``);
+    a user file of that name - a built-in's name too - is replaced only with
+    ``overwrite=true`` (409 ``pack_exists`` otherwise). Admin password required on a cloud
+    host."""
+    declared = request.headers.get("content-length", "").strip()
+    if declared.isdigit() and int(declared) > MAX_IMPORT_BYTES:      # refused before the body is read
+        raise ApiError(422, "invalid_args", f"the pack file has {declared} bytes, at most {MAX_IMPORT_BYTES}")
     raw = await request.body()
     if len(raw) > MAX_IMPORT_BYTES:
         raise ApiError(422, "invalid_args", f"the pack file has {len(raw)} bytes, at most {MAX_IMPORT_BYTES}")
     try:
         text = raw.decode("utf-8-sig")
-        data = yaml.safe_load(text)
     except UnicodeDecodeError:
         raise ApiError(422, "invalid_pack", problems=["the file is not UTF-8 text"]) from None
-    except yaml.YAMLError as exc:
-        first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
-        raise ApiError(422, "invalid_pack", problems=[f"not YAML: {first}"]) from None
-    problems = validate_pack(data)
+    data = load_pack_yaml(text)
+    problems = pack_problems(data)
     if problems:
         raise ApiError(422, "invalid_pack", problems=problems)
     name = require_tool_name(data["name"])
@@ -645,7 +704,7 @@ async def import_tool(request: Request, overwrite: bool = False):
     if not safe:
         raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
     store = ToolStore()
-    if ships_builtin(store, name):
+    if is_builtin(store, name):
         raise builtin_read_only(name)
     target = _user_file(store, name)
     replaced = target.exists()
@@ -780,22 +839,85 @@ def _load_guidance(framework: Path, company: Path | None, project: Path | None,
     return _guidance.load_layers(framework, company=company, project=project, personal=personal)
 
 
-@router.post("/check", responses=responses(403, 422, 503))
+def workbench_rate_limit(request: Request) -> None:
+    """A cloud host: ``/check`` and ``/dry-run`` count against ``/spec/confirm``'s limiter and
+    limit (CHAT_RATE_LIMIT per minute per address); each reaches a Revit and a dry run
+    writes a ledger line without any token. A local host does not limit them."""
+    settings = get_settings()
+    if settings.cloud and not confirm_limiter.allow(client_key(request), settings.chat_rate_limit):
+        raise ApiError(429, "rate_limited", "Too many requests from this address; try again in a minute")
+
+
+RENDER_FAILED = "render_failed"
+
+
+def render_draft(pack: dict, values: dict) -> str:
+    """The draft pack's template filled with ``values`` by the package itself: the draft is
+    checked with ``validate_pack`` (422 ``invalid_pack``) and its name with
+    ``require_tool_name``, then saved with ``ToolStore.solidify`` in a store whose user and
+    built-in directories are both fresh temporary directories (never the real ones,
+    removed afterwards), and ``ToolStore.render(name, values)`` fills it - defaults,
+    escaping, leftover placeholders, all the package's. A render it refuses is 422
+    ``render_failed`` with the package's messages in ``errors``."""
+    problems = pack_problems(pack)
+    if problems:
+        raise ApiError(422, "invalid_pack", problems=problems)
+    name = require_tool_name(pack["name"])
+    with tempfile.TemporaryDirectory(prefix="rbw-draft-") as scratch:
+        root = Path(scratch)
+        (root / "builtin").mkdir()
+        store = ToolStore(user_dir=root / "user", builtin_dir=root / "builtin")
+        try:
+            store.solidify(
+                name=name, code=pack["code_template"], description=pack.get("description") or "",
+                display_name=pack.get("display_name") or "", parameters=pack.get("parameters") or [],
+                source_query=pack.get("source_query") or "", preconditions=pack.get("preconditions") or [],
+                applies_when=pack.get("applies_when") or [], not_for=pack.get("not_for") or [],
+                validator=pack.get("validator"),
+            )
+        except ValueError as exc:
+            raise _invalid_pack(exc) from None
+        code, errors = store.render(name, values)
+    if code is None:
+        raise ApiError(422, RENDER_FAILED, "The package could not fill the draft's template with these values",
+                       errors=errors)
+    return code
+
+
+async def code_and_parameters(req: WorkbenchCodeRequest) -> tuple[str, list | None]:
+    """The snippet to check or dry-run: ``code`` with its ``parameters``, or the draft
+    ``pack`` filled with ``values`` (no parameters: a pack's code gets none when it runs)."""
+    if req.pack is not None:
+        if req.code is not None or req.parameters is not None:
+            raise ApiError(422, "invalid_args", "send either code (with parameters) or pack (with values), not both")
+        return await run_in_threadpool(render_draft, req.pack, req.values or {}), None
+    if req.code is None:
+        raise ApiError(422, "invalid_args", "code or pack is required")
+    if req.values is not None:
+        raise ApiError(422, "invalid_args", "values go with pack; code takes parameters")
+    return req.code, req.parameters
+
+
+@router.post("/check", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
 async def check_code(req: CheckCodeRequest):
     """``checking.check_code``: compile the snippet in Revit without running it - no token,
     nothing changes. The package's reply as it is (``{schema_version, checked, compiled,
     blocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,
-    environment, warnings}``), with the guidance lessons the MCP tool adds. As the MCP tool
-    does, code the sandbox refuses is answered before Revit is needed (``blocked: true``);
-    no Revit to ask is 503 ``revit_unreachable``, as on every route."""
-    refused = checking.blocked_reply(req.code)
+    environment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +
+    ``values`` instead of ``code``: the draft's template filled by the package first (422
+    ``invalid_pack`` / ``render_failed``). As the MCP tool does, code the sandbox refuses is
+    answered before Revit is needed (``blocked: true``); no Revit to ask is 503
+    ``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past
+    ``/spec/confirm``'s limit."""
+    code, parameters = await code_and_parameters(req)
+    refused = checking.blocked_reply(code)
     if refused is not None:
         return refused
     client = await get_revit_client()
-    return await checking.check_code(client, req.code, req.parameters, library=guidance_library)
+    return await checking.check_code(client, code, parameters, library=guidance_library)
 
 
-@router.post("/dry-run", responses=responses(403, 422, 503))
+@router.post("/dry-run", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
 async def dry_run_code(req: DryRunRequest):
     """``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group
     the add-in always rolls back - nothing is kept, the undo stack is untouched, so no
@@ -803,14 +925,41 @@ async def dry_run_code(req: DryRunRequest):
     The package's reply as it is (``{success, rolled_back, result, error, diagnostics,
     changes, failures, fingerprint, evidence_id, hint, warnings}``); each request that
     reaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's
-    scope. Code the sandbox refuses is answered before Revit is needed (``error:
-    "blocked"``); no Revit to ask is 503 ``revit_unreachable``."""
-    refused, _ = package_dry_run.prepare(req.code)
+    scope. ``pack`` + ``values`` instead of ``code``: the draft's template filled by the
+    package first, exactly the code the saved pack would send. Code the sandbox refuses is
+    answered before Revit is needed (``error: "blocked"``); no Revit to ask is 503
+    ``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s
+    limit."""
+    code, parameters = await code_and_parameters(req)
+    refused, _ = package_dry_run.prepare(code)
     if refused is not None:
         return refused
     client = await get_revit_client()
-    return await package_dry_run.dry_run_code(client, req.code, req.parameters, ledger=get_ledger(),
+    return await package_dry_run.dry_run_code(client, code, parameters, ledger=get_ledger(),
                                               host=HOST, scope=current_scope())
+
+
+@router.post("/choices", responses=responses(403, 422, 503, 504))
+async def choices_of(req: ChoicesRequest):
+    """The real options of one ``choices_from`` (``levels``, ``floor_types``,
+    ``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's
+    ``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,
+    asked for one parameter - so the values are what a saved pack receives. A value the
+    pack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504
+    after 15 s)."""
+    if not CHOICES_FROM_RE.fullmatch(req.choices_from):
+        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_* or "
+                                            "elements:OST_*", choices_from=req.choices_from[:100])
+    client = await get_revit_client()
+    try:
+        found = await asyncio.wait_for(
+            RevitQueryExecutor(client).get_tool_choices([{"name": "value", "choices_from": req.choices_from}]),
+            timeout=15.0)
+    except asyncio.TimeoutError:
+        raise ApiError(504, "revit_timeout", "Revit query timed out (15s)") from None
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    return found.get("value", [])
 
 
 # -- execution -----------------------------------------------------------------
@@ -830,11 +979,12 @@ async def execute_code(req: ExecuteRequest):
 async def solidify_tool(req: SolidifyRequest):
     """``ToolStore.solidify``: save working code as a v1 pack in the user capabilities
     directory (admin password required on a cloud host; a user pack of the same name is
-    replaced); best-effort sync to the add-in. A built-in pack's name is refused: 409
+    replaced, a user file of a built-in's name too); best-effort sync to the add-in. The
+    name of a built-in pack with no user file of that name is refused: 409
     ``builtin_read_only``."""
     require_tool_name(req.name)
     store = ToolStore()
-    if ships_builtin(store, req.name):
+    if is_builtin(store, req.name):
         raise builtin_read_only(req.name)
     safe, warnings = sandbox.review(req.code)
     if not safe:

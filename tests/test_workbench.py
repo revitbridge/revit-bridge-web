@@ -9,8 +9,10 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
+import yaml
 
 from revit_bridge import checking
 from revit_bridge import dry_run as package_dry_run
@@ -176,12 +178,15 @@ def test_dry_run_is_the_package_s_dry_run_code_with_no_token(addin, client, tmp_
 
 
 def test_the_dry_run_takes_no_files_from_the_browser(addin, client, tmp_path):
-    """The package's include reads .cs files on the machine running it: not offered here."""
+    """The package's include reads .cs files on the machine running it: not offered here.
+    A body with any field the route does not take is refused before anything else."""
     secret = tmp_path / "Secret.cs"
     secret.write_text("public static class Secret { public const string Key = \"x\"; }", encoding="utf-8")
-    reply = client.post(f"{B}/dry-run", json={"code": CODE, "include": [str(secret)]}).json()
-    assert reply["success"] is True
-    assert sent(addin, "dry_run_code_in_revit") == [{"code": CODE, "parameters": []}]   # no "sources"
+    for route in ("dry-run", "check"):
+        resp = client.post(f"{B}/{route}", json={"code": CODE, "include": [str(secret)]})
+        assert resp.status_code == 422 and resp.json()["error"] == "invalid_args", resp.text
+        assert "include" in resp.json()["message"]
+    assert sent(addin, "dry_run_code_in_revit") == [] and sent(addin, "check_code_in_revit") == []
 
 
 def test_a_dry_run_that_was_not_rolled_back_is_the_package_s_defect_reply(env, client):
@@ -198,6 +203,153 @@ def test_dry_run_refuses_blocked_code_without_revit_and_reports_no_revit_as_503(
     unreachable = client.post(f"{B}/dry-run", json={"code": CODE})
     assert unreachable.status_code == 503 and unreachable.json()["error"] == "revit_unreachable"
     assert client.get(f"{B}/evidence").json() == []                    # nothing reached an add-in
+
+
+# -- a draft pack: the package fills the template ------------------------------------------
+
+def draft_of(name: str) -> dict:
+    """A built-in pack's file as a draft (what the workbench sends as ``pack``)."""
+    return yaml.safe_load((builtin_capabilities_dir() / f"{name}.yaml").read_text(encoding="utf-8"))
+
+
+HEIGHT = {"element_id": 4242, "height": 3500}
+
+
+def drafts_left() -> list[str]:
+    import tempfile
+    return sorted(p.name for p in Path(tempfile.gettempdir()).glob("rbw-draft-*"))
+
+
+def test_a_draft_is_filled_by_the_package_then_checked_and_dry_run(addin, client, tmp_path):
+    before = drafts_left()
+    expected, problems = ToolStore().render("modify_wall_height", HEIGHT)   # what the saved pack would send
+    assert problems == [] and "{height}" not in expected
+    pack = {**draft_of("modify_wall_height"), "name": "raise_wall"}
+    checked = client.post(f"{B}/check", json={"pack": pack, "values": HEIGHT})
+    assert checked.status_code == 200 and checked.json()["compiled"] is True, checked.text
+    dry = client.post(f"{B}/dry-run", json={"pack": pack, "values": HEIGHT})
+    assert dry.status_code == 200 and dry.json()["success"] is True, dry.text
+    assert sent(addin, "check_code_in_revit") == [{"code": expected, "parameters": []}]
+    assert sent(addin, "dry_run_code_in_revit") == [{"code": expected, "parameters": []}]
+    # Nothing written where packs live; the temporary store is gone.
+    assert not (tmp_path / "data" / "capabilities").exists() or not list((tmp_path / "data" / "capabilities").iterdir())
+    assert drafts_left() == before
+
+
+def test_a_draft_the_package_cannot_fill_is_422_with_its_messages(addin, client):
+    pack = draft_of("modify_wall_height")
+    missing = client.post(f"{B}/check", json={"pack": pack, "values": {"element_id": 1}})
+    assert missing.status_code == 422 and missing.json()["error"] == "render_failed"
+    assert missing.json()["errors"] == ["Missing required parameter: height"]
+    wrong = client.post(f"{B}/dry-run", json={"pack": pack, "values": {"element_id": 1, "height": "tall"}})
+    assert wrong.json()["errors"] == ["Parameter 'height' expects double, got 'tall'"]
+    leftover = {**pack, "code_template": pack["code_template"] + "\n// {undeclared}"}
+    invalid = client.post(f"{B}/check", json={"pack": leftover, "values": HEIGHT})
+    assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
+    assert invalid.json()["problems"] == ["code_template: placeholder {undeclared} is not a declared parameter"]
+    named = client.post(f"{B}/check", json={"pack": {**pack, "name": "con"}, "values": HEIGHT})
+    assert named.status_code == 422 and named.json()["error"] == "invalid_tool_name"
+    assert sent(addin, "check_code_in_revit") == [] and sent(addin, "dry_run_code_in_revit") == []
+
+
+def test_code_and_pack_go_alone(client):
+    pack = draft_of("query_levels")
+    for body in ({"code": CODE, "pack": pack}, {"pack": pack, "parameters": [1]}, {"code": CODE, "values": {}},
+                 {}, {"values": {"a": 1}}):
+        for route in ("check", "dry-run"):
+            resp = client.post(f"{B}/{route}", json=body)
+            assert resp.status_code == 422 and resp.json()["error"] == "invalid_args", (route, body, resp.text)
+
+
+def test_a_draft_s_code_still_meets_the_sandbox(client):
+    pack = {**draft_of("query_levels"), "code_template": BLOCKED_CODE}
+    assert client.post(f"{B}/dry-run", json={"pack": pack, "values": {}}).json()["error"] == "blocked"
+    assert client.post(f"{B}/check", json={"pack": pack, "values": {}}).json()["blocked"] is True
+
+
+def test_a_cloud_host_rate_limits_check_and_dry_run_with_the_confirm_limiter(make_client, env):
+    env.setenv("CHAT_RATE_LIMIT", "3")
+    client = make_client()
+    body = {"code": BLOCKED_CODE}                    # answered without Revit
+    assert client.post(f"{B}/check", json=body).status_code == 200
+    assert client.post(f"{B}/dry-run", json=body).status_code == 200
+    assert client.post(f"{B}/spec/confirm", json={"spec": {"task": "x"}}).status_code == 422   # counted too
+    limited = client.post(f"{B}/check", json=body)
+    assert limited.status_code == 429 and limited.json()["error"] == "rate_limited"
+    assert client.post(f"{B}/spec/confirm", json={"spec": {"task": "x"}}).status_code == 429
+
+
+def test_a_local_host_does_not_rate_limit_them(make_client, local_env):
+    local_env.setenv("CHAT_RATE_LIMIT", "1")
+    client = make_client(**LOCAL)
+    for _ in range(4):
+        assert client.post(f"{B}/check", json={"code": BLOCKED_CODE}).status_code == 200
+        assert client.post(f"{B}/dry-run", json={"code": BLOCKED_CODE}).status_code == 200
+
+
+def test_choices_come_from_the_package_s_get_tool_choices(revit, client):
+    levels = client.post(f"{B}/choices", json={"choices_from": "levels"})
+    assert levels.status_code == 200
+    assert levels.json() == client.get(f"{B}/tools/create_wall/choices").json()["level_name"]
+    assert levels.json() == [{"label": "L1 (0.0mm)", "value": "L1"}, {"label": "L2 (3500.0mm)", "value": "L2"}]
+    types = client.post(f"{B}/choices", json={"choices_from": "family_types:OST_Walls"}).json()
+    assert types == [{"label": "OST_Walls-TypeA", "value": "OST_Walls-TypeA"}]
+    for bad in ("rooms", "family_types:Walls", "elements:OST_Walls;x", "levels\n", ""):
+        resp = client.post(f"{B}/choices", json={"choices_from": bad})
+        assert resp.status_code == 422 and resp.json()["error"] == "invalid_args", bad
+    assert client.post(f"{B}/choices", json={"choices_from": "levels", "x": 1}).status_code == 422
+
+
+def test_choices_without_revit_is_503(client):
+    resp = client.post(f"{B}/choices", json={"choices_from": "levels"})
+    assert resp.status_code == 503 and resp.json()["error"] == "revit_unreachable"
+
+
+# -- the lessons check_code adds: the layers the MCP server loads ---------------------------
+
+LESSON_CODE = "var id = new ElementId(1); return id.IntegerValue;"
+
+
+@pytest.fixture
+def fresh_guidance():
+    bridge_module._load_guidance.cache_clear()
+    yield
+    bridge_module._load_guidance.cache_clear()
+
+
+def test_the_company_project_and_personal_layers_come_from_the_environment(env, client, tmp_path, fresh_guidance):
+    """Personal = <REVIT_BRIDGE_DATA_DIR>/guidance; a bad project layer is left out."""
+    import shutil
+
+    from revit_bridge.paths import guidance_dir
+
+    personal = tmp_path / "data" / "guidance" / "revit-core" / "lessons"
+    personal.mkdir(parents=True)
+    shutil.copyfile(guidance_dir() / "revit-core" / "lessons" / "elementid-value.md", personal / "elementid-value.md")
+    project = tmp_path / "project-guidance"
+    project.mkdir()
+    (project / "guidance.yaml").write_text("schema_version: 1\nalways: [no-such-category]\n", encoding="utf-8")
+    env.setenv("REVIT_BRIDGE_GUIDANCE_PROJECT", str(project))
+    with FakeRevit(workbench_handler()) as fake:
+        env.setenv("REVIT_BRIDGE_PORT", str(fake.port))
+        reply = client.post(f"{B}/check", json={"code": LESSON_CODE}).json()
+    assert reply["compiled"] is True and not [w for w in reply["warnings"] if w.startswith("guidance_unavailable")]
+    layers = {item["id"]: item["layer"] for item in reply["guidance"]}
+    assert layers.get("revit-core/elementid-value") == "personal", reply["guidance"]
+    library = bridge_module.guidance_library()
+    assert any(w.startswith("layer_invalid: project") for w in library.warnings), library.warnings
+
+
+def test_an_invalid_framework_layer_is_a_result_not_a_crash(env, client, monkeypatch, tmp_path, fresh_guidance):
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setattr(bridge_module, "guidance_dir", lambda: tmp_path / "empty")
+    with FakeRevit(workbench_handler()) as fake:
+        env.setenv("REVIT_BRIDGE_PORT", str(fake.port))
+        resp = client.post(f"{B}/check", json={"code": LESSON_CODE})
+    assert resp.status_code == 200
+    reply = resp.json()
+    assert reply["compiled"] is True and reply["guidance"] == []
+    assert any(w.startswith("guidance_unavailable") for w in reply["warnings"]), reply["warnings"]
 
 
 # -- export and import -------------------------------------------------------------------
@@ -277,7 +429,7 @@ def test_import_does_not_replace_a_user_pack_unless_asked(client_local):
 
 
 @pytest.mark.parametrize("text, problem", [
-    ("name: [unclosed", "not YAML"),
+    ("name: [unclosed", "not a YAML pack file"),
     ("- just\n- a list\n", "pack must be a mapping"),
     ("name: old_style\ncode_template: return 1;\n", "schema_version: expected 1"),
     ("schema_version: 1\nname: x\nversion: 1.0.0\ncode_template: 'return \"{level}\";'\n",
@@ -305,6 +457,54 @@ def test_import_refuses_bad_names_blocked_code_and_oversized_files(client_local)
     not_utf8 = client.post(f"{B}/tools/import", content=b"name: \xff\xfe", headers={"Content-Type": "text/yaml"})
     assert not_utf8.status_code == 422 and not_utf8.json()["problems"] == ["the file is not UTF-8 text"]
     assert not list(user_dir.glob("*.yaml")) and not list(user_dir.glob(".*"))
+
+
+PACK_HEAD = "schema_version: 1\nname: {name}\nversion: 1.0.0\ncode_template: return 1;\n"
+
+
+@pytest.mark.parametrize("text", [
+    PACK_HEAD.format(name="aliased") + "description: &d hello\nsource_query: *d\n",             # one alias
+    PACK_HEAD.format(name="looped") + "not_for: &loop [*loop]\n",                                # refers to itself
+    "a: &x [1, 2]\nb: [*x, *x, *x, *x]\n",
+])
+def test_import_refuses_yaml_aliases(client_local, text):
+    client, user_dir = client_local
+    resp = yaml_request(client, text)
+    assert resp.status_code == 422 and resp.json()["error"] == "invalid_pack", resp.text
+    assert "aliases" in resp.json()["problems"][0]
+    assert not list(user_dir.glob("*.yaml"))
+
+
+def test_import_reports_what_the_package_cannot_read_as_a_pack(client_local):
+    client, user_dir = client_local
+    deep = yaml_request(client, PACK_HEAD.format(name="deep") + "not_for: " + "[" * 3000 + "]" * 3000 + "\n")
+    assert deep.status_code == 422 and deep.json()["error"] == "invalid_pack"
+    assert "recursion" in deep.json()["problems"][0]
+    # validate_pack sorts the keys it does not know: keys of two types make it raise TypeError.
+    for extra in ("1: a\nextra: b\n", "parameters:\n- {name: a, 2: x, zz: y, source: designer, required: true}\n"):
+        resp = yaml_request(client, PACK_HEAD.format(name="keys") + extra)
+        assert resp.status_code == 422 and resp.json()["error"] == "invalid_pack", resp.text
+        assert "every key must be text" in resp.json()["problems"][0]
+    assert not list(user_dir.glob("*.yaml"))
+
+
+def test_import_refuses_a_declared_size_over_the_limit_before_reading_the_body(client_local, monkeypatch):
+    from starlette.requests import Request
+
+    client, user_dir = client_local
+    read: list[int] = []
+    real_body = Request.body
+
+    async def spy(self):
+        read.append(1)
+        return await real_body(self)
+
+    monkeypatch.setattr(Request, "body", spy)
+    big = PACK_HEAD.format(name="big") + "#" * bridge_module.MAX_IMPORT_BYTES
+    resp = client.post(f"{B}/tools/import", content=big.encode(), headers={"Content-Type": "text/yaml"})
+    assert resp.status_code == 422 and resp.json()["error"] == "invalid_args"
+    assert read == []                                                   # refused on Content-Length
+    assert yaml_request(client, PACK_HEAD.format(name="small")).status_code == 200 and read == [1]
 
 
 @pytest.fixture
@@ -343,14 +543,36 @@ def test_a_user_file_with_a_built_in_name_is_the_designer_s_own(client_local):
     assert sorted(p.name for p in user_dir.iterdir() if p.name != "usage.json") == []   # no .disabled marker
     listed = {t["name"]: t for t in client.get(f"{B}/tools").json()}
     assert listed["query_levels"]["origin"] == "builtin" and listed["query_levels"]["builtin"] is True
-    # A new copy of a built-in name is not made, by import or by saving.
+    # With only the wheel's file left, the name is read-only again: no import, no saving.
     assert yaml_request(client, original).json()["error"] == "builtin_read_only"
+    assert yaml_request(client, original, overwrite=True).json()["error"] == "builtin_read_only"
+    assert client.post(f"{B}/solidify", json={"name": "query_levels", "code": "return 1;"}).status_code == 409
+
+
+def test_a_user_file_with_a_built_in_name_is_replaced_like_any_user_pack(client_local):
+    """Import and solidify follow the PUT / DELETE rule: the user file of a built-in's name
+    is the designer's - an import replaces it only with overwrite=true, solidify replaces it."""
+    client, user_dir = client_local
+    user_dir.mkdir(parents=True)
+    original = (builtin_capabilities_dir() / "query_levels.yaml").read_text(encoding="utf-8")
+    (user_dir / "query_levels.yaml").write_text(original, encoding="utf-8")
+    edited = original.replace("description:", "description: (mine)", 1)
+    taken = yaml_request(client, edited)
+    assert taken.status_code == 409 and taken.json()["error"] == "pack_exists"
+    replaced = yaml_request(client, edited, overwrite=True)
+    assert replaced.status_code == 200 and replaced.json()["replaced"] is True
+    assert (user_dir / "query_levels.yaml").read_text(encoding="utf-8") == edited
+    saved = client.post(f"{B}/solidify", json={"name": "query_levels", "code": "return 2;", "description": "saved"})
+    assert saved.status_code == 200
+    assert client.get(f"{B}/tools/query_levels").json()["code_template"] == "return 2;"
+    assert client.get(f"{B}/tools/query_levels").json()["description"] == "saved"
 
 
 # -- tool names ---------------------------------------------------------------------------
 
 BAD_NAMES = ["con", "CON", "Con", "nul", "prn", "aux", "com1", "COM9", "com0", "lpt1", "LPT9", "com\u00b9",
-             "lpt\u00b3", "con.txt", "a-b", "a.b", "1abc", "x" * 101, "conin$"]
+             "lpt\u00b3", "con.txt", "a-b", "a.b", "1abc", "x" * 101, "conin$",
+             "\u5899\u4f53", "\u0441reate_wall", "caf\u00e9", "x\uff11"]     # CJK, a Cyrillic c, Latin-1, fullwidth
 
 
 @pytest.fixture
@@ -374,7 +596,6 @@ def no_store_calls(monkeypatch):
 @pytest.mark.parametrize("name", BAD_NAMES)
 def test_routes_refuse_a_bad_tool_name_before_the_store_is_asked(client_local, no_store_calls, name):
     client, user_dir = client_local
-    from urllib.parse import quote
     path = f"{B}/tools/{quote(name, safe='')}"
     spec = spec_for(name, height=3000)
     for method, url, kwargs in (
@@ -420,6 +641,11 @@ def test_good_names_still_reach_the_store(client):
     assert bridge_module.tool_name_problem("x" * 100) is None
     assert bridge_module.tool_name_problem("con\n") is not None      # $ would match before a newline
     assert client.get(f"{B}/tools/console").status_code == 404       # a name the store was asked about
+    # ASCII only: the schema's \\w would take these; the host does not.
+    for name in ("\u5899\u4f53", "\u0441reate_wall", "create_wall\u0430"):
+        assert "ASCII" in bridge_module.tool_name_problem(name), ascii(name)
+        resp = client.get(f"{B}/tools/{quote(name, safe='')}")
+        assert resp.status_code == 422 and resp.json()["error"] == "invalid_tool_name", ascii(name)
 
 
 # -- the tool directory is shared and read from disk on every call ------------------------
