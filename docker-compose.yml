@@ -37,6 +37,14 @@ services:
       # app (uid 1000) needs write access to it as it is. Without these two lines
       # the tools stay in ./data/capabilities, as before.
       # REVIT_BRIDGE_CAPABILITIES_DIR: /shared/capabilities
+      # Models by role (models.example.yml, README): the host reads MODELS_FILE,
+      # by default /app/data/models.yml - that is ./data/models.yml here, in the
+      # data volume, so dropping the file there is enough. The keys stay in .env
+      # (the file names their variables). To keep the file read-only and out of
+      # the volume instead, uncomment the next line and the models.yml volume
+      # below: a read-only file mounted inside /app/data would stop the
+      # entrypoint, which changes the owner of everything there.
+      # MODELS_FILE: /app/config/models.yml
       # Inside the container the app always listens on 7860; PORT in .env only
       # chooses the published host port above.
       PORT: 7860
@@ -53,5 +61,6 @@ services:
     volumes:
       - ./data:/app/data
       # - ${SHARED_CAPABILITIES_DIR:?set SHARED_CAPABILITIES_DIR in .env}:/shared/capabilities
+      # - ./models.yml:/app/config/models.yml:ro
     mem_limit: 1g
     restart: unless-stopped

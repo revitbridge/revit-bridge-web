@@ -7,12 +7,19 @@
    config.json written before modes) reads as cloud: the pages as they were. */
 export type DeployMode = 'local' | 'cloud'
 
+/* The model NAME of each role (no address, no key); null where none is configured. */
+export const ROLES = ['analyst', 'planner', 'supervisor'] as const
+export type RoleName = typeof ROLES[number]
+export type RoleModels = Record<RoleName, string | null>
+
 export interface RuntimeFeatures {
   mode: DeployMode
   byoModel: boolean
   serverModel: boolean
   admin: boolean
   maxDevices: number
+  models: RoleModels
+  modelsFile: boolean     // the names come from the host's models file, not LLM_* / this browser
 }
 
 export interface RuntimeConfig {
@@ -21,10 +28,24 @@ export interface RuntimeConfig {
   features: RuntimeFeatures
 }
 
+const NO_MODELS: RoleModels = { analyst: null, planner: null, supervisor: null }
+
 const DEFAULTS: RuntimeConfig = {
   apiBase: '',
   wsBase: '',
-  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20 },
+  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20, models: NO_MODELS, modelsFile: false },
+}
+
+/* features.models as the host wrote it: a text name per role, anything else (an older host
+   without the field, a value that is not text) is no name. */
+function readRoleModels(raw: unknown): RoleModels {
+  const source = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const models = { ...NO_MODELS }
+  for (const role of ROLES) {
+    const name = source[role]
+    models[role] = typeof name === 'string' && name ? name : null
+  }
+  return models
 }
 
 let current: RuntimeConfig = DEFAULTS
@@ -40,7 +61,10 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
   return {
     apiBase: String(data.apiBase || '').replace(/\/+$/, ''),
     wsBase: String(data.wsBase || '').replace(/\/+$/, ''),
-    features: { ...features, mode: features.mode === 'local' ? 'local' : 'cloud' },
+    features: {
+      ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
+      models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
+    },
   }
 }
 

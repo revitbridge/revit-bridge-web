@@ -81,3 +81,36 @@ def test_absurd_counts_are_unknown_and_never_overflow(make_client, local_env):
     # 3 x 2**53 passes the limit: unknown. 3 x 2**51 does not: exact.
     assert (edge["input"], edge["output"], edge["cache_read"], edge["cache_write"]) == (None, 3 * 2 ** 51, 0, None)
     assert isinstance(edge["output"], int) and isinstance(edge["ms"], int)
+
+
+# -- the runs route: per role and model -------------------------------------------------------------------
+
+def test_runs_list_each_role_and_model(make_client, local_env):
+    client = make_client(**LOCAL)
+    store = get_log_store()
+    calls = [("analyst", "small", {"input": 10, "output": 1, "cache_read": 0, "cache_write": None}),
+             ("planner", "big", {"input": 100, "output": 20, "cache_read": 50, "cache_write": None}),
+             ("planner", "big", {"input": 120, "output": None, "cache_read": 60, "cache_write": None}),
+             ("supervisor", "small", {"input": 30, "output": 3, "cache_read": 0, "cache_write": 0})]
+    for role, model, usage in calls:
+        store.record_call(session_id="s", turn=1, round=1, role=role, model=model, usage=usage, ms=5,
+                          run_label="roles-1")
+    store.record_call(session_id="t", turn=1, round=1, role="planner", model=None,
+                      usage={"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}, ms=1, run_label="old")
+    runs = client.get("/api/usage/runs").json()["items"]
+    first, second = runs
+    assert (first["calls"], first["input"], first["output"], first["cache_read"]) == (4, 260, None, 110)
+    assert first["by_role"] == [
+        {"role": "analyst", "model": "small", "calls": 1, "input": 10, "output": 1, "cache_read": 0,
+         "cache_write": None, "ms": 5},
+        {"role": "planner", "model": "big", "calls": 2, "input": 220, "output": None, "cache_read": 110,
+         "cache_write": None, "ms": 10},
+        {"role": "supervisor", "model": "small", "calls": 1, "input": 30, "output": 3, "cache_read": 0,
+         "cache_write": 0, "ms": 5}]
+    assert second["by_role"] == [{"role": "planner", "model": None, "calls": 1, "input": 1, "output": 1,
+                                  "cache_read": 1, "cache_write": 1, "ms": 1}]
+    # The export documents the new field next to the old ones.
+    schema = client.app.openapi()["components"]["schemas"]
+    assert "by_role" in schema["RunTotal"]["properties"] and "by_role" not in schema["RunTotal"].get("required", [])
+    assert {"role", "model", "calls", "input", "output", "cache_read", "cache_write", "ms"} == set(
+        schema["RolePart"]["properties"])
