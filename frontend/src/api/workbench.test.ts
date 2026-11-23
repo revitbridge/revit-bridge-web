@@ -1,0 +1,210 @@
+/* api/workbench.ts against a mocked fetch: each WorkbenchApi method calls its route with the
+   right body and returns what the workbench component expects. */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { loadRuntimeConfig } from '../config'
+import { useSessionStore } from '../store'
+import { BridgeApiError } from '../components/shared/http'
+import {
+  choicesFrom, choicesQuery, draftParameter, packParameter, parseValidator, positional, workbenchApi,
+  type ToolParamDraft, type WorkbenchApi,
+} from './workbench'
+
+type Call = { url: string; init: RequestInit }
+
+function stubFetch(...replies: Array<{ status?: number; body: unknown; type?: string }>) {
+  const calls: Call[] = []
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+    calls.push({ url, init })
+    const reply = replies.length > 1 ? replies.shift()! : replies[0]
+    const type = reply.type ?? 'application/json'
+    const text = typeof reply.body === 'string' && type !== 'application/json' ? reply.body : JSON.stringify(reply.body)
+    return new Response(text, { status: reply.status ?? 200, headers: { 'content-type': type } })
+  }))
+  return calls
+}
+
+const body = (c: Call) => JSON.parse(String(c.init.body))
+
+const level: ToolParamDraft = { name: 'level_name', type: 'string', description: 'Level', source: 'levels', required: true }
+const height: ToolParamDraft = { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', required: false, default: 3000 }
+const wallType: ToolParamDraft = { name: 'type_name', type: 'string', description: 'Type', source: 'family_types', category: 'OST_Walls', required: true }
+const wall: ToolParamDraft = { name: 'wall_id', type: 'int', description: 'Wall', source: 'elements', category: 'OST_Walls', required: true }
+
+beforeEach(async () => {
+  stubFetch({ body: { apiBase: '', wsBase: '', features: { mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 20 } } })
+  await loadRuntimeConfig()
+  vi.unstubAllGlobals()
+  useSessionStore.setState({ adminToken: 'pw' })
+})
+afterEach(() => {
+  vi.unstubAllGlobals()
+  useSessionStore.setState({ adminToken: '' })
+})
+
+describe('workbenchApi', () => {
+  it('satisfies the WorkbenchApi interface of the workbench component', () => {
+    const api: WorkbenchApi = workbenchApi
+    expect(Object.keys(api).sort()).toEqual(
+      ['check', 'choices', 'dryRun', 'exportYaml', 'importYaml', 'list', 'load', 'remove', 'save'])
+  })
+
+  it('check sends the code to /check and returns the package reply as it is', async () => {
+    const reply = { schema_version: 1, checked: true, compiled: false, diagnostics: [{ id: 'CS1061', line: 2 }] }
+    const calls = stubFetch({ body: reply })
+    expect(await workbenchApi.check('return wall.Lenght;', [level, height])).toEqual(reply)
+    expect(calls[0].url).toBe('/api/v1/bridge/check')
+    expect(calls[0].init.method).toBe('POST')
+    expect(body(calls[0])).toEqual({ code: 'return wall.Lenght;', parameters: [] })
+  })
+
+  it('dryRun sends the values in declaration order, no token', async () => {
+    const reply = { success: true, rolled_back: true, changes: { modified: { count: 3 } } }
+    const calls = stubFetch({ body: reply })
+    expect(await workbenchApi.dryRun('code', [level, height, wall], { height: 500, level_name: 'L1' })).toEqual(reply)
+    expect(calls[0].url).toBe('/api/v1/bridge/dry-run')
+    expect(body(calls[0])).toEqual({ code: 'code', parameters: ['L1', 500, null] })
+    expect(body(calls[0])).not.toHaveProperty('token')
+  })
+
+  it('a refusal comes back as a BridgeApiError in the server words', async () => {
+    stubFetch({ status: 503, body: { error: 'revit_unreachable', message: 'refused' } })
+    const err = await workbenchApi.dryRun('code', [], {}).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(BridgeApiError)
+    expect((err as BridgeApiError).message).toBe('503: revit_unreachable: refused')
+  })
+
+  it('choices reads the model through /query, with the values get_tool_choices gives a pack', async () => {
+    const calls = stubFetch(
+      { body: { kind: 'levels', items: [{ id: 1, name: 'L1', elevation_mm: 0 }, { id: 2, name: 'L2', elevation_mm: 3500 }] } },
+      { body: { kind: 'family_types', items: [{ id: 7, family: 'Basic Wall', name: 'Generic - 200mm', category: 'Walls' }] } },
+      { body: { kind: 'elements', items: [{ id: 4242, name: 'Generic - 200mm', category: 'Walls' }] } },
+    )
+    expect(await workbenchApi.choices(level)).toEqual([{ label: 'L1 (0mm)', value: 'L1' }, { label: 'L2 (3500mm)', value: 'L2' }])
+    expect(await workbenchApi.choices(wallType)).toEqual([{ label: 'Generic - 200mm', value: 'Generic - 200mm' }])
+    expect(await workbenchApi.choices(wall)).toEqual([{ label: 'Generic - 200mm (ID: 4242)', value: 4242 }])
+    expect(calls.map(body)).toEqual([
+      { kind: 'levels', args: {} },
+      { kind: 'family_types', args: { categories: ['OST_Walls'] } },
+      { kind: 'elements', args: { category: 'OST_Walls', limit: 200 } },
+    ])
+    expect(calls.every(c => c.url === '/api/v1/bridge/query')).toBe(true)
+  })
+
+  it('choices of a designer value asks nothing; a query error is thrown', async () => {
+    const calls = stubFetch({ body: { error: 'revit_error', kind: 'levels', message: 'no document' } })
+    expect(await workbenchApi.choices(height)).toEqual([])
+    expect(calls).toHaveLength(0)
+    await expect(workbenchApi.choices(level)).rejects.toThrow('revit_error: no document')
+  })
+
+  it('save posts the draft as a v1 pack to /solidify with the admin token', async () => {
+    const calls = stubFetch({ body: { status: 'solidified', name: 'raise_walls', display_name: 'Raise Walls', version: '1.0.0', revit_synced: false } })
+    const saved = await workbenchApi.save({
+      name: 'raise_walls', description: 'Raise the selected walls', code: 'return {height};',
+      parameters: [level, height, wallType, wall], validator: '{"kind": "param_equals", "category": "OST_Walls", "checks": []}',
+    })
+    expect(saved).toEqual({ name: 'raise_walls' })
+    expect(calls[0].url).toBe('/api/v1/bridge/solidify')
+    expect(calls[0].init.headers).toMatchObject({ 'X-Admin-Token': 'pw' })
+    expect(body(calls[0])).toEqual({
+      name: 'raise_walls', code: 'return {height};', description: 'Raise the selected walls', source_query: '',
+      validator: { kind: 'param_equals', category: 'OST_Walls', checks: [] },
+      parameters: [
+        { name: 'level_name', type: 'string', description: 'Level', source: 'tool:levels', choices_from: 'levels', required: true },
+        { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', default: 3000, required: false },
+        { name: 'type_name', type: 'string', description: 'Type', source: 'tool:family_types', choices_from: 'family_types:OST_Walls', required: true },
+        { name: 'wall_id', type: 'int', description: 'Wall', source: 'tool:elements', choices_from: 'elements:OST_Walls', required: true },
+      ],
+    })
+  })
+
+  it('save refuses a validator that is not a JSON object before anything is sent', async () => {
+    const calls = stubFetch({ body: {} })
+    await expect(workbenchApi.save({ name: 'x', description: '', code: 'return 1;', parameters: [], validator: 'created_ids' }))
+      .rejects.toThrow('The validator must be a JSON object')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('list gives name, description, builtin, origin and the directory when the host names it', async () => {
+    const calls = stubFetch({ body: [
+      { name: 'create_wall', description: 'Wall', version: '1.0.0', parameters: [], preconditions: [], validator: null, used: 0, builtin: true, origin: 'builtin' },
+      { name: 'mine', description: 'Mine', version: '1.0.0', parameters: [], preconditions: [], validator: null, used: 2, builtin: false, origin: 'user', directory: 'C:/x/capabilities' },
+    ] })
+    expect(await workbenchApi.list()).toEqual([
+      { name: 'create_wall', description: 'Wall', builtin: true, origin: 'builtin' },
+      { name: 'mine', description: 'Mine', builtin: false, origin: 'user', directory: 'C:/x/capabilities' },
+    ])
+    expect(calls[0].url).toBe('/api/v1/bridge/tools')
+  })
+
+  it('load reads a pack back as a draft', async () => {
+    const calls = stubFetch({ body: {
+      name: 'create_wall', display_name: 'Create Wall', description: 'Wall', version: '1.0.0', code_template: 'return 1;',
+      parameters: [
+        { name: 'level_name', type: 'string', source: 'tool:levels', choices_from: 'levels', required: true, description: 'Level' },
+        { name: 'height', type: 'double', source: 'default', default: 3000, unit: 'mm', required: false, description: 'Height (mm)' },
+        { name: 'floor_type', type: 'string', source: 'tool:floor_types', choices_from: 'floor_types', required: true },
+        { name: 'count', type: 'integer', source: 'designer', required: true },
+      ],
+      validator: { kind: 'count_delta', category: 'OST_Walls', expected: 1 },
+    } })
+    expect(await workbenchApi.load('create wall')).toEqual({
+      name: 'create_wall', description: 'Wall', code: 'return 1;', validator: '{"kind":"count_delta","category":"OST_Walls","expected":1}',
+      parameters: [
+        { name: 'level_name', type: 'string', description: 'Level', source: 'levels', required: true },
+        { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', required: false, default: 3000 },
+        { name: 'floor_type', type: 'string', description: '', source: 'family_types', category: 'OST_Floors', required: true },
+        { name: 'count', type: 'int', description: '', source: 'designer', required: true },
+      ],
+    })
+    expect(calls[0].url).toBe('/api/v1/bridge/tools/create%20wall')
+  })
+
+  it('remove deletes the pack', async () => {
+    const calls = stubFetch({ body: { status: 'deleted', name: 'mine' } })
+    expect(await workbenchApi.remove('mine')).toBeUndefined()
+    expect([calls[0].init.method, calls[0].url]).toEqual(['DELETE', '/api/v1/bridge/tools/mine'])
+    expect(calls[0].init.headers).toMatchObject({ 'X-Admin-Token': 'pw' })
+  })
+
+  it('exportYaml returns the file as text; a 404 is a BridgeApiError', async () => {
+    const yaml = 'schema_version: 1\nname: mine\n'
+    const calls = stubFetch({ body: yaml, type: 'text/yaml; charset=utf-8' }, { status: 404, body: { error: 'unknown_tool', message: "Tool 'nope' not found" } })
+    expect(await workbenchApi.exportYaml('mine')).toBe(yaml)
+    expect(calls[0].url).toBe('/api/v1/bridge/tools/mine/export')
+    const err = await workbenchApi.exportYaml('nope').catch((e: unknown) => e as BridgeApiError)
+    expect(err.code).toBe('unknown_tool')
+  })
+
+  it('importYaml posts the text as text/yaml; overwrite only when asked', async () => {
+    const yaml = 'schema_version: 1\nname: mine\nversion: 1.0.0\ncode_template: return 1;\n'
+    const calls = stubFetch(
+      { body: { status: 'imported', name: 'mine', version: '1.0.0', replaced: false, revit_synced: false } },
+      { body: { status: 'imported', name: 'mine', version: '1.0.0', replaced: true, revit_synced: false } },
+    )
+    expect((await workbenchApi.importYaml(yaml)).name).toBe('mine')
+    expect((await workbenchApi.importYaml(yaml, { overwrite: true })).replaced).toBe(true)
+    expect(calls.map(c => c.url)).toEqual(['/api/v1/bridge/tools/import', '/api/v1/bridge/tools/import?overwrite=true'])
+    expect(calls[0].init.body).toBe(yaml)
+    expect(calls[0].init.headers).toMatchObject({ 'Content-Type': 'text/yaml', 'X-Admin-Token': 'pw' })
+  })
+})
+
+describe('the mapping helpers', () => {
+  it('packParameter and draftParameter round-trip a draft', () => {
+    for (const p of [level, height, wallType, wall]) {
+      const pack = packParameter(p)
+      expect(draftParameter({ ...pack, unit: pack.unit ?? undefined })).toEqual(p)
+    }
+  })
+
+  it('positional, choicesQuery, choicesFrom and parseValidator', () => {
+    expect(positional([level, height], { height: 1 })).toEqual([null, 1])
+    expect(choicesQuery(height)).toBeNull()
+    expect(choicesFrom(level, {})).toEqual([])
+    expect(parseValidator('  ')).toBeNull()
+    expect(parseValidator(undefined)).toBeNull()
+    expect(() => parseValidator('[1]')).toThrow('JSON object')
+  })
+})

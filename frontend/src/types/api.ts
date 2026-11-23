@@ -80,7 +80,9 @@ export interface ToolParam {
   choices_from?: string
 }
 
-/* One item of GET /tools: the package's list_tools shape. */
+/* One item of GET /tools: the package's list_tools shape, plus where the pack comes from:
+   builtin (the wheel's, read-only) or user (a file in the user capabilities directory);
+   directory only on a local host. */
 export interface ToolInfo {
   name: string
   description: string
@@ -89,6 +91,9 @@ export interface ToolInfo {
   preconditions: Array<Record<string, unknown>>
   validator: string | null
   used: number
+  builtin: boolean
+  origin: 'builtin' | 'user'
+  directory?: string
 }
 
 /* GET /tools/{name}: the full pack. */
