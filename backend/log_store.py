@@ -30,7 +30,21 @@ _log = logging.getLogger("backend.logs")
 RETENTION_DAYS = 90
 MAX_TEXT = 10_000
 MAX_MODEL_NAME = 200
+# The largest token count kept as a number (backend.llm.MAX_COUNT): a count beyond it, or a
+# sum that passes it, is unknown - never an overflow, never a dropped row.
+MAX_COUNT = 2 ** 53
 _TOKEN_COLUMNS = ("input", "output", "cache_read", "cache_write")
+
+
+def _token_count(value) -> int | None:
+    """``value`` as a count from 0 to ``MAX_COUNT`` (an integral float is fine), else None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    return value if 0 <= value <= MAX_COUNT else None
 _CALL_COLUMNS = ("session_id, turn, round, role, model, input, output, cache_read, cache_write, "
                  "ms, created_at, run_label")
 # Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
@@ -213,8 +227,11 @@ class InteractionLogStore:
     def record_call(self, *, session_id: str, turn: int, round: int, role: str, model: str | None,
                     usage: dict, ms: int, run_label: str | None = None) -> None:
         """One model call; ``usage`` is ``{input, output, cache_read, cache_write}`` with
-        ``None`` kept as ``NULL``. A failed write is logged, never raised."""
+        ``None`` kept as ``NULL``; a value that is not a count from 0 to ``MAX_COUNT`` is
+        stored as ``NULL`` too, so the row is kept. A failed write is logged, never raised."""
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        counts = [_token_count(usage.get(c)) for c in _TOKEN_COLUMNS]
+        ms = _token_count(ms) or 0
         with self._lock:
             try:
                 with contextlib.closing(self._conn()) as conn, conn:
@@ -224,8 +241,7 @@ class InteractionLogStore:
                             input, output, cache_read, cache_write, ms, run_label)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (ts, session_id, turn, round, role, (model or "")[:MAX_MODEL_NAME] or None,
-                         usage.get("input"), usage.get("output"), usage.get("cache_read"),
-                         usage.get("cache_write"), int(ms), run_label),
+                         *counts, ms, run_label),
                     )
             except Exception as exc:  # noqa: BLE001
                 _log.error("failed to write a model call: %s", exc)
@@ -241,17 +257,26 @@ class InteractionLogStore:
 
     def runs(self) -> list[dict]:
         """One line per run label: the number of calls, each token column's sum (``None``
-        when any call of the run lacks that number), the total time, first and last call."""
+        when any call of the run lacks that number, or when the sum passes ``MAX_COUNT``),
+        the total time, first and last call. Summed with ``TOTAL`` (a float), which never
+        raises SQLite's integer overflow the way ``SUM`` does."""
         sums = ", ".join(
-            f"CASE WHEN COUNT({c}) = COUNT(*) THEN SUM({c}) END AS {c}" for c in _TOKEN_COLUMNS)
+            f"CASE WHEN COUNT({c}) = COUNT(*) THEN TOTAL({c}) END AS {c}" for c in _TOKEN_COLUMNS)
         with contextlib.closing(self._conn()) as conn:
             rows = conn.execute(
-                f"""SELECT run_label, COUNT(*) AS calls, {sums}, SUM(ms) AS ms,
+                f"""SELECT run_label, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms,
                            MIN(created_at) AS first_at, MAX(created_at) AS last_at
                     FROM llm_calls WHERE run_label IS NOT NULL
                     GROUP BY run_label ORDER BY MIN(id)"""
             ).fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            for column in _TOKEN_COLUMNS:
+                item[column] = _token_count(item[column])
+            item["ms"] = int(item["ms"])
+            result.append(item)
+        return result
 
 
 def _sse_frames(chunk: str):

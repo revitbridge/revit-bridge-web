@@ -56,3 +56,28 @@ def test_the_export_documents_the_usage_routes_and_the_run_label(client):
     assert [(p["name"], p["in"], p["required"]) for p in chat["parameters"]] == [("x-run-label", "header", False)]
     row = spec["components"]["schemas"]["CallRow"]["properties"]
     assert {"input", "output", "cache_read", "cache_write"} <= set(row)
+
+
+def test_absurd_counts_are_unknown_and_never_overflow(make_client, local_env):
+    """A count beyond 2**53 is stored as unknown (the row is kept); a sum that would pass it
+    is unknown too - the route answers, never 500 on SQLite's integer overflow."""
+    client = make_client(**LOCAL)
+    store = get_log_store()
+    for _ in range(2):
+        store.record_call(session_id="big", turn=1, round=1, role="planner", model="m",
+                          usage={"input": 2 ** 62, "output": 5, "cache_read": -1, "cache_write": True},
+                          ms=10, run_label="big")
+    for _ in range(3):
+        store.record_call(session_id="edge", turn=1, round=1, role="planner", model="m",
+                          usage={"input": 2 ** 53, "output": 2 ** 51, "cache_read": 0, "cache_write": 1.5},
+                          ms=1, run_label="edge")
+    rows = client.get("/api/usage", params={"session_id": "big"}).json()["items"]
+    assert len(rows) == 2                                   # kept, not dropped
+    assert [(r["input"], r["output"], r["cache_read"], r["cache_write"]) for r in rows] == [(None, 5, None, None)] * 2
+    runs = client.get("/api/usage/runs")
+    assert runs.status_code == 200
+    big, edge = runs.json()["items"]
+    assert (big["calls"], big["input"], big["output"], big["ms"]) == (2, None, 10, 20)
+    # 3 x 2**53 passes the limit: unknown. 3 x 2**51 does not: exact.
+    assert (edge["input"], edge["output"], edge["cache_read"], edge["cache_write"]) == (None, 3 * 2 ** 51, 0, None)
+    assert isinstance(edge["output"], int) and isinstance(edge["ms"], int)
