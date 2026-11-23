@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { TraceEvent, ToolEvent, UsageEvent } from '../../../types/hostv2'
-import { groupTraceEvents, mergeToolEvents, sumUsage } from './events'
+import { groupTraceEvents, interruptOpen, mergeToolEvents, sumUsage, truncatedArgs } from './events'
 import TokenPanel from './TokenPanel'
 import TraceTimeline from './TraceTimeline'
 
@@ -233,5 +233,59 @@ describe('TokenPanel', () => {
     expect(html).toContain('Session: 0 in / 0 out (0 calls)')
     expect(html).toContain('<td data-label="Calls">0</td>')
     expect(html).not.toMatch(/NaN|Infinity/)
+  })
+})
+
+describe('long arguments', () => {
+  const marker = { _truncated: true, _chars: 312045, _head: '{"spec": {"task": "' + 'x'.repeat(1981) }
+
+  it('reads the truncation marker and nothing else', () => {
+    expect(truncatedArgs(marker)).toEqual({ chars: 312045, head: marker._head })
+    expect(truncatedArgs({ kind: 'levels' })).toBeNull()
+    expect(truncatedArgs({ _truncated: 'yes', _chars: 1, _head: 'x' })).toBeNull()
+    expect(truncatedArgs({ _truncated: true, _chars: '9', _head: 'x' })).toBeNull()
+  })
+
+  it('shows truncated arguments as their head with the full size, not as an object', () => {
+    const html = renderToStaticMarkup(<TraceTimeline events={[tool({ args: marker, status: 'ok', size: 10 })]} />)
+    expect(html).toContain('Parameters (truncated: the first 2,000 of 312,045 characters)')
+    expect(html).toContain('aria-label="query parameters, truncated"')
+    expect(html).toContain('(312,045 characters)')
+    expect(html).not.toContain('_truncated')
+    expect(html).not.toContain('_chars')
+  })
+})
+
+describe('an interrupted turn', () => {
+  it('closes what was still open as interrupted, and nothing else', () => {
+    const open: TraceEvent[] = [
+      { type: 'stage', role: 'planner', model: 'm', status: 'start' },
+      tool({ id: 'done' }), tool({ id: 'done', status: 'ok' }),
+      tool({ id: 'hung' }),
+    ]
+    const closed = interruptOpen(open)
+    expect(closed.slice(0, 4)).toEqual(open)
+    expect(closed.slice(4)).toEqual([
+      tool({ id: 'hung', status: 'interrupted' }),
+      { type: 'stage', role: 'planner', model: 'm', status: 'interrupted' },
+    ])
+    const finished: TraceEvent[] = [...open.slice(0, 3), { type: 'stage', role: 'planner', model: 'm', status: 'end' }]
+    expect(interruptOpen(finished)).toBe(finished)
+    expect(interruptOpen([])).toEqual([])
+  })
+
+  it('renders interrupted rows and stages as their own state, neither ok nor error', () => {
+    const events = interruptOpen([{ type: 'stage', role: 'planner', model: 'm', status: 'start' }, tool({ id: 'hung' })])
+    const groups = groupTraceEvents(events)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].stage?.status).toBe('interrupted')
+    expect(groups[0].tools.map(t => t.status)).toEqual(['interrupted'])
+    const html = renderToStaticMarkup(<TraceTimeline events={events} />)
+    expect(html).toContain('is-interrupted')
+    expect(html).toContain('The turn ended before this call reported back.')
+    expect(html).toContain('hostv2-trace-stage-state is-interrupted">interrupted')
+    expect(html).not.toContain('in progress')
+    expect(html).not.toContain('hostv2-trace-running')
+    expect(html).not.toContain('is-error')
   })
 })

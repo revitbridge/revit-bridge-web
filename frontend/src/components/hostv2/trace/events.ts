@@ -9,6 +9,35 @@ export function mergeToolEvents(events: readonly TraceEvent[]): ToolEvent[] {
   return [...tools.values()]
 }
 
+/** The events of a turn whose stream has ended, with what was still open closed as
+    interrupted: one 'interrupted' event per tool whose latest event is 'running', and one
+    per stage started and never ended. The same array when nothing was open. */
+export function interruptOpen(events: readonly TraceEvent[]): TraceEvent[] {
+  const extra: TraceEvent[] = []
+  for (const tool of mergeToolEvents(events)) {
+    if (tool.status === 'running') extra.push({ ...tool, status: 'interrupted' })
+  }
+  const open = new Map<Role, StageEvent>()
+  for (const event of events) {
+    if (event.type !== 'stage') continue
+    if (event.status === 'start') open.set(event.role, event)
+    else open.delete(event.role)
+  }
+  for (const stage of open.values()) extra.push({ ...stage, status: 'interrupted' })
+  return extra.length > 0 ? [...events, ...extra] : events as TraceEvent[]
+}
+
+export interface TruncatedArgs {
+  chars: number
+  head: string
+}
+
+/** The truncation marker the server sends instead of long arguments, or null. */
+export function truncatedArgs(args: Record<string, unknown>): TruncatedArgs | null {
+  if (args._truncated !== true || typeof args._chars !== 'number' || typeof args._head !== 'string') return null
+  return { chars: args._chars, head: args._head }
+}
+
 export interface TraceGroup {
   stage?: StageEvent
   tools: ToolEvent[]
@@ -27,7 +56,7 @@ export function groupTraceEvents(events: readonly TraceEvent[]): TraceGroup[] {
   for (const event of events) {
     if (event.type === 'stage') {
       const current = active.get(event.role)
-      if (event.status === 'end' && current) {
+      if (event.status !== 'start' && current) {           // end, or interrupted
         current.stage = { ...event }
         active.delete(event.role)
       } else {

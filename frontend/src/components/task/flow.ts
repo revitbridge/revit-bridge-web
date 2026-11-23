@@ -12,6 +12,7 @@ import type {
   SpecError, TaskSpec,
 } from '../../types/api'
 import type { TraceEvent, UsageEvent } from '../../types/hostv2'
+import { interruptOpen } from '../hostv2/trace/events'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
@@ -179,7 +180,14 @@ export function createTaskFlow(deps: FlowDeps) {
       }
     }
     if (!reply) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
-    patch(side, t => ({ ...t, streaming: false }))
+    // However the stream ended (done, error, abort, broken off): a tool or stage still open
+    // will never be closed by the server now - mark it interrupted.
+    patch(side, t => {
+      const last = t.messages.at(-1)
+      const trace = last?.role === 'assistant' && last.trace ? interruptOpen(last.trace) : undefined
+      if (!last || !trace || trace === last.trace) return { ...t, streaming: false }
+      return { ...t, streaming: false, messages: [...t.messages.slice(0, -1), { ...last, trace }] }
+    })
   }
 
   const onSpec = (evt: SpecEvent) => setState({

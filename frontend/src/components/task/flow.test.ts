@@ -329,6 +329,35 @@ describe('the trace of each reply', () => {
     expect(sumUsage(usageOf(s.baseline).turn).input).toBe(400)
   })
 
+  it('after an abort, the tool and the stage still open are marked interrupted', async () => {
+    const events = async function* (_request: HostRequest, signal?: AbortSignal): AsyncGenerator<HostEvent> {
+      yield stage('start')
+      yield usage(1, 100)
+      yield tool('1.1.1', 'running')
+      await new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))
+    }
+    const flow = createTaskFlow({ events, api: fakeApi() })
+    const sending = flow.send('levels?')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(flow.store.getState().bridge.messages[1].trace?.map(e => e.type === 'usage' ? 'usage' : e.status)).toEqual(['start', 'usage', 'running'])
+    flow.abort()
+    await sending
+    const s = flow.store.getState()
+    expect(s.bridge.streaming).toBe(false)
+    const trace = s.bridge.messages[1].trace ?? []
+    expect(trace.map(e => e.type === 'usage' ? 'usage' : e.status)).toEqual(['start', 'usage', 'running', 'interrupted', 'interrupted'])
+    expect(trace.slice(3).map(e => e.type)).toEqual(['tool', 'stage'])
+    expect(s.bridge.messages[1].content).not.toContain('Model error')   // an abort is not an error
+  })
+
+  it('a stream that breaks off closes the open rows too; a finished one is left alone', async () => {
+    const host = scriptedHost([stage('start'), tool('1.1.1', 'running')])                 // ends without done
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('x')
+    expect(flow.store.getState().bridge.messages[1].trace?.map(e => e.type === 'usage' ? 'usage' : e.status))
+      .toEqual(['start', 'running', 'interrupted', 'interrupted'])
+  })
+
   it('a transcript with no replies has no usage; a model error keeps the trace it had', async () => {
     expect(usageOf(initialState().bridge)).toEqual({ turn: [], session: [] })
     const host = scriptedHost([stage('start'), usage(1, 10), stage('end'), { type: 'error', detail: 'HTTP 500' }])

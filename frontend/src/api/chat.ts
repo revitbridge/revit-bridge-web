@@ -16,9 +16,12 @@ const TOOL_STATES: readonly string[] = ['running', 'ok', 'error']
 
 const isRole = (value: unknown): value is Role => typeof value === 'string' && ROLES.includes(value)
 
-/* A token count as the server sent it; anything that is not a finite number (null, absent,
-   text) is unknown - null, never 0. */
-const count = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null
+/* A count as the server sent it (tokens, ms, characters): an integer from 0 to 2**53, the
+   server's own limit. Anything else (null, absent, text, a fraction, larger) is unknown -
+   null, never 0. */
+const MAX_COUNT = 2 ** 53
+const count = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_COUNT ? value : null
 
 /* event: stage / tool / usage (plan 2.2); null when the frame is not one of them or is malformed. */
 function traceEvent(event: string, parsed: unknown): HostEvent | null {

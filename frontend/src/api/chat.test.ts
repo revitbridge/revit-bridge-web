@@ -98,6 +98,20 @@ describe('parseSseFrame', () => {
     expect(parseSseFrame('event: thinking\ndata: {"role": "planner"}')).toBeNull()                       // unknown event
   })
 
+  it('passes truncated arguments through as the marker; a count must be an integer up to 2**53', () => {
+    const marker = { _truncated: true, _chars: 9000, _head: '{"spec": ' }
+    const frame = `event: tool\ndata: ${JSON.stringify({ id: '1.1.1', role: 'planner', name: 'reconcile', args: marker, status: 'running' })}`
+    expect(parseSseFrame(frame)).toEqual({ type: 'tool', id: '1.1.1', role: 'planner', name: 'reconcile', args: marker, status: 'running' })
+    const usage = (input: unknown) =>
+      parseSseFrame(`event: usage\ndata: ${JSON.stringify({ role: 'planner', model: 'm', round: 1, input, output: 1, ms: 1 })}`)
+    expect(usage(2 ** 53)).toMatchObject({ input: 2 ** 53 })
+    expect(usage(2 ** 53 + 2)).toMatchObject({ input: null })
+    expect(usage(12.5)).toMatchObject({ input: null })
+    expect(usage(-1)).toMatchObject({ input: null })
+    // 'interrupted' is the page's own state, never read from the server
+    expect(parseSseFrame('event: tool\ndata: {"id": "1", "role": "planner", "name": "q", "status": "interrupted"}')).toBeNull()
+  })
+
   it('tolerates CRLF line endings', () => {
     expect(parseSseFrame('event: done\r\ndata: [DONE]\r\n')).toEqual({ type: 'done' })
     expect(parseSseFrame('data: "a"\r')).toEqual({ type: 'token', text: 'a' })
