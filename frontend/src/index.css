@@ -1235,3 +1235,12 @@ select {
   .pairing-code { font-size: 22px; letter-spacing: 0.12em; }
   .device-row { align-items: flex-start; flex-direction: column; }
 }
+
+/* Token page */
+.token-runs .token-run.is-open td { background: rgba(217, 119, 87, 0.1); }
+.token-role-row td { color: var(--mid); font-size: 11px; border-bottom-style: dashed; }
+.token-pick { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.token-diff.up { color: var(--danger); }
+.token-diff.down { color: var(--success); }
+.token-diff.unknown { color: var(--faint); }
+.token-role-compare { margin-top: 12px; }

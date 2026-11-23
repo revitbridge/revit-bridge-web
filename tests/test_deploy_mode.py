@@ -286,7 +286,8 @@ def test_a_local_host_publishes_no_relay(make_client, local_env):
     client = make_client(**LOCAL)
     assert client.get("/config.json").json()["features"] == {
         "mode": "local", "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 0,
-        "slotTokenRequired": False, "maxSlots": 0}
+        "slotTokenRequired": False, "maxSlots": 0,
+        "models": {"analyst": None, "planner": None, "supervisor": None}, "modelsFile": False}
     assert client.get(f"{B}/slots").json() == {"max_devices": 0, "connected": 0}
     service = client.get(f"{B}/service-health").json()
     assert service == {"status": "ok", "remote_relay_ready": False, "connected_devices": 0,

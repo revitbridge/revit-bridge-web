@@ -258,8 +258,9 @@ class InteractionLogStore:
     def runs(self) -> list[dict]:
         """One line per run label: the number of calls, each token column's sum (``None``
         when any call of the run lacks that number, or when the sum passes ``MAX_COUNT``),
-        the total time, first and last call. Summed with ``TOTAL`` (a float), which never
-        raises SQLite's integer overflow the way ``SUM`` does."""
+        the total time, first and last call, and ``by_role``: the same sums per role and
+        model of the run, in the order of their first call. Summed with ``TOTAL`` (a float),
+        which never raises SQLite's integer overflow the way ``SUM`` does."""
         sums = ", ".join(
             f"CASE WHEN COUNT({c}) = COUNT(*) THEN TOTAL({c}) END AS {c}" for c in _TOKEN_COLUMNS)
         with contextlib.closing(self._conn()) as conn:
@@ -269,14 +270,29 @@ class InteractionLogStore:
                     FROM llm_calls WHERE run_label IS NOT NULL
                     GROUP BY run_label ORDER BY MIN(id)"""
             ).fetchall()
+            parts = conn.execute(
+                f"""SELECT run_label, role, model, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms
+                    FROM llm_calls WHERE run_label IS NOT NULL
+                    GROUP BY run_label, role, model ORDER BY MIN(id)"""
+            ).fetchall()
+        by_run: dict[str, list[dict]] = {}
+        for row in parts:
+            part = _counted(dict(row))
+            by_run.setdefault(part.pop("run_label"), []).append(part)
         result = []
         for row in rows:
-            item = dict(row)
-            for column in _TOKEN_COLUMNS:
-                item[column] = _token_count(item[column])
-            item["ms"] = int(item["ms"])
+            item = _counted(dict(row))
+            item["by_role"] = by_run.get(item["run_label"], [])
             result.append(item)
         return result
+
+
+def _counted(item: dict) -> dict:
+    """A summed row as counts: each token sum a count or ``None``, the time an integer."""
+    for column in _TOKEN_COLUMNS:
+        item[column] = _token_count(item[column])
+    item["ms"] = int(item["ms"])
+    return item
 
 
 def _sse_frames(chunk: str):
