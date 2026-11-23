@@ -65,7 +65,7 @@ import re
 import time
 from collections.abc import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -130,14 +130,15 @@ TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool
 TOOL_ERROR_TEXT = 500        # characters of the error text in a closing ``tool`` event
 
 # X-Run-Label: names a run of the token bench in llm_calls.
-RUN_LABEL_HEADER = "x-run-label"
 _RUN_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+RUN_LABEL_DOC = ("Optional name of a measured run (the token bench): stored with every model call of "
+                 "this turn in llm_calls, read back with GET /api/usage/runs. 1-64 characters of "
+                 "A-Z a-z 0-9 _ . - (not . or ..); anything else is 422 invalid_args.")
 
 
-def run_label_of(request: Request) -> str | None:
-    """The request's ``X-Run-Label``: absent is None; 1-64 of ``A-Z a-z 0-9 _ . -``, not
-    ``.`` or ``..``, else 422 ``invalid_args``."""
-    value = request.headers.get(RUN_LABEL_HEADER)
+def check_run_label(value: str | None) -> str | None:
+    """``X-Run-Label`` as sent: absent is None; 1-64 of ``A-Z a-z 0-9 _ . -``, not ``.`` or
+    ``..``, else 422 ``invalid_args``."""
     if value is None:
         return None
     if not _RUN_LABEL.fullmatch(value) or value in (".", ".."):
@@ -225,7 +226,8 @@ def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
 
 
 @router.post("/chat", dependencies=[Depends(rate_limit)])
-async def chat(req: ChatRequest, request: Request):
+async def chat(req: ChatRequest, request: Request,
+               x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
     if (req.message is None) == (req.execution is None):
         raise ApiError(422, "invalid_args", "send exactly one of message and execution")
     if req.message is not None and not req.message.strip():
@@ -237,7 +239,7 @@ async def chat(req: ChatRequest, request: Request):
         if size > MAX_EXECUTION_CHARS:
             raise ApiError(422, "invalid_args",
                            f"execution is too large: {size} characters as JSON, at most {MAX_EXECUTION_CHARS}")
-    run_label = run_label_of(request)
+    run_label = check_run_label(x_run_label)
     if req.bridge:
         # The model's tools reach Revit through the selected device: the same header
         # checks as the bridge routes (403 on a wrong or revoked device key).

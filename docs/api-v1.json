@@ -13,15 +13,35 @@
         ],
         "summary": "Chat",
         "operationId": "chat_api_chat_post",
+        "parameters": [
+          {
+            "name": "x-run-label",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional name of a measured run (the token bench): stored with every model call of this turn in llm_calls, read back with GET /api/usage/runs. 1-64 characters of A-Z a-z 0-9 _ . - (not . or ..); anything else is 422 invalid_args.",
+              "title": "X-Run-Label"
+            },
+            "description": "Optional name of a measured run (the token bench): stored with every model call of this turn in llm_calls, read back with GET /api/usage/runs. 1-64 characters of A-Z a-z 0-9 _ . - (not . or ..); anything else is 422 invalid_args."
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/ChatRequest"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -706,6 +726,119 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Session Usage",
+        "description": "Every model call of one chat session, oldest first.",
+        "operationId": "session_usage_api_usage_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "the X-Session-Id of a chat",
+              "title": "Session Id"
+            },
+            "description": "the X-Session-Id of a chat"
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionUsage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/usage/runs": {
+      "get": {
+        "tags": [
+          "usage"
+        ],
+        "summary": "Run Usage",
+        "description": "One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,\nfirst and last call (UTC, ``YYYY-MM-DD HH:MM:SS``).",
+        "operationId": "run_usage_api_usage_runs_get",
+        "parameters": [
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
               }
             }
           },
@@ -2315,6 +2448,117 @@
   },
   "components": {
     "schemas": {
+      "CallRow": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "turn": {
+            "type": "integer",
+            "title": "Turn"
+          },
+          "round": {
+            "type": "integer",
+            "title": "Round"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
+          "cache_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read"
+          },
+          "cache_write": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write"
+          },
+          "ms": {
+            "type": "integer",
+            "title": "Ms"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "run_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "turn",
+          "round",
+          "role",
+          "model",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "ms",
+          "created_at",
+          "run_label"
+        ],
+        "title": "CallRow",
+        "description": "One model call."
+      },
       "ChatRequest": {
         "properties": {
           "message": {
@@ -2559,6 +2803,22 @@
         ],
         "title": "RedeemRequest"
       },
+      "RunList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunTotal"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "RunList"
+      },
       "RunToolRequest": {
         "properties": {
           "params": {
@@ -2574,6 +2834,109 @@
         },
         "type": "object",
         "title": "RunToolRequest"
+      },
+      "RunTotal": {
+        "properties": {
+          "run_label": {
+            "type": "string",
+            "title": "Run Label"
+          },
+          "calls": {
+            "type": "integer",
+            "title": "Calls"
+          },
+          "input": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output"
+          },
+          "cache_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Read"
+          },
+          "cache_write": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Write"
+          },
+          "ms": {
+            "type": "integer",
+            "title": "Ms"
+          },
+          "first_at": {
+            "type": "string",
+            "title": "First At"
+          },
+          "last_at": {
+            "type": "string",
+            "title": "Last At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_label",
+          "calls",
+          "input",
+          "output",
+          "cache_read",
+          "cache_write",
+          "ms",
+          "first_at",
+          "last_at"
+        ],
+        "title": "RunTotal",
+        "description": "The calls of one run label: each token sum is null when any call lacks it."
+      },
+      "SessionUsage": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CallRow"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "items"
+        ],
+        "title": "SessionUsage"
       },
       "SkillCreateRequest": {
         "properties": {
