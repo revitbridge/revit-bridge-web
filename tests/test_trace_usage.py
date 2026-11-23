@@ -116,12 +116,8 @@ def test_failed_tools_close_their_row_as_errors(client, model):
     assert all("size" in t and "preview" in t and "ms" in t for t in closing)
 
 
-def test_a_handler_that_raises_still_closes_its_row(make_client, env, model, monkeypatch):
-    async def broken(name, arguments, session):
-        raise RuntimeError("handler bug")
-
-    monkeypatch.setattr(chat_module, "call_tool", broken)
-    # The test client drops the body of a stream that raised: record the frames on the way out.
+def _recording(monkeypatch) -> list[str]:
+    """The test client drops the body of a stream that raised: record the frames on the way out."""
     chunks: list[str] = []
     real_log_and_stream = chat_module.log_and_stream
 
@@ -133,15 +129,79 @@ def test_a_handler_that_raises_still_closes_its_row(make_client, env, model, mon
         return frames()
 
     monkeypatch.setattr(chat_module, "log_and_stream", recording)
+    return chunks
+
+
+def test_a_handler_that_raises_still_closes_its_row(make_client, env, model, monkeypatch, caplog):
+    secret_path = "C:\\secret\\path"
+
+    async def broken(name, arguments, session):
+        raise RuntimeError(f"boom at {secret_path}")
+
+    monkeypatch.setattr(chat_module, "call_tool", broken)
+    chunks = _recording(monkeypatch)
     model.turns += [tool_turn(("list_tools", {})), text_turn("never")]
     client = make_client(raise_server_exceptions=False)
     with contextlib.suppress(Exception):
         client.post("/api/chat", json={"message": "x"}, headers=HEADERS)
-    tools = events(sse("".join(chunks)), "tool")
+    sent = "".join(chunks)
+    frames = sse(sent)
+    tools = events(frames, "tool")
     assert [(t["id"], t["status"]) for t in tools] == [("1.1.1", "running"), ("1.1.1", "error")]
-    assert tools[1]["error"] == "RuntimeError: handler bug" and "ms" in tools[1]
+    # Only the type reaches the browser; the text, with its path, is in the server log.
+    assert tools[1]["error"] == "RuntimeError" and "ms" in tools[1]
+    assert "secret" not in sent and "boom" not in sent
+    assert "tool list_tools raised" in caplog.text and "boom at" in caplog.text
+    # The stage is closed before the turn breaks off.
+    assert [e for e, _ in frames if e in ("stage", "tool")] == ["stage", "tool", "tool", "stage"]
+    assert events(frames, "stage")[-1]["status"] == "end"
     assert len(model.requests) == 1               # the turn ended there, as before
-    assert get_log_store().query()["items"][0]["status"] == "error: handler bug"
+    assert get_log_store().query()["items"][0]["status"].startswith("error: boom at")
+
+
+def test_any_other_failure_of_the_turn_closes_the_stage(make_client, env, model, monkeypatch):
+    """A failure outside the tools (here: storing the session's reply) still sends stage end."""
+    def broken_kept(message, keep=chat_module.TOOL_RESULT_KEEP):
+        raise ValueError("store failed")
+
+    monkeypatch.setattr(chat_module, "kept_tool_message", broken_kept)
+    chunks = _recording(monkeypatch)
+    model.turns += [tool_turn(("list_tools", {})), text_turn("never")]
+    client = make_client(raise_server_exceptions=False)
+    with contextlib.suppress(Exception):
+        client.post("/api/chat", json={"message": "x"}, headers=HEADERS)
+    frames = sse("".join(chunks))
+    assert [s["status"] for s in events(frames, "stage")] == ["start", "end"]
+    assert [t["status"] for t in events(frames, "tool")] == ["running", "ok"]
+    assert ("done", None) not in frames
+
+
+def test_large_arguments_go_out_truncated_in_both_events(client, model):
+    big = {"spec": {"task": "x" * 9000}}
+    text = json.dumps(big, ensure_ascii=False)
+    small = {"spec": {"task": "y" * 100}}
+    model.turns += [tool_turn(("reconcile", big), ("reconcile", small)), text_turn("ok")]
+    resp = client.post("/api/chat", json={"message": "check"}, headers=HEADERS)
+    tools = events(sse(resp.text), "tool")
+    marker = {"_truncated": True, "_chars": len(text), "_head": text[:chat_module.TOOL_ARGS_HEAD]}
+    assert [t["args"] for t in tools[:2]] == [marker, marker]
+    assert [t["args"] for t in tools[2:]] == [small, small]           # short ones as given
+    assert len(resp.text) < 2 * len(text)                             # the 9 KB went out not even once whole
+    # The model still got its own arguments back in the history, whole.
+    sent = model.requests[1]["messages"][2]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(sent) == big
+
+
+def test_shown_arguments_measures_the_json_text():
+    limit = chat_module.TOOL_ARGS_LIMIT
+    exactly = {"k": "a" * (limit - len('{"k": ""}'))}
+    assert len(json.dumps(exactly)) == limit and chat_module.shown_arguments("", exactly) == exactly
+    over = {"k": "a" * (limit - len('{"k": ""}') + 1)}
+    assert chat_module.shown_arguments("", over)["_chars"] == limit + 1
+    assert chat_module.shown_arguments("not json", None) == {"_raw": "not json"}
+    raw = "x" * 9000
+    shown = chat_module.shown_arguments(raw, None)
+    assert shown["_truncated"] is True and shown["_head"].startswith('{"_raw": "xxx')
 
 
 def test_a_turn_without_the_bridge_reports_usage_but_no_tools(client, model):

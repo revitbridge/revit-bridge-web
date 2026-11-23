@@ -25,10 +25,12 @@ change nothing else in it):
   ``error`` or ``done``). The role is always ``planner`` until the roles package.
 - ``event: tool`` ``{id, role, name, args, status, ms?, size?, preview?, error?}``:
   ``running`` when a tool call starts, then ``ok`` or ``error`` with the same
-  ``id`` when it ends (``error`` when the handler raised or its result carries an
-  ``error``); ``args`` as the model gave them, ``size`` the result's length in
-  characters, ``preview`` its first ``TOOL_PREVIEW`` characters. ``bridge: false``
-  runs no tools and sends none.
+  ``id`` when it ends (``error`` when the handler raised - ``error`` is then the
+  exception's type name only - or its result carries an ``error``); ``args`` as the
+  model gave them, or ``{_truncated, _chars, _head}`` when their JSON text is longer
+  than ``TOOL_ARGS_LIMIT``; ``size`` the result's length in characters, ``preview``
+  its first ``TOOL_PREVIEW`` characters. ``bridge: false`` runs no tools and sends
+  none. ``stage`` ``end`` is sent on every way the turn ends that can still send.
 - ``event: usage`` ``{role, model, round, input, output, cache_read, cache_write,
   ms}`` after every model call (``round`` counts the calls of the turn from 1);
   a number the provider did not report is ``null``. The same row goes to the
@@ -128,6 +130,21 @@ BASE_PROMPT = (
 ROLE = "planner"
 TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool`` event
 TOOL_ERROR_TEXT = 500        # characters of the error text in a closing ``tool`` event
+# Arguments whose JSON text is longer than TOOL_ARGS_LIMIT go out in both tool events as
+# {"_truncated": true, "_chars": <length>, "_head": <first TOOL_ARGS_HEAD characters>}.
+TOOL_ARGS_LIMIT = 8000
+TOOL_ARGS_HEAD = 2000
+
+
+def shown_arguments(raw: str, args: dict | None) -> dict:
+    """A tool call's arguments as its ``tool`` events carry them: the object the model gave
+    (``{"_raw": <text>}`` when that was not a JSON object), or, when its JSON text runs past
+    ``TOOL_ARGS_LIMIT`` characters, the truncation marker with the length and the head."""
+    shown = args if args is not None else {"_raw": raw}
+    text = json.dumps(shown, ensure_ascii=False)
+    if len(text) > TOOL_ARGS_LIMIT:
+        return {"_truncated": True, "_chars": len(text), "_head": text[:TOOL_ARGS_HEAD]}
+    return shown
 
 # X-Run-Label: names a run of the token bench in llm_calls.
 _RUN_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -327,7 +344,7 @@ async def chat(req: ChatRequest, request: Request,
                 for index, call in enumerate(calls, start=1):
                     event_id = f"{turn}.{round_no + 1}.{index}"     # unique in the session
                     args = parse_arguments(call.arguments)
-                    shown_args = args if args is not None else {"_raw": call.arguments[:TOOL_PREVIEW]}
+                    shown_args = shown_arguments(call.arguments, args)
                     yield tool_event(event_id, call.name, shown_args, "running")
                     tool_started = time.monotonic()
                     try:
@@ -338,10 +355,13 @@ async def chat(req: ChatRequest, request: Request,
                             outcome = await call_tool(call.name, args, session)
                         reply = tool_message(call, outcome.result)
                     except Exception as exc:
-                        # The turn fails as before; the row still closes.
+                        # The turn fails as before; the row still closes. The browser gets the
+                        # exception's type only - its text (paths, internals) goes to the log.
+                        _log.error("tool %s raised in session %s", call.name, session.session_id,
+                                   exc_info=True)
                         yield tool_event(event_id, call.name, shown_args, "error",
                                          ms=int((time.monotonic() - tool_started) * 1000),
-                                         error=f"{type(exc).__name__}: {exc}"[:TOOL_ERROR_TEXT])
+                                         error=type(exc).__name__)
                         raise
                     result_text = reply["content"]
                     error = tool_error_text(outcome.result)
@@ -359,6 +379,12 @@ async def chat(req: ChatRequest, request: Request,
             yield stage("end")
             yield format_sse_event("error", {"detail": str(exc)})
             return
+        except Exception:
+            # Anything else ends the turn as before (the response breaks off), but the stage
+            # is closed first. A generator closed by a client that went away (GeneratorExit,
+            # cancellation) can send nothing more: the page marks what stayed open.
+            yield stage("end")
+            raise
         yield stage("end")
         yield SSE_DONE
 
