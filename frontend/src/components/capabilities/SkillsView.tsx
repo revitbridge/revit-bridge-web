@@ -9,9 +9,10 @@ import { getErrorMessage } from '../../utils/errors'
 import Markdown from '../shared/Markdown'
 
 export default function SkillsView() {
-  const admin = getConfig().features.admin
+  const { admin, mode } = getConfig().features
+  const local = mode === 'local'          // a local host needs no admin password
   const adminToken = useSessionStore(s => s.adminToken)
-  const canEdit = admin && Boolean(adminToken)
+  const canEdit = local || (admin && Boolean(adminToken))
   const [skills, setSkills] = useState<Skill[]>([])
   const [loading, setLoading] = useState(true)
   const [notice, setNotice] = useState('')
@@ -65,8 +66,8 @@ export default function SkillsView() {
     <div className="space-y-4">
       <p className="section-copy small">
         {builtin} built-in · {custom} custom · {active} active. Every enabled skill is appended to the system prompt.
-        {admin && !adminToken && ' Enter the admin password on the Connect page to add or change skills.'}
-        {!admin && ' This host has no admin password configured; skills are read-only here.'}
+        {!local && admin && !adminToken && ' Enter the admin password on the Connect page to add or change skills.'}
+        {!local && !admin && ' This host has no admin password configured; skills are read-only here.'}
       </p>
 
       {canEdit && (

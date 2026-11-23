@@ -23,6 +23,8 @@ export default function App() {
   const llmModel = useSessionStore(s => s.llmModel)
   const config = getConfig()
   const modelLabel = llmModel || (config.features.serverModel ? 'server default' : 'not set')
+  // A local host has no devices: whatever this tab still holds, Revit is the local add-in.
+  const revitLabel = config.features.mode === 'local' ? 'local' : deviceLabel(deviceId, devices)
 
   return (
     <div className="app-shell flex flex-col h-screen">
@@ -35,7 +37,7 @@ export default function App() {
           </div>
         </div>
         <div className="runtime-chips">
-          <div className="runtime-chip"><span>Revit</span><strong>{deviceLabel(deviceId, devices)}</strong></div>
+          <div className="runtime-chip"><span>Revit</span><strong>{revitLabel}</strong></div>
           <div className="runtime-chip"><span>Model</span><strong>{modelLabel}</strong></div>
           <div className="runtime-chip"><span>API</span><strong>{config.apiBase || 'same-origin'}</strong></div>
         </div>
