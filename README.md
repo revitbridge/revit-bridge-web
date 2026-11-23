@@ -157,7 +157,9 @@ its connection.
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
    Above each reply of the bridge transcript is its tool activity: one row per tool call the model
    made (name, arguments, status, time, result size in characters; open a row for the full
-   arguments and the first 2000 characters of the result; errors in red). Below the chat, the
+   arguments - the first 2000 characters and the size when they run past 8000 - and the first
+   2000 characters of the result; errors in red). A row or stage still open when the turn's
+   stream ended (stopped, broken off) shows as *interrupted*. Below the chat, the
    *Tokens* panel counts this turn and this session: input (cached tokens included), cache read,
    hit rate, cache write, output and the number of model calls (by role once there is more than
    one). A number the provider
@@ -292,10 +294,18 @@ Every turn also streams what the host did: `event: stage` `{role, model, status}
 turn (`start`, then `end` before `done` or `error`), `event: tool` `{id, role, name, args, status,
 ms?, size?, preview?, error?}` twice per tool call (`running`, then `ok` or `error` with the same
 `id`) and `event: usage` `{role, model, round, input, output, cache_read, cache_write, ms}` after
-each model call; until roles are split the role is always `planner`. Token counts come from the
-provider's `usage` object (the request asks for it with `stream_options.include_usage`; an
-endpoint that refuses that option with a 4xx is asked again without it). `input` is the whole
-prompt, cached tokens included; a count the provider did not send is `null`. Each call is also
+each model call; until roles are split the role is always `planner`. `args` is what the model sent,
+or `{"_truncated": true, "_chars": <length>, "_head": <first 2000 characters>}` when its JSON text
+is longer than 8000 characters; for a tool that raised, `error` is the exception's type name only.
+Token counts come from the provider's `usage` object (the request asks for it with
+`stream_options.include_usage`; an endpoint that answers a 4xx other than 401 / 403 naming that
+option is asked once more without it, and that address and model are not asked again once the
+retry is accepted). `input` is the whole prompt, cached tokens included; `output` includes
+thinking tokens also where the provider counts them only in `total_tokens` (Gemini's
+OpenAI-compatible endpoint: `output` is then `total_tokens - input`); a count the provider did
+not send, or one that is not an integer from 0 to 2^53, is `null`. Known limit: a gateway that
+always sends `prompt_tokens_details.cached_tokens` (new-api sends 0 when the upstream reported
+nothing) shows a cache read of 0, not unknown - the host cannot tell the two apart. Each call is also
 stored in the `llm_calls` table (no text, no address, no key) with the optional `X-Run-Label`
 header (1-64 of `A-Z a-z 0-9 _ . -`, 422 otherwise). `GET /api/usage?session_id=<id>` returns
 those rows for one session, `GET /api/usage/runs` one line per run label with each sum `null` as
