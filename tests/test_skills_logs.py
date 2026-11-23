@@ -11,16 +11,15 @@ from backend.api import chat as chat_module
 ADMIN = {"X-Admin-Token": "hunter2"}
 
 
-def test_the_wheel_puts_revit_core_in_the_prompt(make_client, env, tmp_path):
+def test_the_wheel_s_skills_are_listed_and_stay_out_of_the_prompt(make_client, env, tmp_path):
     """Without SKILLS_DIR the wheel's skills are listed, but only revit-core is enabled;
     the revit-bridge protocol (the MCP host's tool flow), revit-addin-dev, references and
-    lessons stay off. The system prompt is the package's host instructions (this host's
-    protocol), the revit-core SKILL body and one line that sends the model to
-    get_guidance for the lessons."""
+    lessons stay off. None of them enters the system prompt any more: it is the package's
+    host instructions (this host's protocol) and this host's paragraph - the model here
+    writes no code, and the skills are guidance for writing it."""
     import shutil
 
     from revit_bridge import host_instructions, skills_dir
-    from revit_bridge.guidance import CATEGORIES
 
     client = make_client()
     listing = client.get("/api/skills").json()["skills"]
@@ -44,44 +43,30 @@ def test_the_wheel_puts_revit_core_in_the_prompt(make_client, env, tmp_path):
     assert get_skill_store().update("builtin:revit-bridge/SKILL", content="x") is None
     assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
 
+    expected = host_instructions().strip() + "\n\n" + chat_module.HOST_PARAGRAPH
     prompt = chat_module.build_system_prompt()
-    assert prompt == (host_instructions().strip() + "\n\n## Skills\n\n" + core["content"]
-                      + "\n\n## Guidance\n\n" + chat_module.GUIDANCE_POINTER)
-    assert protocol["content"] not in prompt and addin["content"] not in prompt
-    for lesson in lessons:                                   # titles in the index, bodies not
-        assert get_skill_store().get(lesson["id"])["content"] not in prompt
-    pointer = chat_module.GUIDANCE_POINTER
-    assert "\n" not in pointer and "get_guidance" in pointer
-    assert all(category in pointer for category in CATEGORIES)
-    # 6,007 bytes with revit-bridge 0.8.2 (5,455 with 0.6.1: revit-core gained "Keep Revit
-    # interactive"); 22,348 bytes with the protocol in it.
-    assert len(prompt.encode("utf-8")) < 6_500
-
-    # With no built-in skills at all: the host instructions and the pointer.
-    empty = tmp_path / "no-skills"
-    empty.mkdir()
-    env.setenv("SKILLS_DIR", str(empty))
-    make_client()
-    assert chat_module.build_system_prompt() == (host_instructions().strip() + "\n\n## Guidance\n\n"
-                                                 + chat_module.GUIDANCE_POINTER)
+    assert prompt == expected
+    for skill in (core, protocol, addin):
+        assert skill["content"] not in prompt
+    # 4,288 bytes with revit-bridge 0.8.2; 6,007 with the revit-core skill and the
+    # get_guidance pointer it carried before.
+    assert len(prompt.encode("utf-8")) < 4_500
     assert chat_module.build_system_prompt(bridge=False) == chat_module.BASE_PROMPT
 
-    # Every skill switched off: the same - the pointer stays, get_guidance is still a tool.
+    # No built-in skills, every skill switched off, or a mounted SKILLS_DIR whose files are
+    # on: the prompt is the same.
+    empty = tmp_path / "no-skills"
+    empty.mkdir()
     off = tmp_path / "all-off"
     off.mkdir()
     (off / "SKILL.md").write_text("---\nname: x\nenabled: false\n---\n\nOff.\n", encoding="utf-8")
-    env.setenv("SKILLS_DIR", str(off))
-    make_client()
-    assert chat_module.build_system_prompt() == (host_instructions().strip() + "\n\n## Guidance\n\n"
-                                                 + chat_module.GUIDANCE_POINTER)
-
-    # A mounted SKILLS_DIR is the operator's: the protocol in it is on, as before.
     mounted = tmp_path / "mounted"
     shutil.copytree(skills_dir() / "revit-bridge", mounted / "revit-bridge")
-    env.setenv("SKILLS_DIR", str(mounted))
-    make_client()
-    assert get_skill_store().get("builtin:revit-bridge/SKILL")["enabled"] is True
-    assert protocol["content"] in chat_module.build_system_prompt()
+    for directory in (empty, off, mounted):
+        env.setenv("SKILLS_DIR", str(directory))
+        make_client()
+        assert chat_module.build_system_prompt() == expected, directory
+    assert get_skill_store().get("builtin:revit-bridge/SKILL")["enabled"] is True   # on, and still not in it
 
 
 def test_builtin_enabled_default_depends_on_the_source(tmp_path, monkeypatch):
@@ -171,11 +156,14 @@ def test_skill_crud_and_prompt_injection(make_client, env, tmp_path):
     assert skill_id == "office-layout"
     assert (tmp_path / "data" / "skills" / "office-layout.md").is_file()
 
+    # Enabled or not, a skill's text never reaches the chat's prompt (prompt injection by
+    # a skill file is off the table along with the skills themselves).
     prompt = chat_module.build_system_prompt()
-    assert "Always snapshot first." in prompt and "Walls are 200mm." in prompt and "Desks face north." in prompt
+    assert not any(text in prompt for text in ("Always snapshot first.", "Walls are 200mm.", "Desks face north."))
+    assert get_skill_store().get(skill_id)["enabled"] is True
 
     assert client.patch(f"/api/skills/{skill_id}", json={"enabled": False}, headers=ADMIN).json()["enabled"] is False
-    assert "Desks face north." not in chat_module.build_system_prompt()
+    assert chat_module.build_system_prompt() == prompt
 
     updated = client.put(f"/api/skills/{skill_id}", json={"description": "desk rule", "content": "Desks face south."}, headers=ADMIN)
     assert updated.json()["description"] == "desk rule" and updated.json()["content"] == "Desks face south."

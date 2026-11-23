@@ -341,7 +341,7 @@ def test_two_turns_of_a_session_send_the_same_system_message_and_tools(make_clie
     model.turns += [tool_turn(("list_tools", {})), text_turn("one"), text_turn("two"), text_turn("three")]
     first = client.post("/api/chat", json={"message": "first"}, headers=HEADERS)
     session_id = first.headers["X-Session-Id"]
-    # A skill enabled between the turns: the open session keeps the prompt it started with.
+    # A skill created between the turns: skills are no part of the prompt, in this session or a new one.
     created = client.post("/api/skills", json={"name": "late rule", "content": "# Late rule\n\nAlways say hi."},
                           headers={"X-Admin-Token": "hunter2"})
     assert created.status_code in (200, 201), created.text
@@ -355,9 +355,8 @@ def test_two_turns_of_a_session_send_the_same_system_message_and_tools(make_clie
     assert tools[0] == json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)
     # The volatile part comes after them: the user turns.
     assert [m["role"] for m in bodies[2]["messages"]][:2] == ["system", "user"]
-    # A new session reads the skills again.
     client.post("/api/chat", json={"message": "fresh"}, headers=HEADERS)
-    assert "Always say hi." in model.requests[3]["messages"][0]["content"]
+    assert model.requests[3]["messages"][0] == bodies[0]["messages"][0]
     assert get_session_store().get(session_id).system_prompts.keys() == {True}
 
 
