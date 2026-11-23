@@ -25,6 +25,11 @@ Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Sec
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
 
+**The model in the chat no longer writes code** (see *Changed*): it runs saved tools only, and code
+becomes a tool on the workbench. Built-in packs are now read-only: a client that edited, hid or
+replaced one gets 409 `builtin_read_only` (see *Changed*). Started with `uv run revit-bridge-web`,
+the host shares your tools with the package's MCP server (see *Changed*).
+
 ### Security
 
 - **Changing capability packs needs the admin password.** This changes who may call three
@@ -66,6 +71,30 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Added
 
+- The workbench's routes (`docs/api-v1.json` gains four operations): `POST /api/v1/bridge/check`
+  `{code, parameters?}` is the package's `check_code` (compile in Revit, never run, with the lessons
+  for the errors as the MCP tool adds them) and `POST /api/v1/bridge/dry-run` `{code, parameters?}`
+  its `dry_run_code` (run in the open model and always rolled back: no confirmation, no token; one
+  `dry_run` ledger line). The replies are the package's as they are; code the sandbox refuses is
+  answered before Revit is needed, no add-in is 503 `revit_unreachable`, and the package's `include`
+  (files on the host's machine) is not offered. `GET /api/v1/bridge/tools/{name}/export` returns the
+  pack file as stored (`text/yaml`); `POST /api/v1/bridge/tools/import` takes one as YAML text,
+  validates it as the package validates a pack file (422 `invalid_pack`, 400 `blocked`) and stores it
+  as sent; an existing user pack is replaced only with `?overwrite=true` (409 `pack_exists`). The
+  import is a pack write: admin password on a cloud host, none on a local one.
+- `GET /api/v1/bridge/tools` and the model's `list_tools` mark each pack `builtin` (true for the
+  wheel's) and its `origin` (`"builtin"` or `"user"`); on a local host the page's listing also has
+  `directory`, where the file is. Both are read from disk on every call.
+- Every tool name from a request or from the model is checked before the store sees it: the
+  package's identifier pattern (`IDENTIFIER_RE` of its pack schema), at most 100 characters, and no
+  Windows device name (`con`, `nul`, `prn`, `aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case; on Windows
+  `ToolStore().load("con")` blocks). 422 `invalid_tool_name` from the routes (paths, `POST /solidify`,
+  the import, the specs of `/spec/confirm` and `/spec/reconcile`), a result with that error from the
+  model's `missing_params`, `get_tool_choices`, `reconcile` and `propose_spec`.
+- The Capabilities page has a *Workbench* tab, also at `/capabilities/workbench` (a link opens it):
+  for now a note that the workbench editor is being wired in, and your own tools with *Export*,
+  *Delete* and *Import*. `frontend/src/api/workbench.ts` is the one HTTP client of the workbench
+  (check, dry run, choices, save, list, load, remove, export, import).
 - What the host loop does is visible and counted. `/api/chat` sends three more SSE events next
   to the ones it already sent (whose names, shapes and order are unchanged): `event: stage`
   `{role, model, status}` (`start` before the first model call, `end` before `done` or `error`;
@@ -238,6 +267,29 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
+- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,444 bytes of
+  definitions instead of 5,147), and the system prompt is the package's `host_instructions()` and
+  one paragraph of this host's: here the model never writes or proposes code, uses saved tools only
+  and, when none fits, says so and links `[workbench](/capabilities/workbench)` (4,288 bytes instead
+  of 6,007: no skills, no `get_guidance` pointer). `propose_spec` with an `execute_code` spec shows no
+  card and answers `{accepted: false, errors: [{code: "code_not_offered", ...}], reconcile: null}`.
+  The Skills page and `/api/skills` stay; the skills no longer enter the prompt. The task page loses
+  the free-code execution, the code branch of the tamper demo and the *Solidify* panel; running a
+  pack, the spec card, the tamper demo for a value, the timeline and the token panel are unchanged.
+- **Built-in packs are read-only.** `PUT` and `DELETE /api/v1/bridge/tools/{name}` on a pack from
+  the wheel, and `POST /solidify` or the import under a built-in's name, are 409 `builtin_read_only`
+  (before, an edit copied the built-in into the user directory and a delete hid it behind a
+  `.disabled` marker). A user file that already carries a built-in's name is the designer's own:
+  it can be edited, and deleting it brings the built-in back. The Capabilities page offers *Edit*
+  and *Delete* for your own packs only.
+- **Your tools are shared with the package's MCP server** when the host runs without a container
+  (`uv run revit-bridge-web`): it sets no `REVIT_BRIDGE_DATA_DIR`, so the package uses its per-user
+  directory, the one its MCP server uses. The 0.1 repair at startup (moving v0 pack files to
+  `legacy-0.1/`) now runs only on the host's own `DATA_DIR/capabilities`, never on a shared
+  directory, where another host's v0 packs stay where they are. `docker-compose.yml` keeps the tools
+  in `./data` as before and has a commented mount (`SHARED_CAPABILITIES_DIR`,
+  `REVIT_BRIDGE_CAPABILITIES_DIR=/shared/capabilities`) to share the machine's directory instead;
+  `.env.example` no longer sets `REVIT_BRIDGE_DATA_DIR` (compose and the image pin it).
 - A chat session keeps the system prompt its first turn was sent with (one per `bridge` value):
   every later call of the session starts with the same bytes - system message, then the tool
   definitions, which were already constant - so a provider's prompt cache keeps matching. A
@@ -417,6 +469,9 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 - `CLAUDE.md` gave the package constraint as `revit-bridge>=0.1.0`; it is `>=0.6,<0.7`.
 
 ### Removed
+
+- The model's `get_guidance` tool and the skills and lesson pointer in the chat's system prompt
+  (the model here writes no code); the task page's code execution path and *Solidify* panel.
 
 - `X-Slot-Id` / `X-Slot-Token` (an `X-Slot-*` header is now 422 `invalid_args`),
   `MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*` (the host

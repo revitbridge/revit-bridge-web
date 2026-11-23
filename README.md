@@ -5,7 +5,7 @@ web UI, talks to the Revit add-in on your machine and streams a model you bring 
 cloud host it also relays remote Revit add-ins. The host contains no Revit logic of its own - every
 query, execution and capability pack goes through the `revit_bridge` package.
 
-设计师与 AI 之间的意图桥演示站：连接 Revit、用自带模型提出任务、审查并执行 C#、把可复用的代码固化为能力包。
+设计师与 AI 之间的意图桥演示站：连接 Revit、用自带模型从已保存的工具里选工具并填参数、确认后执行；对话里模型不写代码，新工具在工具台里检查、试跑、存成工具。
 
 ## Start on your machine
 
@@ -34,6 +34,17 @@ so. The wheel the project builds contains only the backend, so installing it wit
 not a supported way to run the host (there would be no UI). Open it as `http://127.0.0.1:7860` or
 `http://localhost:7860` - typed, from a bookmark, or from a link in a README or a chat tool: a link
 opens the page itself, while everything else another site's page asks for is refused (see below).
+
+**Your tools.** The capability packs you save (your tools) live in the `revit_bridge` package's user
+capabilities directory. Started with `uv run revit-bridge-web`, the host sets nothing: that is the
+package's per-user directory (`%LOCALAPPDATA%\revit-bridge\capabilities` on Windows,
+`~/.local/share/revit-bridge/capabilities` elsewhere), the same one the package's MCP server uses when
+Claude Code or another coding framework runs it on this machine - a tool saved there shows up here on
+the next request, and one saved here is a file the MCP server reads, no restart on either side.
+`docker compose` keeps them in `./data/capabilities` instead; to share them with the MCP server,
+uncomment the two lines in `docker-compose.yml` that mount the machine's directory
+(`SHARED_CAPABILITIES_DIR` in `.env`) at `/shared/capabilities` and point
+`REVIT_BRIDGE_CAPABILITIES_DIR` there.
 
 The image on its own, without compose - publish on loopback and pass the same address in:
 
@@ -140,9 +151,9 @@ its connection.
    the browser tab (`sessionStorage`) and travel as request headers; the server never stores them.
 2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
    summary, selection, fingerprint). Describe what you want in one sentence: the model works through
-   the package's tools - it reads the lessons for writing Revit code it needs (`get_guidance`), takes
-   a snapshot, asks the questions a capability pack still has open (with the real levels and types,
-   as buttons you can click) and reconciles a draft - then proposes
+   the package's tools - it picks a saved tool (a capability pack) from the list, takes a snapshot,
+   asks the questions the pack still has open (with the real levels and types, as buttons you can
+   click) and reconciles a draft - then proposes
    a TaskSpec, which the page shows as a spec card: every parameter with its source and evidence,
    the readings it made as checkboxes, conflicts in red. A value the reconciliation cannot find is a
    question too; each question has a badge for who can answer it (*designer*, or *model fact*: check
@@ -152,8 +163,12 @@ its connection.
    see the validator's checks, the evidence id, and `validation_failed` in red when Revit ran the
    code but the model did not change as claimed. The tamper demo changes one confirmed value and
    runs again under the same token: `confirmation_invalid`, nothing reaches Revit. The result then
-   goes back to the model for a faithful report, and code that worked can be solidified into a v1
-   pack (on a cloud host with the admin password). The *Compare with no bridge* switch sends the same sentence a second time with
+   goes back to the model for a faithful report. **The model here never writes code**: it has no
+   lessons for writing it and no way to propose it (an `execute_code` spec is refused and shows no
+   card), so it runs saved tools only. When no saved tool fits, it says so, describes the tool you
+   would need in one sentence and links the workbench (`/capabilities/workbench`), where a person
+   tries code and saves it as a tool - code is written in the coding frameworks (Claude Code and
+   others, with the `revit-bridge` plugin's skills). The *Compare with no bridge* switch sends the same sentence a second time with
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
    Above each reply of the bridge transcript is its tool activity: one row per tool call the model
    made (name, arguments, status, time, result size in characters; open a row for the full
@@ -168,31 +183,38 @@ its connection.
 3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
-   delete it (on a cloud host with the admin password). *Skills*: Markdown protocols that are appended to the model's system prompt - the
-   package's `revit-core` (the contract every snippet follows) is on; the `revit-bridge` protocol
-   (written for the MCP server's tools; this host's protocol is the package's `host_instructions()`),
-   the add-in phase skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
-   `revit-addin-release`), `revit-journal-analysis` (reading Revit journal files), the references
-   and the lessons are listed but off (the model asks for lessons with `get_guidance`); add, upload
-   or import more from GitHub (a cloud host asks for the admin password).
+   delete your own (on a cloud host with the admin password). The built-in packs from the
+   `revit_bridge` wheel are read-only everywhere: never edited, hidden or replaced (export one and
+   import it under another name to make your own). *Workbench* (`/capabilities/workbench`): where code
+   becomes a tool - for now the list of your own tools (with the directory they are in) with *Export*
+   (the pack file), *Delete* and *Import* (a pack file); the editor (check, dry run, save as tool) is
+   being wired in. *Skills*: the Markdown protocols of the package (`revit-core`, the `revit-bridge`
+   protocol, the add-in phase skills, `revit-journal-analysis`, references and lessons) and your own;
+   list, read, add, upload or import from GitHub (a cloud host asks for the admin password). They are
+   guidance for writing code and no longer enter the chat's prompt.
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.
 
-The system prompt is the package's `host_instructions()` (this host's protocol), the enabled skills
-(by default only `revit-core`) and one line that sends the model to `get_guidance` for the lessons
-(revit-core's and every other category's) - about 6 KB in all. The task page's "without the
-bridge" comparison sends the same message with `bridge: false` (one plain prompt, no tools, no
-skills). A session keeps the system prompt of its first turn, so every call starts with the same
-system message and tool definitions and a provider's prompt cache can serve them; a skill
-changed meanwhile applies from the next session (*New session*).
+The system prompt is the package's `host_instructions()` (this host's protocol) and one paragraph
+of this host's own: here the model never writes or proposes code, has no `get_guidance`, uses saved
+tools only and, when none fits, says so and links the workbench - about 4.3 KB, with seven tool
+definitions of about 3.4 KB (6 KB and eight tools, 11.2 KB in all, while skills and `get_guidance`
+were part of it). The package's text still describes `execute_code` and the snippet contract; the
+host's paragraph after it is what holds here, until a package release brings a variant without
+code. The task page's "without the bridge" comparison sends the same message with `bridge: false`
+(one plain prompt, no tools). A session keeps the system prompt of its first turn, so every call
+starts with the same system message and tool definitions and a provider's prompt cache can serve
+them.
 
 Upgrading from 0.1: the 0.1 host copied the package's built-in packs into `data/capabilities/`,
 which is now the package's own directory for user packs, where a file of the same name would hide
 the wheel's pack. On its first start 0.2 moves every 0.1 copy (a pack file without
 `schema_version`) to `data/capabilities/legacy-0.1/` and logs one line per file; nothing is
-deleted. A pack you solidified with 0.1 lands there too: solidify it again from the Capabilities
-page (its `code_template` and `parameters` are still in the file).
+deleted. A pack you solidified with 0.1 lands there too: write it out as a v1 pack (its
+`code_template` and `parameters` are still in the file) and import it on the workbench. Only the
+host's own `DATA_DIR/capabilities` is repaired this way: a user pack directory shared with other
+hosts (the package's per-user directory, or a mounted one) is never touched at startup.
 
 Development without Docker:
 
@@ -214,15 +236,15 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
-| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
+| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify, import), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
 | `MAX_DEVICES` | `20` | Cloud only (a local host logs it as unused). How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
 | `DATA_DIR` | `/app/data` | This host's files: skills, interaction logs (`./data` volume). |
-| `REVIT_BRIDGE_DATA_DIR` | `/app/data` | The package's data root: user capability packs (solidified, edited or hidden built-ins), `usage.json`, the evidence ledger (read by the package; same volume). The built-in packs are read from the wheel. |
-| `REVIT_BRIDGE_CAPABILITIES_DIR`, `REVIT_BRIDGE_EVIDENCE_DIR` | `REVIT_BRIDGE_DATA_DIR/capabilities`, `REVIT_BRIDGE_DATA_DIR/evidence` | Package overrides for the user pack and evidence directories. Leave them unset in the container: a path outside `/app/data` is not in the volume and the entrypoint does not make it writable. |
+| `REVIT_BRIDGE_DATA_DIR` | `/app/data` in the image; unset outside it | The package's data root: user capability packs (your tools), `usage.json`, the evidence ledger (read by the package). In the image it is the `./data` volume. Without a container leave it unset: the package then uses its per-user directory (`%LOCALAPPDATA%\revit-bridge` on Windows, `~/.local/share/revit-bridge` elsewhere), the one its MCP server uses, so the tools are shared. The built-in packs are read from the wheel. |
+| `REVIT_BRIDGE_CAPABILITIES_DIR`, `REVIT_BRIDGE_EVIDENCE_DIR` | `REVIT_BRIDGE_DATA_DIR/capabilities`, `REVIT_BRIDGE_DATA_DIR/evidence` | Package overrides for the user pack and evidence directories. In the container leave them unset (a path outside `/app/data` is not in the volume and the entrypoint does not make it writable), except `REVIT_BRIDGE_CAPABILITIES_DIR=/shared/capabilities` with the commented mount in `docker-compose.yml`, which shares the machine's tool directory (`SHARED_CAPABILITIES_DIR`) with the MCP server; the entrypoint leaves that directory's owner as it is, so on Linux the app (uid 1000) needs write access to it. |
 | `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `<skill>/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. Every file in a mounted directory is on unless its front matter says `enabled: false`. |
-| `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for `get_guidance`, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
+| `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for the lessons the workbench's compile check (`POST /check`) adds to its reply, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
 | `PUBLIC_WS_BASE` | unset | Cloud only (a local host logs it as unused). Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
 | `CORS_ORIGINS` | unset | Cloud only: a local host answers its own origin only and refuses to start when it is set. Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). Without Docker, `PORT` (or `--port`) is the port the server listens on. Compose also passes `BIND_ADDRESS` into the container: there the server listens on `0.0.0.0`, so the published address is what a local host checks - it must be loopback. Running the image with `docker run` in local mode, publish on loopback and pass the same value: `-p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1`. |
@@ -240,8 +262,8 @@ turns the designer's confirmation into a one-time token; `POST /tools/{name}/run
 run only with that token (sandbox review, preconditions, validator and the evidence ledger are the
 package's; the ledger records `host: "web"`); `GET /evidence` and `POST /evidence/{id}/validate` show
 and re-check what ran. A pack's code runs in a designer's Revit once they confirm its card, so the
-routes that change packs - `PUT` and `DELETE /tools/{name}`, `POST /solidify` - take the admin
-password as `X-Admin-Token` on a cloud host (403 `admin_required` without the right one; the 503
+routes that change packs - `PUT` and `DELETE /tools/{name}`, `POST /solidify`, `POST /tools/import` -
+take the admin password as `X-Admin-Token` on a cloud host (403 `admin_required` without the right one; the 503
 `admin_disabled` of a host without `ADMIN_PASSWORD` stays in the contract, but a cloud host no longer
 starts without it); on a local host they, the skill writes and `/api/logs` need no token. Reading,
 choosing, confirming and running a pack never do. A request the route refuses as such is 400, a body that parsed but is not
@@ -249,6 +271,25 @@ valid 422, a Revit that cannot be reached before the run is 503 (a transport fai
 is the package's `success: false` without consuming the token), and a refusal by the gate, a failed
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
+
+The workbench's routes: `POST /check` `{code, parameters?}` is the package's `check_code` (compile in
+Revit, never run; with the lessons for the errors, as the MCP tool adds them) and `POST /dry-run`
+`{code, parameters?}` its `dry_run_code` (run in the open model inside a transaction group that is
+always rolled back - nothing is kept, so no confirmation and no token; one `dry_run` line in the
+evidence ledger). Both answer the package's reply as it is, code the sandbox refuses before Revit is
+asked (`blocked`), and 503 `revit_unreachable` when no add-in answers; the package's `include` (local
+`.cs` files) is not offered. `GET /tools/{name}/export` is the pack file as stored (`text/yaml`);
+`POST /tools/import` takes one (YAML text), validates it as the package validates a pack file (422
+`invalid_pack` with the problems; 400 `blocked` for code the sandbox refuses) and stores it as sent in
+the user directory; a user pack of the same name is replaced only with `?overwrite=true` (409
+`pack_exists` otherwise). Built-in packs are read-only: `PUT` and `DELETE` on one, and saving or
+importing a pack under a built-in's name, are 409 `builtin_read_only` (a user file that already carries
+a built-in's name is the designer's own: it can be edited, and deleting it brings the built-in back).
+Every tool name in a path, a body or a spec is checked before the store is asked: the package's
+identifier pattern (a letter or `_`, then letters, digits, `_`), at most 100 characters, and never a
+Windows device name (`con`, `nul`, `prn`, `aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case) - 422
+`invalid_tool_name`. `GET /tools` is read from disk on every call and marks each pack `builtin` and
+its `origin` (`builtin` or `user`); a local host adds `directory`, where the file is.
 
 A local host puts one guard in front of every route (not in the export, which is a cloud host's): 403
 `local_mode_no_proxy` for a request carrying a proxy forwarding header, 403 `local_mode_host` for a
@@ -277,17 +318,19 @@ device itself; a No there is `success: false, error: "declined_on_device"`.
 `POST /api/chat` is the host loop: `{message, session_id, bridge?}` streams one turn over SSE -
 reply text as `data: "<token>"` frames, `event: spec` (`{spec, card, errors, reconcile}`) when the
 model proposed a spec, `event: done`. The model's tools are the package's read-only ones
-(`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`,
-`get_guidance`) plus `propose_spec`; it has no `confirm_spec`, `run_tool` or `execute_code`.
-`get_guidance` is the package's lesson selection called in process (no MCP server), with the MCP
-tool's arguments and JSON reply; its description is the MCP tool's followed by one note for this
-host, which has no `check_code` (after a failed execution: `stage=fix` with the symbols you suspect).
-The session keeps a tool result up to 8 KB after the turn that produced it (head plus a one-line
-note), a `get_guidance` reply up to 16 KB, so the orient lessons reach later turns whole. After the
+(`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`)
+plus `propose_spec`; it has no `confirm_spec`, `run_tool`, `execute_code` or `get_guidance`, and no
+tool that writes a pack. `list_tools` is read from disk on every call (a tool saved a moment ago, here
+or by the MCP server, is offered at once) and marks each pack `builtin` and its `origin`. A
+`propose_spec` with `action.kind: "execute_code"` shows no card and answers `{accepted: false,
+errors: [{code: "code_not_offered", param: null, message}], reconcile: null}`: this host runs saved
+tools only, and the message tells the model to say so and point to the workbench. A tool name the
+model gives that is not one is `invalid_tool_name`, before any file is read. The session keeps a
+tool result up to 8 KB after the turn that produced it (head plus a one-line note). After the
 page ran something, `{execution: <ExecutionResult>, session_id}` (instead of `message`) hands the result back:
 the turn starts with `event: execution` and the model reports what the validator found. Exactly one
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
-no tools, no skills and no execution feedback (tool calls a model sends anyway are dropped, never
+no tools and no execution feedback (tool calls a model sends anyway are dropped, never
 run - as in the last round of a turn, which goes out without tools).
 
 Every turn also streams what the host did: `event: stage` `{role, model, status}` around the
