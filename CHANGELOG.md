@@ -71,6 +71,35 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **Models by role: `models.yml`**, the one configuration file of the host (`MODELS_FILE`, default
+  `DATA_DIR/models.yml`; `models.example.yml` shows it). Each entry is a `base_url` (https, or http
+  to loopback), a `model` and `api_key_env` - the *name* of the environment variable holding the
+  key, read on every call; keys never go in the file, and any other field (`api_key`, `key`,
+  `token`, `extra_headers`...) is refused. `roles` maps `analyst`, `planner` (required) and
+  `supervisor` to entries; a role left out uses the planner's; all three on one entry is "one model
+  for everything". Only the planner runs in this release (the chat); the roles split comes next.
+  The file is checked once at startup: a file that is not valid - or missing where `MODELS_FILE`
+  points - refuses the start with the file, the field and the problem, never a value from it. A
+  key variable that is not set is no startup error (the browser may bring `X-LLM-Key`). **No file
+  at the default path changes nothing**: `LLM_*` and the `X-LLM-*` headers as before, the same
+  requests to the model and the same stream. With a file, the planner's entry stands where `LLM_*`
+  stood and the `X-LLM-*` headers replace that entry, field by field, for the request (the browser
+  endpoint check applies to `X-LLM-Base-Url` as before); roles on other entries keep theirs.
+  `/config.json` gains `features.models` (each role's model name - no address, no key, no variable
+  name; without the file `LLM_MODEL` or `null` for all three) and `features.modelsFile`; with the
+  file `serverModel` follows the planner's key variable. The startup log says where the models come
+  from and names each role entry whose key variable is not set. `stage`, `usage` and `llm_calls`
+  carry the model the call actually went to.
+- Connect page: *Models by role*, read-only - the three roles, their model names, and whether they
+  come from the host's models file or from the environment and this browser.
+- **Token page** (`/token`, a tab next to Evidence): the runs of `GET /api/usage/runs` - time,
+  calls, input, cache read, cache write, output, time per run and per role and model - and two
+  picked runs side by side with the difference of each count, in total and per role. Unknown
+  counts show as `-` and make every total and difference they are part of unknown. Read-only; on a
+  cloud host it asks for the admin password, as `/api/logs` does.
+- `GET /api/usage/runs` gains `by_role` on each run: the calls and the four sums per role and model,
+  in the order of their first call, with the same unknown rule. A new field only; in
+  `docs/api-v1.json` the `RolePart` schema, `RunTotal.by_role` and the route's description.
 - The workbench's routes (`docs/api-v1.json` gains five operations): `POST /api/v1/bridge/check`
   is the package's `check_code` (compile in Revit, never run, with the lessons for the errors as the
   MCP tool adds them) and `POST /api/v1/bridge/dry-run` its `dry_run_code` (run in the open model and
