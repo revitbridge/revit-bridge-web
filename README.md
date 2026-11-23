@@ -49,6 +49,11 @@ A local host has no password, so it is strict about who it answers:
   `local_mode_host`; a change (POST, PUT, PATCH, DELETE) from a page on another origin is 403
   `local_mode_origin`. That holds for every path, `/health` and the static files included, and keeps
   web pages elsewhere (DNS rebinding, cross-site forms) away from a host without a password.
+- It cannot tell a request relayed by a forward proxy running on the same machine (a system or
+  browser proxy) from a direct browser: the peer is loopback, the proxy rewrites `Host` and sends no
+  forwarding header. So a local proxy that accepts connections from other machines (an "allow LAN"
+  setting) exposes the host to them. Keep such a proxy bound to loopback, or do not run the host
+  beside it.
 
 To serve other machines, deploy it as a cloud host.
 

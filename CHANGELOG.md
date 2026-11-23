@@ -84,7 +84,11 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   is not `http://` plus the request's `Host`. Routes without a body (`DELETE /tools/{name}`, `DELETE
   /api/skills/{id}`, `POST /trigger-selection`...) would otherwise take a cross-site form post;
   routes with a JSON body already refuse `text/plain` and form data with 422. A cloud host has no
-  such guard: forwarding headers and public host names are normal behind its proxy.
+  such guard: forwarding headers and public host names are normal behind its proxy. Known limit:
+  the guard cannot tell a request relayed by a forward proxy running on the same machine from a
+  direct browser (loopback peer, rewritten `Host`, no forwarding headers), so a local proxy that
+  accepts connections from other machines exposes the host to them; keep such a proxy bound to
+  loopback or do not run the host beside it.
 - `npm run dev`: the Vite proxy presents its own pages (`http://localhost:5173`) with the target's
   origin, so the dev page can still make changes on a local host; any other `Origin` passes through
   unchanged and is refused.
