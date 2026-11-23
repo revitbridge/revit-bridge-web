@@ -73,6 +73,13 @@ describe('SpecCard', () => {
     expect(html).toMatch(/<button class="btn-primary">Confirm<\/button>/)
     expect(html).toContain('data-ready="true"')
   })
+
+  it('a spec that is not a saved tool says it is not offered here and shows no code', () => {
+    const code: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 42;', code_parameters: [] } }
+    const html = render(proposalFrom({ type: 'spec', spec: code, card: 'c', errors: [], reconcile: null }), false)
+    expect(html).toContain('execute_code: not offered here - this host runs saved tools only')
+    expect(html).not.toContain('return 42;')
+  })
 })
 
 describe('ExecutionView', () => {

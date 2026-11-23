@@ -47,7 +47,7 @@ export default function ExecutionPanel({ confirmation, execution, executionKind,
         <>
           <div className="flex gap-2 flex-wrap items-center">
             <button className="btn-primary" onClick={onRun} disabled={running || confirmation.used}>
-              {running ? 'Running...' : confirmation.spec.action.kind === 'run_tool' ? `Run ${confirmation.spec.action.tool}` : 'Execute the code'}
+              {running ? 'Running...' : `Run ${confirmation.spec.action.tool}`}
             </button>
             {confirmation.used && <span className="muted small-mono">token spent: confirm the card again for another run</span>}
           </div>
@@ -72,36 +72,26 @@ export default function ExecutionPanel({ confirmation, execution, executionKind,
 }
 
 function TamperDemo({ confirmation, running, onTamper }: { confirmation: Confirmation; running: boolean; onTamper: (t: Tamper) => void }) {
-  const spec = confirmation.spec
-  const isTool = spec.action.kind === 'run_tool'
-  const params = paramsOf(spec)
+  const params = paramsOf(confirmation.spec)
   const names = Object.keys(params)
-  const [param, setParam] = useState(names[0] ?? '')
+  const [param, setParam] = useState(names[0] ?? '')   // keyed by the token: a new confirmation resets the demo
   const [value, setValue] = useState(names[0] ? showValue(params[names[0]]) : '')
-  const [code, setCode] = useState(spec.action.code ?? '')   // keyed by the token: a new confirmation resets the demo
 
   const pick = (name: string) => { setParam(name); setValue(showValue(params[name])) }
-  const unchanged = isTool ? showValue(params[param]) === value : code === (spec.action.code ?? '')
+  const unchanged = showValue(params[param]) === value
 
   return (
     <details className="spec-details tamper">
       <summary className="label-text">Tamper demo: change one thing, run under the same token</summary>
-      {isTool ? (
-        names.length === 0
-          ? <p className="section-copy small">This pack has no parameters to edit.</p>
-          : <div className="tamper-row">
-              <select className="input-field" value={param} onChange={e => pick(e.target.value)} style={{ maxWidth: 200 }}>
-                {names.map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-              <input className="input-field" value={value} onChange={e => setValue(e.target.value)} style={{ maxWidth: 240 }} aria-label="Edited value" />
-              <button className="btn-secondary" onClick={() => onTamper({ param, value })} disabled={running || unchanged}>Run edited</button>
-            </div>
-      ) : (
-        <div>
-          <textarea className="code-editor small" value={code} onChange={e => setCode(e.target.value)} spellCheck={false} aria-label="Edited code" />
-          <button className="btn-secondary" onClick={() => onTamper({ code })} disabled={running || unchanged} style={{ marginTop: 8 }}>Run edited code</button>
-        </div>
-      )}
+      {names.length === 0
+        ? <p className="section-copy small">This pack has no parameters to edit.</p>
+        : <div className="tamper-row">
+            <select className="input-field" value={param} onChange={e => pick(e.target.value)} style={{ maxWidth: 200 }}>
+              {names.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <input className="input-field" value={value} onChange={e => setValue(e.target.value)} style={{ maxWidth: 240 }} aria-label="Edited value" />
+            <button className="btn-secondary" onClick={() => onTamper({ param, value })} disabled={running || unchanged}>Run edited</button>
+          </div>}
       <p className="section-copy small">The token is bound to the confirmed values: anything else is refused as <code>confirmation_invalid</code> and nothing reaches Revit.</p>
     </details>
   )

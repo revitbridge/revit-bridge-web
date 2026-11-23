@@ -8,7 +8,9 @@ set -eu
 # runs as appuser and must write it. Nothing is copied into it: this host
 # keeps skills and interaction logs under DATA_DIR, and the revit-bridge
 # package creates capabilities/ and evidence/ under REVIT_BRIDGE_DATA_DIR
-# itself when it first writes there. Both default to /app/data.
+# itself when it first writes there. Both default to /app/data. A directory
+# mounted for REVIT_BRIDGE_CAPABILITIES_DIR (docker-compose.yml: your tools,
+# shared with the MCP server) is yours and is deliberately left as it is.
 for data_dir in "${DATA_DIR:-/app/data}" "${REVIT_BRIDGE_DATA_DIR:-/app/data}"; do
     if [ -d "$data_dir" ]; then
         chown -R appuser:appuser "$data_dir"

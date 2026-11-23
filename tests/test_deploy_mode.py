@@ -374,19 +374,30 @@ SOLIDIFY = {"name": "count_walls", "description": "How many walls", "parameters"
             "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();"}
 
 
+IMPORT_YAML = ("schema_version: 1\nname: count_doors\ndescription: How many doors\nversion: 1.0.0\n"
+               "code_template: return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Doors)"
+               ".GetElementCount();\nparameters: []\n")
+
+
 @pytest.mark.parametrize("token", [None, "", "wrong"])
 def test_a_local_host_changes_packs_without_a_password(make_client, local_env, token):
     client = make_client(**LOCAL)
     headers = {} if token is None else {"X-Admin-Token": token}
-    updated = client.put(f"{B}/tools/query_levels", json={"description": "changed"}, headers=headers)
-    assert updated.status_code == 200 and updated.json()["description"] == "changed"
-    assert client.delete(f"{B}/tools/create_beam", headers=headers).json() == {"status": "deleted", "name": "create_beam"}
     solid = client.post(f"{B}/solidify", json=SOLIDIFY, headers=headers)
     assert solid.status_code == 200 and solid.json()["name"] == "count_walls"
+    updated = client.put(f"{B}/tools/count_walls", json={"description": "changed"}, headers=headers)
+    assert updated.status_code == 200 and updated.json()["description"] == "changed"
+    imported = client.post(f"{B}/tools/import", content=IMPORT_YAML, headers={**headers, "Content-Type": "text/yaml"})
+    assert imported.status_code == 200 and imported.json()["name"] == "count_doors"
     # The routes' own refusals are unchanged: the admin check was the only one lifted.
-    blocked = client.put(f"{B}/tools/query_levels", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
+    blocked = client.put(f"{B}/tools/count_walls", json={"code_template": "System.IO.File.Delete(\"x\"); return 1;"},
                          headers=headers)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
+    assert client.delete(f"{B}/tools/count_walls", headers=headers).json() == {"status": "deleted", "name": "count_walls"}
+    assert client.delete(f"{B}/tools/count_doors", headers=headers).json()["status"] == "deleted"
+    # No password needed, and none lets a built-in pack change.
+    assert client.put(f"{B}/tools/query_levels", json={"description": "x"}, headers=headers).status_code == 409
+    assert client.delete(f"{B}/tools/create_beam", headers=headers).json()["error"] == "builtin_read_only"
 
 
 def test_a_local_host_edits_skills_and_reads_logs_without_a_password(make_client, local_env, tmp_path):
@@ -561,6 +572,9 @@ def write_calls(body: str) -> list[tuple[str, str, str | None]]:
         ("POST", f"{B}/solidify", body),
         ("PUT", f"{B}/tools/query_levels", body),
         ("DELETE", f"{B}/tools/create_beam", None),
+        ("POST", f"{B}/tools/import", body),
+        ("POST", f"{B}/check", body),
+        ("POST", f"{B}/dry-run", body),
         ("POST", "/api/skills", body),
         ("PUT", f"/api/skills/{SKILL}", body),
         ("PATCH", f"/api/skills/{SKILL}", body),
@@ -622,19 +636,24 @@ def test_simple_content_types_alone_do_not_protect_the_routes_without_a_body(loc
             if payload is None:
                 continue
             resp = client.request(method, path, content=payload, headers={"Content-Type": content_type})
+            # (The import takes YAML text, so these bodies reach it and fail as packs.)
             assert resp.status_code == 422, (content_type, method, path, resp.status_code, resp.text)
         nothing_changed(client)
-    taken = client.request("DELETE", f"{B}/tools/create_beam", content="x", headers={"Content-Type": "text/plain"})
-    assert taken.status_code == 200 and taken.json()["status"] == "deleted"
-    assert client.request("DELETE", f"/api/skills/{SKILL}", headers={"Content-Type": "text/plain"}).status_code == 200
+    # A body-less route and the import (a pack file is text) take a simple request; only the
+    # Origin check keeps another site's page from sending one.
+    taken = client.request("DELETE", f"/api/skills/{SKILL}", content="x", headers={"Content-Type": "text/plain"})
+    assert taken.status_code == 200 and taken.json()["deleted"] == SKILL
+    pack = client.request("POST", f"{B}/tools/import", content=IMPORT_YAML, headers={"Content-Type": "text/plain"})
+    assert pack.status_code == 200 and pack.json()["name"] == "count_doors"
 
 
 def test_the_host_s_own_page_changes_things(local_with_a_skill):
     client = local_with_a_skill
     own = {"Origin": "http://127.0.0.1:7860"}
-    assert client.put(f"{B}/tools/query_levels", json={"description": "changed"}, headers=own).status_code == 200
     assert client.post(f"{B}/solidify", json=SOLIDIFY, headers=own).json()["name"] == "count_walls"
-    assert client.delete(f"{B}/tools/create_beam", headers=own).json()["status"] == "deleted"
+    assert client.put(f"{B}/tools/count_walls", json={"description": "changed"}, headers=own).status_code == 200
+    assert client.post(f"{B}/tools/import", content=IMPORT_YAML, headers={**own, "Content-Type": "text/yaml"}).status_code == 200
+    assert client.delete(f"{B}/tools/count_walls", headers=own).json()["status"] == "deleted"
     assert client.patch(f"/api/skills/{SKILL}", json={"enabled": False}, headers=own).json()["enabled"] is False
     assert client.delete(f"/api/skills/{SKILL}", headers=own).json()["deleted"] == SKILL
     # The same page opened as localhost: its origin and its Host agree again.
@@ -668,8 +687,10 @@ def test_a_cloud_host_keeps_its_own_protection(make_client, env):
     assert client.request("POST", f"{B}/solidify", content="{}", headers=evil).status_code == 403   # admin first
     assert client.request("POST", "/api/chat", content="{}", headers=evil).status_code == 422
     assert client.request("DELETE", f"{B}/tools/create_beam", headers=evil).status_code == 403
-    assert client.request("DELETE", f"{B}/tools/create_beam",
-                          headers={**evil, "X-Admin-Token": FIXTURE_ADMIN_PASSWORD}).status_code == 200
+    # With the token the request reaches the route, which keeps a built-in pack as it is.
+    through = client.request("DELETE", f"{B}/tools/create_beam", headers={**evil, "X-Admin-Token": FIXTURE_ADMIN_PASSWORD})
+    assert through.status_code == 409 and through.json()["error"] == "builtin_read_only"
+    assert client.request("POST", f"{B}/tools/import", content=IMPORT_YAML, headers=evil).status_code == 403
 
 
 # -- Sec-Fetch-Site, WebSocket Origin, ASCII ports -------------------------------------------
@@ -679,6 +700,8 @@ def test_a_cloud_host_keeps_its_own_protection(make_client, env):
 FOREIGN_FETCHES = [("GET", f"{B}/snapshot"), ("GET", f"{B}/tools/create_wall/choices"),
                    ("POST", f"{B}/trigger-selection"), ("POST", f"{B}/evidence/ev_x/validate"),
                    ("POST", f"{B}/query"), ("DELETE", f"{B}/tools/create_beam"),
+                   ("POST", f"{B}/check"), ("POST", f"{B}/dry-run"), ("POST", f"{B}/tools/import"), ("POST", f"{B}/choices"),
+                   ("GET", f"{B}/tools/create_wall/export"),
                    ("GET", "/config.json"), ("GET", "/health"), ("GET", f"{B}/tools")]
 
 
@@ -794,8 +817,8 @@ def test_a_link_on_another_site_opens_the_page_shell(local_spa, site):
     assert client.head("/", headers=headers).status_code == 405
 
 
-@pytest.mark.parametrize("path", [f"{B}/snapshot", f"{B}/tools", "/api/logs", "/api", "/config.json", "/openapi.json",
-                                  "/docs", "/docs/oauth2-redirect", "/redoc", "/health"])
+@pytest.mark.parametrize("path", [f"{B}/snapshot", f"{B}/tools", f"{B}/tools/create_wall/export", "/api/logs", "/api",
+                                  "/config.json", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc", "/health"])
 def test_the_same_navigation_to_data_is_refused(revit, make_client, local_env, path):
     client = make_client(**LOCAL)
     resp = client.get(path, headers=NAVIGATION)

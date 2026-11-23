@@ -77,11 +77,11 @@ def test_host_loop_walks_the_bridge_flow(revit, client, model):
     assert tokens(frames) == "Which level, L1 or L2? And where does the wall end?"
     assert events(frames, "spec") == [] and frames[-1] == ("done", None)
 
-    # What the model was shown: the bridge prompt, the skills, the eight tools.
+    # What the model was shown: the bridge prompt and this host's paragraph (no skills), the seven tools.
     first = model.requests[0]
     assert first["messages"][0]["role"] == "system"
-    assert first["messages"][0]["content"].startswith(host_instructions().strip())
-    assert "## Skills" in first["messages"][0]["content"] and "# revit-core" in first["messages"][0]["content"]
+    assert first["messages"][0]["content"] == host_instructions().strip() + "\n\n" + chat_module.HOST_PARAGRAPH
+    assert "## Skills" not in first["messages"][0]["content"] and "# revit-core" not in first["messages"][0]["content"]
     assert "# revit-bridge" not in first["messages"][0]["content"]       # the MCP host's protocol stays off
     assert {t["function"]["name"] for t in first["tools"]} == set(TOOL_NAMES)
     assert first["messages"][-1] == {"role": "user", "content": "draw a wall from the origin"}
@@ -299,38 +299,11 @@ def test_no_bridge_mode_sends_no_tools_and_no_skills(client, model):
     for skill in store.list_all():                    # no skill text at all, enabled or not
         content = store.get(skill["id"])["content"]
         assert content and content not in system
-    # The same message with the bridge gets both.
+    # The same message with the bridge gets the tools and the host's prompt - still no skills.
     model.turns.append(text_turn("Which level?"))
     client.post("/api/chat", json={"message": "draw a wall from the origin"}, headers=HEADERS)
-    assert "tools" in model.requests[1] and "## Skills" in model.requests[1]["messages"][0]["content"]
-
-
-def test_one_chat_round_reads_the_core_lessons_through_get_guidance(client, model):
-    """The model asks for the orient lessons; the host answers from the package, no Revit
-    and no MCP server involved, and the reply carries the revit-core lessons."""
-    model.turns += [
-        tool_turn(("get_guidance", {"mode": "recommend", "stage": "orient"})),
-        text_turn("Read the snippet contract; which wall do you mean?"),
-    ]
-    resp = client.post("/api/chat", json={"message": "move the wall by 200 mm"}, headers=HEADERS)
-    assert resp.status_code == 200, resp.text
-    frames = sse(resp.text)
-    assert tokens(frames) == "Read the snippet contract; which wall do you mean?" and frames[-1] == ("done", None)
-    assert events(frames, "spec") == []
-
-    first = model.requests[0]
-    tools = {t["function"]["name"]: t["function"] for t in first["tools"]}
-    assert "get_guidance" in tools and tools["get_guidance"]["description"].startswith("Lessons for writing Revit code")
-    system = first["messages"][0]["content"]
-    assert "# revit-core" in system and chat_module.GUIDANCE_POINTER in system
-
-    reply = model.tool_results("get_guidance")[0]
-    assert reply["error"] is None and reply["mode"] == "recommend" and reply["stage"] == "orient"
-    lesson_ids = [item["id"] for item in reply["items"]]
-    assert "revit-core/snippet-contract" in lesson_ids
-    assert all(i.startswith("revit-core/") for i in lesson_ids)
-    contract = reply["items"][lesson_ids.index("revit-core/snippet-contract")]
-    assert contract["layer"] == "framework" and "document" in contract["body"]
+    assert "tools" in model.requests[1] and "## Skills" not in model.requests[1]["messages"][0]["content"]
+    assert model.requests[1]["messages"][0]["content"].endswith(chat_module.HOST_PARAGRAPH)
 
 
 def test_chat_with_the_bridge_checks_the_device_headers(client, device, model):

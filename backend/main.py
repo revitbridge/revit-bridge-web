@@ -40,9 +40,15 @@ _log = logging.getLogger("backend")
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     settings = get_settings()
-    # A data volume written by the 0.1 host holds copies of the old built-in
-    # packs where the package now keeps user packs; park them aside.
-    quarantine_legacy_packs(ToolStore().user_dir)
+    # A data volume written by the 0.1 host holds copies of the old built-in packs
+    # in DATA_DIR/capabilities, where the package keeps user packs when its data root
+    # is that volume (the image); park them aside. Only there: a host started without
+    # REVIT_BRIDGE_DATA_DIR shares the package's per-user directory with the MCP server
+    # and other hosts, whose v0 packs are theirs and stay where they are.
+    user_dir = ToolStore().user_dir
+    if own_capabilities_dir(user_dir, settings):
+        quarantine_legacy_packs(user_dir)
+    _log.info("user tools (capability packs) are read from and saved to %s", user_dir)
     app = FastAPI(
         title="revit-bridge-web",
         version=APP_VERSION,
@@ -118,6 +124,16 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
     log_deploy_mode(settings)
     return app
+
+
+def own_capabilities_dir(user_dir: Path, settings: WebSettings) -> bool:
+    """The package's user pack directory is this host's ``DATA_DIR/capabilities`` (the 0.1
+    host's copy target), not a directory shared with other hosts."""
+    own = settings.data_dir / "capabilities"
+    try:
+        return user_dir.resolve() == own.resolve()
+    except OSError:
+        return user_dir == own
 
 
 def log_deploy_mode(settings: WebSettings) -> None:

@@ -18,13 +18,34 @@ The flow a page walks is the package's: ``take_snapshot`` -> ``missing_params``
 / ``reconcile`` -> ``validate_spec`` + ``Gate.issue`` (the token stays in the
 browser) -> ``run_pack`` / ``run_code`` (sandbox, preconditions, validator,
 evidence ledger, all inside the package) -> ``Ledger.recent`` / ``revalidate``.
-``ToolStore`` (built-in packs from the wheel plus the user packs under
-``REVIT_BRIDGE_DATA_DIR``) serves the pack routes.
+``ToolStore`` (built-in packs from the wheel plus the user packs in the
+package's user capabilities directory) serves the pack routes, read from disk on
+every call: a pack another process (the package's MCP server) writes there is
+listed on the next request.
+
+The workbench's routes: ``POST /check`` (``checking.check_code``: compile, never
+run) and ``POST /dry-run`` (``dry_run.dry_run_code``: run and always roll back,
+no token - the package's rule), each taking either ``code`` (a snippet) or
+``pack`` + ``values`` (a draft pack whose template the package fills, see
+``render_draft``); ``POST /choices`` (the real options of one ``choices_from``,
+from the code ``get_tool_choices`` uses); ``GET /tools/{name}/export`` (the
+pack file as stored) and ``POST /tools/import`` (a pack file, validated as the
+package validates a pack file). On a cloud host ``/check`` and ``/dry-run``
+share ``/spec/confirm``'s rate limit.
+
+Built-in packs are read-only: a name whose pack ships in the wheel and has no
+file of that name in the user directory is never updated, hidden, replaced by a
+solidified pack or by an import (409 ``builtin_read_only``). A user file of a
+built-in's name is the designer's own: it can be updated, replaced (import with
+``overwrite=true``, solidify) and deleted, and deleting it shows the wheel's pack
+again. Every tool name that comes from a request is checked before it reaches
+the file system (``require_tool_name``).
 
 Status codes: a request the route refuses as such is 400 (``confirmation_required``,
 ``invalid_category``, ``unknown_kind``, ``blocked``, ``no_validator``), a body that
 parsed but is not valid is 422 (``invalid_args``, ``invalid_spec``, ``invalid_snapshot``,
-``invalid_pack``), something that does not exist is 404, a Revit that cannot be
+``invalid_pack``, ``invalid_tool_name``), something that does not exist is 404, a change
+that would overwrite what is there is 409 (``builtin_read_only``, ``pack_exists``), a Revit that cannot be
 reached *before* the run is 503 (a transport failure *during* the run is the
 package's ``success: false`` without consuming the token), and a refusal by the
 gate, a failed precondition or a failed validation is 200 with ``success: false``
@@ -36,18 +57,29 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
+import tempfile
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 
+import yaml
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import HTTPConnection
 
 from revit_bridge import __version__ as bridge_version
+from revit_bridge import checking
+from revit_bridge import dry_run as package_dry_run
+from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
+from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
+from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
@@ -177,6 +209,99 @@ def unknown_tool(name: str) -> ApiError:
     return ApiError(404, "unknown_tool", f"Tool '{name}' not found", tool=name)
 
 
+# -- tool names ----------------------------------------------------------------------
+
+# A tool name becomes a file name: the store reads and writes <directory>/<name>.yaml.
+# The package's schema asks a pack name only to be a non-empty string. The host takes
+# the shape of the schema's parameter names (IDENTIFIER_RE: a letter or _, then
+# letters, digits or _ - no dot, no path separator) in ASCII only (IDENTIFIER_RE's \w
+# would let CJK and look-alike letters such as a Cyrillic "c" in), at most
+# TOOL_NAME_MAX characters, and never a Windows device name: on Windows con.yaml is
+# the console in every directory, and ToolStore().load("con") blocks reading it.
+# Checked before any store call, in the routes and in the model's tools.
+TOOL_NAME_MAX = 100
+INVALID_TOOL_NAME = "invalid_tool_name"
+_TOOL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# CON, PRN, AUX, NUL, COM0-9 and LPT0-9, in any case (no extension can occur: no dot).
+_DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul"} | {
+    f"{port}{digit}" for port in ("com", "lpt") for digit in "0123456789"})
+
+
+def tool_name_problem(name: object) -> str | None:
+    """Why ``name`` cannot be a tool name, or None when it can."""
+    if not isinstance(name, str) or not name:
+        return "a tool name is required"
+    if len(name) > TOOL_NAME_MAX:
+        return f"a tool name has at most {TOOL_NAME_MAX} characters"
+    if not _TOOL_NAME.fullmatch(name):
+        return "a tool name starts with an ASCII letter or _ and has only ASCII letters, digits and _"
+    if name.lower() in _DEVICE_NAMES:
+        return f"'{name}' is a Windows device name"
+    return None
+
+
+def invalid_tool_name(name: object, problem: str) -> ApiError:
+    return ApiError(422, INVALID_TOOL_NAME, f"Not a tool name: {problem}", tool=str(name)[:TOOL_NAME_MAX])
+
+
+def require_tool_name(name: object) -> str:
+    """``name`` when it is a tool name; 422 ``invalid_tool_name`` before any file is touched."""
+    problem = tool_name_problem(name)
+    if problem is not None:
+        raise invalid_tool_name(name, problem)
+    return name  # type: ignore[return-value]
+
+
+# -- built-in packs are read-only ------------------------------------------------------
+
+BUILTIN_READ_ONLY = "builtin_read_only"
+PACK_EXISTS = "pack_exists"
+
+
+def _user_file(store: ToolStore, name: str) -> Path:
+    """Where the store keeps the user pack ``name`` (a checked name is its own file stem)."""
+    return store.user_dir / f"{name}.yaml"
+
+
+def ships_builtin(store: ToolStore, name: str) -> bool:
+    """A pack of this name ships in the wheel (shown or hidden)."""
+    return (store.builtin_dir / f"{name}.yaml").is_file()
+
+
+def is_builtin(store: ToolStore, name: str) -> bool:
+    """``name`` is a built-in pack with no user file of that name: changing, replacing or
+    deleting it would copy over or hide the wheel's pack, so it is read-only (PUT, DELETE,
+    solidify, import). A user file of a built-in name (one an older host made by editing
+    the built-in) is the designer's own."""
+    return ships_builtin(store, name) and not _user_file(store, name).exists()
+
+
+def builtin_read_only(name: str) -> ApiError:
+    return ApiError(409, BUILTIN_READ_ONLY,
+                    f"'{name}' is a built-in tool (the revit-bridge package's, with no file of yours by that "
+                    f"name) and built-in tools are read-only: export it and import it under another name to "
+                    f"make your own", tool=name)
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
+def pack_origin(store: ToolStore, name: str) -> tuple[str, Path | None]:
+    """``("builtin" | "user", file)`` of a listed pack: the file ``load`` reads. A listed
+    name that is not a tool name is never looked up (it can only be a user file: the
+    wheel's packs are named like their files)."""
+    if tool_name_problem(name) is not None:
+        return "user", None
+    path = store.path_of(name)
+    if path is not None and _same_dir(path.parent, store.builtin_dir):
+        return "builtin", path
+    return "user", path
+
+
 async def require_admin(x_admin_token: str | None = Header(None)) -> None:
     """Changing a capability pack takes the admin password: its code later runs in a
     designer's Revit once they confirm its card. The same check as every admin route
@@ -211,8 +336,9 @@ def parse_spec(data: dict) -> TaskSpec:
 
 
 def pack_for(spec: TaskSpec, store: ToolStore):
+    """The pack a ``run_tool`` spec names (422 ``invalid_tool_name`` before the store is asked)."""
     if spec.action.kind == "run_tool" and spec.action.tool:
-        return store.load(spec.action.tool)
+        return store.load(require_tool_name(spec.action.tool))
     return None
 
 
@@ -278,6 +404,37 @@ class ExecuteRequest(BaseModel):
     token: str = ""
 
 
+class WorkbenchCodeRequest(BaseModel):
+    """What ``/check`` and ``/dry-run`` take: either ``code`` (a snippet) with its
+    ``parameters`` (the snippet's object[], as the MCP tools take them), or ``pack`` (a
+    draft in the capability pack format, as a pack file holds it) with ``values``
+    (parameter name -> value), whose template the package fills (``render_draft``). Any
+    other field is refused - the package's ``include`` (paths of .cs files on the machine
+    running the host) is not offered: a browser has no business naming files there."""
+    model_config = ConfigDict(extra="forbid")
+
+    code: str | None = None
+    parameters: list | None = None
+    pack: dict | None = None
+    values: dict | None = None
+
+
+class CheckCodeRequest(WorkbenchCodeRequest):
+    """``checking.check_code(client, code, parameters)``."""
+
+
+class DryRunRequest(WorkbenchCodeRequest):
+    """``dry_run.dry_run_code(client, code, parameters)``."""
+
+
+class ChoicesRequest(BaseModel):
+    """One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |
+    elements:OST_*."""
+    model_config = ConfigDict(extra="forbid")
+
+    choices_from: str
+
+
 class SolidifyRequest(BaseModel):
     name: str
     code: str
@@ -299,9 +456,13 @@ class UpdateToolRequest(BaseModel):
     not_for: list[str] | None = None
 
 
-def tool_listing(tool) -> dict:
-    """One item of ``GET /tools``: the MCP ``list_tools`` shape."""
-    return {
+def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
+    """One item of ``GET /tools`` and of the model's ``list_tools``: the MCP ``list_tools``
+    shape plus ``builtin`` and ``origin`` (``"builtin"``: the wheel's read-only pack;
+    ``"user"``: a file in the user capabilities directory). ``directory`` adds the
+    absolute directory the pack was read from (a local host's page only)."""
+    origin, path = pack_origin(store, tool.name)
+    item = {
         "name": tool.name,
         "description": tool.description,
         "version": tool.version,
@@ -312,7 +473,18 @@ def tool_listing(tool) -> dict:
         "preconditions": tool.preconditions,
         "validator": (tool.validator or {}).get("kind"),
         "used": tool.execution_count,
+        "builtin": origin == "builtin",
+        "origin": origin,
     }
+    if directory:
+        item["directory"] = str(path.parent if path is not None else store.user_dir)
+    return item
+
+
+def list_packs(*, directory: bool = False) -> list[dict]:
+    """Every pack, read from disk now (no cache: a pack another process just wrote is in it)."""
+    store = ToolStore()
+    return [tool_listing(t, store, directory=directory) for t in store.list_tools()]
 
 
 def _tool_detail(tool) -> dict:
@@ -391,30 +563,37 @@ async def query_model(req: QueryRequest):
 
 @router.get("/tools", responses=responses(403))
 async def list_tools():
-    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape."""
-    return [tool_listing(t) for t in ToolStore().list_tools()]
+    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and
+    ``origin`` (and, on a local host, ``directory``: where the file was read). Read from
+    disk on every call."""
+    return list_packs(directory=not get_settings().cloud)
 
 
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
-    tool = ToolStore().load(name)
+    tool = ToolStore().load(require_tool_name(name))
     if not tool:
         raise unknown_tool(name)
     return _tool_detail(tool)
 
 
 @router.put("/tools/{name}", dependencies=[Depends(require_admin)],
-            responses=admin_responses(400, 403, 404, 422, 503))
+            responses=admin_responses(400, 403, 404, 409, 422, 503))
 async def update_tool(name: str, req: UpdateToolRequest):
-    """Change editable fields (admin password required); the package validates the result
-    as a v1 pack (422 with problems)."""
+    """Change editable fields of a user pack (admin password required on a cloud host); the
+    package validates the result as a v1 pack (422 with problems). A built-in pack is
+    read-only: 409 ``builtin_read_only``."""
+    require_tool_name(name)
+    store = ToolStore()
+    if is_builtin(store, name):
+        raise builtin_read_only(name)
     updates = req.model_dump(exclude_unset=True)
     if "code_template" in updates:
         safe, warnings = sandbox.review(updates["code_template"] or "")
         if not safe:
             raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
     try:
-        tool = ToolStore().update(name, updates)
+        tool = store.update(name, updates)
     except ValueError as exc:
         raise _invalid_pack(exc) from None
     if not tool:
@@ -423,17 +602,140 @@ async def update_tool(name: str, req: UpdateToolRequest):
 
 
 @router.delete("/tools/{name}", dependencies=[Depends(require_admin)],
-               responses=admin_responses(403, 404, 422, 503))
+               responses=admin_responses(403, 404, 409, 422, 503))
 async def delete_tool(name: str):
-    """Delete a user pack or hide a built-in one (admin password required)."""
-    if ToolStore().delete(name):
-        return {"status": "deleted", "name": name}
-    raise unknown_tool(name)
+    """Delete a user pack (admin password required on a cloud host). A built-in pack is
+    read-only: 409 ``builtin_read_only``, never hidden. Deleting a user file that carries a
+    built-in's name brings the built-in back."""
+    require_tool_name(name)
+    store = ToolStore()
+    if is_builtin(store, name):
+        raise builtin_read_only(name)
+    if not store.delete(name):
+        raise unknown_tool(name)
+    if ships_builtin(store, name):
+        store.enable(name)            # delete() hid the wheel's pack behind a marker: show it again
+    return {"status": "deleted", "name": name}
+
+
+@router.get("/tools/{name}/export", response_class=Response,
+            responses={**responses(403, 404, 422),
+                       200: {"description": "The pack file as stored (YAML text)",
+                             "content": {"text/yaml": {"schema": {"type": "string"}}}}})
+async def export_tool(name: str):
+    """The pack's file as it is on disk - the user file, or the wheel's for a built-in pack -
+    as ``text/yaml``. ``POST /tools/import`` takes it back (under another name for a built-in)."""
+    require_tool_name(name)
+    store = ToolStore()
+    path = store.path_of(name) if store.load(name) is not None else None
+    if path is None:
+        raise unknown_tool(name)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:                    # deleted between the two reads
+        raise unknown_tool(name) from None
+    return Response(text, media_type="text/yaml; charset=utf-8")
+
+
+MAX_IMPORT_BYTES = 256 * 1024          # a pack file; the largest built-in is a few KB
+
+
+class PackYamlLoader(yaml.SafeLoader):
+    """``yaml.SafeLoader`` without aliases: a pack file needs none, and ``*name`` lets a
+    few bytes stand for a structure many times their size (or one that contains itself)."""
+
+    def compose_node(self, parent, index):
+        if self.check_event(yaml.AliasEvent):
+            event = self.peek_event()
+            raise yaml.composer.ComposerError(None, None, "aliases (*name) are not allowed in a pack file",
+                                              event.start_mark)
+        return super().compose_node(parent, index)
+
+
+def load_pack_yaml(text: str):
+    """The pack file's data; 422 ``invalid_pack`` for text that is not YAML, uses an alias,
+    or nests too deep to read."""
+    try:
+        return yaml.load(text, Loader=PackYamlLoader)  # noqa: S506 - a SafeLoader subclass
+    except (yaml.YAMLError, RecursionError) as exc:
+        detail = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+        raise ApiError(422, "invalid_pack", problems=[f"not a YAML pack file: {detail}"]) from None
+
+
+def pack_problems(data) -> list[str]:
+    """``validate_pack``, with what it cannot check reported as a problem: keys that are
+    not text make it raise ``TypeError`` (it sorts them)."""
+    try:
+        return validate_pack(data)
+    except (TypeError, ValueError, AttributeError) as exc:
+        return [f"the pack cannot be checked ({type(exc).__name__}: {exc}); every key must be text"]
+
+
+@router.post("/tools/import", dependencies=[Depends(require_admin)],
+             responses=admin_responses(400, 403, 409, 422, 503),
+             openapi_extra={"requestBody": {"required": True, "description": "A capability pack file (YAML text)",
+                                            "content": {"text/yaml": {"schema": {"type": "string"}}}}})
+async def import_tool(request: Request, overwrite: bool = False):
+    """Store a pack file sent as YAML text in the user capabilities directory, as it is.
+
+    Validated as the package validates a pack file (``validate_pack``: the v1 layout, 422
+    ``invalid_pack`` with the problems; YAML aliases are refused), its name checked (422
+    ``invalid_tool_name``), its code reviewed by the sandbox (400 ``blocked``). The name of
+    a built-in pack with no user file of that name is refused (409 ``builtin_read_only``);
+    a user file of that name - a built-in's name too - is replaced only with
+    ``overwrite=true`` (409 ``pack_exists`` otherwise). Admin password required on a cloud
+    host."""
+    declared = request.headers.get("content-length", "").strip()
+    if declared.isdigit() and int(declared) > MAX_IMPORT_BYTES:      # refused before the body is read
+        raise ApiError(422, "invalid_args", f"the pack file has {declared} bytes, at most {MAX_IMPORT_BYTES}")
+    raw = await request.body()
+    if len(raw) > MAX_IMPORT_BYTES:
+        raise ApiError(422, "invalid_args", f"the pack file has {len(raw)} bytes, at most {MAX_IMPORT_BYTES}")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ApiError(422, "invalid_pack", problems=["the file is not UTF-8 text"]) from None
+    data = load_pack_yaml(text)
+    problems = pack_problems(data)
+    if problems:
+        raise ApiError(422, "invalid_pack", problems=problems)
+    name = require_tool_name(data["name"])
+    safe, warnings = sandbox.review(data["code_template"])
+    if not safe:
+        raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
+    store = ToolStore()
+    if is_builtin(store, name):
+        raise builtin_read_only(name)
+    target = _user_file(store, name)
+    replaced = target.exists()
+    if replaced and not overwrite:
+        raise ApiError(409, PACK_EXISTS, f"A tool named '{name}' exists: import with overwrite=true to replace it",
+                       tool=name)
+    await run_in_threadpool(_write_pack_file, store.user_dir, target, text)
+    tool = store.load(name)
+    if tool is None:                   # validated above; only a file changed meanwhile gets here
+        raise unknown_tool(name)
+    return {"status": "imported", "name": tool.name, "version": tool.version, "replaced": replaced,
+            "revit_synced": await _sync_to_revit(tool)}
+
+
+def _write_pack_file(directory: Path, target: Path, text: str) -> None:
+    """Write the file whole or not at all: another process (the MCP server) may read it now."""
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, temp = tempfile.mkstemp(dir=directory, prefix=f".{target.stem}.", suffix=".import")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        os.replace(temp, target)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
 
 
 @router.get("/tools/{name}/choices", responses=responses(403, 404, 422, 503, 504))
 async def get_tool_choices(name: str):
     """Real values for the pack's dynamic parameters (levels, types, elements)."""
+    require_tool_name(name)
     store = ToolStore()
     if not store.load(name):
         raise unknown_tool(name)
@@ -453,7 +755,7 @@ async def get_tool_choices(name: str):
 async def tool_missing_params(name: str, req: MissingParamsRequest):
     """``missing_params``: the questions still open for the pack given ``known`` values,
     with the real options from ``snapshot`` (or one taken now, best effort)."""
-    pack = ToolStore().load(name)
+    pack = ToolStore().load(require_tool_name(name))
     if pack is None:
         raise unknown_tool(name)
     snapshot = parse_snapshot(req.snapshot)
@@ -470,6 +772,7 @@ async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
     validator, evidence, all in the package. An unknown pack is 404 and a missing token
     400 ``confirmation_required`` before anything else is looked at."""
+    require_tool_name(name)
     store = ToolStore()
     if store.load(name) is None:
         raise unknown_tool(name)
@@ -486,11 +789,11 @@ async def run_tool(name: str, req: RunToolRequest):
 async def reconcile_spec(req: ReconcileRequest):
     """``reconcile``: the draft TaskSpec against the snapshot (given, or taken now)."""
     draft = parse_spec(req.spec)
-    store = ToolStore()
+    pack = pack_for(draft, ToolStore())          # a bad tool name is refused before Revit is asked
     snapshot = parse_snapshot(req.snapshot)
     if snapshot is None:
         snapshot = await snapshot_now(await get_revit_client())
-    return reconcile(draft, snapshot, pack_for(draft, store)).model_dump(mode="json")
+    return reconcile(draft, snapshot, pack).model_dump(mode="json")
 
 
 def confirm_rate_limit(request: Request) -> None:
@@ -517,6 +820,148 @@ async def confirm_spec(req: ConfirmRequest):
     return {"token": conf.token, "spec_hash": conf.spec_hash, "expires_at": conf.expires_at, "card": spec.card()}
 
 
+# -- the workbench: compile, dry run (no token) ----------------------------------------
+
+def guidance_library() -> _guidance.Library:
+    """The guidance layers as the MCP server loads them for ``check_code``: the framework
+    lessons in the wheel, company and project from REVIT_BRIDGE_GUIDANCE_COMPANY /
+    _PROJECT, personal under the package's data root. Validated on first use and kept per
+    set of directories (a lesson added later is read after a restart, as with the MCP
+    server). Raises ``GuidanceError`` when the framework layer is invalid - ``check_code``
+    turns that into a ``guidance_unavailable`` warning."""
+    layers = guidance_layer_dirs()
+    return _load_guidance(guidance_dir(), layers["company"], layers["project"], layers["personal"])
+
+
+@lru_cache(maxsize=8)
+def _load_guidance(framework: Path, company: Path | None, project: Path | None,
+                   personal: Path | None) -> _guidance.Library:
+    return _guidance.load_layers(framework, company=company, project=project, personal=personal)
+
+
+def workbench_rate_limit(request: Request) -> None:
+    """A cloud host: ``/check`` and ``/dry-run`` count against ``/spec/confirm``'s limiter and
+    limit (CHAT_RATE_LIMIT per minute per address); each reaches a Revit and a dry run
+    writes a ledger line without any token. A local host does not limit them."""
+    settings = get_settings()
+    if settings.cloud and not confirm_limiter.allow(client_key(request), settings.chat_rate_limit):
+        raise ApiError(429, "rate_limited", "Too many requests from this address; try again in a minute")
+
+
+RENDER_FAILED = "render_failed"
+
+
+def render_draft(pack: dict, values: dict) -> str:
+    """The draft pack's template filled with ``values`` by the package itself: the draft is
+    checked with ``validate_pack`` (422 ``invalid_pack``) and its name with
+    ``require_tool_name``, then saved with ``ToolStore.solidify`` in a store whose user and
+    built-in directories are both fresh temporary directories (never the real ones,
+    removed afterwards), and ``ToolStore.render(name, values)`` fills it - defaults,
+    escaping, leftover placeholders, all the package's. A render it refuses is 422
+    ``render_failed`` with the package's messages in ``errors``."""
+    problems = pack_problems(pack)
+    if problems:
+        raise ApiError(422, "invalid_pack", problems=problems)
+    name = require_tool_name(pack["name"])
+    with tempfile.TemporaryDirectory(prefix="rbw-draft-") as scratch:
+        root = Path(scratch)
+        (root / "builtin").mkdir()
+        store = ToolStore(user_dir=root / "user", builtin_dir=root / "builtin")
+        try:
+            store.solidify(
+                name=name, code=pack["code_template"], description=pack.get("description") or "",
+                display_name=pack.get("display_name") or "", parameters=pack.get("parameters") or [],
+                source_query=pack.get("source_query") or "", preconditions=pack.get("preconditions") or [],
+                applies_when=pack.get("applies_when") or [], not_for=pack.get("not_for") or [],
+                validator=pack.get("validator"),
+            )
+        except ValueError as exc:
+            raise _invalid_pack(exc) from None
+        code, errors = store.render(name, values)
+    if code is None:
+        raise ApiError(422, RENDER_FAILED, "The package could not fill the draft's template with these values",
+                       errors=errors)
+    return code
+
+
+async def code_and_parameters(req: WorkbenchCodeRequest) -> tuple[str, list | None]:
+    """The snippet to check or dry-run: ``code`` with its ``parameters``, or the draft
+    ``pack`` filled with ``values`` (no parameters: a pack's code gets none when it runs)."""
+    if req.pack is not None:
+        if req.code is not None or req.parameters is not None:
+            raise ApiError(422, "invalid_args", "send either code (with parameters) or pack (with values), not both")
+        return await run_in_threadpool(render_draft, req.pack, req.values or {}), None
+    if req.code is None:
+        raise ApiError(422, "invalid_args", "code or pack is required")
+    if req.values is not None:
+        raise ApiError(422, "invalid_args", "values go with pack; code takes parameters")
+    return req.code, req.parameters
+
+
+@router.post("/check", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
+async def check_code(req: CheckCodeRequest):
+    """``checking.check_code``: compile the snippet in Revit without running it - no token,
+    nothing changes. The package's reply as it is (``{schema_version, checked, compiled,
+    blocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,
+    environment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +
+    ``values`` instead of ``code``: the draft's template filled by the package first (422
+    ``invalid_pack`` / ``render_failed``). As the MCP tool does, code the sandbox refuses is
+    answered before Revit is needed (``blocked: true``); no Revit to ask is 503
+    ``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past
+    ``/spec/confirm``'s limit."""
+    code, parameters = await code_and_parameters(req)
+    refused = checking.blocked_reply(code)
+    if refused is not None:
+        return refused
+    client = await get_revit_client()
+    return await checking.check_code(client, code, parameters, library=guidance_library)
+
+
+@router.post("/dry-run", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
+async def dry_run_code(req: DryRunRequest):
+    """``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group
+    the add-in always rolls back - nothing is kept, the undo stack is untouched, so no
+    confirmation and no token (the package's rule: the gate takes no part in a dry run).
+    The package's reply as it is (``{success, rolled_back, result, error, diagnostics,
+    changes, failures, fingerprint, evidence_id, hint, warnings}``); each request that
+    reaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's
+    scope. ``pack`` + ``values`` instead of ``code``: the draft's template filled by the
+    package first, exactly the code the saved pack would send. Code the sandbox refuses is
+    answered before Revit is needed (``error: "blocked"``); no Revit to ask is 503
+    ``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s
+    limit."""
+    code, parameters = await code_and_parameters(req)
+    refused, _ = package_dry_run.prepare(code)
+    if refused is not None:
+        return refused
+    client = await get_revit_client()
+    return await package_dry_run.dry_run_code(client, code, parameters, ledger=get_ledger(),
+                                              host=HOST, scope=current_scope())
+
+
+@router.post("/choices", responses=responses(403, 422, 503, 504))
+async def choices_of(req: ChoicesRequest):
+    """The real options of one ``choices_from`` (``levels``, ``floor_types``,
+    ``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's
+    ``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,
+    asked for one parameter - so the values are what a saved pack receives. A value the
+    pack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504
+    after 15 s)."""
+    if not CHOICES_FROM_RE.fullmatch(req.choices_from):
+        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_* or "
+                                            "elements:OST_*", choices_from=req.choices_from[:100])
+    client = await get_revit_client()
+    try:
+        found = await asyncio.wait_for(
+            RevitQueryExecutor(client).get_tool_choices([{"name": "value", "choices_from": req.choices_from}]),
+            timeout=15.0)
+    except asyncio.TimeoutError:
+        raise ApiError(504, "revit_timeout", "Revit query timed out (15s)") from None
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    return found.get("value", [])
+
+
 # -- execution -----------------------------------------------------------------
 
 @router.post("/execute", responses=responses(400, 403, 422, 503))
@@ -530,15 +975,22 @@ async def execute_code(req: ExecuteRequest):
 
 
 @router.post("/solidify", dependencies=[Depends(require_admin)],
-             responses=admin_responses(400, 403, 422, 503))
+             responses=admin_responses(400, 403, 409, 422, 503))
 async def solidify_tool(req: SolidifyRequest):
-    """``ToolStore.solidify``: save working code as a v1 pack (admin password required);
-    best-effort sync to the add-in."""
+    """``ToolStore.solidify``: save working code as a v1 pack in the user capabilities
+    directory (admin password required on a cloud host; a user pack of the same name is
+    replaced, a user file of a built-in's name too); best-effort sync to the add-in. The
+    name of a built-in pack with no user file of that name is refused: 409
+    ``builtin_read_only``."""
+    require_tool_name(req.name)
+    store = ToolStore()
+    if is_builtin(store, req.name):
+        raise builtin_read_only(req.name)
     safe, warnings = sandbox.review(req.code)
     if not safe:
         raise ApiError(400, "blocked", "Code review failed", warnings=warnings)
     try:
-        tool = ToolStore().solidify(
+        tool = store.solidify(
             name=req.name, code=req.code, description=req.description, parameters=req.parameters,
             source_query=req.source_query, validator=req.validator,
         )

@@ -2,7 +2,7 @@
 
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { SkillContent } from './SkillsView'
+import SkillsView, { SkillContent } from './SkillsView'
 
 describe('SkillContent', () => {
   it('renders the Markdown without images; links open in a new tab without a referrer', () => {
@@ -18,5 +18,13 @@ describe('SkillContent', () => {
 
   it('shows a placeholder for an empty skill', () => {
     expect(renderToStaticMarkup(<SkillContent content="" />)).toContain('(empty)')
+  })
+})
+
+describe('SkillsView', () => {
+  it('says the skills are not part of the chat prompt', () => {
+    const html = renderToStaticMarkup(<SkillsView />)
+    expect(html).toContain('Skills are guidance for writing code; they are not part of the chat&#x27;s prompt.')
+    expect(html).not.toContain('system prompt')
   })
 })

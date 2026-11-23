@@ -24,6 +24,19 @@ services:
       # root (user capability packs, usage.json, evidence): the ./data volume.
       DATA_DIR: /app/data
       REVIT_BRIDGE_DATA_DIR: /app/data
+      # Share your tools with the coding frameworks on this machine (the
+      # revit-bridge MCP server that Claude Code and other hosts start): uncomment
+      # the next line and the second volume below, and set SHARED_CAPABILITIES_DIR
+      # in .env to the machine's tool directory - the package's user capabilities
+      # directory, by default
+      #   Windows: C:/Users/<you>/AppData/Local/revit-bridge/capabilities
+      #   Linux:   /home/<you>/.local/share/revit-bridge/capabilities
+      # Tools saved on this page are files there, and the MCP server's tools are
+      # listed here on the next request. It is mounted outside /app/data on purpose:
+      # the entrypoint never changes the owner of your directory, so on Linux the
+      # app (uid 1000) needs write access to it as it is. Without these two lines
+      # the tools stay in ./data/capabilities, as before.
+      # REVIT_BRIDGE_CAPABILITIES_DIR: /shared/capabilities
       # Inside the container the app always listens on 7860; PORT in .env only
       # chooses the published host port above.
       PORT: 7860
@@ -39,5 +52,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
+      # - ${SHARED_CAPABILITIES_DIR:?set SHARED_CAPABILITIES_DIR in .env}:/shared/capabilities
     mem_limit: 1g
     restart: unless-stopped

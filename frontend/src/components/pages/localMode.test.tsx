@@ -10,11 +10,9 @@ import { apiStream } from '../../api/client'
 import { skillsApi } from '../../api/skills'
 import { loadRuntimeConfig, type DeployMode } from '../../config'
 import { adminHeaders, deviceHeaders, useSessionStore } from '../../store'
-import type { TaskSpec } from '../../types/api'
 import SkillsView from '../capabilities/SkillsView'
 import ToolLibrary from '../capabilities/ToolLibrary'
 import { packGate } from '../shared/packAdmin'
-import SolidifyPanel from '../task/SolidifyPanel'
 import { taskApi } from '../task/api'
 import ConnectPage from './ConnectPage'
 
@@ -36,8 +34,6 @@ async function host(mode: DeployMode, admin = mode === 'cloud') {
   vi.unstubAllGlobals()
 }
 
-const spec: TaskSpec = { task: 'count walls', action: { kind: 'execute_code', code: 'return 1;' }, parameters: [] }
-const solidify = async () => ({ status: 'solidified', name: 'n', display_name: 'N', version: '1.0.0', revit_synced: false })
 const pairingDeps = {
   api: {
     pair: async () => { throw new Error('a local host pairs nothing') },
@@ -137,10 +133,6 @@ describe('admin-only controls on a local host', () => {
     expect(packGate(false, '')).toEqual({ canEdit: false,
       note: 'This host has no admin password configured; packs are read-only here (running them still works).' })
 
-    const solid = renderToStaticMarkup(<SolidifyPanel spec={spec} solidify={solidify} />)
-    expect(solid).toMatch(/<button class="btn-primary">Save as pack<\/button>/)
-    expect(solid).not.toContain('admin password')
-
     const library = renderToStaticMarkup(<ToolLibrary />)
     expect(library).not.toContain('read-only')
     expect(library).not.toContain('admin password')
@@ -154,8 +146,6 @@ describe('admin-only controls on a local host', () => {
   it('stay behind the password on a cloud host', async () => {
     useSessionStore.setState({ adminToken: '' })
     await host('cloud')
-    expect(renderToStaticMarkup(<SolidifyPanel spec={spec} solidify={solidify} />))
-      .toMatch(/<button class="btn-primary" disabled="">Save as pack<\/button>/)
     const skills = renderToStaticMarkup(<SkillsView />)
     expect(skills).not.toContain('+ Add skill')
     expect(skills).toContain('Enter the admin password on the Connect page to add or change skills.')

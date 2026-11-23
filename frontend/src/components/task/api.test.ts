@@ -32,14 +32,11 @@ describe('taskApi', () => {
     expect(parse(calls[0])).toEqual({ spec, confirmed_by: 'designer' })
   })
 
-  it('runs a pack and code with the token in the body, values untouched', async () => {
+  it('runs a pack with the token in the body, values untouched', async () => {
     const calls = stubFetch(200, { success: true, error: null })
     await taskApi.runTool('create structural/column', { x: 3000, level_name: 'L1' }, 'tok_1')
-    await taskApi.execute('return 1;', [{ name: 'a', value: 1 }], 'tok_2')
     expect(calls[0].url).toBe('/api/v1/bridge/tools/create%20structural%2Fcolumn/run')
     expect(parse(calls[0])).toEqual({ params: { x: 3000, level_name: 'L1' }, token: 'tok_1' })
-    expect(calls[1].url).toBe('/api/v1/bridge/execute')
-    expect(parse(calls[1])).toEqual({ code: 'return 1;', parameters: [{ name: 'a', value: 1 }], token: 'tok_2' })
   })
 
   it('asks for missing params, reconciles, lists and validates evidence', async () => {
@@ -70,7 +67,7 @@ describe('taskApi', () => {
     expect(calls[0].init.headers).toMatchObject({ 'X-Device-Id': 'dev_one', 'X-Device-Key': 'bk_secret', 'Content-Type': 'application/json' })
   })
 
-  it('keeps the rejected body: spec errors of /spec/confirm, pack problems of /solidify', async () => {
+  it('keeps the rejected body: spec errors of /spec/confirm', async () => {
     stubFetch(422, { error: 'invalid_spec', errors: [{ code: 'missing_param', param: 'x', message: 'x is required' }] })
     const spec = { task: 't', action: { kind: 'run_tool' as const, tool: 'q' }, parameters: [] }
     const err = await taskApi.confirm(spec).catch((e: unknown) => e)
@@ -80,10 +77,6 @@ describe('taskApi', () => {
     expect(failure.code).toBe('invalid_spec')
     expect(failure.message).toBe('422: invalid_spec')
     expect(failure.body?.errors).toEqual([{ code: 'missing_param', param: 'x', message: 'x is required' }])
-
-    stubFetch(422, { error: 'invalid_pack', problems: ['parameters[0] (x): required must be true or false', 'validator: unknown kind'] })
-    const pack = await taskApi.solidify({ name: 'n', code: 'c', description: '', parameters: [], source_query: '' }).catch((e: unknown) => e as BridgeApiError)
-    expect((pack as BridgeApiError).body?.problems).toHaveLength(2)
 
     stubFetch(502, '<!doctype html><html></html>')
     const html = await taskApi.evidence().catch((e: unknown) => e as BridgeApiError)
