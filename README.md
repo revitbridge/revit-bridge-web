@@ -19,15 +19,21 @@ cd revit-bridge-web
 docker compose up -d --build              # one command: http://127.0.0.1:7860
 ```
 
-Without Docker (Python 3.11+, [uv](https://docs.astral.sh/uv/), Node 20 to build the UI once):
+Without Docker (Python 3.11+, [uv](https://docs.astral.sh/uv/), Node 20 to build the UI):
 
 ```bash
-cd frontend && npm ci && npm run build && cd ..
-uv run revit-bridge-web                   # http://127.0.0.1:7860; --port 7871 for another port
+git clone https://github.com/revitbridge/revit-bridge-web.git
+cd revit-bridge-web
+cd frontend && npm ci && npm run build && cd ..   # the UI; again after each pull
+uv run revit-bridge-web                           # http://127.0.0.1:7860; --port 7871 for another port
 ```
 
-`uv run revit-bridge-web` serves the API and the built UI (`frontend/dist`) on `127.0.0.1`; without a
-build it serves the API only and says so. Open it as `http://127.0.0.1:7860` or `http://localhost:7860`.
+`uv run revit-bridge-web` runs from this checkout: it serves the API and the built UI
+(`frontend/dist`, next to `backend/`) on `127.0.0.1`; without a build it serves the API only and says
+so. The wheel the project builds contains only the backend, so installing it with `pip` or `uvx` is
+not a supported way to run the host (there would be no UI). Open it by typing
+`http://127.0.0.1:7860` or `http://localhost:7860`, or from a bookmark: a link on another site's page
+is refused (see below).
 
 The image on its own, without compose - publish on loopback and pass the same address in:
 
@@ -42,18 +48,31 @@ A local host has no password, so it is strict about who it answers:
 - It refuses to start, and prints why, when other machines could reach it (`HOST=0.0.0.0`, or with
   Docker a `BIND_ADDRESS` other than loopback), when `ADMIN_PASSWORD` is set (that is a cloud host
   missing `DEPLOY_MODE=cloud`) and when `CORS_ORIGINS` is set.
-- It answers only a browser on this machine talking to it directly. A request that came through a
-  proxy (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
-  `CF-Connecting-IP`) is 403 `local_mode_no_proxy`; one addressed to any name other than `127.0.0.1`,
-  `localhost` or `[::1]` (any port), or - outside Docker - from another machine, is 403
-  `local_mode_host`; a change (POST, PUT, PATCH, DELETE) from a page on another origin is 403
-  `local_mode_origin`. That holds for every path, `/health` and the static files included, and keeps
-  web pages elsewhere (DNS rebinding, cross-site forms) away from a host without a password.
-- It cannot tell a request relayed by a forward proxy running on the same machine (a system or
-  browser proxy) from a direct browser: the peer is loopback, the proxy rewrites `Host` and sends no
-  forwarding header. So a local proxy that accepts connections from other machines (an "allow LAN"
-  setting) exposes the host to them. Keep such a proxy bound to loopback, or do not run the host
-  beside it.
+- It refuses requests that do not look like a browser on this machine talking to it directly. One
+  carrying a proxy forwarding header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto`, `X-Real-IP`, `CF-Connecting-IP`) is 403 `local_mode_no_proxy`; one addressed
+  to any name other than `127.0.0.1`, `localhost` or `[::1]` (any port), or - outside Docker - from
+  another machine, is 403 `local_mode_host`; one that another site's page started
+  (`Sec-Fetch-Site: cross-site` or `same-site`, any method), and a change (POST, PUT, PATCH, DELETE)
+  or a WebSocket from a page on another origin, are 403 `local_mode_origin`. That holds for every
+  path, `/health` and the static files included, and keeps web pages elsewhere (DNS rebinding,
+  cross-site forms and requests) away from a host without a password.
+
+What the checks cannot see:
+
+- A reverse proxy that adds no forwarding header and sends `Host` with the loopback address - nginx's
+  default `location / { proxy_pass http://127.0.0.1:7860; }` - passes every check. A host behind a
+  proxy or a tunnel must run as a cloud host (below); local mode does not detect it.
+- A forward proxy running on the same machine (a system or browser proxy) looks like a direct
+  browser: the peer is loopback, the proxy rewrites `Host` and sends no forwarding header. So a local
+  proxy that accepts connections from other machines (an "allow LAN" setting) exposes the host to
+  them. Keep such a proxy bound to loopback, or do not run the host beside it.
+- In Docker the peer-address check is off (connections arrive from Docker's network), so the
+  loopback rule rests on the port being published on the same loopback address as `BIND_ADDRESS`.
+  `docker run -p 7860:7860 -e BIND_ADDRESS=127.0.0.1`, a compose override that publishes the port on
+  another address, or `network_mode: host` publish a host without a password to the network while
+  the startup check passes. Use exactly the `-p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1` form
+  above (or compose as shipped).
 
 To serve other machines, deploy it as a cloud host.
 
@@ -70,9 +89,12 @@ docker compose up -d --build
 
 The UI is on `http://127.0.0.1:7860`. Put a reverse proxy with TLS in front of it for anything
 beyond localhost; WebSocket upgrades on `/api/v1/bridge/ws/` must be forwarded. A host behind a
-reverse proxy or a tunnel is a cloud host even though its port is published on loopback: set
-`DEPLOY_MODE=cloud`. Left as local it would not start with `ADMIN_PASSWORD` in its `.env`, and
-without it would refuse every proxied request (403 `local_mode_no_proxy`).
+reverse proxy or a tunnel is a cloud host even though its port is published on loopback, and must
+run with `DEPLOY_MODE=cloud`. Local mode does not detect every proxy: one that adds no forwarding
+header and sends `Host` with the loopback address (nginx's default `proxy_pass
+http://127.0.0.1:7860;`) passes its checks, and the host would then serve pack edits, skill edits and
+the logs without a password to anyone the proxy lets in. The only protections are setting
+`DEPLOY_MODE=cloud` and the startup refusal of a local host that finds `ADMIN_PASSWORD` set.
 
 Split deployment (SPA on a static host, API on another machine): build `frontend/` and upload
 `dist/`, then place a static `config.json` next to its `index.html` - copy
@@ -213,8 +235,9 @@ precondition or a failed validation is 200 with `success: false`; error bodies a
 A local host puts one guard in front of every route (not in the export, which is a cloud host's): 403
 `local_mode_no_proxy` for a request carrying a proxy forwarding header, 403 `local_mode_host` for a
 `Host` other than `127.0.0.1`, `localhost` or `[::1]` (or a peer that is not this machine, outside
-Docker), 403 `local_mode_origin` for a POST, PUT, PATCH or DELETE whose `Origin` is not the host's own
-(`http://` plus its `Host`); a request without `Origin` (curl on this machine) is not refused for that.
+Docker), 403 `local_mode_origin` for any request with `Sec-Fetch-Site: cross-site` or `same-site` and
+for a POST, PUT, PATCH, DELETE or WebSocket upgrade whose `Origin` is not the host's own (`http://`
+plus its `Host`); a request with neither header (curl on this machine) is not refused for that.
 
 Pairing and devices exist on a cloud host only; on a local host `/devices*` and `/ws/{device_id}`
 answer 404 `{"error": "cloud_mode_only"}` (the add-in socket before the upgrade), `X-Device-Id` /

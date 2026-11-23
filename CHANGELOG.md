@@ -6,15 +6,17 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
-Upgrading: **the host now starts as a local host** (`DEPLOY_MODE=local`, the new default): this
-machine only, no relay, no pairing, no admin password. A deployment that other machines reach must
-set `DEPLOY_MODE=cloud` in its `.env` before it is upgraded, and keep `ADMIN_PASSWORD` (a cloud
-host now refuses to start without it). That includes a host published on loopback behind a reverse
-proxy or a tunnel on the same machine, which the loopback check cannot see. Such a host fails
-closed if it is upgraded without `DEPLOY_MODE=cloud`: with `ADMIN_PASSWORD` (or `CORS_ORIGINS`) in
-its `.env` a local host refuses to start, and without them it refuses every request that came
-through a proxy (403 `local_mode_no_proxy`) or names its public host (403 `local_mode_host`). See
-*Added* and *Changed* (deploy modes).
+Upgrading: **a host that other machines reach must set `DEPLOY_MODE=cloud` in its `.env` before it
+is upgraded**, and keep `ADMIN_PASSWORD` (a cloud host now refuses to start without it). That
+includes a host published on loopback behind a reverse proxy or a tunnel on the same machine. The
+host now starts as a local host by default (`DEPLOY_MODE=local`): this machine only, no relay, no
+pairing, no admin password. Local mode does not detect every proxy: a reverse proxy that adds no
+forwarding header and rewrites `Host` to the loopback address - nginx's default `location / {
+proxy_pass http://127.0.0.1:7860; }` - passes all of its checks, and the host would then serve pack
+edits, skill edits and the logs without a password to anyone the proxy lets in. The only
+protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal of a local host that
+finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
+that ran without it does not. See *Added* and *Changed* (deploy modes).
 
 The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
@@ -80,15 +82,20 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   `localhost` or `[::1]` with any port (plus the loopback address configured as `HOST` /
   `BIND_ADDRESS` when it is another one), the guard against DNS rebinding, and - outside a container -
   for a peer address that is not loopback (a server started as `uvicorn backend.main:app --host
-  0.0.0.0` is covered too); 403 `local_mode_origin` for a POST, PUT, PATCH or DELETE whose `Origin`
-  is not `http://` plus the request's `Host`. Routes without a body (`DELETE /tools/{name}`, `DELETE
-  /api/skills/{id}`, `POST /trigger-selection`...) would otherwise take a cross-site form post;
-  routes with a JSON body already refuse `text/plain` and form data with 422. A cloud host has no
-  such guard: forwarding headers and public host names are normal behind its proxy. Known limit:
-  the guard cannot tell a request relayed by a forward proxy running on the same machine from a
-  direct browser (loopback peer, rewritten `Host`, no forwarding headers), so a local proxy that
-  accepts connections from other machines exposes the host to them; keep such a proxy bound to
-  loopback or do not run the host beside it.
+  0.0.0.0` is covered too); 403 `local_mode_origin` for any request whose `Sec-Fetch-Site` is
+  `cross-site` or `same-site` (another site's page started it: GETs that reach Revit such as
+  `/snapshot`, body-less POSTs such as `/trigger-selection`, any method), and for a POST, PUT,
+  PATCH, DELETE or WebSocket upgrade whose `Origin` is not `http://` plus the request's `Host`.
+  Routes without a body (`DELETE /tools/{name}`, `DELETE /api/skills/{id}`, `POST
+  /trigger-selection`...) would otherwise take a cross-site form post; routes with a JSON body
+  already refuse `text/plain` and form data with 422. A port in `Host` must be ASCII digits. A cloud
+  host has no such guard: forwarding headers and public host names are normal behind its proxy.
+  Known limits: a reverse proxy that adds no forwarding header and sends a loopback `Host` (nginx's
+  default) is not detected; a request relayed by a forward proxy running on the same machine looks
+  like a direct browser (loopback peer, rewritten `Host`, no forwarding headers), so a local proxy
+  that accepts connections from other machines exposes the host to them - keep such a proxy bound
+  to loopback or do not run the host beside it; in Docker the peer-address check is off, so the port
+  must be published on the same loopback address as `BIND_ADDRESS` (`-p 127.0.0.1:7860:7860`).
 - `npm run dev`: the Vite proxy presents its own pages (`http://localhost:5173`) with the target's
   origin, so the dev page can still make changes on a local host; any other `Origin` passes through
   unchanged and is refused.
