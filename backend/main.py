@@ -26,6 +26,7 @@ from revit_bridge.capabilities import ToolStore
 from backend.api import bridge, chat, errors, logs, skills, usage
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
 from backend.localguard import LocalModeGuard, host_names_for
+from backend.models_file import config_features, get_models, log_models
 from backend.upgrade import quarantine_legacy_packs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -40,6 +41,9 @@ _log = logging.getLogger("backend")
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     settings = get_settings()
+    # The models file, when there is one, is read and checked now: a bad one stops the
+    # start (ConfigError) before anything else is touched.
+    models = get_models()
     # A data volume written by the 0.1 host holds copies of the old built-in packs
     # in DATA_DIR/capabilities, where the package keeps user packs when its data root
     # is that volume (the image); park them aside. Only there: a host started without
@@ -91,7 +95,11 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     @app.get("/config.json", tags=["meta"])
     async def config_json():
         """Runtime configuration for the SPA (read once at startup)."""
-        return JSONResponse(get_settings().config_json(), headers={"Cache-Control": "no-cache"})
+        settings = get_settings()
+        body = settings.config_json()
+        # Each role's model name (from LLM_MODEL or the models file) and where it comes from.
+        body["features"].update(config_features(settings, get_models()))
+        return JSONResponse(body, headers={"Cache-Control": "no-cache"})
 
     dist = frontend_dist or FRONTEND_DIST
     if dist.is_dir():
@@ -123,6 +131,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         _log.warning("frontend build not found at %s - API only", dist)
 
     log_deploy_mode(settings)
+    log_models(settings, models)
     return app
 
 
@@ -151,7 +160,8 @@ def build_app_or_exit() -> FastAPI:
 
     A deployment whose environment cannot work (a retired 0.1 slot variable
     still set, a non-numeric port or limit, a local host other machines could
-    reach, a cloud host without ADMIN_PASSWORD) must fail at startup with the
+    reach, a cloud host without ADMIN_PASSWORD, a models file that is missing
+    where MODELS_FILE points or not valid) must fail at startup with the
     reason, not answer 500 to every request.
     """
     try:

@@ -1,0 +1,53 @@
+# The model of each role. Copy to models.yml in DATA_DIR (./data/models.yml next to
+# docker-compose.yml, or the path in MODELS_FILE) and restart the host: the file is
+# read and checked once, at startup. Without the file the host uses LLM_BASE_URL /
+# LLM_MODEL / LLM_API_KEY, as before.
+#
+# Keys never go in this file. api_key_env is the NAME of an environment variable
+# (capital letters, digits and _) that holds the key; the host reads it on every
+# model call. Put the key in .env or the environment, not here. A variable that is
+# not set is no startup error: the browser may then bring its own key.
+#
+# An entry: base_url (https://, or http:// to 127.0.0.1 / localhost only), model,
+# api_key_env, and optionally max_tokens (a whole number) and temperature (0 to 2).
+# Nothing else is accepted: api_key, key, token, extra_headers or any other field
+# refuses the start, and so do YAML aliases (*name).
+#
+# Roles: analyst, planner, supervisor. planner is required; a role left out uses the
+# planner's entry. Several roles may name one entry. In this release only the
+# planner runs (the chat); the analyst and supervisor are read for the roles split.
+# The browser's model settings (X-LLM-* headers) replace the planner's entry for its
+# own requests; roles on another entry keep theirs.
+
+models:
+  main:
+    base_url: https://api.example.com/v1
+    model: some-model
+    api_key_env: LLM_API_KEY
+  small:
+    base_url: https://api.example.com/v1
+    model: some-small-model
+    api_key_env: LLM_API_KEY
+    max_tokens: 1024
+
+roles:
+  analyst: small
+  planner: main
+  supervisor: small
+
+# One model for everything:
+#
+# models:
+#   main: { base_url: https://api.example.com/v1, model: some-model, api_key_env: LLM_API_KEY }
+# roles:
+#   planner: main
+#
+# Two providers, each key in its own variable:
+#
+# models:
+#   strong: { base_url: https://api.example.com/v1, model: some-model, api_key_env: EXAMPLE_API_KEY }
+#   cheap:  { base_url: https://api.example.net/v1, model: some-small-model, api_key_env: OTHER_API_KEY }
+# roles:
+#   analyst: cheap
+#   planner: strong
+#   supervisor: cheap
