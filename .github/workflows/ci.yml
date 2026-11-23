@@ -60,10 +60,19 @@ jobs:
       - name: Smoke
         run: |
           # Local mode (the default) refuses to start unless the port is published on loopback,
-          # or with ADMIN_PASSWORD set; a cloud host without ADMIN_PASSWORD refuses too.
-          if docker run --rm -e BIND_ADDRESS=0.0.0.0 revit-bridge-web:ci; then exit 1; fi
-          if docker run --rm -e BIND_ADDRESS=127.0.0.1 -e ADMIN_PASSWORD=x revit-bridge-web:ci; then exit 1; fi
-          if docker run --rm -e DEPLOY_MODE=cloud revit-bridge-web:ci; then exit 1; fi
+          # or with ADMIN_PASSWORD set; a cloud host without ADMIN_PASSWORD refuses too. A refusal
+          # exits 2 at once; a regression that let one start is stopped by timeout (124) and fails.
+          refused() {
+            set +e
+            timeout 60 docker run --rm "$@" revit-bridge-web:ci
+            code=$?
+            set -e
+            echo "docker run $* -> exit $code"
+            test "$code" -eq 2
+          }
+          refused -e BIND_ADDRESS=0.0.0.0
+          refused -e BIND_ADDRESS=127.0.0.1 -e ADMIN_PASSWORD=x
+          refused -e DEPLOY_MODE=cloud
           docker run -d --name web -p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1 revit-bridge-web:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:7860/health >/dev/null; then break; fi
