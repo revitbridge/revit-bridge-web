@@ -24,7 +24,14 @@ order, and the first that fails answers 403 ``{error, message}``:
      site's page started, including the GETs that reach Revit (``/snapshot``,
      ``/tools/{name}/choices``) and body-less POSTs (``/trigger-selection``,
      ``/evidence/{id}/validate``). ``same-origin``, ``none`` (typed address,
-     bookmark) and no header at all (curl, the bench runner) pass;
+     bookmark) and no header at all (curl, the bench runner) pass. One exception:
+     a top-level navigation to the page shell - GET or HEAD, ``Sec-Fetch-Mode:
+     navigate``, ``Sec-Fetch-Dest: document``, a path outside ``/api/`` that is
+     not ``/config.json``, ``/openapi.json``, ``/docs``, ``/redoc`` or ``/health``
+     - passes, so a link to the host in a README or a chat tool opens it. A frame
+     (``Sec-Fetch-Dest: iframe``) does not, and every local response says
+     ``frame-ancestors 'self'`` / ``X-Frame-Options: SAMEORIGIN`` so the UI, which
+     has no password, cannot be framed by another page (clickjacking);
    - a POST, PUT, PATCH or DELETE, or a WebSocket upgrade, that carries ``Origin``
      (every browser sends it on these) must come from the host's own origin,
      ``http://`` plus the Host header. Browsers apply no same-origin rule to
@@ -57,6 +64,37 @@ LOOPBACK_HOST_NAMES = ("127.0.0.1", "localhost", "[::1]")
 STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Sec-Fetch-Site values that mean another site's page started the request.
 FOREIGN_FETCH_SITES = frozenset({"cross-site", "same-site"})
+# Paths a cross-site navigation may not open: data, not the page shell.
+NOT_THE_PAGE = ("/config.json", "/openapi.json", "/docs", "/redoc", "/health")
+# On every local response: no other page may frame the UI.
+FRAME_POLICY = ((b"content-security-policy", b"frame-ancestors 'self'"), (b"x-frame-options", b"SAMEORIGIN"))
+
+
+def opens_the_page(scope: Scope, headers: dict[bytes, bytes]) -> bool:
+    """A top-level navigation (a link clicked on another site) to the page shell or a
+    static file: GET or HEAD, navigate, document, not an API or data path."""
+    if scope["type"] != "http" or scope.get("method", "").upper() not in ("GET", "HEAD"):
+        return False
+    if headers.get(b"sec-fetch-mode", b"").strip().lower() != b"navigate":
+        return False
+    if headers.get(b"sec-fetch-dest", b"").strip().lower() != b"document":
+        return False
+    path = scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        return False
+    return not any(path == p or path.startswith(p + "/") for p in NOT_THE_PAGE)
+
+
+def with_frame_policy(send: Send) -> Send:
+    """``send`` that adds FRAME_POLICY to the response headers it does not set itself."""
+    async def send_with_policy(message):
+        if message["type"] == "http.response.start":
+            headers = list(message.get("headers") or [])
+            present = {name.lower() for name, _ in headers}
+            headers += [(name, value) for name, value in FRAME_POLICY if name not in present]
+            message = {**message, "headers": headers}
+        await send(message)
+    return send_with_policy
 
 
 def host_name(host_header: str) -> str | None:
@@ -106,6 +144,8 @@ class LocalModeGuard:
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
+        if scope["type"] == "http":
+            send = with_frame_policy(send)
         refusal = self.refusal(scope)
         if refusal is None:
             await self.app(scope, receive, send)
@@ -140,7 +180,7 @@ class LocalModeGuard:
             return NOT_LOCAL, "This host runs in local mode and answers this machine only"
 
         fetch_site = headers.get(b"sec-fetch-site", b"").decode("latin-1").strip().lower()
-        if fetch_site in FOREIGN_FETCH_SITES:
+        if fetch_site in FOREIGN_FETCH_SITES and not opens_the_page(scope, headers):
             return FOREIGN_ORIGIN, (f"This host runs in local mode and answers only its own page; another "
                                     f"site's page started this request (Sec-Fetch-Site: {fetch_site})")
 

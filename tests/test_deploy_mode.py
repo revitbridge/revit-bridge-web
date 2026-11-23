@@ -771,3 +771,72 @@ def test_a_port_must_be_ascii_digits():
     scope = {"type": "http", "method": "GET", "client": ("127.0.0.1", 1), "headers": [(b"host", b"127.0.0.1:\xb2")]}
     assert guard.refusal(scope)[0] == "local_mode_host"
     assert guard.refusal({**scope, "headers": [(b"host", b"127.0.0.1:7860")]}) is None
+
+
+# -- a link on another site opens the page, and nothing else -------------------------------
+
+NAVIGATION = {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
+              "Sec-Fetch-User": "?1"}
+
+
+@pytest.mark.parametrize("site", ["cross-site", "same-site"])
+def test_a_link_on_another_site_opens_the_page_shell(local_spa, site):
+    """Clicking http://127.0.0.1:7860 in a README or a chat tool: the SPA shell and the
+    static files a navigation can name."""
+    client = local_spa()
+    headers = {**NAVIGATION, "Sec-Fetch-Site": site}
+    for path in ("/", "/task", "/capabilities/packs"):
+        page = client.get(path, headers=headers)
+        assert page.status_code == 200 and "<title>spa</title>" in page.text, path
+    assert client.get("/favicon.svg", headers=headers).text == "<svg/>"
+    assert client.get("/assets/app.js", headers=headers).text == "console.log(1)"
+    # HEAD passes the guard too; the SPA route answers GET only (405), as it always has.
+    assert client.head("/", headers=headers).status_code == 405
+
+
+@pytest.mark.parametrize("path", [f"{B}/snapshot", f"{B}/tools", "/api/logs", "/api", "/config.json", "/openapi.json",
+                                  "/docs", "/docs/oauth2-redirect", "/redoc", "/health"])
+def test_the_same_navigation_to_data_is_refused(revit, make_client, local_env, path):
+    client = make_client(**LOCAL)
+    resp = client.get(path, headers=NAVIGATION)
+    assert refused(resp, "local_mode_origin"), (path, resp.status_code)
+    assert revit.requests == []
+
+
+@pytest.mark.parametrize("change", [
+    {"method": "POST"},                                         # a cross-site form posted as a navigation
+    {"headers": {"Sec-Fetch-Dest": "iframe"}},                  # another page framing the host
+    {"headers": {"Sec-Fetch-Dest": "frame"}},
+    {"headers": {"Sec-Fetch-Mode": "no-cors"}},                 # <img src>, <script src>
+    {"headers": {"Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"}},   # fetch()
+    {"headers": {"Sec-Fetch-Mode": None}},
+])
+def test_anything_but_a_page_navigation_from_another_site_is_refused(local_spa, change):
+    client = local_spa()
+    headers = {k: v for k, v in {**NAVIGATION, **change.get("headers", {})}.items() if v is not None}
+    resp = client.request(change.get("method", "GET"), "/", headers=headers)
+    assert refused(resp, "local_mode_origin"), (change, resp.status_code)
+
+
+def test_the_other_checks_still_apply_to_a_page_navigation(local_spa):
+    client = local_spa()
+    assert refused(client.get("/", headers={**NAVIGATION, "Host": "attacker.example:7860"}), "local_mode_host")
+    assert refused(client.get("/", headers={**NAVIGATION, "X-Forwarded-For": "203.0.113.9"}), "local_mode_no_proxy")
+    assert refused(local_spa(client=("192.168.1.20", 5000)).get("/", headers=NAVIGATION), "local_mode_host")
+
+
+def test_no_other_page_may_frame_a_local_host(local_spa):
+    """Every local response says so, refusals included; a frame is refused anyway."""
+    client = local_spa()
+    for resp in (client.get("/"), client.get("/assets/app.js"), client.get("/config.json"),
+                 client.get(f"{B}/tools"), client.get("/", headers=NAVIGATION),
+                 client.get("/config.json", headers={"X-Forwarded-For": "203.0.113.9"})):
+        assert resp.headers["content-security-policy"] == "frame-ancestors 'self'", resp.request.url
+        assert resp.headers["x-frame-options"] == "SAMEORIGIN"
+
+
+def test_a_cloud_host_sends_no_frame_policy(client):
+    """Unchanged: the cloud host's pages are as before (a proxy in front may add its own)."""
+    resp = client.get("/config.json")
+    assert "content-security-policy" not in resp.headers and "x-frame-options" not in resp.headers
+    assert client.get(f"{B}/tools", headers=NAVIGATION).status_code == 200
