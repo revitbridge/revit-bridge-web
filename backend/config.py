@@ -1,8 +1,11 @@
 """Host settings, read once from environment variables.
 
-There is no config file. Everything a deployment can change is an
-environment variable (see ``.env.example``); ``/config.json`` republishes the
-subset the browser needs so one frontend build works on any address.
+Everything a deployment can change is an environment variable (see
+``.env.example``), except the model of each role, which may come from one file,
+``models.yml`` (``MODELS_FILE``, read and checked at startup by
+``backend.models_file``; keys stay in the environment, the file names their
+variables). ``/config.json`` republishes the subset the browser needs so one
+frontend build works on any address.
 
     DEPLOY_MODE                 "local" (default) or "cloud". local: this machine
                                 only - the server must be reachable on loopback
@@ -36,7 +39,13 @@ subset the browser needs so one frontend build works on any address.
                                 is only sent to LLM_BASE_URL: a request with its
                                 own X-LLM-Base-Url must bring X-LLM-Key
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
-                                and a loopback or private address
+                                and a loopback or private address, and a models
+                                file entry use http to any host (not only loopback)
+    MODELS_FILE                 the models file: an endpoint, model and key variable
+                                per entry, an entry per role (analyst, planner,
+                                supervisor); default DATA_DIR/models.yml. No file
+                                there: LLM_* and the headers as above. Given and
+                                missing, or invalid: no start (backend.models_file)
     ADMIN_PASSWORD              cloud only, required there: the X-Admin-Token of
                                 pack and skill changes, /api/logs and the device list
     MAX_DEVICES                 cloud only: how many paired add-ins may be
@@ -81,6 +90,7 @@ from revit_bridge.revit.settings import env_flag
 
 DEFAULT_PORT = 7860
 DEFAULT_MAX_DEVICES = 20
+MODELS_FILE_NAME = "models.yml"           # in DATA_DIR unless MODELS_FILE names another
 DEFAULT_CHAT_RATE_LIMIT = 30
 
 LOCAL = "local"
@@ -122,6 +132,10 @@ class WebSettings:
     llm_model: str = ""
     llm_api_key: str = ""
     llm_allow_http: bool = False
+    # The models file (backend.models_file): MODELS_FILE, or DATA_DIR/models.yml. Only a
+    # file MODELS_FILE names must exist; at the default path it is optional.
+    models_file: Path = Path("data") / MODELS_FILE_NAME
+    models_file_explicit: bool = False
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
@@ -149,6 +163,8 @@ class WebSettings:
         cloud = mode == CLOUD
         skills = env.get("SKILLS_DIR", "").strip()
         host = env.get("HOST", "").strip() or DEFAULT_HOST[mode]
+        data_dir = Path(env.get("DATA_DIR", "").strip() or "data")
+        models_file = env.get("MODELS_FILE", "").strip()
         settings = cls(
             mode=mode,
             host=host,
@@ -157,12 +173,14 @@ class WebSettings:
                 o.strip() for o in env.get("CORS_ORIGINS", "").split(",") if o.strip()
             ),
             public_ws_base=env.get("PUBLIC_WS_BASE", "").strip().rstrip("/") if cloud else "",
-            data_dir=Path(env.get("DATA_DIR", "").strip() or "data"),
+            data_dir=data_dir,
             skills_dir=Path(skills) if skills else None,
             llm_base_url=env.get("LLM_BASE_URL", "").strip().rstrip("/"),
             llm_model=env.get("LLM_MODEL", "").strip(),
             llm_api_key=env.get("LLM_API_KEY", "").strip(),
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
+            models_file=Path(models_file) if models_file else data_dir / MODELS_FILE_NAME,
+            models_file_explicit=bool(models_file),
             admin_password=env.get("ADMIN_PASSWORD", "") if cloud else "",
             max_devices=_int(env.get("MAX_DEVICES"), DEFAULT_MAX_DEVICES, "MAX_DEVICES") if cloud else 0,
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),

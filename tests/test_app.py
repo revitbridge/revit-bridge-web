@@ -32,6 +32,9 @@ def test_health_and_config_json(make_client, env):
             # kept until the connect page of 7.3 reads maxDevices
             "slotTokenRequired": False,
             "maxSlots": 3,
+            # each role's model name: LLM_MODEL (unset here) without a models file
+            "models": {"analyst": None, "planner": None, "supervisor": None},
+            "modelsFile": False,
         },
     }
 

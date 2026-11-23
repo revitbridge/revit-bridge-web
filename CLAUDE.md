@@ -36,10 +36,10 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
   `backend/session.py` (history, the session's fixed system prompt, the turn counter).
-- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs`: the `llm_calls` rows read back.
+- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
-- `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
+- `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `api/workbench.ts` the one HTTP client of the workbench (it satisfies the `WorkbenchApi` of the workbench component), `components/capabilities/WorkbenchPlaceholder.tsx` the page until that component is wired in.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
@@ -55,7 +55,17 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   `LLM_BASE_URL`, so a request with its own `X-LLM-Base-Url` must bring `X-LLM-Key`.
   A browser-supplied endpoint must be https on a public address unless `LLM_ALLOW_HTTP=1`.
   Keys are never written to disk, logs or error messages.
-- Configuration comes only from environment variables (see `.env.example`); no config files.
+- Configuration comes only from environment variables (see `.env.example`); no config files
+  except `models.yml` (`MODELS_FILE`, default `DATA_DIR/models.yml`; `models.example.yml`): the
+  model of each role (`analyst`, `planner`, `supervisor`), read and checked once at startup by
+  `backend/models_file.py` - a file that is not valid, or missing where `MODELS_FILE` points,
+  refuses the start with the file, field and problem, never a value. Keys never go in it: an
+  entry names the environment variable (`api_key_env`), read on every call; any other field
+  (`api_key`, `token`, `extra_headers`...) is refused. No file at the default path: `LLM_*` and
+  the headers, byte for byte as before. With the file, the planner's entry stands where `LLM_*`
+  stood and the `X-LLM-*` headers replace that entry (and only that one) for the request;
+  `/config.json` `features.models` carries model names only. Every model call goes through
+  `models_file.resolve(role, headers)`.
 - `DEPLOY_MODE` is `local` (default) or `cloud` (`backend/config.py` validates it at startup).
   `local`: only loopback may reach the host (`HOST`, or in the image the published `BIND_ADDRESS`;
   otherwise it refuses to start), `ADMIN_PASSWORD` or `CORS_ORIGINS` set refuses to start too, no

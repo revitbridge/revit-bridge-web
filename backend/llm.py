@@ -156,6 +156,24 @@ def _endpoint(base_url: str) -> tuple[str, str, int]:
     return url.scheme, host, port or (443 if url.scheme == "https" else 80)
 
 
+def endpoint(base_url: str) -> tuple[str, str, int]:
+    """``(scheme, host, port)`` of the address a completion for ``base_url`` is POSTed to,
+    by the parser of the browser endpoint check; ``LLMError`` (400) for a URL it refuses.
+    The models file's entries are read with it (``backend.models_file``)."""
+    return _endpoint(base_url)
+
+
+def is_loopback_host(host: str) -> bool:
+    """``localhost`` (or a name under it) or a literal loopback address, in any form the
+    system resolver reads (``127.1``, ``::ffff:127.0.0.1``)."""
+    if _is_localhost(host):
+        return True
+    ip = _literal_address(host)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip is not None and ip.is_loopback
+
+
 _LEGACY_IPV4_PART = re.compile(r"0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*")
 _NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
 

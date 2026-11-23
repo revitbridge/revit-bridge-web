@@ -7,7 +7,7 @@ A token count the provider did not report is ``null`` in a row, and a sum over c
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.api.logs import verify_admin
 from backend.log_store import get_log_store
@@ -36,6 +36,19 @@ class SessionUsage(BaseModel):
     items: list[CallRow]
 
 
+class RolePart(BaseModel):
+    """The calls of one role with one model within a run: each token sum is null when any
+    of those calls lacks it."""
+    role: str
+    model: str | None
+    calls: int
+    input: int | None
+    output: int | None
+    cache_read: int | None
+    cache_write: int | None
+    ms: int
+
+
 class RunTotal(BaseModel):
     """The calls of one run label: each token sum is null when any call lacks it."""
     run_label: str
@@ -47,6 +60,9 @@ class RunTotal(BaseModel):
     ms: int
     first_at: str
     last_at: str
+    by_role: list[RolePart] = Field(
+        default_factory=list,
+        description="The same sums per role and model of the run, in the order of their first call.")
 
 
 class RunList(BaseModel):
@@ -63,5 +79,6 @@ async def session_usage(session_id: str = Query(..., min_length=1, max_length=12
 @router.get("/runs", dependencies=[Depends(verify_admin)], response_model=RunList)
 async def run_usage():
     """One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,
-    first and last call (UTC, ``YYYY-MM-DD HH:MM:SS``)."""
+    first and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), and the same per role and model
+    (``by_role``)."""
     return {"items": get_log_store().runs()}

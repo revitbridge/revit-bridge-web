@@ -1,5 +1,5 @@
 /* Connect: which Revit this host talks to (a paired device or the local add-in),
-   which model, admin access. A local host (features.mode) has no pairing, no
+   which model (each role's, read-only, and this browser's own settings), admin access. A local host (features.mode) has no pairing, no
    devices and no admin password: its page is the local add-in's status and the
    model settings only; the pairing and device components render on a cloud host. */
 
@@ -13,6 +13,7 @@ import { getErrorMessage } from '../../utils/errors'
 import AdminDevices from '../connect/AdminDevices'
 import DeviceList from '../connect/DeviceList'
 import PairPanel from '../connect/PairPanel'
+import RoleModels from '../connect/RoleModels'
 import { createPairingFlow, type PairingDeps, type PairingFlow } from '../connect/pairing'
 
 /* One flow for the tab's lifetime, so a pairing survives a visit to another page. */
@@ -79,6 +80,8 @@ function LocalConnectPage() {
         {revit.units && <div className="status-line">{revit.units}</div>}
       </section>
 
+      <HostModels />
+
       <ModelSettings />
     </div>
   )
@@ -133,6 +136,8 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
         {revit.units && <div className="status-line">{revit.units}</div>}
       </section>
 
+      <HostModels />
+
       <ModelSettings />
 
       {config.features.admin && (
@@ -151,6 +156,12 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
       )}
     </div>
   )
+}
+
+/* Each role's model as the host announces it (/config.json features.models). */
+function HostModels() {
+  const { models, modelsFile } = getConfig().features
+  return <RoleModels models={models} modelsFile={modelsFile} />
 }
 
 /* Bring your own model: the same on both kinds of host. */

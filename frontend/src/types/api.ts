@@ -339,3 +339,30 @@ export interface ApiErrorBody {
   warnings?: string[]
   [key: string]: unknown
 }
+
+/* GET /api/usage/runs: the model calls of each run label (X-Run-Label). A token sum is null
+   when any call of it lacks the count; by_role has the same per role and model (a host
+   before it sends none). */
+export interface UsagePart {
+  role: string
+  model: string | null
+  calls: number
+  input: number | null
+  output: number | null
+  cache_read: number | null
+  cache_write: number | null
+  ms: number
+}
+
+export interface UsageRun {
+  run_label: string
+  calls: number
+  input: number | null
+  output: number | null
+  cache_read: number | null
+  cache_write: number | null
+  ms: number
+  first_at: string
+  last_at: string
+  by_role?: UsagePart[]
+}

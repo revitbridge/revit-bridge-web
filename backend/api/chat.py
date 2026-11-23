@@ -36,6 +36,11 @@ change nothing else in it):
   a number the provider did not report is ``null``. The same row goes to the
   ``llm_calls`` table with the request's ``X-Run-Label``.
 
+The model is the planner's (``backend.models_file.resolve``): ``LLM_*`` and the
+``X-LLM-*`` headers as before, or, with a models file, the planner's entry there,
+which the headers replace for the request. Events and ``llm_calls`` carry the model
+the call actually went to.
+
 Within one session the system prompt is the one its first turn was sent with
 (``Session.system_prompt``) and the tool definitions are a constant: the
 prefix a provider caches stays byte for byte the same from call to call.
@@ -82,10 +87,11 @@ from backend.api.model_tools import (
 )
 from backend.config import get_settings
 from backend.llm import (
-    SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, resolve_llm,
-    stream_completion, tool_message,
+    SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, stream_completion,
+    tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
+from backend.models_file import NO_MODEL_FROM_FILE, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import get_session_store
 
@@ -133,6 +139,8 @@ BASE_PROMPT = (
 
 # The one role of the host loop until the roles package splits it (stage/tool/usage events).
 ROLE = "planner"
+NO_MODEL = ("No model configured: fill in Model settings on the Connect page "
+            "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.")
 TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool`` event
 TOOL_ERROR_TEXT = 500        # characters of the error text in a closing ``tool`` event
 # Arguments whose JSON text is longer than TOOL_ARGS_LIMIT go out in both tool events as
@@ -257,17 +265,15 @@ async def chat(req: ChatRequest, request: Request,
         # checks as the bridge routes (403 on a wrong or revoked device key).
         await set_device_context(request)
 
-    settings = get_settings()
     try:
-        llm = await resolve_llm(request.headers, settings)
+        # The planner's model: LLM_* and the headers, or its entry in the models file
+        # (the headers then replace that entry, as they replace LLM_* without it).
+        target = await resolve_model(ROLE, request.headers)
     except LLMError as exc:
         raise HTTPException(exc.status, str(exc)) from None
+    llm = target.llm
     if not llm.configured:
-        raise HTTPException(
-            400,
-            "No model configured: fill in Model settings on the Connect page "
-            "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
-        )
+        raise HTTPException(400, NO_MODEL if target.entry is None else NO_MODEL_FROM_FILE)
 
     session = get_session_store().get_or_create(req.session_id)
     turn = session.next_turn()
@@ -310,7 +316,8 @@ async def chat(req: ChatRequest, request: Request,
                 stats = CallStats()
                 started = time.monotonic()
                 try:
-                    async for item in stream_completion(llm, messages, tools=round_tools, stats=stats):
+                    async for item in stream_completion(llm, messages, tools=round_tools, stats=stats,
+                                                        **target.options):
                         if isinstance(item, str):
                             parts.append(item)
                             yield format_sse(item)
