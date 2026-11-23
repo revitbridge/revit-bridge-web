@@ -171,8 +171,9 @@ def test_task_failure_isolated_and_each_task_gets_new_session(bad):
     assert host.requests[1][0]["session_id"] is None
 
 
-def test_query_needs_successful_read_tool_and_no_accepted_spec():
-    query = {"id": "q", "role": "analyst", "name": "query", "status": "ok", "args": {}}
+@pytest.mark.parametrize("tool_name", ["query", "get_project_snapshot"])
+def test_query_needs_successful_read_tool_and_no_accepted_spec(tool_name):
+    query = {"id": "q", "role": "analyst", "name": tool_name, "status": "ok", "args": {}}
     host = FakeHost([response(("tool", query), ("", "Found two levels")), response(("", "Found two levels"))])
     result = host.run([task("yes", kind="query", expect={}), task("no", kind="query", expect={})])["tasks"]
     assert result[0]["correct"] and not result[1]["correct"]

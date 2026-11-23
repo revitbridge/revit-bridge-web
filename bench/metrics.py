@@ -76,7 +76,7 @@ def evaluate(task: dict, specs: list[dict], tools: list[dict], text: str, turns:
         correct = correct and bool(text.strip())
     if task["kind"] == "query":
         correct = correct and any(
-            event.get("status") == "ok" and event.get("name") in ("query", "snapshot", "get_snapshot")
+            event.get("status") == "ok" and event.get("name") in ("query", "get_project_snapshot")
             for event in tools
         )
     if task["kind"] == "ask":
