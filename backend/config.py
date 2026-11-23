@@ -8,15 +8,17 @@ subset the browser needs so one frontend build works on any address.
                                 only - the server must be reachable on loopback
                                 only, there is no relay, no pairing and no admin
                                 password (changing packs and skills and reading
-                                logs needs none). cloud: the relay, pairing and
-                                ADMIN_PASSWORD, which is then required
+                                logs needs none), and backend.localguard refuses
+                                every request that does not come straight from a
+                                browser on this machine. cloud: the relay, pairing
+                                and ADMIN_PASSWORD, which is then required
     HOST / PORT                 bind address of the server (127.0.0.1:7860 in
                                 local mode, 0.0.0.0:7860 in cloud mode)
     BIND_ADDRESS                the host address docker-compose.yml publishes the
                                 port on; compose passes it into the container,
                                 where local mode checks it instead of HOST
-    CORS_ORIGINS                comma-separated origins when the SPA is hosted
-                                elsewhere (empty = same-origin only)
+    CORS_ORIGINS                cloud only: comma-separated origins when the SPA is
+                                hosted elsewhere (empty = same-origin only)
     PUBLIC_WS_BASE              cloud only: wsBase announced in /config.json when
                                 the relay is reached on another address than the
                                 page ("" = derived from the page origin)
@@ -42,8 +44,11 @@ subset the browser needs so one frontend build works on any address.
     CHAT_RATE_LIMIT             requests per minute per IP on /api/chat and on
                                 /api/v1/bridge/spec/confirm (default 30)
 
-A local host given ADMIN_PASSWORD, MAX_DEVICES or PUBLIC_WS_BASE starts anyway
-and logs one line per variable it does not use. The image sets
+A local host refuses to start with ADMIN_PASSWORD set (that is a cloud
+deployment missing DEPLOY_MODE=cloud: started as local it would have no
+password at all) or with CORS_ORIGINS set (a local host answers its own origin
+only). Given MAX_DEVICES or PUBLIC_WS_BASE it starts anyway and logs one line
+per variable it does not use. The image sets
 REVIT_BRIDGE_WEB_CONTAINER=1: inside a container the server listens on the
 container's own interface, and what is reachable from outside is the published
 BIND_ADDRESS, so local mode checks that one there (see ``exposed_address``).
@@ -80,8 +85,8 @@ DEFAULT_HOST = {LOCAL: "127.0.0.1", CLOUD: "0.0.0.0"}
 # other machines can reach is the address the port is published on, BIND_ADDRESS.
 CONTAINER_FLAG = "REVIT_BRIDGE_WEB_CONTAINER"
 # Read only in cloud mode; a local host that is given one logs that it is not used.
+# (ADMIN_PASSWORD and CORS_ORIGINS are cloud only too, but a local host refuses them.)
 CLOUD_ONLY_VARIABLES = {
-    "ADMIN_PASSWORD": "in local mode changing packs and skills and reading logs needs no password",
     "MAX_DEVICES": "there is no device relay in local mode",
     "PUBLIC_WS_BASE": "there is no device relay in local mode",
 }
@@ -116,23 +121,31 @@ class WebSettings:
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
     # Cloud-only variables a local host was given anyway (logged once at startup).
     unused_variables: tuple[str, ...] = ()
+    # Inside the image (REVIT_BRIDGE_WEB_CONTAINER): connections arrive from Docker's
+    # network, not from loopback, and the address browsers use is BIND_ADDRESS.
+    in_container: bool = False
+    # What other machines would reach (HOST, or BIND_ADDRESS in the image): local
+    # mode has checked it is loopback; the request guard accepts it as a Host name.
+    exposed: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> WebSettings:
         """Read the environment and validate it; raise ``ConfigError`` on a
         deployment that cannot run (a retired 0.1 slot variable still set, an
         unknown DEPLOY_MODE, a non-numeric PORT, MAX_DEVICES or CHAT_RATE_LIMIT,
-        a local host other machines could reach, a cloud host without
-        ADMIN_PASSWORD) so the process exits with the reason instead of
-        answering 500 to every request - or serving what it should not."""
+        a local host other machines could reach or given ADMIN_PASSWORD or
+        CORS_ORIGINS, a cloud host without ADMIN_PASSWORD) so the process exits
+        with the reason instead of answering 500 to every request - or serving
+        what it should not."""
         env = os.environ if env is None else env
         _refuse_retired(env)
         mode = _deploy_mode(env.get("DEPLOY_MODE"))
         cloud = mode == CLOUD
         skills = env.get("SKILLS_DIR", "").strip()
+        host = env.get("HOST", "").strip() or DEFAULT_HOST[mode]
         settings = cls(
             mode=mode,
-            host=env.get("HOST", "").strip() or DEFAULT_HOST[mode],
+            host=host,
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
             cors_origins=tuple(
                 o.strip() for o in env.get("CORS_ORIGINS", "").split(",") if o.strip()
@@ -149,6 +162,8 @@ class WebSettings:
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
             unused_variables=() if cloud else tuple(
                 name for name in CLOUD_ONLY_VARIABLES if env.get(name, "").strip()),
+            in_container=env_flag(CONTAINER_FLAG, env),
+            exposed=exposed_address(env, host)[1],
         )
         if cloud:
             if not settings.admin_password.strip():
@@ -157,6 +172,7 @@ class WebSettings:
                     "changing packs and skills, reading logs and listing devices take that password. "
                     "Set it, or run DEPLOY_MODE=local on one machine")
         else:
+            _refuse_local_settings(env)
             _refuse_exposed_local(env, settings.host)
         return settings
 
@@ -265,6 +281,26 @@ def exposed_address(env: Mapping[str, str], host: str) -> tuple[str, str]:
     if env_flag(CONTAINER_FLAG, env):
         return "BIND_ADDRESS", env.get("BIND_ADDRESS", "").strip()
     return "HOST", host
+
+
+def _refuse_local_settings(env: Mapping[str, str]) -> None:
+    """Variables that make no sense on a local host and would be dangerous to ignore.
+
+    ADMIN_PASSWORD set means a deployment meant to be guarded - typically a cloud
+    host upgraded without DEPLOY_MODE=cloud, published on loopback behind a proxy
+    the loopback check cannot see. Started as local it would have no password at
+    all, so it fails closed. CORS_ORIGINS would let other origins' pages call a
+    host that has no password; a local host answers its own origin only.
+    """
+    if env.get("ADMIN_PASSWORD", "").strip():
+        raise ConfigError(
+            "DEPLOY_MODE=local with ADMIN_PASSWORD set looks like a cloud deployment: a local host "
+            "has no password at all. Set DEPLOY_MODE=cloud to keep the password, or remove "
+            "ADMIN_PASSWORD to run on this machine only")
+    if env.get("CORS_ORIGINS", "").strip():
+        raise ConfigError(
+            "DEPLOY_MODE=local answers its own origin only, but CORS_ORIGINS is set: remove it, or "
+            "use DEPLOY_MODE=cloud with ADMIN_PASSWORD for a split deployment")
 
 
 def _refuse_exposed_local(env: Mapping[str, str], host: str) -> None:

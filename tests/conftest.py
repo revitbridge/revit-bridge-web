@@ -109,9 +109,11 @@ def device(client):
 
 @pytest.fixture
 def make_client(env):
-    """For tests that must set more environment before the app is built."""
-    def build() -> TestClient:
+    """For tests that must set more environment before the app is built. Keyword
+    arguments go to TestClient: a local host answers only a loopback Host and peer
+    (``tests.test_deploy_mode.LOCAL``), not TestClient's ``testserver``."""
+    def build(**options) -> TestClient:
         _reset()
         from backend.main import create_app
-        return TestClient(create_app())
+        return TestClient(create_app(), **options)
     return build

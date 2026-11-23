@@ -25,6 +25,7 @@ from revit_bridge.capabilities import ToolStore
 
 from backend.api import bridge, chat, errors, logs, skills
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
+from backend.localguard import LocalModeGuard, host_names_for
 from backend.upgrade import quarantine_legacy_packs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -61,6 +62,11 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
             allow_headers=["*"],
             expose_headers=["X-Session-Id"],
         )
+    if not settings.cloud:
+        # A local host has no password: only a browser on this machine, talking to it
+        # directly, gets through (backend/localguard.py). CORS is never on here.
+        app.add_middleware(LocalModeGuard, host_names=host_names_for(settings.exposed),
+                           check_peer=not settings.in_container)
 
     errors.install(app)
     app.include_router(chat.router)

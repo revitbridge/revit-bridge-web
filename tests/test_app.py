@@ -43,7 +43,8 @@ def test_settings_defaults_come_from_env_only():
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "mode": "cloud", "byoModel": True, "serverModel": False, "admin": True, "maxDevices": 20,
         "slotTokenRequired": False, "maxSlots": 20}}
-    s = WebSettings.from_env({"LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
+    s = WebSettings.from_env({"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "pw",     # CORS_ORIGINS: cloud only
+                              "LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
                               "CORS_ORIGINS": "https://a, https://b"})
     assert s.server_model_configured and s.cors_origins == ("https://a", "https://b")
     # Without its URL the server's key could only go to a visitor's endpoint: not a server model.
