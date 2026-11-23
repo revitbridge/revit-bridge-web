@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { TraceEvent, ToolEvent, UsageEvent } from '../../../types/hostv2'
-import { groupTraceEvents, mergeToolEvents, sumUsage } from './events'
+import { groupTraceEvents, interruptOpen, mergeToolEvents, sumUsage, truncatedArgs } from './events'
 import TokenPanel from './TokenPanel'
 import TraceTimeline from './TraceTimeline'
 
@@ -64,11 +64,38 @@ describe('groupTraceEvents', () => {
       { type: 'stage', role: 'planner', model: 'other', status: 'start' },
       tool({ id: 'last' }),
     ])
+    // 'after' is a planner tool once the planner stage has closed: it goes to the stage
+    // still open around it (analyst), not to a detached group.
     expect(groups.map(group => group.tools.map(event => event.id)))
-      .toEqual([['before'], ['tool-1'], ['during'], ['after'], ['last']])
+      .toEqual([['before'], ['tool-1', 'after'], ['during'], ['last']])
     expect(groups[0].stage).toBeUndefined()
-    expect(groups[3].stage).toBeUndefined()
-    expect(groups[4].stage?.model).toBe('other')
+    expect(groups[3].stage?.model).toBe('other')
+  })
+
+  it('keeps a tool whose role differs from the open stage inside that stage', () => {
+    const groups = groupTraceEvents([
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },
+      tool({ id: 'mine' }),
+      tool({ id: 'odd', role: 'supervisor' }),
+      tool({ id: 'odd', role: 'supervisor', status: 'ok' }),
+      { type: 'stage', role: 'planner', model: 'large', status: 'end' },
+      tool({ id: 'outside', role: 'supervisor' }),
+    ])
+    expect(groups.map(group => [group.stage?.role, group.tools.map(event => [event.id, event.status])])).toEqual([
+      ['planner', [['mine', 'running'], ['odd', 'ok']]],
+      [undefined, [['outside', 'running']]],
+    ])
+  })
+
+  it('puts a mismatched tool in the stage opened last when several are open', () => {
+    const groups = groupTraceEvents([
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },
+      { type: 'stage', role: 'analyst', model: 'small', status: 'start' },
+      tool({ id: 'x', role: 'supervisor' }),
+      { type: 'stage', role: 'planner', model: 'large', status: 'start' },   // the planner opens again
+      tool({ id: 'y', role: 'supervisor' }),
+    ])
+    expect(groups.map(group => group.tools.map(event => event.id))).toEqual([[], ['x'], ['y']])
   })
 })
 
@@ -93,6 +120,18 @@ describe('sumUsage', () => {
       .toMatchObject({ input: null, cache_read: null, cache_hit_rate: null })
   })
 
+  it('treats a field that is missing altogether as unknown, never NaN', () => {
+    const missing = { ...usage() } as Partial<UsageEvent>
+    delete missing.cache_write
+    delete missing.input
+    const total = sumUsage([usage(), missing as UsageEvent])
+    expect(total).toMatchObject({ input: null, cache_write: null, output: 40, cache_read: 50, calls: 2, cache_hit_rate: null })
+    expect(Object.values(total).some(value => typeof value === 'number' && Number.isNaN(value))).toBe(false)
+    const noMs = { ...usage() } as Partial<UsageEvent>
+    delete noMs.ms
+    expect(sumUsage([noMs as UsageEvent]).ms).toBe(0)
+  })
+
   it('represents empty totals as zero calls and tokens with an undefined hit rate', () => {
     expect(sumUsage([])).toEqual({ input: 0, output: 0, cache_read: 0, cache_write: 0, ms: 0, calls: 0, cache_hit_rate: null })
     expect(sumUsage([usage({ input: 0, cache_read: 0 })]).cache_hit_rate).toBeNull()
@@ -110,7 +149,8 @@ describe('TraceTimeline', () => {
     expect(html.match(/<li /g)).toHaveLength(1)
     expect(html).toContain('is-ok')
     expect(html).toContain('0 ms')
-    expect(html).toContain('0 bytes')
+    expect(html).toContain('0 characters')        // size is the result's length in characters
+    expect(html).not.toContain('bytes')
     expect(html).not.toContain('<h3')
     expect(html).not.toContain('hostv2-trace-running')
   })
@@ -177,11 +217,75 @@ describe('TokenPanel', () => {
     expect(html).toContain('<td data-label="Cache write">unknown</td>')
   })
 
+  it('shows unknown, not NaN, when a usage event lacks a field', () => {
+    const partial = { ...usage() } as Partial<UsageEvent>
+    delete partial.input
+    const html = renderToStaticMarkup(<TokenPanel title="Tokens without the bridge" turn={[partial as UsageEvent]} session={[usage(), partial as UsageEvent]} />)
+    expect(html).toContain('<strong>Tokens without the bridge</strong>')
+    expect(html).toContain('This turn: unknown in / 20 out (1 calls)')
+    expect(html).toContain('<td data-label="Input">unknown</td>')
+    expect(html).not.toMatch(/NaN|Infinity/)
+  })
+
   it('shows actual zero totals for an empty turn and session without NaN or Infinity', () => {
     const html = renderToStaticMarkup(<TokenPanel turn={[]} session={[]} />)
     expect(html).toContain('This turn: 0 in / 0 out (0 calls)')
     expect(html).toContain('Session: 0 in / 0 out (0 calls)')
     expect(html).toContain('<td data-label="Calls">0</td>')
     expect(html).not.toMatch(/NaN|Infinity/)
+  })
+})
+
+describe('long arguments', () => {
+  const marker = { _truncated: true, _chars: 312045, _head: '{"spec": {"task": "' + 'x'.repeat(1981) }
+
+  it('reads the truncation marker and nothing else', () => {
+    expect(truncatedArgs(marker)).toEqual({ chars: 312045, head: marker._head })
+    expect(truncatedArgs({ kind: 'levels' })).toBeNull()
+    expect(truncatedArgs({ _truncated: 'yes', _chars: 1, _head: 'x' })).toBeNull()
+    expect(truncatedArgs({ _truncated: true, _chars: '9', _head: 'x' })).toBeNull()
+  })
+
+  it('shows truncated arguments as their head with the full size, not as an object', () => {
+    const html = renderToStaticMarkup(<TraceTimeline events={[tool({ args: marker, status: 'ok', size: 10 })]} />)
+    expect(html).toContain('Parameters (truncated: the first 2,000 of 312,045 characters)')
+    expect(html).toContain('aria-label="query parameters, truncated"')
+    expect(html).toContain('(312,045 characters)')
+    expect(html).not.toContain('_truncated')
+    expect(html).not.toContain('_chars')
+  })
+})
+
+describe('an interrupted turn', () => {
+  it('closes what was still open as interrupted, and nothing else', () => {
+    const open: TraceEvent[] = [
+      { type: 'stage', role: 'planner', model: 'm', status: 'start' },
+      tool({ id: 'done' }), tool({ id: 'done', status: 'ok' }),
+      tool({ id: 'hung' }),
+    ]
+    const closed = interruptOpen(open)
+    expect(closed.slice(0, 4)).toEqual(open)
+    expect(closed.slice(4)).toEqual([
+      tool({ id: 'hung', status: 'interrupted' }),
+      { type: 'stage', role: 'planner', model: 'm', status: 'interrupted' },
+    ])
+    const finished: TraceEvent[] = [...open.slice(0, 3), { type: 'stage', role: 'planner', model: 'm', status: 'end' }]
+    expect(interruptOpen(finished)).toBe(finished)
+    expect(interruptOpen([])).toEqual([])
+  })
+
+  it('renders interrupted rows and stages as their own state, neither ok nor error', () => {
+    const events = interruptOpen([{ type: 'stage', role: 'planner', model: 'm', status: 'start' }, tool({ id: 'hung' })])
+    const groups = groupTraceEvents(events)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].stage?.status).toBe('interrupted')
+    expect(groups[0].tools.map(t => t.status)).toEqual(['interrupted'])
+    const html = renderToStaticMarkup(<TraceTimeline events={events} />)
+    expect(html).toContain('is-interrupted')
+    expect(html).toContain('The turn ended before this call reported back.')
+    expect(html).toContain('hostv2-trace-stage-state is-interrupted">interrupted')
+    expect(html).not.toContain('in progress')
+    expect(html).not.toContain('hostv2-trace-running')
+    expect(html).not.toContain('is-error')
   })
 })

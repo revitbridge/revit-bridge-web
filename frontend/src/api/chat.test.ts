@@ -68,6 +68,50 @@ describe('parseSseFrame', () => {
     expect(parseSseFrame('event: unknown\ndata: "x"')).toBeNull()
   })
 
+  it('reads the stage, tool and usage events (plan 2.2)', () => {
+    expect(parseSseFrame('event: stage\ndata: {"role": "planner", "model": "m-1", "status": "start"}'))
+      .toEqual({ type: 'stage', role: 'planner', model: 'm-1', status: 'start' })
+    expect(parseSseFrame('event: tool\ndata: {"id": "1.1.1", "role": "planner", "name": "query", "args": {"kind": "levels"}, "status": "running"}'))
+      .toEqual({ type: 'tool', id: '1.1.1', role: 'planner', name: 'query', args: { kind: 'levels' }, status: 'running' })
+    const closing = { id: '1.1.1', role: 'planner', name: 'query', args: { kind: 'levels' }, status: 'error', ms: 12, size: 40,
+      preview: '{"error": "revit_unreachable"}', error: 'revit_unreachable' }
+    expect(parseSseFrame(`event: tool\ndata: ${JSON.stringify(closing)}`)).toEqual({ type: 'tool', ...closing })
+    const usage = { role: 'planner', model: 'm-1', round: 2, input: 1200, output: 40, cache_read: 1024, cache_write: 0, ms: 850 }
+    expect(parseSseFrame(`event: usage\ndata: ${JSON.stringify(usage)}`)).toEqual({ type: 'usage', ...usage })
+  })
+
+  it('keeps an unreported count unknown: null or absent is null, never 0', () => {
+    expect(parseSseFrame('event: usage\ndata: {"role": "planner", "model": "m", "round": 1, "input": null, "output": 5, "ms": 3}'))
+      .toEqual({ type: 'usage', role: 'planner', model: 'm', round: 1, input: null, output: 5, cache_read: null, cache_write: null, ms: 3 })
+    expect(parseSseFrame('event: usage\ndata: {"role": "planner", "model": "m", "round": 1, "input": "12", "output": 0, "cache_read": 0, "cache_write": null, "ms": 1}'))
+      .toMatchObject({ input: null, output: 0, cache_read: 0, cache_write: null })
+  })
+
+  it('ignores trace frames it cannot read, and a tool without optional fields has none', () => {
+    expect(parseSseFrame('event: stage\ndata: {"role": "boss", "model": "m", "status": "start"}')).toBeNull()
+    expect(parseSseFrame('event: stage\ndata: {"role": "planner", "model": "m", "status": "paused"}')).toBeNull()
+    expect(parseSseFrame('event: tool\ndata: {"role": "planner", "name": "q", "status": "ok"}')).toBeNull()       // no id
+    expect(parseSseFrame('event: tool\ndata: {"id": "1", "role": "planner", "name": "q", "status": "done"}')).toBeNull()
+    expect(parseSseFrame('event: usage\ndata: [1, 2]')).toBeNull()
+    const bare = parseSseFrame('event: tool\ndata: {"id": 7, "role": "planner", "name": "q", "args": "x", "status": "ok", "ms": null}')
+    expect(bare).toEqual({ type: 'tool', id: '7', role: 'planner', name: 'q', args: {}, status: 'ok' })
+    expect(parseSseFrame('event: thinking\ndata: {"role": "planner"}')).toBeNull()                       // unknown event
+  })
+
+  it('passes truncated arguments through as the marker; a count must be an integer up to 2**53', () => {
+    const marker = { _truncated: true, _chars: 9000, _head: '{"spec": ' }
+    const frame = `event: tool\ndata: ${JSON.stringify({ id: '1.1.1', role: 'planner', name: 'reconcile', args: marker, status: 'running' })}`
+    expect(parseSseFrame(frame)).toEqual({ type: 'tool', id: '1.1.1', role: 'planner', name: 'reconcile', args: marker, status: 'running' })
+    const usage = (input: unknown) =>
+      parseSseFrame(`event: usage\ndata: ${JSON.stringify({ role: 'planner', model: 'm', round: 1, input, output: 1, ms: 1 })}`)
+    expect(usage(2 ** 53)).toMatchObject({ input: 2 ** 53 })
+    expect(usage(2 ** 53 + 2)).toMatchObject({ input: null })
+    expect(usage(12.5)).toMatchObject({ input: null })
+    expect(usage(-1)).toMatchObject({ input: null })
+    // 'interrupted' is the page's own state, never read from the server
+    expect(parseSseFrame('event: tool\ndata: {"id": "1", "role": "planner", "name": "q", "status": "interrupted"}')).toBeNull()
+  })
+
   it('tolerates CRLF line endings', () => {
     expect(parseSseFrame('event: done\r\ndata: [DONE]\r\n')).toEqual({ type: 'done' })
     expect(parseSseFrame('data: "a"\r')).toEqual({ type: 'token', text: 'a' })

@@ -27,14 +27,18 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving, the `revit-bridge-web` console entry (`[project.scripts]`).
 - `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
-- `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`);
+- `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`, and
+  what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header);
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`);
-  `backend/llm.py` the single OpenAI-compatible client, with function calling; `backend/session.py`.
+  `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
+  (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
+  `backend/session.py` (history, the session's fixed system prompt, the turn counter).
+- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs`: the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
-- `backend/skill_store.py`, `backend/log_store.py`, `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
-- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`.
-- `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
+- `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
+- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`; `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events).
+- `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
 ## Hard constraints
 
@@ -62,9 +66,14 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   anything outside it. `cloud`: the relay and pairing, and `ADMIN_PASSWORD` is required
   (no start without it); no request guard.
 - On a cloud host, changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`,
-  `POST /solidify`), skill writes and `/api/logs` are admin only, through the one `X-Admin-Token`
-  check (`WebSettings.admin_token_ok`). On a local host they need no password: changing packs and
-  skills and reading logs is open to this machine. Either way no model tool may write a pack.
+  `POST /solidify`), skill writes, `/api/logs` and `/api/usage` are admin only, through the one
+  `X-Admin-Token` check (`WebSettings.admin_token_ok`). On a local host they need no password:
+  changing packs and skills and reading logs and usage is open to this machine. Either way no
+  model tool may write a pack.
+- Keys and request headers never reach an SSE event or `llm_calls`; a token count the provider
+  did not report stays `null` everywhere (events, table, `/api/usage` sums, the page's totals).
+- Within a chat session the system prompt and the tool definitions go out byte for byte the same
+  on every call and come first; anything that varies belongs in later messages.
 - Web API contract changes are a planning decision: stop and record `BLOCKED` in the notes log.
 - `docs/` holds exactly one file, `docs/api-v1.json`. Deployment details stay in the notes repo.
 - Scripts (`*.sh`, `*.ps1`, `*.py` tools, Dockerfile) are ASCII only.

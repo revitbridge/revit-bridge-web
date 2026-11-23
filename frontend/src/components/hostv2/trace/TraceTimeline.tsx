@@ -1,25 +1,40 @@
-import type { ToolEvent, TraceEvent } from '../../../types/hostv2'
-import { groupTraceEvents } from './events'
+import type { StageEvent, ToolEvent, TraceEvent } from '../../../types/hostv2'
+import { groupTraceEvents, truncatedArgs } from './events'
 import './trace.css'
 
+const STAGE_STATE: Record<StageEvent['status'], string> = {
+  start: 'in progress',
+  end: 'complete',
+  interrupted: 'interrupted',
+}
+
 function ToolRow({ tool }: { tool: ToolEvent }) {
-  const args = JSON.stringify(tool.args)
+  const truncated = truncatedArgs(tool.args)
+  const args = truncated ? `${truncated.head}...` : JSON.stringify(tool.args)
+  const argsTitle = truncated ? `${args} (${truncated.chars.toLocaleString('en-US')} characters)` : args
   return (
     <li className={`hostv2-trace-tool is-${tool.status}`}>
       <details>
         <summary className="hostv2-trace-summary">
           <span className="hostv2-trace-name">{tool.name}</span>
-          <span className="hostv2-trace-args" title={args}>{args}</span>
+          <span className="hostv2-trace-args" title={argsTitle}>{args}</span>
           <span className="hostv2-trace-status">
             {tool.status === 'running' && <span className="hostv2-trace-running" aria-hidden="true" />}
             {tool.status}
           </span>
           <span className="hostv2-trace-metric">{tool.ms === undefined ? 'time unknown' : `${tool.ms} ms`}</span>
-          <span className="hostv2-trace-metric">{tool.size === undefined ? 'size unknown' : `${tool.size} bytes`}</span>
+          <span className="hostv2-trace-metric">{tool.size === undefined ? 'size unknown' : `${tool.size.toLocaleString('en-US')} characters`}</span>
         </summary>
         <div className="hostv2-trace-detail">
-          <h4>Parameters</h4>
-          <pre tabIndex={0} aria-label={`${tool.name} parameters`}>{JSON.stringify(tool.args, null, 2)}</pre>
+          {truncated
+            ? <>
+                <h4>Parameters (truncated: the first {truncated.head.length.toLocaleString('en-US')} of {truncated.chars.toLocaleString('en-US')} characters)</h4>
+                <pre tabIndex={0} aria-label={`${tool.name} parameters, truncated`}>{truncated.head}</pre>
+              </>
+            : <>
+                <h4>Parameters</h4>
+                <pre tabIndex={0} aria-label={`${tool.name} parameters`}>{JSON.stringify(tool.args, null, 2)}</pre>
+              </>}
           {tool.preview !== undefined && <>
             <h4>Result preview</h4>
             <pre tabIndex={0} aria-label={`${tool.name} result preview`}>{tool.preview}</pre>
@@ -27,6 +42,7 @@ function ToolRow({ tool }: { tool: ToolEvent }) {
         </div>
       </details>
       {tool.status === 'error' && <p className="hostv2-trace-error">{tool.error || 'Tool failed without an error message.'}</p>}
+      {tool.status === 'interrupted' && <p className="hostv2-trace-interrupted">The turn ended before this call reported back.</p>}
     </li>
   )
 }
@@ -42,7 +58,7 @@ export function TraceTimeline({ events }: { events: TraceEvent[] }) {
             <h3 className="hostv2-trace-stage">
               <span>{group.stage.role}</span>
               <span className="hostv2-trace-model">{group.stage.model}</span>
-              <span className="hostv2-trace-stage-state">{group.stage.status === 'start' ? 'in progress' : 'complete'}</span>
+              <span className={`hostv2-trace-stage-state is-${group.stage.status}`}>{STAGE_STATE[group.stage.status]}</span>
             </h3>
           )}
           {group.tools.length > 0 && <ol className="hostv2-trace-tools">

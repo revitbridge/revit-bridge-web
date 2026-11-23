@@ -63,6 +63,11 @@
 .hostv2-trace-tool.is-error .hostv2-trace-status,
 .hostv2-trace-error { color: var(--danger); }
 .hostv2-trace-error { margin: 0; padding: 0 12px 10px; overflow-wrap: anywhere; }
+.hostv2-trace-tool.is-interrupted { border-style: dashed; border-color: var(--warning); }
+.hostv2-trace-tool.is-interrupted .hostv2-trace-status,
+.hostv2-trace-stage-state.is-interrupted,
+.hostv2-trace-interrupted { color: var(--warning); }
+.hostv2-trace-interrupted { margin: 0; padding: 0 12px 10px; }
 
 .hostv2-trace-running {
   width: 7px;

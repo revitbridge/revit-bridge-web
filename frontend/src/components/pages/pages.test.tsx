@@ -50,6 +50,9 @@ describe('the pages', () => {
     expect(html).not.toContain('4. Spec card')
     expect(html).not.toContain('5. Confirm and run')
     expect(html).not.toContain('6. Solidify')
+    // no reply yet: no tool activity and no token counts
+    expect(html).not.toContain('hostv2-trace')
+    expect(html).not.toContain('hostv2-tokens')
   })
 
   it('the evidence page renders its empty state', () => {

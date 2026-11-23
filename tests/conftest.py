@@ -21,6 +21,15 @@ def _no_dns(monkeypatch):
     monkeypatch.setattr(llm, "resolve_addresses", public)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_usage_option_memory():
+    """Which endpoints refused ``stream_options`` is process state: no test inherits it."""
+    from backend import llm
+    llm.reset_usage_option_memory()
+    yield
+    llm.reset_usage_option_memory()
+
+
 # The cloud host's ADMIN_PASSWORD in every test that does not set its own (a cloud host
 # refuses to start without one). Deliberately not the "hunter2" the tests send.
 FIXTURE_ADMIN_PASSWORD = "fixture-admin-password"

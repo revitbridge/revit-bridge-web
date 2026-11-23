@@ -155,6 +155,16 @@ its connection.
    goes back to the model for a faithful report, and code that worked can be solidified into a v1
    pack (on a cloud host with the admin password). The *Compare with no bridge* switch sends the same sentence a second time with
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
+   Above each reply of the bridge transcript is its tool activity: one row per tool call the model
+   made (name, arguments, status, time, result size in characters; open a row for the full
+   arguments - the first 2000 characters and the size when they run past 8000 - and the first
+   2000 characters of the result; errors in red). A row or stage still open when the turn's
+   stream ended (stopped, broken off) shows as *interrupted*. Below the chat, the
+   *Tokens* panel counts this turn and this session: input (cached tokens included), cache read,
+   hit rate, cache write, output and the number of model calls (by role once there is more than
+   one). A number the provider
+   did not report shows as *unknown* and makes every total it is part of unknown - never 0. No
+   prices. The no-bridge comparison has its own panel.
 3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
@@ -173,7 +183,9 @@ The system prompt is the package's `host_instructions()` (this host's protocol),
 (by default only `revit-core`) and one line that sends the model to `get_guidance` for the lessons
 (revit-core's and every other category's) - about 6 KB in all. The task page's "without the
 bridge" comparison sends the same message with `bridge: false` (one plain prompt, no tools, no
-skills).
+skills). A session keeps the system prompt of its first turn, so every call starts with the same
+system message and tool definitions and a provider's prompt cache can serve them; a skill
+changed meanwhile applies from the next session (*New session*).
 
 Upgrading from 0.1: the 0.1 host copied the package's built-in packs into `data/capabilities/`,
 which is now the package's own directory for user packs, where a file of the same name would hide
@@ -277,6 +289,28 @@ the turn starts with `event: execution` and the model reports what the validator
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
 no tools, no skills and no execution feedback (tool calls a model sends anyway are dropped, never
 run - as in the last round of a turn, which goes out without tools).
+
+Every turn also streams what the host did: `event: stage` `{role, model, status}` around the
+turn (`start`, then `end` before `done` or `error`), `event: tool` `{id, role, name, args, status,
+ms?, size?, preview?, error?}` twice per tool call (`running`, then `ok` or `error` with the same
+`id`) and `event: usage` `{role, model, round, input, output, cache_read, cache_write, ms}` after
+each model call; until roles are split the role is always `planner`. `args` is what the model sent,
+or `{"_truncated": true, "_chars": <length>, "_head": <first 2000 characters>}` when its JSON text
+is longer than 8000 characters; for a tool that raised, `error` is the exception's type name only.
+Token counts come from the provider's `usage` object (the request asks for it with
+`stream_options.include_usage`; an endpoint that answers a 4xx other than 401 / 403 naming that
+option is asked once more without it, and that address and model are not asked again once the
+retry is accepted). `input` is the whole prompt, cached tokens included; `output` includes
+thinking tokens also where the provider counts them only in `total_tokens` (Gemini's
+OpenAI-compatible endpoint: `output` is then `total_tokens - input`); a count the provider did
+not send, or one that is not an integer from 0 to 2^53, is `null`. Known limit: a gateway that
+always sends `prompt_tokens_details.cached_tokens` (new-api sends 0 when the upstream reported
+nothing) shows a cache read of 0, not unknown - the host cannot tell the two apart. Each call is also
+stored in the `llm_calls` table (no text, no address, no key) with the optional `X-Run-Label`
+header (1-64 of `A-Z a-z 0-9 _ . -`, 422 otherwise). `GET /api/usage?session_id=<id>` returns
+those rows for one session, `GET /api/usage/runs` one line per run label with each sum `null` as
+soon as one call lacks that count; like `/api/logs`, they need no password on a local host and
+`X-Admin-Token` on a cloud one.
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps

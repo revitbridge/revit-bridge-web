@@ -8,7 +8,8 @@ import { chatEvents } from '../../api/chat'
 import { taskApi } from '../task/api'
 import ChatPanel from '../task/ChatPanel'
 import ExecutionPanel from '../task/ExecutionPanel'
-import { canConfirm, createTaskFlow, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
+import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
+import { TokenPanel } from '../hostv2/trace'
 import SnapshotPanel from '../task/SnapshotPanel'
 import SolidifyPanel from '../task/SolidifyPanel'
 import SpecCard from '../task/SpecCard'
@@ -63,12 +64,19 @@ export default function TaskPage({ events }: { events?: EventSource }) {
           <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions}
             onSend={t => flow.send(t)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
             placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
-            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below." />
+            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below."
+            showTrace />
           {state.compare && (
             <ChatPanel title="Without the bridge (baseline)" transcript={state.baseline}
               hint="The same brief goes here with bridge=false. Nothing it says can be executed." />
           )}
         </div>
+        {(state.bridge.messages.length > 0 || (state.compare && state.baseline.messages.length > 0)) && (
+          <div className={`task-columns task-tokens${state.compare ? ' two' : ''}`}>
+            <TokenPanel title="Tokens" {...usageOf(state.bridge)} />
+            {state.compare && <TokenPanel title="Tokens without the bridge" {...usageOf(state.baseline)} />}
+          </div>
+        )}
       </section>
 
       {state.proposal && (

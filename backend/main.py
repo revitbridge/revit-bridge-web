@@ -4,7 +4,7 @@
     python -m backend.main          # the same (the image's command)
 
 Routes: ``/health``, ``/config.json``, ``/api/chat``, ``/api/skills``,
-``/api/logs``, ``/api/v1/bridge/*`` and the SPA from ``frontend/dist``. The
+``/api/logs``, ``/api/usage``, ``/api/v1/bridge/*`` and the SPA from ``frontend/dist``. The
 relay and device routes exist on a ``DEPLOY_MODE=cloud`` host only.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from revit_bridge.capabilities import ToolStore
 
-from backend.api import bridge, chat, errors, logs, skills
+from backend.api import bridge, chat, errors, logs, skills, usage
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
 from backend.localguard import LocalModeGuard, host_names_for
 from backend.upgrade import quarantine_legacy_packs
@@ -72,6 +72,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     app.include_router(chat.router)
     app.include_router(skills.router)
     app.include_router(logs.router)
+    app.include_router(usage.router)
     app.include_router(bridge.router)
     # The relay, pairing and the device list only on a cloud host; a local host
     # answers their paths 404 cloud_mode_only.

@@ -1,5 +1,7 @@
 /* Shared API types (mirrors docs/api-v1.json). */
 
+import type { StageEvent, ToolEvent, TraceEvent, UsageEvent } from './hostv2'
+
 export interface RevitHealthResponse {
   revit_connected: boolean
   latency_ms: number | null
@@ -153,6 +155,7 @@ export interface Skill {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
+  trace?: TraceEvent[]                  // assistant: the stage / tool / usage events of its turn, in order
 }
 
 /* -- the host loop (POST /api/chat), spec 10.10 ------------------------------------ */
@@ -245,6 +248,7 @@ export type HostEvent =
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
       reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
+  | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
   | { type: 'error'; detail: string }
   | { type: 'done' }
 

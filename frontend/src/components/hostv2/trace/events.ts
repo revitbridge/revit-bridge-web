@@ -9,12 +9,44 @@ export function mergeToolEvents(events: readonly TraceEvent[]): ToolEvent[] {
   return [...tools.values()]
 }
 
+/** The events of a turn whose stream has ended, with what was still open closed as
+    interrupted: one 'interrupted' event per tool whose latest event is 'running', and one
+    per stage started and never ended. The same array when nothing was open. */
+export function interruptOpen(events: readonly TraceEvent[]): TraceEvent[] {
+  const extra: TraceEvent[] = []
+  for (const tool of mergeToolEvents(events)) {
+    if (tool.status === 'running') extra.push({ ...tool, status: 'interrupted' })
+  }
+  const open = new Map<Role, StageEvent>()
+  for (const event of events) {
+    if (event.type !== 'stage') continue
+    if (event.status === 'start') open.set(event.role, event)
+    else open.delete(event.role)
+  }
+  for (const stage of open.values()) extra.push({ ...stage, status: 'interrupted' })
+  return extra.length > 0 ? [...events, ...extra] : events as TraceEvent[]
+}
+
+export interface TruncatedArgs {
+  chars: number
+  head: string
+}
+
+/** The truncation marker the server sends instead of long arguments, or null. */
+export function truncatedArgs(args: Record<string, unknown>): TruncatedArgs | null {
+  if (args._truncated !== true || typeof args._chars !== 'number' || typeof args._head !== 'string') return null
+  return { chars: args._chars, head: args._head }
+}
+
 export interface TraceGroup {
   stage?: StageEvent
   tools: ToolEvent[]
 }
 
-/** A completion belongs to the stage in which its tool started. */
+/** A completion belongs to the stage in which its tool started. A tool goes to the open
+    stage of its own role; when its role has none, to the stage opened last that is still
+    open (the one enclosing it), so a role that differs from the stage's never detaches
+    the row; with no open stage at all it is ungrouped. */
 export function groupTraceEvents(events: readonly TraceEvent[]): TraceGroup[] {
   const tools = new Map(mergeToolEvents(events).map(event => [event.id, event]))
   const seen = new Set<string>()
@@ -24,17 +56,20 @@ export function groupTraceEvents(events: readonly TraceEvent[]): TraceGroup[] {
   for (const event of events) {
     if (event.type === 'stage') {
       const current = active.get(event.role)
-      if (event.status === 'end' && current) {
+      if (event.status !== 'start' && current) {           // end, or interrupted
         current.stage = { ...event }
         active.delete(event.role)
       } else {
         const group: TraceGroup = { stage: { ...event }, tools: [] }
         groups.push(group)
-        if (event.status === 'start') active.set(event.role, group)
+        if (event.status === 'start') {
+          active.delete(event.role)          // re-insert: the Map's order is the opening order
+          active.set(event.role, group)
+        }
       }
       ungrouped = undefined
     } else if (event.type === 'tool' && !seen.has(event.id)) {
-      let group = active.get(event.role)
+      let group = active.get(event.role) ?? [...active.values()].at(-1)
       if (!group) {
         if (!ungrouped) {
           ungrouped = { tools: [] }
@@ -61,13 +96,16 @@ export interface UsageTotal {
   cache_hit_rate: number | null
 }
 
-/** Unknown values propagate independently through each token column. */
+const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
+
+/** Unknown values propagate independently through each token column: a value that is not
+    a number - null, or a field missing altogether - makes that column's total unknown. */
 export function sumUsage(events: readonly UsageEvent[]): UsageTotal {
   const sum = (field: TokenField): number | null => {
     let total = 0
     for (const event of events) {
-      const value = event[field]
-      if (value === null) return null
+      const value: unknown = event[field]
+      if (!isCount(value)) return null
       total += value
     }
     return total
@@ -79,7 +117,7 @@ export function sumUsage(events: readonly UsageEvent[]): UsageTotal {
     output: sum('output'),
     cache_read: cacheRead,
     cache_write: sum('cache_write'),
-    ms: events.reduce((total, event) => total + event.ms, 0),
+    ms: events.reduce((total, event) => total + (isCount(event.ms) ? event.ms : 0), 0),
     calls: events.length,
     cache_hit_rate: input === null || input === 0 || cacheRead === null ? null : cacheRead / input,
   }

@@ -845,6 +845,7 @@ select {
 }
 
 .task-columns.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.task-tokens { margin-top: 14px; align-items: start; }
 
 .chat-head {
   display: flex;

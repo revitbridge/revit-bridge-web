@@ -49,13 +49,13 @@ function UsageColumn({ title, events }: { title: string; events: UsageEvent[] })
   )
 }
 
-export function TokenPanel({ turn, session }: { turn: UsageEvent[]; session: UsageEvent[] }) {
+export function TokenPanel({ turn, session, title = 'Tokens' }: { turn: UsageEvent[]; session: UsageEvent[]; title?: string }) {
   const turnTotal = sumUsage(turn)
   const sessionTotal = sumUsage(session)
   return (
     <details className="hostv2-tokens">
       <summary>
-        <strong>Tokens</strong>
+        <strong>{title}</strong>
         <span className="hostv2-token-summary">
           This turn: {format(turnTotal.input)} in / {format(turnTotal.output)} out ({turnTotal.calls} calls)
           {' | '}Session: {format(sessionTotal.input)} in / {format(sessionTotal.output)} out ({sessionTotal.calls} calls)

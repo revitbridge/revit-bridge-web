@@ -66,6 +66,49 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Added
 
+- What the host loop does is visible and counted. `/api/chat` sends three more SSE events next
+  to the ones it already sent (whose names, shapes and order are unchanged): `event: stage`
+  `{role, model, status}` (`start` before the first model call, `end` before `done` or `error`;
+  the role is `planner`), `event: tool` `{id, role, name, args, status, ms?, size?, preview?,
+  error?}` (`running` when a tool call starts, then `ok` or `error` with the same `id`; `size` is
+  the result's length in characters, `preview` its first 2000) and `event: usage` `{role, model,
+  round, input, output, cache_read, cache_write, ms}` after every model call. A client that
+  ignores unknown events sees no difference. A turn with `bridge: false` sends `stage` and
+  `usage` but no `tool`. Arguments whose JSON text runs past 8000 characters go out as
+  `{"_truncated": true, "_chars": <length>, "_head": <first 2000 characters>}`; a tool that raised
+  reports only the exception's type name (the text goes to the server log); `stage` `end` is sent
+  however the turn ends, as long as the client is still there.
+- Token usage: every model request asks for it (`stream_options.include_usage`) and the four
+  numbers are read from the provider's `usage` object - OpenAI, DeepSeek
+  (`prompt_cache_hit_tokens`), the Gemini and Anthropic OpenAI-compatibility endpoints, gateways
+  such as OpenRouter, new-api and LiteLLM. `input` is the whole prompt with cached tokens
+  included, `cache_read` and `cache_write` the parts served from and written to the provider's
+  cache, `output` the completion - thinking tokens included also where the provider counts them
+  only in `total_tokens` (Gemini's compatibility endpoint; `output` is then `total_tokens -
+  input`). A number the provider does not report, or one that is not an integer from 0 to 2^53,
+  is `null`, never 0, and every sum over calls is unknown as soon as one call lacks that number
+  (or the sum passes 2^53). Usage objects of one stream are merged field by field. An endpoint
+  that answers a 4xx other than 401 / 403 naming `stream_options` is asked once more without
+  it; when that is accepted, that address and model are not asked again until the host
+  restarts. Known limit: a gateway that always sends `prompt_tokens_details.cached_tokens`
+  (new-api sends 0 when the upstream reported nothing) shows a cache read of 0 rather than
+  unknown.
+- Each model call is a row in the new `llm_calls` table of the interaction log database (session,
+  turn, round, role, model name, the four counts, duration, time, run label), created on an
+  existing database at startup and purged with the logs after 90 days. No message text, endpoint
+  address or key is stored there. The optional request header `X-Run-Label` (1-64 characters of
+  `A-Z a-z 0-9 _ . -`, not `.` or `..`; anything else 422 `invalid_args`) names a measured run.
+  `GET /api/usage?session_id=` lists the calls of one chat session and `GET /api/usage/runs`
+  sums them per run label (calls, the four counts, time, first and last call); both follow the
+  `/api/logs` rule (no password on a local host, `X-Admin-Token` on a cloud one). In
+  `docs/api-v1.json`: these two operations with their schemas, and the header on `/api/chat`.
+- Task page: above every reply of the bridge transcript, its tool activity - one row per tool
+  call with the arguments, status, time and result size, expandable to the full arguments and
+  the result preview, errors in red - and below the chat a collapsible token panel for this turn
+  and this session (input, cache read, hit rate, cache write, output, calls; *unknown* where the
+  provider reported nothing). With *Compare with no bridge* on, the no-bridge session has its own
+  token panel and no timeline. A row or stage still open when the turn's stream ended (stopped,
+  broken off) is marked *interrupted*.
 - Deploy modes: `DEPLOY_MODE=local` (default) or `cloud`. A local host serves this machine only:
   it refuses to start when other machines could reach it (`HOST` not loopback; in the image, where
   the server listens on `0.0.0.0`, a `BIND_ADDRESS` not loopback or not passed in), and it has no
@@ -195,6 +238,11 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
+- A chat session keeps the system prompt its first turn was sent with (one per `bridge` value):
+  every later call of the session starts with the same bytes - system message, then the tool
+  definitions, which were already constant - so a provider's prompt cache keeps matching. A
+  skill enabled, edited or turned off meanwhile reaches the next session (*New session* on the
+  task page), not the open one. The prompt's text itself is unchanged.
 - On a local host: the add-in socket and the device routes (`/api/v1/bridge/ws/{device_id}`,
   `/devices`, `/devices/pair`, `/devices/redeem`, `/devices/{device_id}`) are not mounted and answer
   404 `{"error": "cloud_mode_only", "message": ...}` - the socket before the upgrade; `X-Device-Id`
