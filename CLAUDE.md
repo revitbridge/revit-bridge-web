@@ -11,14 +11,19 @@ repository.
 uv sync                                  # backend deps (revit-bridge included)
 uv run pytest                            # backend tests with TestClient, no Revit needed
 cd frontend && npm ci && npm run lint && npm test && npm run build   # vitest: config parsing, chat stream handling
-docker compose up --build                # the smoke test: UI on http://127.0.0.1:7860
-uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > docs/api-v1.json
+docker compose up --build                # the smoke test: UI on http://127.0.0.1:7860 (local mode)
+uv run revit-bridge-web                  # the same without Docker (frontend built first); --port to move it
+# the contract is a cloud host's export (every route present):
+DEPLOY_MODE=cloud ADMIN_PASSWORD=openapi-export uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > docs/api-v1.json
 ```
+
+Tests run as a cloud host by default (`tests/conftest.py` `env`: `DEPLOY_MODE=cloud` with a fixture
+`ADMIN_PASSWORD`); `local_env` gives a local one. `tests/test_deploy_mode.py` covers what differs.
 
 ## Layout
 
-- `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving.
-- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence), the device header dependency, add-in WebSocket endpoint; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
+- `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving, the `revit-bridge-web` console entry (`[project.scripts]`).
+- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`);
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling; `backend/session.py`.
@@ -40,9 +45,15 @@ uv run python -c "from backend.main import create_app; import json; print(json.d
   A browser-supplied endpoint must be https on a public address unless `LLM_ALLOW_HTTP=1`.
   Keys are never written to disk, logs or error messages.
 - Configuration comes only from environment variables (see `.env.example`); no config files.
-- Changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`, `POST /solidify`) is
-  admin only, through the one `X-Admin-Token` check (`WebSettings.admin_token_ok`); no model
-  tool may write a pack.
+- `DEPLOY_MODE` is `local` (default) or `cloud` (`backend/config.py` validates it at startup).
+  `local`: only loopback may reach the host (`HOST`, or in the image the published `BIND_ADDRESS`;
+  otherwise it refuses to start), no relay, pairing or device routes (404 `cloud_mode_only`), device
+  headers are not read, and the admin checks pass without a password. `cloud`: the relay and
+  pairing, and `ADMIN_PASSWORD` is required (no start without it).
+- On a cloud host, changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`,
+  `POST /solidify`), skill writes and `/api/logs` are admin only, through the one `X-Admin-Token`
+  check (`WebSettings.admin_token_ok`). On a local host they need no password: changing packs and
+  skills and reading logs is open to this machine. Either way no model tool may write a pack.
 - Web API contract changes are a planning decision: stop and record `BLOCKED` in the notes log.
 - `docs/` holds exactly one file, `docs/api-v1.json`. Deployment details stay in the notes repo.
 - Scripts (`*.sh`, `*.ps1`, `*.py` tools, Dockerfile) are ASCII only.

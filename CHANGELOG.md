@@ -6,7 +6,16 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
-Upgrading: the host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
+Upgrading: **the host now starts as a local host** (`DEPLOY_MODE=local`, the new default): this
+machine only, no relay, no pairing, no admin password. A deployment that other machines reach must
+set `DEPLOY_MODE=cloud` in its `.env` before it is upgraded, and keep `ADMIN_PASSWORD` (a cloud
+host now refuses to start without it). That includes a host published on loopback behind a reverse
+proxy or a tunnel on the same machine: the loopback check cannot see the proxy, so without
+`DEPLOY_MODE=cloud` such a host would start in local mode and serve pack edits, skill edits and the
+logs to anyone the proxy lets in. A local host given `ADMIN_PASSWORD` logs a warning that it is not
+used. See *Added* and *Changed* (deploy modes).
+
+The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
@@ -54,6 +63,18 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Added
 
+- Deploy modes: `DEPLOY_MODE=local` (default) or `cloud`. A local host serves this machine only:
+  it refuses to start when other machines could reach it (`HOST` not loopback; in the image, where
+  the server listens on `0.0.0.0`, a `BIND_ADDRESS` not loopback or not passed in), and it has no
+  relay, no pairing and no admin password. A cloud host is the host as it was, and refuses to start
+  without `ADMIN_PASSWORD`. Both refusals print the reason and exit 2. `/config.json` reports
+  `features.mode`. Cloud-only variables a local host is given anyway (`ADMIN_PASSWORD`,
+  `MAX_DEVICES`, `PUBLIC_WS_BASE`) are not an error; one startup log line names each as unused.
+- `uv run revit-bridge-web`: the API and the built frontend on `127.0.0.1:7860` without Docker
+  (`--host` / `--port` override `HOST` / `PORT` and go through the same check). `pyproject.toml`
+  now builds the project (hatchling) so `uv sync` installs it editable with this script; `uv.lock`
+  changes only the project's own source line. `python -m backend.main` (the image) is unchanged;
+  importing `backend.main` no longer builds the app (`uvicorn backend.main:app` still finds one).
 - `get_guidance`, the package's lessons for writing Revit code, as a model tool: the same
   arguments (`mode`, `stage`, `skill_categories`, `revit_categories`, `symbols`, `errors`,
   `exceptions`, `revit_version`, `ids`, `seen_hashes`) and JSON reply as the MCP tool, computed in
@@ -140,6 +161,30 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
 
 ### Changed
 
+- On a local host: the add-in socket and the device routes (`/api/v1/bridge/ws/{device_id}`,
+  `/devices`, `/devices/pair`, `/devices/redeem`, `/devices/{device_id}`) are not mounted and answer
+  404 `{"error": "cloud_mode_only", "message": ...}` - the socket before the upgrade; `X-Device-Id`
+  / `X-Device-Key` (and the 0.1 slot headers) are not read, so every request, the chat's tools
+  included, drives the add-in on this machine and its confirmations and evidence are `local`; the
+  admin checks of pack changes, skill writes and `/api/logs` pass without a token
+  (`/api/logs/verify` answers `{valid: true}`); `/config.json` has `admin: false`, `maxDevices: 0`
+  and an empty `wsBase`; `GET /slots` is `{max_devices: 0, connected: 0}`; `GET /service-health`
+  has `remote_relay_ready: false` and `websocket_endpoint: null`; `GET /revit-health` no longer adds
+  "0 paired device(s) connected" to its detail. A cloud host answers all of these as before.
+- The Connect page of a local host shows the local add-in's check and the model settings only - no
+  pairing, no device lists, no admin password field (the components render on a cloud host) - and
+  no request carries a device header or the admin token there; pack edit and delete, *Save as
+  pack* and the skill editor work without a password. A cloud host's pages are unchanged. A
+  `config.json` without `features.mode` (an older static one) is read as a cloud host;
+  `frontend/public/config.example.json` says `"mode": "cloud"` and `"admin": true`.
+- `docker-compose.yml` sets `DEPLOY_MODE` (default `local`) and passes `BIND_ADDRESS` into the
+  container with the same default as the published port; `MAX_DEVICES` is passed empty unless set
+  (empty means 20 on a cloud host), so a local host does not report it as unused. The image sets
+  `REVIT_BRIDGE_WEB_CONTAINER=1`. Running the image with `docker run` in local mode needs
+  `-p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1` (CI's image smoke does that, and checks both
+  refusals).
+- `docs/api-v1.json` is exported from a cloud host (`DEPLOY_MODE=cloud ADMIN_PASSWORD=...` before
+  the export command; CI does the same) and is unchanged: every route is still there.
 - Requires `revit-bridge>=0.8,<0.9` (0.8.2 in `uv.lock`; the image installs it from PyPI). From
   0.6.1 to 0.8.2 nothing the host imports changed its name, signature or reply, and no route,
   tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export, `GET /tools` lists
