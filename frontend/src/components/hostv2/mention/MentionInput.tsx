@@ -1,23 +1,27 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
 import type { FetchCandidates, Mention } from '../../../types/hostv2'
 import { MentionController, type MentionState } from './controller'
-import { hasLineBreak, matchingKinds, type TextSelection } from './model'
+import { handleKeyDown, handlePaste, selectionOf, syncSelection } from './dom'
+import { hasLineBreak, matchingKinds } from './model'
 import './mention.css'
 
 export interface MentionInputProps {
   value: string
   mentions: Mention[]
+  // Every edit, and once when the given mentions do not match the given text
+  // (missing from it or out of text order): the component's text and mentions.
   onChange: (text: string, mentions: Mention[]) => void
-  onSubmit: () => void
+  // Enter with the picker closed (or with nothing to pick) and non-blank text.
+  // The arguments are what the component holds; mentions are in text order.
+  onSubmit: (text: string, mentions: Mention[]) => void
+  // Called only from the picker, debounced 200 ms; late answers are dropped.
+  // Its identity may change between renders.
   fetchCandidates: FetchCandidates
   disabled?: boolean
   placeholder?: string
+  // Tags with one of these kind + id pairs are shown as no longer available.
   invalid?: Mention[]
 }
-
-const selectionOf = (input: HTMLTextAreaElement): TextSelection => ({
-  start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection,
-})
 
 export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandidates,
   disabled = false, placeholder = 'Write a message. Type @ to mention a model item.', invalid = [] }: MentionInputProps) {
@@ -59,12 +63,8 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
   const hasActive = state.menu?.mode === 'kinds' ? kinds.length > 0
     : items[state.active] && controller.selectable(items[state.active])
 
-  const syncSelection = (element: HTMLTextAreaElement) => {
-    controller.select(selectionOf(element))
-    const selection = controller.getSnapshot().selection
-    if (!controller.getSnapshot().composing && (element.selectionStart !== selection.start || element.selectionEnd !== selection.end))
-      element.setSelectionRange(selection.start, selection.end, selection.direction)
-  }
+  const dropsUnrepresentable = state.dropped.some(mention => hasLineBreak(mention.name))
+  const dropsMissing = state.dropped.some(mention => !hasLineBreak(mention.name))
 
   return (
     <div className={`mention-input${disabled ? ' is-disabled' : ''}`}>
@@ -75,28 +75,12 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
           aria-expanded={Boolean(state.menu)} aria-activedescendant={state.menu && hasActive ? `${id}-option-${state.active}` : undefined}
           aria-describedby={`${id}-hint`} placeholder={placeholder} disabled={disabled} rows={3}
           onChange={event => controller.editNative(event.currentTarget.value, selectionOf(event.currentTarget))}
-          onSelect={event => syncSelection(event.currentTarget)}
-          onKeyDown={event => {
-            const composing = event.nativeEvent.isComposing || event.keyCode === 229
-            if (!composing) syncSelection(event.currentTarget)
-            if (controller.key(event.key, event.shiftKey, event.ctrlKey || event.metaKey || event.altKey,
-              composing)) event.preventDefault()
-          }}
-          onBeforeInput={event => {
-            const native = event.nativeEvent as InputEvent
-            if (native.isComposing || state.composing) return
-            syncSelection(event.currentTarget)
-            if (native.inputType === 'deleteContentBackward' && controller.key('Backspace')) event.preventDefault()
-            if (native.inputType === 'deleteContentForward' && controller.key('Delete')) event.preventDefault()
-          }}
-          onPaste={event => {
-            if (state.composing) return
-            syncSelection(event.currentTarget)
-            if (controller.replaceSelection(event.clipboardData.getData('text/plain'))) event.preventDefault()
-          }}
+          onSelect={event => syncSelection(controller, event.currentTarget)}
+          onKeyDown={event => handleKeyDown(controller, event)}
+          onPaste={event => handlePaste(controller, event)}
           onCut={event => {
             if (state.composing || disabled) return
-            syncSelection(event.currentTarget)
+            syncSelection(controller, event.currentTarget)
             const selection = controller.getSnapshot().selection
             if (selection.start === selection.end) return
             event.clipboardData.setData('text/plain', state.text.slice(selection.start, selection.end))
@@ -116,7 +100,8 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
       <div className="mention-hint" id={`${id}-hint`}>
         Enter to send. Shift+Enter for a new line. Type @ to select a model item.
         {invalid.length > 0 && <span className="mention-invalid-note"> Some model items are unavailable. Remove or replace the marked tags.</span>}
-        {mentions.some(mention => hasLineBreak(mention.name)) && <span className="mention-invalid-note"> Names with line breaks cannot be represented as tags. Remove or rename those model items.</span>}
+        {dropsUnrepresentable && <span className="mention-invalid-note"> Names with line breaks cannot be represented as tags. Remove or rename those model items.</span>}
+        {dropsMissing && <span className="mention-invalid-note"> Some selected model items were not found in the text and were removed.</span>}
       </div>
       <MentionSuggestions state={state} controller={controller} id={id} listRef={list} />
     </div>
@@ -154,8 +139,8 @@ export function MentionSuggestions({ state, controller, id, listRef }: {
       </div>
       {state.status === 'loading' && <div role="status" className="mention-message">Loading candidates...</div>}
       {state.status === 'error' && <div role="alert" className="mention-error">{state.error}</div>}
-      {((state.menu.mode === 'kinds' && kinds.length === 0) || (state.status === 'ready' && items.length === 0)) &&
-        <div className="mention-message">No matching items. Keep typing to search.</div>}
+      {state.status === 'ready' && items.length === 0 &&
+        <div className="mention-message">No matching items. Keep typing to search, or press Enter to send.</div>}
       {state.candidates?.truncated && <div className="mention-message">More items are available. Keep typing to narrow the search.</div>}
     </div>
   )

@@ -17,31 +17,37 @@ export function indexSpans(spans: MentionSpan[]): MentionSpan[] {
 export interface KnownEdit extends MentionText { spans: MentionSpan[]; caret: number }
 
 // Only for new external state and the stateless public helpers. That contract
-// has no offsets, so ambiguous initial labels bind in occurrence order. Internal
-// edits must use known spans instead; they must never rediscover identity by text.
+// has no offsets, so labels are bound by text, independently of the array order:
+// longer labels claim first (so `@level:A` cannot take the start of `@level:A B`),
+// equal lengths keep their array order (the only hint between identical labels),
+// and each mention takes the first occurrence no other mention has claimed and
+// that overlaps no claimed one. Spans come back in text order; span.index is the
+// mention's position in the given array. Internal edits must use known spans
+// instead; they must never rediscover identity by text.
 export function mentionSpans(text: string, mentions: Mention[]): MentionSpan[] {
-  let cursor = 0
+  const claims = mentions.map((mention, index) => ({ mention, index, label: mentionLabel(mention) }))
+    .filter(claim => !hasLineBreak(claim.mention.name))
+    .sort((a, b) => b.label.length - a.label.length)
   const spans: MentionSpan[] = []
-  mentions.forEach((mention, index) => {
-    if (hasLineBreak(mention.name)) return
-    const label = mentionLabel(mention)
-    const start = text.indexOf(label, cursor)
-    if (start < 0) return
-    const end = start + label.length
-    spans.push({ start, end, index, mention })
-    cursor = end
-  })
-  return spans
+  for (const { mention, index, label } of claims) {
+    const free = (start: number) => !spans.some(span => start < span.end && start + label.length > span.start)
+    let start = text.indexOf(label)
+    while (start >= 0 && !free(start)) start = text.indexOf(label, start + 1)
+    if (start >= 0) spans.push({ start, end: start + label.length, index, mention })
+  }
+  return spans.sort((a, b) => a.start - b.start)
 }
 
 // Serialize editor state, not an HTTP request. Hosts can map mentions to
 // {kind, id} when building a ChatRequest. Plain text is never promoted to an id.
+// Mentions come back in text order; those not found in the text are left out.
 export function serialize(text: string, mentions: Mention[]): MentionText {
   text = normalizeNewlines(text)
   return { text, mentions: mentionSpans(text, mentions).map(span => ({ ...span.mention })) }
 }
 
-// index is the zero-based metadata occurrence, not an element id or character.
+// index is the zero-based position in the given mentions array, not an element
+// id or a character offset. The remaining mentions come back in text order.
 export function removeMentionAt(text: string, mentions: Mention[], index: number): MentionText {
   text = normalizeNewlines(text)
   const spans = mentionSpans(text, mentions)
@@ -138,9 +144,19 @@ export function matchingKinds(prefix: string): MentionKind[] {
   return mentionKinds.filter(kind => kind.startsWith(prefix.toLowerCase()))
 }
 
+// The '@' the caret is typing after: the last one before the caret on the same
+// line that is not part of a tag. Used to remember a dismissed picker until the
+// caret leaves that '@'.
+export function mentionStartAt(text: string, spans: MentionSpan[], caret: number): number | null {
+  if (caret <= 0) return null
+  const start = text.lastIndexOf('@', caret - 1)
+  if (start < 0 || text.slice(start, caret).includes('\n')) return null
+  return spans.some(span => start >= span.start && start < span.end) ? null : start
+}
+
 export function menuAt(text: string, spans: MentionSpan[], caret: number, previous: MentionMenu | null): MentionMenu | null {
-  const start = text.lastIndexOf('@', Math.max(0, caret - 1))
-  if (start < 0 || spans.some(span => start >= span.start && start < span.end)) return null
+  const start = mentionStartAt(text, spans, caret)
+  if (start === null) return null
   const query = text.slice(start, caret)
   const items = /^@(link|type|level):([^\r\n@]*)$/i.exec(query)
   if (items) {
@@ -148,6 +164,8 @@ export function menuAt(text: string, spans: MentionSpan[], caret: number, previo
     const keep = previous?.mode === 'items' && previous.start === start && previous.kind === kind ? previous : undefined
     return { mode: 'items', start, end: caret, query: items[2], kind, category: keep?.category, categoryLabel: keep?.categoryLabel }
   }
+  // Letters that start no kind (an e-mail address, "@corp") open nothing, so
+  // Enter still sends.
   const kinds = /^@([a-z]*)$/i.exec(query)
-  return kinds ? { mode: 'kinds', start, end: caret, query: kinds[1] } : null
+  return kinds && matchingKinds(kinds[1]).length > 0 ? { mode: 'kinds', start, end: caret, query: kinds[1] } : null
 }

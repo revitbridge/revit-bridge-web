@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { FetchCandidates, Mention, MentionCandidates, MentionItem } from '../../../types/hostv2'
 import { MentionController } from './controller'
+import { handleKeyDown, handlePaste, type KeyDownLike, type TextareaLike } from './dom'
 import MentionInput, { MentionSuggestions } from './MentionInput'
 import { applyNativeEdit, matchingKinds, mentionLabel, mentionSpans, normalizeSelection, removeMentionAt, replaceRange, serialize } from './model'
 
@@ -153,7 +154,9 @@ describe('candidate and keyboard flow', () => {
     await Promise.resolve()
     expect(controller.getSnapshot().menu).toBeNull()
     expect(controller.getSnapshot().error).toBe('')
+    input(controller, '')
     input(controller, '@link:')
+    expect(controller.getSnapshot().menu?.mode).toBe('items')
     controller.syncExternal('@link:', [], true)
     await vi.advanceTimersByTimeAsync(200)
     expect(fetch).toHaveBeenCalledTimes(1)
@@ -163,21 +166,24 @@ describe('candidate and keyboard flow', () => {
     await vi.advanceTimersByTimeAsync(200)
     expect(fetch).toHaveBeenCalledTimes(1)
   })
-  it('never submits while a popup is loading, empty or errored, and Escape closes it', async () => {
+  it('waits while the list loads, shows a load error inline, and the error blocks neither typing nor Enter', async () => {
     const { controller, onSubmit } = setup(async () => { throw new Error('Model offline') })
     input(controller, '@level:')
     expect(controller.key('Enter')).toBe(true)
-    await vi.advanceTimersByTimeAsync(200)
-    expect(controller.key('Enter')).toBe(true)
+    expect(controller.key('Tab')).toBe(true)
     expect(onSubmit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(200)
     expect(popup(controller)).toContain('role="alert"')
     expect(popup(controller)).toContain('Model offline')
     input(controller, '@level:still editable')
-    expect(controller.getSnapshot().text).toContain('still editable')
-    controller.key('Escape')
-    controller.select(at(controller.getSnapshot().text.length))
-    controller.key('Enter')
-    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().text).toBe('@level:still editable')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(controller.getSnapshot().status).toBe('error')
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenCalledWith('@level:still editable', [])
+    expect(controller.getSnapshot().menu).toBeNull()
+    input(controller, '@level:still editable!')
+    expect(controller.getSnapshot().menu).toBeNull()
   })
   it('keeps disabled links visible with reasons and skips them during keyboard navigation', async () => {
     const { controller, onSubmit } = setup(async () => result('link', [
@@ -451,5 +457,306 @@ describe('MentionInput rendering', () => {
     expect(html).toContain('Names with line breaks cannot be represented as tags.')
     expect(multiline.name).toBe('Level\r\nOne')
     expect(serialize('\r\n' + mentionLabel(level), [level])).toEqual({ text: '\n' + mentionLabel(level), mentions: [level] })
+  })
+})
+
+const f1: Mention = { kind: 'level', id: 21, name: 'F1' }
+const f2: Mention = { kind: 'level', id: 22, name: 'F2' }
+const ids = (controller: MentionController) => controller.getSnapshot().spans.map(span => span.mention.id)
+
+describe('binding mentions to the text, whatever the array order', () => {
+  const a: Mention = { kind: 'level', id: 1, name: 'A' }
+  const b: Mention = { kind: 'link', id: 2, name: 'B' }
+  const ab: Mention = { kind: 'level', id: 3, name: 'A B' }
+
+  it('binds a reversed array by text and returns text order', () => {
+    const text = `${mentionLabel(a)} and ${mentionLabel(b)}`
+    expect(serialize(text, [b, a])).toEqual({ text, mentions: [a, b] })
+    expect(removeMentionAt(text, [b, a], 0)).toEqual({ text: `${mentionLabel(a)} and `, mentions: [a] })
+    expect(removeMentionAt(text, [b, a], 1)).toEqual({ text: ` and ${mentionLabel(b)}`, mentions: [b] })
+    expect(removeMentionAt(text, [b, a, f1], 2)).toEqual({ text, mentions: [a, b] })
+  })
+  it('lets the longer of two names that prefix each other claim first, in either order', () => {
+    const text = `${mentionLabel(ab)} then ${mentionLabel(a)}`
+    expect(mentionSpans(text, [a, ab]).map(span => [span.start, span.mention.id]))
+      .toEqual([[0, 3], [mentionLabel(ab).length + ' then '.length, 1]])
+    expect(serialize(text, [a, ab]).mentions).toEqual([ab, a])
+    expect(serialize(text, [ab, a]).mentions).toEqual([ab, a])
+    const flipped = `${mentionLabel(a)} then ${mentionLabel(ab)}`
+    expect(serialize(flipped, [ab, a]).mentions).toEqual([a, ab])
+    expect(removeMentionAt(flipped, [ab, a], 0)).toEqual({ text: `${mentionLabel(a)} then `, mentions: [a] })
+  })
+  it('keeps identical labels with different ids in array order and drops only the absent one', () => {
+    const text = `${mentionLabel(level)} x ${mentionLabel(level)}`
+    expect(serialize(text, [sameName, level]).mentions).toEqual([sameName, level])
+    expect(serialize(text, [level, { ...level, id: 12, name: 'Gone' }, sameName]).mentions).toEqual([level, sameName])
+  })
+})
+
+describe('two mentions of the same kind keep their ids', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('binds a reversed parent array, reports the text order once, and keeps ids through edits, deletion and re-ordering', async () => {
+    const text = `on ${mentionLabel(f1)} and ${mentionLabel(f2)}`
+    const { controller, onChange } = setup(async () => result('level', [item('level', 21, 'F1')]), text, [f2, f1])
+    expect(controller.getSnapshot().mentions).toEqual([f1, f2])
+    controller.syncExternal(text, [f2, f1])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenLastCalledWith(text, [f1, f2])
+    controller.syncExternal(text, [f2, f1])
+    controller.syncExternal(text, [f1, f2])
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    controller.select(at(0))
+    controller.replaceSelection('build ')
+    controller.select(at(controller.getSnapshot().text.indexOf(' and')))
+    controller.replaceSelection(' first')
+    expect(controller.getSnapshot().text).toBe(`build on ${mentionLabel(f1)} first and ${mentionLabel(f2)}`)
+    expect(ids(controller)).toEqual([21, 22])
+    expect(onChange).toHaveBeenLastCalledWith(controller.getSnapshot().text, [f1, f2])
+
+    controller.select(at(controller.getSnapshot().spans[0].end))
+    expect(controller.key('Backspace')).toBe(true)
+    expect(controller.getSnapshot().mentions).toEqual([f2])
+
+    controller.select(at(controller.getSnapshot().text.length))
+    controller.replaceSelection(' then @level:')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(controller.key('Enter')).toBe(true)
+    const after = controller.getSnapshot()
+    expect(after.text).toBe(`build on  first and ${mentionLabel(f2)} then ${mentionLabel(f1)}`)
+    expect(after.mentions).toEqual([f2, f1])
+    expect(ids(controller)).toEqual([22, 21])
+    expect(onChange).toHaveBeenLastCalledWith(after.text, [f2, f1])
+    controller.syncExternal(after.text, [f2, f1])
+    expect(ids(controller)).toEqual([22, 21])
+  })
+  it('keeps two identical labels apart through an edit between them and the deletion of the first', () => {
+    const label = mentionLabel(level)
+    const { controller, onChange } = setup(undefined, `${label} ${label}`, [level, sameName])
+    controller.select(at(label.length))
+    controller.replaceSelection(' and')
+    expect(controller.getSnapshot().text).toBe(`${label} and ${label}`)
+    expect(ids(controller)).toEqual([10, 11])
+    controller.select(at(0))
+    expect(controller.key('Delete')).toBe(true)
+    expect(onChange).toHaveBeenLastCalledWith(` and ${label}`, [sameName])
+  })
+  it('a caret carried over to new parent text never lands inside a tag', () => {
+    const { controller } = setup(undefined, 'abcdefghij')
+    controller.syncExternal(`${mentionLabel(level)} end`, [level])
+    expect(controller.getSnapshot().selection).toEqual(at(mentionLabel(level).length))
+  })
+  it('reports a parent mention that is not in the text once, shows a notice, and submits what it holds', () => {
+    const text = `${mentionLabel(f1)} only`
+    const { controller, onChange, onSubmit } = setup(undefined, text, [f1, f2])
+    expect(controller.getSnapshot().mentions).toEqual([f1])
+    expect(controller.getSnapshot().dropped).toEqual([f2])
+    controller.syncExternal(text, [f1, f2])
+    controller.syncExternal(text, [f1, f2])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenLastCalledWith(text, [f1])
+    controller.syncExternal(text, [f1])
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(controller.getSnapshot().dropped).toEqual([f2])
+    expect(renderToStaticMarkup(<MentionInput value={text} mentions={[f1, f2]} onChange={vi.fn()}
+      onSubmit={vi.fn()} fetchCandidates={vi.fn()} />)).toContain('were not found in the text and were removed')
+    input(controller, text + '!')
+    expect(controller.getSnapshot().dropped).toEqual([])
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenCalledWith(text + '!', [f1])
+  })
+})
+
+describe('Enter is never swallowed by a picker with nothing to pick', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('sends after an e-mail address: letters that start no kind open no picker', () => {
+    const { controller, onSubmit } = setup()
+    input(controller, 'write to bob@corp')
+    expect(controller.getSnapshot().menu).toBeNull()
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenCalledWith('write to bob@corp', [])
+    input(controller, 'see @x')
+    expect(controller.getSnapshot().menu).toBeNull()
+    input(controller, 'see @L')
+    expect(controller.getSnapshot().menu).toMatchObject({ mode: 'kinds', query: 'L' })
+  })
+  it('after Escape the same @ stays closed while the caret stays after it, so the next key and Enter are plain text', async () => {
+    const fetch = vi.fn(async () => result('level', [item()]))
+    const { controller, onSubmit } = setup(fetch)
+    input(controller, '@level: hello')
+    expect(controller.getSnapshot().menu?.mode).toBe('items')
+    expect(controller.key('Escape')).toBe(true)
+    input(controller, '@level: hello!')
+    expect(controller.getSnapshot().menu).toBeNull()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenCalledWith('@level: hello!', [])
+    controller.select(at(0))
+    controller.select(at('@level: hello!'.length))
+    expect(controller.getSnapshot().menu?.mode).toBe('items')
+  })
+  it('Escape on the kind list holds while letters are added and removed after the same @', () => {
+    const { controller, onSubmit } = setup()
+    input(controller, 'x @le')
+    controller.key('Escape')
+    input(controller, 'x @le ')
+    input(controller, 'x @le')
+    input(controller, 'x @lev')
+    expect(controller.getSnapshot().menu).toBeNull()
+    controller.key('Enter')
+    expect(onSubmit).toHaveBeenCalledWith('x @lev', [])
+    input(controller, 'x @lev @')
+    expect(controller.getSnapshot().menu?.mode).toBe('kinds')
+  })
+  it('a closed picker (click outside) is not dismissed: the next key reopens it', () => {
+    const { controller } = setup()
+    input(controller, '@l')
+    controller.close()
+    expect(controller.getSnapshot().menu).toBeNull()
+    input(controller, '@le')
+    expect(controller.getSnapshot().menu).toMatchObject({ mode: 'kinds', query: 'le' })
+  })
+  it('Enter sends when the open list has no match or only disabled items; Tab and arrows are not trapped', async () => {
+    let items: MentionItem[] = []
+    const { controller, onSubmit } = setup(async () => result('link', items))
+    input(controller, 'on @link:Nope')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(controller.getSnapshot().status).toBe('ready')
+    expect(popup(controller)).toContain('No matching items')
+    expect(controller.key('ArrowDown')).toBe(false)
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenLastCalledWith('on @link:Nope', [])
+    expect(controller.getSnapshot().menu).toBeNull()
+
+    items = [item('link', 1, 'Unloaded', { disabled: true, detail: 'The link is unloaded.' })]
+    input(controller, 'on @link:')
+    input(controller, 'on @link:U')
+    expect(controller.getSnapshot().menu).toBeNull()
+    input(controller, 'on ')
+    input(controller, 'on @link:U')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(popup(controller)).toContain('The link is unloaded.')
+    expect(controller.key('Tab')).toBe(false)
+    expect(controller.getSnapshot().menu).toBeNull()
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenLastCalledWith('on @link:U', [])
+    expect(onSubmit).toHaveBeenCalledTimes(2)
+  })
+  it('a new fetchCandidates identity neither clears nor refetches the open list', async () => {
+    const first = vi.fn(async () => result('level', [item()]))
+    const { controller, onChange, onSubmit } = setup(first)
+    input(controller, '@level:')
+    await vi.advanceTimersByTimeAsync(200)
+    const second = vi.fn(async () => result('level', [item('level', 99, 'Other')]))
+    controller.configure({ onChange, onSubmit, fetchCandidates: second })
+    await vi.advanceTimersByTimeAsync(500)
+    expect(second).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().candidates?.items[0].id).toBe(10)
+    input(controller, '@level:O')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(second).toHaveBeenCalledWith('level', { q: 'O' })
+    expect(first).toHaveBeenCalledTimes(1)
+  })
+  it('lists, inserts and deletes a very long item name intact', async () => {
+    const long = 'Basic Wall - Generic '.repeat(200) + 'end'
+    const { controller } = setup(async () => result('level', [item('level', 7, long, { detail: 'x'.repeat(500) })]))
+    input(controller, '@level:')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(popup(controller)).toContain(long)
+    expect(controller.key('Enter')).toBe(true)
+    expect(controller.getSnapshot().text).toBe(`@level:${long}`)
+    expect(controller.getSnapshot().mentions).toEqual([{ kind: 'level', id: 7, name: long }])
+    expect(controller.key('Backspace')).toBe(true)
+    expect(controller.getSnapshot().text).toBe('')
+  })
+})
+
+describe('DOM adapter: IME and paste', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const textarea = (controller: MentionController): TextareaLike => {
+    const { selection } = controller.getSnapshot()
+    const element: TextareaLike = {
+      selectionStart: selection.start, selectionEnd: selection.end, selectionDirection: selection.direction,
+      setSelectionRange(start, end) { element.selectionStart = start; element.selectionEnd = end },
+    }
+    return element
+  }
+  const keyDown = (controller: MentionController, key: string, native: { isComposing?: boolean; keyCode?: number } = {}) => {
+    const event: KeyDownLike = {
+      key, keyCode: native.keyCode ?? (key === 'Enter' ? 13 : 0), shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+      nativeEvent: { isComposing: native.isComposing ?? false }, currentTarget: textarea(controller), preventDefault: vi.fn(),
+    }
+    handleKeyDown(controller, event)
+    return event.preventDefault
+  }
+  const paste = (controller: MentionController, text: string) => {
+    const event = { clipboardData: { getData: () => text }, currentTarget: textarea(controller), preventDefault: vi.fn() }
+    handlePaste(controller, event)
+    return event.preventDefault
+  }
+
+  it('the Enter that confirms a Chinese composition neither picks nor sends (Chrome isComposing, Safari keyCode 229)', async () => {
+    const floor: Mention = { kind: 'level', id: 30, name: '楼层 1' }
+    const fetch = vi.fn(async () => result('level', [item('level', 30, '楼层 1')]))
+    const { controller, onSubmit } = setup(fetch)
+    input(controller, '@level:')
+    await vi.advanceTimersByTimeAsync(200)
+    expect(controller.getSnapshot().status).toBe('ready')
+
+    controller.compositionStart()
+    controller.editNative('@level:lou', at(10))
+    expect(keyDown(controller, 'Enter', { isComposing: true, keyCode: 229 })).not.toHaveBeenCalled()
+    controller.compositionEnd('@level:楼', at(8))
+    expect(keyDown(controller, 'Enter', { keyCode: 229 })).not.toHaveBeenCalled()
+    expect(keyDown(controller, 'Tab', { keyCode: 229 })).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().text).toBe('@level:楼')
+    expect(controller.getSnapshot().mentions).toEqual([])
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fetch).toHaveBeenLastCalledWith('level', { q: '楼' })
+    expect(keyDown(controller, 'Enter')).toHaveBeenCalled()
+    expect(controller.getSnapshot().mentions).toEqual([floor])
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    const text = controller.getSnapshot().text
+    controller.compositionStart()
+    controller.editNative(text + 'hao', at(text.length + 3))
+    expect(keyDown(controller, 'Enter', { isComposing: true, keyCode: 229 })).not.toHaveBeenCalled()
+    controller.compositionEnd(text + '好', at(text.length + 1))
+    expect(keyDown(controller, 'Enter', { keyCode: 229 })).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(keyDown(controller, 'Enter')).toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledWith(text + '好', [floor])
+  })
+  it('pasted text with @ opens no picker and creates no tag, and Enter sends it', () => {
+    const { controller, onSubmit } = setup()
+    const pasted = 'see @level:Level 1 and mail bob@le'
+    expect(paste(controller, pasted)).toHaveBeenCalled()
+    expect(controller.getSnapshot().text).toBe(pasted)
+    expect(controller.getSnapshot().menu).toBeNull()
+    expect(controller.getSnapshot().mentions).toEqual([])
+    input(controller, pasted + 'v')
+    expect(controller.getSnapshot().menu).toBeNull()
+    expect(keyDown(controller, 'Enter')).toHaveBeenCalled()
+    expect(onSubmit).toHaveBeenCalledWith(pasted + 'v', [])
+  })
+  it('a name pasted after a typed @kind: keeps the picker searching', async () => {
+    const fetch = vi.fn(async () => result('level', [item('level', 22, 'F2')]))
+    const { controller } = setup(fetch)
+    input(controller, 'on @level:')
+    paste(controller, 'F2')
+    expect(controller.getSnapshot().menu).toMatchObject({ mode: 'items', query: 'F2' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fetch).toHaveBeenLastCalledWith('level', { q: 'F2' })
+    expect(keyDown(controller, 'Enter')).toHaveBeenCalled()
+    expect(controller.getSnapshot().mentions).toEqual([f2])
   })
 })

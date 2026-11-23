@@ -1,13 +1,14 @@
 import type { FetchCandidates, Mention, MentionCandidates, MentionItem, MentionKind } from '../../../types/hostv2'
 import {
-  applyKnownNativeEdit, hasLineBreak, indexSpans, matchingKinds, mentionLabel, mentionSpans, menuAt, normalizeKnownSelection,
-  normalizeNewlines, normalizeInputSelection, replaceKnownRange, type MentionMenu, type MentionSpan, type TextSelection,
+  applyKnownNativeEdit, hasLineBreak, indexSpans, matchingKinds, mentionLabel, mentionSpans, mentionStartAt, menuAt,
+  normalizeKnownSelection, normalizeNewlines, normalizeInputSelection, replaceKnownRange,
+  type MentionMenu, type MentionSpan, type TextSelection,
 } from './model'
 
 export interface MentionCallbacks {
   fetchCandidates: FetchCandidates
   onChange: (text: string, mentions: Mention[]) => void
-  onSubmit: () => void
+  onSubmit: (text: string, mentions: Mention[]) => void
 }
 export interface MentionState {
   text: string
@@ -21,12 +22,26 @@ export interface MentionState {
   active: number
   composing: boolean
   disabled: boolean
+  // Mentions the parent passed that are not in its text (or whose names cannot
+  // be a tag). They were reported back through onChange; kept for the notice
+  // until the user edits or the parent's text changes.
+  dropped: Mention[]
 }
 
 const at = (position: number): TextSelection => ({ start: position, end: position, direction: 'none' })
 const sameMentions = (a: Mention[], b: Mention[]) => a.length === b.length &&
   a.every((mention, index) => mention.kind === b[index].kind && mention.id === b[index].id && mention.name === b[index].name)
 const sameMenu = (a: MentionMenu | null, b: MentionMenu | null) => JSON.stringify(a) === JSON.stringify(b)
+const copies = (mentions: Mention[]) => mentions.map(mention => ({ ...mention }))
+
+// Binds external (offset-free) state. bound is in text order; dropped keeps the
+// given order.
+function bindExternal(text: string, mentions: Mention[]) {
+  const spans = mentionSpans(text, mentions)
+  const claimed = new Set(spans.map(span => span.index))
+  const indexed = indexSpans(spans)
+  return { spans: indexed, bound: indexed.map(span => span.mention), dropped: mentions.filter((_, index) => !claimed.has(index)) }
+}
 
 export function elementId(item: MentionItem): number | null {
   if (typeof item.id === 'string' && !/^\d+$/.test(item.id)) return null
@@ -43,14 +58,20 @@ export class MentionController {
   private timer: ReturnType<typeof setTimeout> | undefined
   private request = 0
   private beforeComposition: { text: string; spans: MentionSpan[]; selection: TextSelection } | null = null
+  // Start of the '@' whose picker was closed with Escape (or with Enter when it
+  // had nothing to choose): it stays closed until the caret leaves that '@'.
+  private dismissed: number | null = null
+  // The last external input whose difference was reported, so a parent that
+  // keeps passing it does not get onChange again on every render.
+  private reported = ''
 
   constructor(text: string, mentions: Mention[], callbacks: MentionCallbacks, disabled = false) {
     this.callbacks = callbacks
     text = normalizeNewlines(text)
-    const spans = indexSpans(mentionSpans(text, mentions))
+    const { spans, bound, dropped } = bindExternal(text, mentions)
     this.state = {
-      text, spans, mentions: spans.map(span => span.mention), selection: at(text.length), menu: null, candidates: null,
-      status: 'idle', error: '', active: 0, composing: false, disabled,
+      text, spans, mentions: bound, selection: at(text.length), menu: null, candidates: null,
+      status: 'idle', error: '', active: 0, composing: false, disabled, dropped,
     }
   }
 
@@ -59,25 +80,44 @@ export class MentionController {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
   }
+  // Callbacks may change identity on every parent render (inline arrows); the
+  // latest ones are used from the next call on, nothing is refetched for it.
   configure(callbacks: MentionCallbacks) {
-    const changed = callbacks.fetchCandidates !== this.callbacks.fetchCandidates
     this.callbacks = callbacks
-    if (changed && this.state.menu?.mode === 'items') this.schedule()
   }
-  syncExternal(text: string, mentions: Mention[], disabled = false) {
+  syncExternal(value: string, mentions: Mention[], disabled = false) {
     if (disabled !== this.state.disabled) {
       this.publish({ disabled })
       if (disabled) this.close()
     }
-    text = normalizeNewlines(text)
-    const spans = indexSpans(mentionSpans(text, mentions))
-    const normalized = { text, spans, mentions: spans.map(span => span.mention) }
+    if (this.state.composing) return
+    const text = normalizeNewlines(value)
+    const { spans, bound, dropped } = bindExternal(text, mentions)
     // A controlled echo carries no offsets. Keep authoritative spans when text
     // and metadata agree instead of binding them to the first equal plain text.
-    if (this.state.composing || (text === this.state.text && sameMentions(normalized.mentions, this.state.mentions))) return
-    this.cancel()
-    this.publish({ ...normalized, selection: at(Math.min(this.state.selection.end, text.length)),
-      menu: null, candidates: null, status: 'idle', error: '' })
+    if (text !== this.state.text || !sameMentions(bound, this.state.mentions)) {
+      this.cancel()
+      this.dismissed = null
+      this.publish({ text, spans, mentions: bound,
+        selection: normalizeKnownSelection(text, spans, at(Math.min(this.state.selection.end, text.length))),
+        menu: null, candidates: null, status: 'idle', error: '',
+        dropped: dropped.length || text !== this.state.text ? dropped : this.state.dropped })
+    } else if (dropped.length && !sameMentions(dropped, this.state.dropped)) this.publish({ dropped })
+    this.reportDifference(value, mentions)
+  }
+  // The parent's mentions disagree with its text (missing from it, or out of
+  // text order), or its text was normalized: tell it once what the component
+  // holds, so the parent and the component cannot drift apart silently.
+  private reportDifference(value: string, mentions: Mention[]) {
+    const { text, mentions: held } = this.state
+    if (value === text && sameMentions(mentions, held)) {
+      this.reported = ''
+      return
+    }
+    const key = JSON.stringify([value, mentions.map(mention => [mention.kind, mention.id, mention.name])])
+    if (key === this.reported) return
+    this.reported = key
+    this.callbacks.onChange(text, copies(held))
   }
   destroy() { this.cancel() }
 
@@ -95,10 +135,20 @@ export class MentionController {
     if (this.state.menu || this.state.status !== 'idle')
       this.publish({ menu: null, candidates: null, status: 'idle', error: '', active: 0 })
   }
+  // Escape closes the picker for this '@' only; it does not come back while the
+  // caret stays after it, so the next key and Enter behave as plain text.
+  private dismiss() {
+    this.dismissed = this.state.menu?.start ?? null
+    this.close()
+  }
   private refreshMenu(previous = this.state.menu) {
     const { text, spans, selection, disabled, composing } = this.state
-    const menu = disabled || composing || selection.start !== selection.end
-      ? null : menuAt(text, spans, selection.end, previous)
+    let menu: MentionMenu | null = null
+    if (!disabled && !composing) {
+      if (this.dismissed !== null && mentionStartAt(text, spans, selection.end) !== this.dismissed) this.dismissed = null
+      if (selection.start === selection.end) menu = menuAt(text, spans, selection.end, previous)
+      if (menu && menu.start === this.dismissed) menu = null
+    }
     if (sameMenu(menu, this.state.menu)) return
     this.cancel()
     this.publish({ menu, active: 0, candidates: null, status: 'idle', error: '' })
@@ -135,9 +185,9 @@ export class MentionController {
   private commit(text: string, spans: MentionSpan[], caret: number, previous = this.state.menu) {
     spans = indexSpans(spans)
     const mentions = spans.map(span => span.mention)
-    this.publish({ text, spans, mentions, selection: at(caret) })
+    this.publish({ text, spans, mentions, selection: at(caret), dropped: [] })
     this.refreshMenu(previous)
-    this.callbacks.onChange(text, mentions.map(mention => ({ ...mention })))
+    this.callbacks.onChange(text, copies(mentions))
   }
   editNative(next: string, selection: TextSelection) {
     if (this.state.disabled) return
@@ -158,10 +208,18 @@ export class MentionController {
     const edited = applyKnownNativeEdit(text, spans, next, oldSelection)
     this.commit(edited.text, edited.spans, edited.text === next ? selection.end : edited.caret)
   }
-  replaceSelection(inserted: string) {
+  // paste: an '@' that arrives inside pasted text does not open the picker (an
+  // e-mail address or a copied "@level:..." is text); typing after an '@' that
+  // was already there keeps working. Pasted labels are never promoted to ids.
+  replaceSelection(inserted: string, options: { paste?: boolean } = {}) {
     if (this.state.disabled || this.state.composing) return false
     const { text, spans, selection } = this.state
     const edited = replaceKnownRange(text, spans, selection.start, selection.end, inserted)
+    if (options.paste) {
+      const from = edited.caret - normalizeNewlines(inserted).length
+      const start = mentionStartAt(edited.text, edited.spans, edited.caret)
+      if (start !== null && start >= from) this.dismissed = start
+    }
     this.commit(edited.text, edited.spans, edited.caret)
     return true
   }
@@ -226,26 +284,41 @@ export class MentionController {
     if (this.state.menu?.mode !== 'items' || this.state.menu.kind !== 'type' || this.state.composing || this.state.disabled) return
     this.pickKind('type')
   }
+  // Indices Enter/Tab and the arrow keys can land on in the open picker.
+  private choices(): number[] {
+    const menu = this.state.menu
+    if (!menu) return []
+    return menu.mode === 'kinds' ? matchingKinds(menu.query).map((_, i) => i)
+      : this.state.status !== 'ready' ? []
+        : (this.state.candidates?.items ?? []).flatMap((item, i) => this.selectable(item) ? [i] : [])
+  }
   key(key: string, shift = false, modified = false, nativeComposing = false): boolean {
     const { disabled, composing, menu, text, spans, selection } = this.state
     if (disabled || composing || nativeComposing) return false
-    if (key === 'Escape' && menu) { this.close(); return true }
+    if (key === 'Escape' && menu) { this.dismiss(); return true }
     if (key === 'Enter' && shift) return false
-    if (menu && (key === 'Enter' || key === 'Tab')) { this.choose(this.state.active); return true }
+    if (menu && (key === 'Enter' || key === 'Tab')) {
+      if (this.choices().includes(this.state.active)) { this.choose(this.state.active); return true }
+      // Still loading: Enter or Tab here most likely means "pick it", so wait
+      // instead of sending the half-typed label as plain text.
+      if (menu.mode === 'items' && (this.state.status === 'loading' || this.state.status === 'idle')) return true
+      // Nothing to pick (no match, every item disabled, or the list failed to
+      // load): the picker must not swallow the key. Enter sends, Tab moves on.
+      this.dismiss()
+      if (key === 'Tab') return false
+    }
     if (menu && (key === 'ArrowDown' || key === 'ArrowUp')) {
-      const indices = menu.mode === 'kinds' ? matchingKinds(menu.query).map((_, i) => i)
-        : (this.state.candidates?.items ?? []).flatMap((item, i) => this.selectable(item) ? [i] : [])
-      if (indices.length) {
-        const current = indices.indexOf(this.state.active)
-        const step = key === 'ArrowDown' ? 1 : -1
-        const next = current < 0 ? (step > 0 ? 0 : indices.length - 1)
-          : (current + step + indices.length) % indices.length
-        this.publish({ active: indices[next] })
-      }
+      const indices = this.choices()
+      if (!indices.length) return false
+      const current = indices.indexOf(this.state.active)
+      const step = key === 'ArrowDown' ? 1 : -1
+      const next = current < 0 ? (step > 0 ? 0 : indices.length - 1)
+        : (current + step + indices.length) % indices.length
+      this.publish({ active: indices[next] })
       return true
     }
     if (key === 'Enter') {
-      if (text.trim()) this.callbacks.onSubmit()
+      if (text.trim()) this.callbacks.onSubmit(text, copies(this.state.mentions))
       return true
     }
     if (key === 'Backspace' || key === 'Delete') {
