@@ -9,6 +9,7 @@ from backend.config import WebSettings
 from backend.llm import LLMError, LLMSettings
 from backend.log_store import get_log_store
 from backend.session import get_session_store
+from tests.fake_model import drop_trace_frames
 
 SERVER = WebSettings.from_env({"LLM_BASE_URL": "https://srv.example/v1", "LLM_MODEL": "srv-model", "LLM_API_KEY": "srv-key"})
 
@@ -65,7 +66,15 @@ def test_chat_streams_tokens_keeps_history_and_never_stores_the_key(client, env,
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     session_id = resp.headers["X-Session-Id"]
-    assert resp.text == 'data: "Hel"\n\ndata: "lo "\n\ndata: "designer"\n\nevent: done\ndata: [DONE]\n\n'
+    # The stream as before, plus the trace: a stage around the turn and one usage event
+    # (this stand-in for the model reports no usage, so every count is null).
+    assert drop_trace_frames(resp.text) == 'data: "Hel"\n\ndata: "lo "\n\ndata: "designer"\n\nevent: done\ndata: [DONE]\n\n'
+    frames = resp.text.split("\n\n")
+    assert frames[0] == 'event: stage\ndata: {"role": "planner", "model": "gpt-x", "status": "start"}'
+    assert frames[4].startswith('event: usage\ndata: {"role": "planner", "model": "gpt-x", "round": 1, '
+                                '"input": null, "output": null, "cache_read": null, "cache_write": null, "ms": ')
+    assert frames[5] == 'event: stage\ndata: {"role": "planner", "model": "gpt-x", "status": "end"}'
+    assert "sk-browser-only" not in resp.text
 
     # The model got the package's host instructions, the tools and the user turn.
     assert seen["llm"].model == "gpt-x" and seen["llm"].api_key == "sk-browser-only"
@@ -98,7 +107,9 @@ def test_chat_reports_model_errors_as_an_sse_event(client, monkeypatch):
     headers = {"X-LLM-Base-Url": "https://api.example/v1", "X-LLM-Model": "m", "X-LLM-Key": "k"}
     resp = client.post("/api/chat", json={"message": "hi"}, headers=headers)
     assert resp.status_code == 200
-    assert resp.text.startswith('event: error\ndata: {"detail": "Model endpoint returned HTTP 401')
+    assert drop_trace_frames(resp.text).startswith('event: error\ndata: {"detail": "Model endpoint returned HTTP 401')
+    # The stage closes before the error; a call the endpoint refused has no usage event.
+    assert [b.split("\n")[0] for b in resp.text.split("\n\n") if b] == ["event: stage", "event: stage", "event: error"]
 
     # The interaction log records the model failure, so stats count it.
     row = get_log_store().query()["items"][0]
