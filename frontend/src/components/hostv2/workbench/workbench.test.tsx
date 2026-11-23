@@ -544,6 +544,58 @@ describe('library and run delegation', () => {
   })
 })
 
+describe('dry-run and check status lines', () => {
+  it('a compile failure with an empty error still says what happened', async () => {
+    const { api, model } = await setup()
+    const diagnostic = { id: 'CS0103', severity: 'error', line: 1, column: 5, message: 'Name is missing', symbol: null, in_wrapper: false }
+    api.dryRun.mockResolvedValue({ ...dryReply, success: false, rolled_back: true, error: '', diagnostics: [diagnostic] })
+    await model.dryRun()
+    expect(model.getSnapshot().actions.dryRun).toEqual({ status: 'error', message: 'Dry run failed. See diagnostics.' })
+    api.check.mockResolvedValue({ ...checkReply, compiled: false, reason: '' })
+    await model.check()
+    expect(model.getSnapshot().actions.check?.message).toBe('Compilation failed. See diagnostics.')
+  })
+
+  it.each([
+    { error: 'blocked', hint: null, warnings: ['System.IO.File'] },
+    { error: 'no_dry_run', hint: 'This add-in cannot dry-run' },
+    { error: 'include_not_found', hint: 'include takes paths' },
+    { error: 'unreachable: connection refused', hint: null },
+  ])('a refusal before anything reached Revit is not an unconfirmed rollback: $error', async refusal => {
+    const { api, model } = await setup()
+    api.dryRun.mockResolvedValue({ ...dryReply, success: false, rolled_back: null, result: null, changes: null, evidence_id: null, warnings: [], ...refusal })
+    await model.dryRun()
+    const page = html(model)
+    expect(page).toContain(`Nothing was sent to Revit (${refusal.error})`)
+    expect(page).not.toContain('Rollback is not confirmed')
+    expect(model.getSnapshot().actions.dryRun).toEqual({ status: 'error', message: `Nothing was sent to Revit: ${refusal.error}.` })
+    for (const warning of refusal.warnings ?? []) expect(page).toContain(warning)
+    expect(saveDisabledReason(model.getSnapshot())).toContain('Dry-run')
+  })
+
+  it.each([
+    { error: 'connection lost', hint: 'No dry-run reply came back, so the rollback is not confirmed', evidence_id: 'ev-1' },
+    { error: 'timeout: no reply', hint: 'No dry-run reply came back', evidence_id: null, warnings: ['evidence not recorded: disk full'] },
+    { error: 'dry_run_not_rolled_back', hint: 'The add-in did not report', evidence_id: 'ev-2', rolled_back: false },
+  ])('a request that was sent without a confirmed rollback stays a warning: $error', async reply => {
+    const { api, model } = await setup()
+    api.dryRun.mockResolvedValue({ ...dryReply, success: false, rolled_back: null, warnings: [], ...reply })
+    await model.dryRun()
+    expect(html(model)).toContain('Rollback is not confirmed. Check the model before continuing.')
+    expect(html(model)).not.toContain('Nothing was sent to Revit')
+    expect(model.getSnapshot().actions.dryRun?.message).toBe(`${reply.error}. Rollback is not confirmed. Check the model before continuing.`)
+  })
+
+  it('keeps the note the add-in gives with its counts', async () => {
+    const { api, model } = await setup()
+    api.dryRun.mockResolvedValue({ ...dryReply, changes: { ...dryReply.changes, note: 'Counts exclude elements Revit regenerated.' } })
+    await model.dryRun()
+    expect(model.getSnapshot().dryRun?.changes?.note).toBe('Counts exclude elements Revit regenerated.')
+    expect(html(model)).toContain('Counts exclude elements Revit regenerated.')
+    expect(readDryRun({ ...dryReply, changes: { note: 42 } }).changes).toEqual({})
+  })
+})
+
 describe('reply field fidelity', () => {
   it('keeps check hints, warnings and nullable positions without inventing a compilation success', () => {
     expect(readCheck({ ...checkReply, checked: false, compiled: null, diagnostics: [{ id: 'X', message: 'm', line: null, column: null, in_wrapper: true }], warnings: ['note'] }))

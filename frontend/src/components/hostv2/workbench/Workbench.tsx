@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
 import { saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
-import { diagnosticRange, indentSelection, type Diagnostic, type DryRunReply } from './results'
+import { diagnosticRange, dryRunNotSent, indentSelection, type Diagnostic, type DryRunReply } from './results'
 import './workbench.css'
 
 interface Props { api: WorkbenchApi; onRun: OnRun; initialDescription?: string }
@@ -36,9 +36,12 @@ export function DiagnosticList({ diagnostics, code, locate }: { diagnostics: Dia
 }
 
 function DryRunResult({ result }: { result: DryRunReply }) {
+  const notSent = dryRunNotSent(result)
   return <section className="hostv2-workbench-result" aria-label="Dry run result">
-    <p className={`hostv2-workbench-rollback ${result.rolled_back === true ? 'is-safe' : 'is-unknown'}`}>
-      {result.rolled_back === true ? 'Model was not changed. The dry run was rolled back.' : 'Rollback is not confirmed. Check the model before continuing.'}
+    <p className={`hostv2-workbench-rollback ${result.rolled_back === true ? 'is-safe' : notSent ? 'is-not-sent' : 'is-unknown'}`}>
+      {result.rolled_back === true ? 'Model was not changed. The dry run was rolled back.'
+        : notSent ? `Nothing was sent to Revit (${result.error}): the code did not run, so the model is as it was.`
+        : 'Rollback is not confirmed. Check the model before continuing.'}
     </p>
     <h3>What would change</h3>
     <dl className="hostv2-workbench-changes">
@@ -48,6 +51,7 @@ function DryRunResult({ result }: { result: DryRunReply }) {
         return <div key={kind}><dt>{kind}</dt><dd>{typeof count === 'number' && Number.isFinite(count) ? count : 'unknown'}</dd></div>
       })}
     </dl>
+    {result.changes?.note && <p className="hostv2-workbench-help">{result.changes.note}</p>}
     {result.changes && <details><summary>Changed categories and element IDs</summary><pre>{JSON.stringify(result.changes, null, 2)}</pre></details>}
     <h3>Return value</h3><pre>{JSON.stringify(result.result, null, 2)}</pre>
     {result.hint && <p>{result.hint}</p>}

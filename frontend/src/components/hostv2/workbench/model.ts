@@ -1,5 +1,5 @@
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
-import { normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
+import { dryRunNotSent, normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
 
 export type Action = 'check' | 'dryRun' | 'run' | 'save' | 'list' | 'load' | 'choices' | 'remove' | 'export' | 'import'
 export interface ActionState { status: 'idle' | 'running' | 'success' | 'error'; message: string }
@@ -83,6 +83,14 @@ export function typedParameters(parameters: ToolParamDraft[]): ToolParamDraft[] 
 }
 
 const typedDraft = (draft: ToolDraft): ToolDraft => ({ ...clone(draft), parameters: typedParameters(draft.parameters) })
+
+/* The status line of a dry run that did not succeed. An empty error (a compile failure) is not
+   an empty line; a refusal before anything was sent is not a rollback to worry about. */
+export function dryRunFailure(result: DryRunReply): string {
+  if (dryRunNotSent(result)) return `Nothing was sent to Revit: ${result.error}.`
+  const reason = result.error || (result.diagnostics.length ? 'Dry run failed. See diagnostics.' : 'Dry run failed.')
+  return result.rolled_back === true ? reason : `${reason.replace(/\.?$/, '.')} Rollback is not confirmed. Check the model before continuing.`
+}
 
 function validType(type: ToolParamDraft['type'], value: unknown): boolean {
   if (type === 'string') return typeof value === 'string'
@@ -260,7 +268,7 @@ export class WorkbenchModel {
       if (!this.current('check', ticket)) return
       this.update({ check: result })
       this.status('check', result.checked && result.compiled && !result.blocked ? 'success' : 'error',
-        result.checked && result.compiled && !result.blocked ? 'Compilation succeeded.' : result.reason ?? (result.blocked ? 'Code was blocked.' : result.checked ? 'Compilation failed. See diagnostics.' : 'Code was not checked.'))
+        result.checked && result.compiled && !result.blocked ? 'Compilation succeeded.' : result.reason || (result.blocked ? 'Code was blocked.' : result.checked ? 'Compilation failed. See diagnostics.' : 'Code was not checked.'))
     } catch (error) { if (this.current('check', ticket)) this.fail('check', error) }
   }
 
@@ -278,7 +286,7 @@ export class WorkbenchModel {
       if (!this.current('dryRun', ticket) || revision !== this.state.revision) return
       const success = result.success && result.rolled_back === true
       this.update({ dryRun: result, dryRunRevision: success ? revision : null })
-      this.status('dryRun', success ? 'success' : 'error', success ? 'Dry run succeeded. Model was not changed.' : result.error ?? (result.rolled_back === true ? 'Dry run failed.' : 'Rollback is not confirmed. Check the model before continuing.'))
+      this.status('dryRun', success ? 'success' : 'error', success ? 'Dry run succeeded. Model was not changed.' : dryRunFailure(result))
     } catch (error) { if (this.current('dryRun', ticket)) this.fail('dryRun', error) }
     finally { this.settle('dryRun', ticket) }
   }

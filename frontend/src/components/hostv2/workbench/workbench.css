@@ -38,6 +38,7 @@
 .hostv2-workbench-rollback { padding: 10px; margin: 0 0 12px; border: 2px solid currentColor; border-radius: var(--radius-xs); font-weight: 600; }
 .hostv2-workbench-rollback.is-safe { color: var(--success); }
 .hostv2-workbench-rollback.is-unknown { color: var(--danger); }
+.hostv2-workbench-rollback.is-not-sent { color: var(--mid); }
 .hostv2-workbench-changes { display: flex; gap: 20px; flex-wrap: wrap; }
 .hostv2-workbench-changes > div { display: flex; gap: 6px; }
 .hostv2-workbench-changes dd { margin: 0; font-family: var(--mono); font-weight: 600; }

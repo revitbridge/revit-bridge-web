@@ -39,7 +39,8 @@ export interface DryRunReply {
   result: unknown
   error: string | null
   diagnostics: Diagnostic[]
-  changes: { added?: ChangePart; modified?: ChangePart; deleted?: ChangePart } | null
+  // note: what the add-in says about its counts, kept as it sent it.
+  changes: { added?: ChangePart; modified?: ChangePart; deleted?: ChangePart; note?: string } | null
   failures: unknown[]
   fingerprint: string | null
   evidence_id: string | null
@@ -85,10 +86,29 @@ export function readDryRun(value: unknown): DryRunReply {
   return {
     success: value.success, rolled_back: typeof value.rolled_back === 'boolean' ? value.rolled_back : null,
     result: value.result ?? null, error: text(value.error), diagnostics: diagnostics(value.diagnostics),
-    changes: changes ? Object.fromEntries(['added', 'modified', 'deleted'].filter(kind => object(changes[kind])).map(kind => [kind, changes[kind]])) : null,
+    changes: changes ? {
+      ...Object.fromEntries(['added', 'modified', 'deleted'].filter(kind => object(changes[kind])).map(kind => [kind, changes[kind]])),
+      ...(typeof changes.note === 'string' && changes.note ? { note: changes.note } : {}),
+    } : null,
     failures: Array.isArray(value.failures) ? value.failures : [], fingerprint: text(value.fingerprint),
     evidence_id: text(value.evidence_id), hint: text(value.hint), warnings: strings(value.warnings),
   }
+}
+
+// Refusals revit_bridge/dry_run.py answers before any code is sent to Revit, so there is no
+// rollback to confirm: the sandbox (blocked), an add-in without the dry run (no_dry_run,
+// no_dry_run_include), the include checks (include_*), and an add-in whose capabilities could not
+// be read ("<kind>: <reason>", e.g. "unreachable: ..."). They carry rolled_back null and no ledger
+// line. A request that was sent and got no reply also has rolled_back null, but always a hint and,
+// unless the ledger failed (a warning says so), an evidence id: that one stays "not confirmed".
+const NOT_SENT = new Set(['blocked', 'no_dry_run', 'no_dry_run_include'])
+
+export function dryRunNotSent(result: DryRunReply): boolean {
+  if (result.success || result.rolled_back !== null || result.evidence_id !== null) return false
+  if (result.warnings.some(warning => warning.startsWith('evidence not recorded'))) return false
+  const error = result.error ?? ''
+  if (NOT_SENT.has(error) || /^include_[a-z_]+$/.test(error)) return true
+  return result.hint === null && /^[a-z_]+: /.test(error)
 }
 
 // Textarea values and selection offsets use LF, including when loaded code uses CRLF.
