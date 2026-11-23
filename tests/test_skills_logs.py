@@ -53,7 +53,9 @@ def test_the_wheel_puts_revit_core_in_the_prompt(make_client, env, tmp_path):
     pointer = chat_module.GUIDANCE_POINTER
     assert "\n" not in pointer and "get_guidance" in pointer
     assert all(category in pointer for category in CATEGORIES)
-    assert len(prompt.encode("utf-8")) < 6_000                # 22,348 bytes with the protocol in it
+    # 6,007 bytes with revit-bridge 0.8.2 (5,455 with 0.6.1: revit-core gained "Keep Revit
+    # interactive"); 22,348 bytes with the protocol in it.
+    assert len(prompt.encode("utf-8")) < 6_500
 
     # With no built-in skills at all: the host instructions and the pointer.
     empty = tmp_path / "no-skills"

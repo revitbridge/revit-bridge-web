@@ -6,12 +6,13 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.6
-  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL`` and the
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.8
+  ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL``, the
   add-in phase skills ``builtin:revit-task-brief/SKILL``,
   ``builtin:revit-addin-dev/SKILL``, ``builtin:revit-addin-test/SKILL`` and
-  ``builtin:revit-addin-release/SKILL``, with the Markdown under them such as
-  ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
+  ``builtin:revit-addin-release/SKILL``, and the journal skill
+  ``builtin:revit-journal-analysis/SKILL``, with the Markdown under them such
+  as ``references/`` and ``lessons/``); ``SKILLS_DIR`` replaces that directory
   with a mounted checkout.
 
 Every enabled skill is concatenated into the chat system prompt. Of the

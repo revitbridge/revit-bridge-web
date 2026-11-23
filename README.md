@@ -78,15 +78,16 @@ its connection.
    package's `revit-core` (the contract every snippet follows) is on; the `revit-bridge` protocol
    (written for the MCP server's tools; this host's protocol is the package's `host_instructions()`),
    the add-in phase skills (`revit-task-brief`, `revit-addin-dev`, `revit-addin-test`,
-   `revit-addin-release`), the references and the lessons are listed but off (the model asks for
-   lessons with `get_guidance`); add, upload or import more from GitHub (admin password required).
+   `revit-addin-release`), `revit-journal-analysis` (reading Revit journal files), the references
+   and the lessons are listed but off (the model asks for lessons with `get_guidance`); add, upload
+   or import more from GitHub (admin password required).
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.
 
 The system prompt is the package's `host_instructions()` (this host's protocol), the enabled skills
 (by default only `revit-core`) and one line that sends the model to `get_guidance` for the lessons
-(revit-core's and every other category's) - about 5.5 KB in all. The task page's "without the
+(revit-core's and every other category's) - about 6 KB in all. The task page's "without the
 bridge" comparison sends the same message with `bridge: false` (one plain prompt, no tools, no
 skills).
 
