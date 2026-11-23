@@ -18,7 +18,10 @@ DEPLOY_MODE=cloud ADMIN_PASSWORD=openapi-export uv run python -c "from backend.m
 ```
 
 Tests run as a cloud host by default (`tests/conftest.py` `env`: `DEPLOY_MODE=cloud` with a fixture
-`ADMIN_PASSWORD`); `local_env` gives a local one. `tests/test_deploy_mode.py` covers what differs.
+`ADMIN_PASSWORD`); `local_env` gives a local one, whose requests must look like a browser on this
+machine (`make_client(**LOCAL)`: Host `127.0.0.1:7860`, peer `127.0.0.1`; TestClient's `testserver`
+is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
+`tests/test_deploy_mode.py` covers what differs.
 
 ## Layout
 
@@ -28,6 +31,7 @@ Tests run as a cloud host by default (`tests/conftest.py` `env`: `DEPLOY_MODE=cl
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling; `backend/session.py`.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
+- `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py`, `backend/config.py`, `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages`.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
@@ -47,9 +51,12 @@ Tests run as a cloud host by default (`tests/conftest.py` `env`: `DEPLOY_MODE=cl
 - Configuration comes only from environment variables (see `.env.example`); no config files.
 - `DEPLOY_MODE` is `local` (default) or `cloud` (`backend/config.py` validates it at startup).
   `local`: only loopback may reach the host (`HOST`, or in the image the published `BIND_ADDRESS`;
-  otherwise it refuses to start), no relay, pairing or device routes (404 `cloud_mode_only`), device
-  headers are not read, and the admin checks pass without a password. `cloud`: the relay and
-  pairing, and `ADMIN_PASSWORD` is required (no start without it).
+  otherwise it refuses to start), `ADMIN_PASSWORD` or `CORS_ORIGINS` set refuses to start too, no
+  relay, pairing or device routes (404 `cloud_mode_only`), device headers are not read, and the
+  admin checks pass without a password - so `backend/localguard.py` must stay in front of every
+  path: no proxy forwarding header, a loopback `Host` (and peer outside a container), writes only
+  from the host's own `Origin`. `cloud`: the relay and pairing, and `ADMIN_PASSWORD` is required
+  (no start without it); no request guard.
 - On a cloud host, changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`,
   `POST /solidify`), skill writes and `/api/logs` are admin only, through the one `X-Admin-Token`
   check (`WebSettings.admin_token_ok`). On a local host they need no password: changing packs and

@@ -27,9 +27,30 @@ uv run revit-bridge-web                   # http://127.0.0.1:7860; --port 7871 f
 ```
 
 `uv run revit-bridge-web` serves the API and the built UI (`frontend/dist`) on `127.0.0.1`; without a
-build it serves the API only and says so. A local host refuses to start when other machines could reach
-it - `HOST=0.0.0.0`, or with Docker a `BIND_ADDRESS` other than loopback - and prints why. To serve
-other machines, deploy it as a cloud host.
+build it serves the API only and says so. Open it as `http://127.0.0.1:7860` or `http://localhost:7860`.
+
+The image on its own, without compose - publish on loopback and pass the same address in:
+
+```bash
+docker build -t revit-bridge-web .
+docker run -d --name revit-bridge-web -p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1 \
+  --add-host host.docker.internal:host-gateway -v "$(pwd)/data:/app/data" revit-bridge-web
+```
+
+A local host has no password, so it is strict about who it answers:
+
+- It refuses to start, and prints why, when other machines could reach it (`HOST=0.0.0.0`, or with
+  Docker a `BIND_ADDRESS` other than loopback), when `ADMIN_PASSWORD` is set (that is a cloud host
+  missing `DEPLOY_MODE=cloud`) and when `CORS_ORIGINS` is set.
+- It answers only a browser on this machine talking to it directly. A request that came through a
+  proxy (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP`,
+  `CF-Connecting-IP`) is 403 `local_mode_no_proxy`; one addressed to any name other than `127.0.0.1`,
+  `localhost` or `[::1]` (any port), or - outside Docker - from another machine, is 403
+  `local_mode_host`; a change (POST, PUT, PATCH, DELETE) from a page on another origin is 403
+  `local_mode_origin`. That holds for every path, `/health` and the static files included, and keeps
+  web pages elsewhere (DNS rebinding, cross-site forms) away from a host without a password.
+
+To serve other machines, deploy it as a cloud host.
 
 ## Deploy as a cloud host
 
@@ -44,8 +65,9 @@ docker compose up -d --build
 
 The UI is on `http://127.0.0.1:7860`. Put a reverse proxy with TLS in front of it for anything
 beyond localhost; WebSocket upgrades on `/api/v1/bridge/ws/` must be forwarded. A host behind a
-reverse proxy or a tunnel is a cloud host even though its port is published on loopback: the local
-mode's loopback check cannot see the proxy, and a local host has no admin password.
+reverse proxy or a tunnel is a cloud host even though its port is published on loopback: set
+`DEPLOY_MODE=cloud`. Left as local it would not start with `ADMIN_PASSWORD` in its `.env`, and
+without it would refuse every proxied request (403 `local_mode_no_proxy`).
 
 Split deployment (SPA on a static host, API on another machine): build `frontend/` and upload
 `dist/`, then place a static `config.json` next to its `index.html` - copy
@@ -131,7 +153,7 @@ Development without Docker:
 
 ```bash
 uv sync                                  # backend deps, revit-bridge included; installs the revit-bridge-web script
-cd frontend && npm ci && npm run build   # or `npm run dev` with the proxy to :7860
+cd frontend && npm ci && npm run build   # or `npm run dev` with the proxy to :7860 (it presents its pages with the host's origin)
 cd .. && uv run revit-bridge-web         # http://127.0.0.1:7860 (python -m backend.main is the same)
 uv run pytest                            # backend tests, no Revit needed
 ```
@@ -143,11 +165,11 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
+| `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
-| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify), skill edits, the list of every device and `/api/logs`. A local host does not use it (one startup log line says so): there all of these work without a password. |
+| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
 | `MAX_DEVICES` | `20` | Cloud only (a local host logs it as unused). How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
@@ -157,7 +179,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `SKILLS_DIR` | unset | Optional read-only directory that replaces the built-in skill *directory* (the wheel's `revit_bridge/skills/`, laid out as `<skill>/SKILL.md` + `references/`): mount a checkout with the same layout to keep the `builtin:revit-bridge/...` ids, or point it at an empty directory to list no built-in skills at all. Every file in a mounted directory is on unless its front matter says `enabled: false`. |
 | `REVIT_BRIDGE_GUIDANCE_COMPANY`, `REVIT_BRIDGE_GUIDANCE_PROJECT` | unset | Extra guidance layers for `get_guidance`, as the MCP server reads them (directories inside the container: mount them). The personal layer is `REVIT_BRIDGE_DATA_DIR/guidance`. Loaded on first use and kept until the host restarts. |
 | `PUBLIC_WS_BASE` | unset | Cloud only (a local host logs it as unused). Relay address shown in the add-in command when it differs from the page origin (dedicated WebSocket host name). |
-| `CORS_ORIGINS` | unset | Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
+| `CORS_ORIGINS` | unset | Cloud only: a local host answers its own origin only and refuses to start when it is set. Origins allowed to call the API cross-origin (split deployment), comma-separated. `*` allows any origin but without credentials; an explicit list allows credentials for its own origins. |
 | `BIND_ADDRESS`, `PORT` | `127.0.0.1`, `7860` | Published host interface and port (`docker-compose.yml`). Without Docker, `PORT` (or `--port`) is the port the server listens on. Compose also passes `BIND_ADDRESS` into the container: there the server listens on `0.0.0.0`, so the published address is what a local host checks - it must be loopback. Running the image with `docker run` in local mode, publish on loopback and pass the same value: `-p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1`. |
 | `HOST` | `127.0.0.1` local, `0.0.0.0` cloud | Interface the server listens on without Docker (or `--host`); a local host accepts loopback only. `docker-compose.yml` pins it (and the container port, 7860). |
 | `REVIT_BRIDGE_WEB_CONTAINER` | `1` in the image | Set by the Dockerfile: a local host checks `BIND_ADDRESS` instead of `HOST`. Not for `.env`. |
@@ -182,6 +204,12 @@ valid 422, a Revit that cannot be reached before the run is 503 (a transport fai
 is the package's `success: false` without consuming the token), and a refusal by the gate, a failed
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
+
+A local host puts one guard in front of every route (not in the export, which is a cloud host's): 403
+`local_mode_no_proxy` for a request carrying a proxy forwarding header, 403 `local_mode_host` for a
+`Host` other than `127.0.0.1`, `localhost` or `[::1]` (or a peer that is not this machine, outside
+Docker), 403 `local_mode_origin` for a POST, PUT, PATCH or DELETE whose `Origin` is not the host's own
+(`http://` plus its `Host`); a request without `Origin` (curl on this machine) is not refused for that.
 
 Pairing and devices exist on a cloud host only; on a local host `/devices*` and `/ws/{device_id}`
 answer 404 `{"error": "cloud_mode_only"}` (the add-in socket before the upgrade), `X-Device-Id` /

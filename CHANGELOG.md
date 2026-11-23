@@ -10,10 +10,11 @@ Upgrading: **the host now starts as a local host** (`DEPLOY_MODE=local`, the new
 machine only, no relay, no pairing, no admin password. A deployment that other machines reach must
 set `DEPLOY_MODE=cloud` in its `.env` before it is upgraded, and keep `ADMIN_PASSWORD` (a cloud
 host now refuses to start without it). That includes a host published on loopback behind a reverse
-proxy or a tunnel on the same machine: the loopback check cannot see the proxy, so without
-`DEPLOY_MODE=cloud` such a host would start in local mode and serve pack edits, skill edits and the
-logs to anyone the proxy lets in. A local host given `ADMIN_PASSWORD` logs a warning that it is not
-used. See *Added* and *Changed* (deploy modes).
+proxy or a tunnel on the same machine, which the loopback check cannot see. Such a host fails
+closed if it is upgraded without `DEPLOY_MODE=cloud`: with `ADMIN_PASSWORD` (or `CORS_ORIGINS`) in
+its `.env` a local host refuses to start, and without them it refuses every request that came
+through a proxy (403 `local_mode_no_proxy`) or names its public host (403 `local_mode_host`). See
+*Added* and *Changed* (deploy modes).
 
 The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
@@ -68,8 +69,25 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   the server listens on `0.0.0.0`, a `BIND_ADDRESS` not loopback or not passed in), and it has no
   relay, no pairing and no admin password. A cloud host is the host as it was, and refuses to start
   without `ADMIN_PASSWORD`. Both refusals print the reason and exit 2. `/config.json` reports
-  `features.mode`. Cloud-only variables a local host is given anyway (`ADMIN_PASSWORD`,
-  `MAX_DEVICES`, `PUBLIC_WS_BASE`) are not an error; one startup log line names each as unused.
+  `features.mode`. A local host also refuses to start with `ADMIN_PASSWORD` set (a cloud
+  deployment missing `DEPLOY_MODE=cloud` fails closed instead of running without a password) or
+  with `CORS_ORIGINS` set; `MAX_DEVICES` and `PUBLIC_WS_BASE` given to it are not an error, one
+  startup log line names each as unused.
+- The request guard of a local host (`backend/localguard.py`), in front of every path (API, static
+  files, `/config.json`, `/health`, WebSocket upgrades): 403 `{"error": "local_mode_no_proxy"}` for a
+  request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`,
+  `X-Real-IP` or `CF-Connecting-IP`; 403 `local_mode_host` for a `Host` other than `127.0.0.1`,
+  `localhost` or `[::1]` with any port (plus the loopback address configured as `HOST` /
+  `BIND_ADDRESS` when it is another one), the guard against DNS rebinding, and - outside a container -
+  for a peer address that is not loopback (a server started as `uvicorn backend.main:app --host
+  0.0.0.0` is covered too); 403 `local_mode_origin` for a POST, PUT, PATCH or DELETE whose `Origin`
+  is not `http://` plus the request's `Host`. Routes without a body (`DELETE /tools/{name}`, `DELETE
+  /api/skills/{id}`, `POST /trigger-selection`...) would otherwise take a cross-site form post;
+  routes with a JSON body already refuse `text/plain` and form data with 422. A cloud host has no
+  such guard: forwarding headers and public host names are normal behind its proxy.
+- `npm run dev`: the Vite proxy presents its own pages (`http://localhost:5173`) with the target's
+  origin, so the dev page can still make changes on a local host; any other `Origin` passes through
+  unchanged and is refused.
 - `uv run revit-bridge-web`: the API and the built frontend on `127.0.0.1:7860` without Docker
   (`--host` / `--port` override `HOST` / `PORT` and go through the same check). `pyproject.toml`
   now builds the project (hatchling) so `uv sync` installs it editable with this script; `uv.lock`
