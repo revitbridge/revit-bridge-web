@@ -62,8 +62,24 @@ USAGE_SHAPES: dict[str, tuple[dict, tuple]] = {
     "deepseek_hit_only": ({"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050,
                            "prompt_cache_hit_tokens": 640, "prompt_cache_miss_tokens": 360},
                           (1000, 50, 640, None)),
-    # Gemini's OpenAI compatibility endpoint: no cache fields are documented (seen without them).
-    "gemini": ({"completion_tokens": 102, "prompt_tokens": 758, "total_tokens": 1725}, (758, 102, None, None)),
+    # Gemini's OpenAI compatibility endpoint: no cache fields are documented (seen without
+    # them); completion_tokens leaves the thinking out, total_tokens counts it (1725 - 758 -
+    # 102 = 865 thinking tokens, billed as output): output is total - prompt.
+    "gemini": ({"completion_tokens": 102, "prompt_tokens": 758, "total_tokens": 1725}, (758, 967, None, None)),
+    # ... the same without total_tokens: the thinking cannot be known, output is completion.
+    "gemini_no_total": ({"completion_tokens": 102, "prompt_tokens": 758}, (758, 102, None, None)),
+    # ... a Gemini that also lists the thinking: still total - prompt, nothing added twice.
+    "gemini_reasoning_listed": ({"completion_tokens": 102, "prompt_tokens": 758, "total_tokens": 1725,
+                                 "completion_tokens_details": {"reasoning_tokens": 865}},
+                                (758, 967, None, None)),
+    # OpenAI with reasoning: completion_tokens already includes reasoning_tokens and the total
+    # is prompt + completion - output stays completion_tokens (not 300 + 256).
+    "openai_reasoning": ({"prompt_tokens": 1200, "completion_tokens": 300, "total_tokens": 1500,
+                          "prompt_tokens_details": {"cached_tokens": 1024},
+                          "completion_tokens_details": {"reasoning_tokens": 256}},
+                         (1200, 300, 1024, None)),
+    # A total that is not a count is ignored.
+    "bad_total": ({"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": "999"}, (10, 5, None, None)),
     # Anthropic's OpenAI compatibility endpoint: prompt_tokens_details "always empty".
     "anthropic_compat": ({"prompt_tokens": 500, "completion_tokens": 20, "total_tokens": 520,
                           "prompt_tokens_details": None, "completion_tokens_details": None},
@@ -108,6 +124,11 @@ USAGE_SHAPES: dict[str, tuple[dict, tuple]] = {
     "garbage": ({"prompt_tokens": "12", "completion_tokens": -1, "total_tokens": True,
                  "prompt_tokens_details": {"cached_tokens": 1.5}},
                 (None, None, None, None)),
+    # Counts beyond 2**53 are not token counts: unknown, never an overflow later.
+    "huge": ({"prompt_tokens": 2 ** 62, "completion_tokens": 2 ** 53 + 1, "total_tokens": 2 ** 63,
+              "prompt_tokens_details": {"cached_tokens": 1e300}},
+             (None, None, None, None)),
+    "edge": ({"prompt_tokens": 2 ** 53, "completion_tokens": 0}, (2 ** 53, 0, None, None)),
     "empty": ({}, (None, None, None, None)),
 }
 

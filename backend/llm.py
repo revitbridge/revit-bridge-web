@@ -17,10 +17,11 @@ as one ``list[ToolCall]`` once the model is done, and ``tool`` role messages
 carry the results back in the next request.
 
 Token usage: every request asks for it (``stream_options.include_usage``) and
-the last ``usage`` object of the stream is read into a ``CallStats`` the caller
-passes in (``parse_usage``: four numbers, ``None`` for what the provider did
-not report, never 0). An endpoint that refuses the option with a 4xx naming it
-is asked again once without it, and is remembered for the life of the process.
+the stream's ``usage`` objects are read into a ``CallStats`` the caller passes
+in (``parse_usage``: four numbers, ``None`` for what the provider did not
+report, never 0; merged field by field). An endpoint that refuses the option
+with a 4xx naming it is asked again once without it; when that is accepted the
+endpoint and model are remembered for the life of the process.
 
 Ported from the streaming half of the former ``pipeline/llm_client.py``,
 rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
@@ -333,6 +334,14 @@ class Usage:
         return {"input": self.input, "output": self.output,
                 "cache_read": self.cache_read, "cache_write": self.cache_write}
 
+    def merged(self, later: Usage) -> Usage:
+        """This usage updated by a later ``usage`` object of the same stream, field by field:
+        a number in ``later`` replaces this one, a ``None`` there erases nothing. A provider
+        that repeats a running total still ends with its last total."""
+        return Usage(*(new if new is not None else old for old, new in zip(
+            (self.input, self.output, self.cache_read, self.cache_write),
+            (later.input, later.output, later.cache_read, later.cache_write))))
+
 
 @dataclass
 class CallStats:
@@ -348,14 +357,22 @@ class CallStats:
     retried: bool = False
 
 
+# The largest count taken as a number: beyond it a value is not a token count (and could
+# not be summed safely in SQLite or represented exactly in the browser).
+MAX_COUNT = 2 ** 53
+
+
 def _count(value) -> int | None:
-    """A token count as the JSON gave it: a non-negative integer (``12.0`` is 12), else None."""
+    """A token count as the JSON gave it: an integer from 0 to ``MAX_COUNT`` (``12.0`` is
+    12), else None - negatives, fractions, booleans, text and absurd sizes are unknown."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return value if value >= 0 else None
-    if isinstance(value, float) and value.is_integer() and value >= 0:
-        return int(value)
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if isinstance(value, int) and 0 <= value <= MAX_COUNT:
+        return value
     return None
 
 
@@ -385,46 +402,60 @@ def parse_usage(raw) -> Usage:
       either cache count is missing.
     - Responses-style (``input_tokens`` with ``input_tokens_details``): ``input_tokens`` is
       the whole prompt, reads and writes in its details. Output is ``output_tokens``.
+
+    Output, every shape: ``completion_tokens`` (``output_tokens``), unless ``total_tokens``
+    is a valid count larger than input + that - then ``total_tokens - input``. Gemini's
+    compatibility endpoint leaves the thinking tokens out of ``completion_tokens`` and
+    counts them only in ``total_tokens``; they are billed as output. Reasoning tokens a
+    provider lists in ``completion_tokens_details.reasoning_tokens`` are never added on
+    top: OpenAI's ``completion_tokens`` already includes them (and its total is input +
+    completion, so the rule changes nothing there).
     """
     if not isinstance(raw, dict):
         return Usage()
-    output = _first(_count(raw.get("completion_tokens")), _count(raw.get("output_tokens")))
+    completion = _first(_count(raw.get("completion_tokens")), _count(raw.get("output_tokens")))
+    prompt_details, input_details = _sub(raw, "prompt_tokens_details"), _sub(raw, "input_tokens_details")
+    # The cache counts, whichever names this provider uses (a chunk may carry them alone).
+    read = _first(_count(prompt_details.get("cached_tokens")), _count(raw.get("prompt_cache_hit_tokens")),
+                  _count(raw.get("cache_read_input_tokens")), _count(input_details.get("cached_tokens")))
+    write = _first(_count(prompt_details.get("cache_write_tokens")),
+                   _count(prompt_details.get("cached_creation_tokens")),
+                   _count(raw.get("cache_creation_input_tokens")), _count(input_details.get("cache_write_tokens")))
     prompt = _count(raw.get("prompt_tokens"))
     if prompt is not None:
-        details = _sub(raw, "prompt_tokens_details")
-        return Usage(
-            input=prompt,
-            output=output,
-            cache_read=_first(_count(details.get("cached_tokens")), _count(raw.get("prompt_cache_hit_tokens")),
-                              _count(raw.get("cache_read_input_tokens"))),
-            cache_write=_first(_count(details.get("cache_write_tokens")),
-                               _count(details.get("cached_creation_tokens")),
-                               _count(raw.get("cache_creation_input_tokens"))),
-        )
-    tail = _count(raw.get("input_tokens"))
-    if "cache_read_input_tokens" in raw or "cache_creation_input_tokens" in raw:
-        read = _count(raw.get("cache_read_input_tokens"))
-        write = _count(raw.get("cache_creation_input_tokens"))
-        total = tail + read + write if None not in (tail, read, write) else None
-        return Usage(input=total, output=output, cache_read=read, cache_write=write)
-    details = _sub(raw, "input_tokens_details")
-    return Usage(input=tail, output=output, cache_read=_count(details.get("cached_tokens")),
-                 cache_write=_count(details.get("cache_write_tokens")))
+        whole = prompt
+    elif "cache_read_input_tokens" in raw or "cache_creation_input_tokens" in raw:
+        # Anthropic's own shape: input_tokens is only the tail after the cached prefix.
+        tail = _count(raw.get("input_tokens"))
+        anthropic_read = _count(raw.get("cache_read_input_tokens"))
+        anthropic_write = _count(raw.get("cache_creation_input_tokens"))
+        parts = (tail, anthropic_read, anthropic_write)
+        whole = _count(sum(parts)) if None not in parts else None
+        read, write = anthropic_read, anthropic_write
+    else:
+        whole = _count(raw.get("input_tokens"))
+    usage = Usage(input=whole, output=completion, cache_read=read, cache_write=write)
+    total = _count(raw.get("total_tokens"))
+    if None not in (total, usage.input, completion) and total > usage.input + completion:
+        usage.output = total - usage.input              # thinking counted only in the total
+    return usage
 
 
-# Completion URLs that refused ``stream_options`` (a 4xx naming it): later calls go out
-# without it. In memory for the life of the process, bounded (oldest forgotten first).
+# (completion URL, model) pairs that refused ``stream_options``: a 4xx naming it, and the
+# same call accepted without it. Later calls of that pair go out without the option. In
+# memory for the life of the process, bounded (oldest forgotten first). Keyed by model
+# too: one gateway may put several providers behind one address.
 USAGE_OPTION = {"include_usage": True}
-_REFUSES_USAGE_OPTION: dict[str, None] = {}
+_REFUSES_USAGE_OPTION: dict[tuple[str, str], None] = {}
 _REFUSES_USAGE_OPTION_MAX = 256
 
 
-def _refuses_usage_option(url: str) -> bool:
-    return url in _REFUSES_USAGE_OPTION
+def _refuses_usage_option(url: str, model: str) -> bool:
+    return (url, model) in _REFUSES_USAGE_OPTION
 
 
-def _remember_refusal(url: str) -> None:
-    _REFUSES_USAGE_OPTION[url] = None
+def _remember_refusal(url: str, model: str) -> None:
+    _REFUSES_USAGE_OPTION[(url, model)] = None
     while len(_REFUSES_USAGE_OPTION) > _REFUSES_USAGE_OPTION_MAX:
         del _REFUSES_USAGE_OPTION[next(iter(_REFUSES_USAGE_OPTION))]
 
@@ -434,9 +465,11 @@ def reset_usage_option_memory() -> None:
 
 
 def _names_usage_option(status: int, body: str) -> bool:
-    """A 4xx whose body names the option: the endpoint does not take it."""
+    """A 4xx whose body names the option may be the endpoint not taking it - worth one
+    retry without it. Never 401 or 403: those are about the key, whatever the body says."""
     text = body.lower()
-    return 400 <= status < 500 and ("stream_options" in text or "include_usage" in text)
+    return 400 <= status < 500 and status not in (401, 403) and (
+        "stream_options" in text or "include_usage" in text)
 
 
 def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
@@ -473,11 +506,12 @@ async def stream_completion(
     its ``arguments`` in pieces, all keyed by ``index``).
 
     ``stats``, when given, is filled in as the call goes: whether the endpoint
-    accepted it, and the token usage of the last ``usage`` object the stream
-    carried (``parse_usage``; all ``None`` when there was none). The request asks
-    for usage with ``stream_options.include_usage``; an endpoint that answers a 4xx
-    naming that option is asked once more without it (``stats.retried``) and is
-    not asked again while the process runs.
+    accepted it, and the token usage the stream's ``usage`` objects carried
+    (``parse_usage``, merged field by field; all ``None`` when there was none). The
+    request asks for usage with ``stream_options.include_usage``; an endpoint that
+    answers a 4xx naming that option (not 401 / 403) is asked once more without it
+    (``stats.retried``), and only when that retry is accepted is the endpoint and
+    model remembered and not asked again while the process runs.
 
     Raises ``LLMError`` when the endpoint answers with an error status; the
     message carries the status and a short body excerpt, never the request.
@@ -506,7 +540,7 @@ async def stream_completion(
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-    ask_usage = not _refuses_usage_option(url)
+    ask_usage = not _refuses_usage_option(url, llm.model)
     calls: dict[int, dict] = {}          # index -> {id, name, arguments}
     client_timeout = httpx.Timeout(timeout, connect=15.0)
     # httpx's timeouts are per read: an endpoint that sends a byte now and then would
@@ -527,11 +561,10 @@ async def stream_completion(
                     if resp.status_code >= 400:
                         body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")
                         if ask_usage and _names_usage_option(resp.status_code, body):
-                            # The provider does not take the option: once more without it.
-                            _remember_refusal(url)
-                            _log.info("model endpoint refused stream_options (HTTP %d, %s): asking again "
-                                      "without it; usage of this endpoint is read only if it sends it anyway",
-                                      resp.status_code, llm.model)
+                            # Perhaps the provider does not take the option: once more without
+                            # it. Remembered only if that attempt is accepted (below).
+                            _log.info("model endpoint answered HTTP %d naming stream_options (%s): "
+                                      "asking once more without it", resp.status_code, llm.model)
                             ask_usage = False
                             stats.retried = True
                             continue
@@ -539,6 +572,11 @@ async def stream_completion(
                                        status=502)
                     stats.accepted = True
                     stats.asked_usage = ask_usage
+                    if stats.retried:
+                        _remember_refusal(url, llm.model)
+                        _log.info("model endpoint takes the call without stream_options (%s): not asking "
+                                  "this endpoint and model for usage again; read only if it sends it anyway",
+                                  llm.model)
                     lines = resp.aiter_lines()
                     while True:
                         try:
@@ -557,9 +595,10 @@ async def stream_completion(
                         if not isinstance(chunk, dict):
                             continue
                         if isinstance(chunk.get("usage"), dict):
-                            # The last usage object wins: OpenAI sends it once, in a chunk
-                            # with no choices; some providers repeat a running total.
-                            stats.usage = parse_usage(chunk["usage"])
+                            # OpenAI sends it once, in a chunk with no choices; some providers
+                            # repeat a running total, some split it over chunks. A later number
+                            # replaces an earlier one; a missing one erases nothing.
+                            stats.usage = stats.usage.merged(parse_usage(chunk["usage"]))
                         choices = chunk.get("choices") or []
                         if not choices:
                             continue
