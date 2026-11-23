@@ -84,8 +84,13 @@ when the port is published on loopback behind a proxy on the Docker host (see *F
   for a peer address that is not loopback (a server started as `uvicorn backend.main:app --host
   0.0.0.0` is covered too); 403 `local_mode_origin` for any request whose `Sec-Fetch-Site` is
   `cross-site` or `same-site` (another site's page started it: GETs that reach Revit such as
-  `/snapshot`, body-less POSTs such as `/trigger-selection`, any method), and for a POST, PUT,
+  `/snapshot`, body-less POSTs such as `/trigger-selection`, any method) - except a top-level
+  navigation to the page shell or a static file (GET or HEAD, `Sec-Fetch-Mode: navigate`,
+  `Sec-Fetch-Dest: document`, not `/api/...`, `/config.json`, `/openapi.json`, `/docs`, `/redoc`
+  or `/health`), so a link to the host in a README or a chat tool opens it - and for a POST, PUT,
   PATCH, DELETE or WebSocket upgrade whose `Origin` is not `http://` plus the request's `Host`.
+  Every local response carries `Content-Security-Policy: frame-ancestors 'self'` and
+  `X-Frame-Options: SAMEORIGIN`: no other page may frame the UI, which has no password.
   Routes without a body (`DELETE /tools/{name}`, `DELETE /api/skills/{id}`, `POST
   /trigger-selection`...) would otherwise take a cross-site form post; routes with a JSON body
   already refuse `text/plain` and form data with 422. A port in `Host` must be ASCII digits. A cloud

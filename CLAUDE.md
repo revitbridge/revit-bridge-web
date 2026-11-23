@@ -55,9 +55,11 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   relay, pairing or device routes (404 `cloud_mode_only`), device headers are not read, and the
   admin checks pass without a password - so `backend/localguard.py` must stay in front of every
   path: no proxy forwarding header, a loopback `Host` (and peer outside a container), no
-  `Sec-Fetch-Site` of `cross-site` / `same-site`, writes and WebSocket upgrades only from the host's
-  own `Origin`. A new route on a local host - WebSocket included - needs nothing else to be guarded;
-  do not mount anything outside it. `cloud`: the relay and pairing, and `ADMIN_PASSWORD` is required
+  `Sec-Fetch-Site` of `cross-site` / `same-site` (except a top-level navigation to the page shell or
+  a static file - keep any new data path out of that exception, `NOT_THE_PAGE`), writes and
+  WebSocket upgrades only from the host's own `Origin`, and a frame policy on every response. A new
+  route on a local host - WebSocket included - needs nothing else to be guarded; do not mount
+  anything outside it. `cloud`: the relay and pairing, and `ADMIN_PASSWORD` is required
   (no start without it); no request guard.
 - On a cloud host, changing capability packs (`PUT`/`DELETE /api/v1/bridge/tools/{name}`,
   `POST /solidify`), skill writes and `/api/logs` are admin only, through the one `X-Admin-Token`

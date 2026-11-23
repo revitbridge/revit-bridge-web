@@ -31,9 +31,9 @@ uv run revit-bridge-web                           # http://127.0.0.1:7860; --por
 `uv run revit-bridge-web` runs from this checkout: it serves the API and the built UI
 (`frontend/dist`, next to `backend/`) on `127.0.0.1`; without a build it serves the API only and says
 so. The wheel the project builds contains only the backend, so installing it with `pip` or `uvx` is
-not a supported way to run the host (there would be no UI). Open it by typing
-`http://127.0.0.1:7860` or `http://localhost:7860`, or from a bookmark: a link on another site's page
-is refused (see below).
+not a supported way to run the host (there would be no UI). Open it as `http://127.0.0.1:7860` or
+`http://localhost:7860` - typed, from a bookmark, or from a link in a README or a chat tool: a link
+opens the page itself, while everything else another site's page asks for is refused (see below).
 
 The image on its own, without compose - publish on loopback and pass the same address in:
 
@@ -54,9 +54,15 @@ A local host has no password, so it is strict about who it answers:
   to any name other than `127.0.0.1`, `localhost` or `[::1]` (any port), or - outside Docker - from
   another machine, is 403 `local_mode_host`; one that another site's page started
   (`Sec-Fetch-Site: cross-site` or `same-site`, any method), and a change (POST, PUT, PATCH, DELETE)
-  or a WebSocket from a page on another origin, are 403 `local_mode_origin`. That holds for every
-  path, `/health` and the static files included, and keeps web pages elsewhere (DNS rebinding,
-  cross-site forms and requests) away from a host without a password.
+  or a WebSocket from a page on another origin, are 403 `local_mode_origin`. The one exception is a
+  link: a top-level navigation (GET or HEAD, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document`)
+  to the page or a static file - not to `/api/...`, `/config.json`, `/openapi.json`, `/docs`,
+  `/redoc` or `/health` - opens it. That holds for every path, `/health` and the static files
+  included, and keeps web pages elsewhere (DNS rebinding, cross-site forms and requests) away from a
+  host without a password.
+- No other page may frame it: every response carries `Content-Security-Policy: frame-ancestors
+  'self'` and `X-Frame-Options: SAMEORIGIN` (a frame from another site is refused anyway), so the UI
+  without a password cannot be used for clickjacking.
 
 What the checks cannot see:
 
@@ -235,7 +241,8 @@ precondition or a failed validation is 200 with `success: false`; error bodies a
 A local host puts one guard in front of every route (not in the export, which is a cloud host's): 403
 `local_mode_no_proxy` for a request carrying a proxy forwarding header, 403 `local_mode_host` for a
 `Host` other than `127.0.0.1`, `localhost` or `[::1]` (or a peer that is not this machine, outside
-Docker), 403 `local_mode_origin` for any request with `Sec-Fetch-Site: cross-site` or `same-site` and
+Docker), 403 `local_mode_origin` for any request with `Sec-Fetch-Site: cross-site` or `same-site`
+(except a top-level navigation to the page shell or a static file, never to `/api/...`) and
 for a POST, PUT, PATCH, DELETE or WebSocket upgrade whose `Origin` is not the host's own (`http://`
 plus its `Host`); a request with neither header (curl on this machine) is not refused for that.
 
