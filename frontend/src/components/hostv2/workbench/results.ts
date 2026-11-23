@@ -91,9 +91,12 @@ export function readDryRun(value: unknown): DryRunReply {
   }
 }
 
+// Textarea values and selection offsets use LF, including when loaded code uses CRLF.
+export const normalizeCode = (code: string): string => code.replace(/\r\n?/g, '\n')
+
 export function diagnosticRange(code: string, diagnostic: Pick<Diagnostic, 'line' | 'column' | 'in_wrapper' | 'file'>): [number, number] | null {
   if (diagnostic.in_wrapper || diagnostic.file || diagnostic.line === null || !Number.isInteger(diagnostic.line) || diagnostic.line < 1) return null
-  const lines = code.split('\n')
+  const lines = normalizeCode(code).split('\n')
   if (diagnostic.line > lines.length) return null
   const start = lines.slice(0, diagnostic.line - 1).reduce((sum, line) => sum + line.length + 1, 0)
   const column = Math.max(0, Math.min(lines[diagnostic.line - 1].length, (diagnostic.column ?? 1) - 1))
@@ -101,6 +104,7 @@ export function diagnosticRange(code: string, diagnostic: Pick<Diagnostic, 'line
 }
 
 export function indentSelection(code: string, start: number, end: number): { code: string; start: number; end: number } {
+  code = normalizeCode(code)
   if (start === end) return { code: code.slice(0, start) + '  ' + code.slice(end), start: start + 2, end: end + 2 }
   const lineStart = code.lastIndexOf('\n', start - 1) + 1
   const selection = code.slice(lineStart, end)

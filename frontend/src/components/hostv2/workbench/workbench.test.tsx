@@ -109,6 +109,61 @@ describe('saving the current dry-run draft', () => {
     expect(html(model)).toContain('Invalid dry-run response')
     expect(saveDisabledReason(model.getSnapshot())).toContain('Dry-run')
   })
+
+  it.each(['edit', 'new', 'open', 'copy'] as const)('blocks another save after %s while an earlier write is still pending', async change => {
+    const { api, model } = await setup()
+    const pending = deferred<void>()
+    let stored = ''
+    api.save.mockImplementationOnce(async saving => {
+      await pending.promise
+      stored = saving.code
+      return { name: saving.name }
+    }).mockImplementation(async saving => {
+      stored = saving.code
+      return { name: saving.name }
+    })
+    await model.dryRun()
+    const firstSave = model.save()
+    expect(api.save).toHaveBeenCalledOnce()
+    if (change === 'new') model.newDraft()
+    if (change === 'open') await model.open(draft.name)
+    if (change === 'copy') model.copyAsMine()
+    model.edit({ name: draft.name, code: 'return 2;' })
+    await model.dryRun()
+    expect(model.getSnapshot().actions.save?.status).toBe('running')
+    expect(saveDisabledReason(model.getSnapshot())).toContain('current save')
+    expect(html(model)).toMatch(/disabled=""[^>]*>Saving/)
+    await model.save()
+    expect(api.save).toHaveBeenCalledOnce()
+    expect(model.getSnapshot().actions.save?.status).toBe('running')
+    pending.resolve()
+    await firstSave
+    expect(stored).toBe(draft.code)
+    expect(model.getSnapshot().draft.code).toBe('return 2;')
+    expect(model.getSnapshot().actions.save?.message).toContain('current draft has not been saved')
+    expect(saveDisabledReason(model.getSnapshot())).toBeNull()
+    await model.save()
+    expect(api.save).toHaveBeenCalledTimes(2)
+    expect(stored).toBe('return 2;')
+  })
+
+  it('releases the save lock after an earlier write fails without losing edited code', async () => {
+    const { api, model } = await setup()
+    const pending = deferred<{ name: string }>()
+    api.save.mockReturnValueOnce(pending.promise)
+    await model.dryRun()
+    const firstSave = model.save()
+    model.edit({ code: 'return 2;' })
+    await model.dryRun()
+    pending.reject(new Error('Save connection failed'))
+    await firstSave
+    expect(model.getSnapshot().actions.save?.status).toBe('error')
+    expect(model.getSnapshot().draft.code).toBe('return 2;')
+    expect(saveDisabledReason(model.getSnapshot())).toBeNull()
+    await model.save()
+    expect(api.save).toHaveBeenCalledTimes(2)
+    expect(api.save.mock.calls[1][0].code).toBe('return 2;')
+  })
 })
 
 describe('model options and input values', () => {
@@ -214,7 +269,7 @@ describe('check diagnostics and code editing', () => {
   it('locates a diagnostic in the user code and never navigates to wrapper or included-file lines', () => {
     const location = { line: 2, column: 3, in_wrapper: false }
     expect(diagnosticRange('first\nsecond\nthird', location)).toEqual([8, 12])
-    expect(diagnosticRange('a\r\nbc', { ...location, column: 1 })).toEqual([3, 5])
+    expect(diagnosticRange('a\r\nbc', { ...location, column: 1 })).toEqual([2, 4])
     expect(diagnosticRange(draft.code, { ...location, in_wrapper: true })).toBeNull()
     expect(diagnosticRange(draft.code, { ...location, file: 'Helper.cs' })).toBeNull()
     expect(diagnosticRange(draft.code, { ...location, line: 99 })).toBeNull()
@@ -223,6 +278,25 @@ describe('check diagnostics and code editing', () => {
   it('inserts Tab indentation and maintains selection offsets', () => {
     expect(indentSelection('return 1;', 0, 0)).toEqual({ code: '  return 1;', start: 2, end: 2 })
     expect(indentSelection('one\ntwo', 0, 7)).toEqual({ code: '  one\n  two', start: 2, end: 11 })
+    expect(indentSelection('one\r\ntwo', 4, 4)).toEqual({ code: 'one\n  two', start: 6, end: 6 })
+  })
+
+  it.each(['\r\n', '\r'])('normalizes loaded and edited %j code before diagnostics, Tab and API calls', async newline => {
+    const { api, model } = await setup()
+    const loaded = { ...draft, code: ['first', 'second', 'third'].join(newline) }
+    api.load.mockResolvedValue(loaded)
+    await model.open(draft.name)
+    const code = model.getSnapshot().draft.code
+    expect(code).toBe('first\nsecond\nthird')
+    expect(loaded.code).toBe(['first', 'second', 'third'].join(newline))
+    expect(diagnosticRange(code, { line: 2, column: 3, in_wrapper: false })).toEqual([8, 12])
+    const indented = indentSelection(code, 6, 6)
+    expect(indented).toEqual({ code: 'first\n  second\nthird', start: 8, end: 8 })
+    model.edit({ code: indented.code.replaceAll('\n', newline) })
+    expect(model.getSnapshot().draft.code).toBe(indented.code)
+    await model.check()
+    expect(api.check).toHaveBeenCalledWith(indented.code, [])
+    expect(diagnosticRange(model.getSnapshot().draft.code, { line: 2, column: 3, in_wrapper: false })).toEqual([8, 14])
   })
 
   it('keeps old checks from overwriting a new draft and reports unsupported checks truthfully', async () => {

@@ -1,5 +1,5 @@
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
-import { readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
+import { normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
 
 export type Action = 'check' | 'dryRun' | 'run' | 'save' | 'list' | 'load' | 'choices' | 'remove' | 'export' | 'import'
 export interface ActionState { status: 'idle' | 'running' | 'success' | 'error'; message: string }
@@ -53,6 +53,7 @@ function validType(type: ToolParamDraft['type'], value: unknown): boolean {
 }
 
 export function saveDisabledReason(state: WorkbenchState): string | null {
+  if (state.actions.save?.status === 'running') return 'Wait for the current save to finish before saving again.'
   if (state.builtin) return 'Built-in tools are read-only. Use Copy as mine first.'
   if (state.dryRunRevision !== state.revision) return 'Dry-run the current code and parameter declarations successfully before saving.'
   if (!state.draft.name.trim()) return 'Enter a tool name before saving.'
@@ -67,6 +68,7 @@ export class WorkbenchModel {
   private tickets: Partial<Record<Action, number>> = {}
   private draftVersion = 0
   private choicesRevision = -1
+  private saveInFlight = false
   private api: WorkbenchApi
 
   constructor(api: WorkbenchApi, initialDescription = '') {
@@ -93,23 +95,24 @@ export class WorkbenchModel {
     this.draftVersion++
     this.choicesRevision = -1
     for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
-    this.update({ draft: clone(draft), builtin, revision: this.state.revision + 1, dryRunRevision: null,
+    this.update({ draft: { ...clone(draft), code: normalizeCode(draft.code) }, builtin, revision: this.state.revision + 1, dryRunRevision: null,
       values: Object.fromEntries(draft.parameters.filter(param => param.default !== undefined).map(param => [param.name, clone(param.default)])),
       choices: {}, check: null, dryRun: null, deleteName: null,
-      actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: undefined, run: undefined },
+      actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined, run: undefined },
     })
   }
 
   edit(patch: Partial<ToolDraft>) {
     if (this.state.builtin) return
     const draft = clone({ ...this.state.draft, ...patch })
+    draft.code = normalizeCode(draft.code)
     this.draftVersion++
     if (signature(draft) !== signature(this.state.draft)) {
       this.choicesRevision = -1
       for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
       this.update({ draft, revision: this.state.revision + 1, dryRunRevision: null, check: null, dryRun: null, choices: {},
         values: Object.fromEntries(draft.parameters.map(param => [param.name, own(this.state.values, param.name) ?? param.default]).filter(([, value]) => value !== undefined)),
-        actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: undefined },
+        actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined },
       })
     } else this.update({ draft })
   }
@@ -240,17 +243,20 @@ export class WorkbenchModel {
   }
 
   async save() {
-    if (this.state.actions.save?.status === 'running') return
+    if (this.saveInFlight) return
     const reason = saveDisabledReason(this.state)
     if (reason) { this.fail('save', reason); return }
     const draft = clone(this.state.draft)
     draft.name = draft.name.trim()
+    const version = this.draftVersion
+    this.saveInFlight = true
     const ticket = this.begin('save', 'Saving tool...')
     try {
       const result = await this.api.save(draft)
-      if (this.current('save', ticket)) this.status('save', 'success', `Saved ${result.name}.`)
       await this.refresh()
+      if (this.current('save', ticket)) this.status('save', 'success', `Saved ${result.name}.${version === this.draftVersion ? '' : ' The current draft has not been saved.'}`)
     } catch (error) { if (this.current('save', ticket)) this.fail('save', error) }
+    finally { this.saveInFlight = false }
   }
 
   requestDelete(name: string) {
