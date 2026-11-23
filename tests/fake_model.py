@@ -6,6 +6,16 @@ in pieces, and ``tool_calls`` as fragments - the call's ``id`` and ``name``
 once, its ``arguments`` split over several chunks, all keyed by ``index``.
 Every request the host sends is kept in ``requests`` (messages, tools) so a
 test can check what the model was shown.
+
+Token usage: a turn may carry ``usage`` (a provider's raw usage object, e.g.
+one of ``USAGE_SHAPES``). How it travels is the model's ``usage_delivery``:
+``"final_chunk"`` (OpenAI: one more chunk with ``choices: []`` before
+``[DONE]``, every other chunk ``usage: null``), ``"finish_chunk"`` (on the
+chunk that carries ``finish_reason``, as DeepSeek documents it) or
+``"every_chunk"`` (a running total on each chunk, the last one complete).
+``usage_needs_option`` sends it only when the request asked with
+``stream_options.include_usage``; ``refuse_usage_option`` answers such a
+request 400 naming the option, as a provider that does not take it would.
 """
 from __future__ import annotations
 
@@ -14,33 +24,122 @@ import json
 import httpx
 
 
-def text_turn(text: str) -> dict:
-    return {"content": text}
+def text_turn(text: str, *, usage: dict | None = None) -> dict:
+    turn: dict = {"content": text}
+    if usage is not None:
+        turn["usage"] = usage
+    return turn
 
 
-def tool_turn(*calls: tuple[str, dict], content: str = "") -> dict:
+def tool_turn(*calls: tuple[str, dict], content: str = "", usage: dict | None = None) -> dict:
     """A turn that calls tools: ``tool_turn(("query", {"kind": "levels"}), ...)``."""
-    return {"content": content, "tool_calls": [{"name": name, "arguments": args} for name, args in calls]}
+    turn: dict = {"content": content, "tool_calls": [{"name": name, "arguments": args} for name, args in calls]}
+    if usage is not None:
+        turn["usage"] = usage
+    return turn
+
+
+# Provider usage objects as their documentation describes them (all values made up), and
+# what backend.llm.parse_usage must read from each: (input, output, cache_read, cache_write).
+USAGE_SHAPES: dict[str, tuple[dict, tuple]] = {
+    # OpenAI chat completions: CompletionUsage, prompt_tokens includes cached_tokens.
+    "openai": ({"prompt_tokens": 2006, "completion_tokens": 300, "total_tokens": 2306,
+                "prompt_tokens_details": {"cached_tokens": 1920, "audio_tokens": 0},
+                "completion_tokens_details": {"reasoning_tokens": 0, "audio_tokens": 0,
+                                              "accepted_prediction_tokens": 0, "rejected_prediction_tokens": 0}},
+               (2006, 300, 1920, None)),
+    # OpenAI with the cache write count the current reference lists.
+    "openai_cache_write": ({"prompt_tokens": 12000, "completion_tokens": 80, "total_tokens": 12080,
+                            "prompt_tokens_details": {"cached_tokens": 4000, "cache_write_tokens": 7000}},
+                           (12000, 80, 4000, 7000)),
+    # DeepSeek: prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens.
+    "deepseek": ({"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050,
+                  "prompt_cache_hit_tokens": 800, "prompt_cache_miss_tokens": 200,
+                  "prompt_tokens_details": {"cached_tokens": 800},
+                  "completion_tokens_details": {"reasoning_tokens": 0}},
+                 (1000, 50, 800, None)),
+    # DeepSeek without prompt_tokens_details: the hit count alone.
+    "deepseek_hit_only": ({"prompt_tokens": 1000, "completion_tokens": 50, "total_tokens": 1050,
+                           "prompt_cache_hit_tokens": 640, "prompt_cache_miss_tokens": 360},
+                          (1000, 50, 640, None)),
+    # Gemini's OpenAI compatibility endpoint: no cache fields are documented (seen without them).
+    "gemini": ({"completion_tokens": 102, "prompt_tokens": 758, "total_tokens": 1725}, (758, 102, None, None)),
+    # Anthropic's OpenAI compatibility endpoint: prompt_tokens_details "always empty".
+    "anthropic_compat": ({"prompt_tokens": 500, "completion_tokens": 20, "total_tokens": 520,
+                          "prompt_tokens_details": None, "completion_tokens_details": None},
+                         (500, 20, None, None)),
+    # OpenRouter: reads and writes in prompt_tokens_details.
+    "openrouter": ({"prompt_tokens": 194, "completion_tokens": 2, "total_tokens": 196, "cost": 0.95,
+                    "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 100, "audio_tokens": 0},
+                    "completion_tokens_details": {"reasoning_tokens": 0}},
+                   (194, 2, 0, 100)),
+    # new-api relaying Claude: prompt_tokens = input + cache read + cache creation; the
+    # write count both as cache_write_tokens and the older cached_creation_tokens; its
+    # Responses fields come along as zeros.
+    "newapi_claude": ({"prompt_tokens": 5300, "completion_tokens": 40, "total_tokens": 5340,
+                       "prompt_tokens_details": {"cached_tokens": 3000, "cached_creation_tokens": 2000,
+                                                 "cache_write_tokens": 2000, "text_tokens": 0,
+                                                 "audio_tokens": 0, "image_tokens": 0},
+                       "completion_tokens_details": {"text_tokens": 0, "audio_tokens": 0, "reasoning_tokens": 0},
+                       "input_tokens": 0, "output_tokens": 0, "input_tokens_details": None,
+                       "claude_cache_creation_5_m_tokens": 2000, "claude_cache_creation_1_h_tokens": 0},
+                      (5300, 40, 3000, 2000)),
+    # An older new-api: only cached_creation_tokens for the write.
+    "newapi_legacy_write": ({"prompt_tokens": 2300, "completion_tokens": 10, "total_tokens": 2310,
+                             "prompt_tokens_details": {"cached_tokens": 0, "cached_creation_tokens": 2000}},
+                            (2300, 10, 0, 2000)),
+    # LiteLLM: the Anthropic counts as top-level fields next to the OpenAI ones.
+    "litellm_anthropic": ({"prompt_tokens": 2006, "completion_tokens": 300, "total_tokens": 2306,
+                           "prompt_tokens_details": {"cached_tokens": 1920},
+                           "cache_creation_input_tokens": 0, "cache_read_input_tokens": 1920},
+                          (2006, 300, 1920, 0)),
+    # Anthropic's Messages usage relayed as is: input_tokens is only the uncached tail.
+    "anthropic_native": ({"input_tokens": 50, "cache_read_input_tokens": 1000,
+                          "cache_creation_input_tokens": 200, "output_tokens": 30},
+                         (1250, 30, 1000, 200)),
+    # ... with one cache count missing: the total is unknown, not input_tokens.
+    "anthropic_native_partial": ({"input_tokens": 50, "cache_read_input_tokens": 1000, "output_tokens": 30},
+                                 (None, 30, 1000, None)),
+    # Responses-style usage: input_tokens is the whole prompt.
+    "responses": ({"input_tokens": 12000, "output_tokens": 100,
+                   "input_tokens_details": {"cached_tokens": 4000, "cache_write_tokens": 7000}},
+                  (12000, 100, 4000, 7000)),
+    # Nothing usable: strings, negatives, booleans and floats with a fraction are not counts.
+    "garbage": ({"prompt_tokens": "12", "completion_tokens": -1, "total_tokens": True,
+                 "prompt_tokens_details": {"cached_tokens": 1.5}},
+                (None, None, None, None)),
+    "empty": ({}, (None, None, None, None)),
+}
 
 
 class FakeModel:
-    def __init__(self, turns: list[dict], *, pieces: int = 3):
+    def __init__(self, turns: list[dict], *, pieces: int = 3, usage_delivery: str = "final_chunk",
+                 usage_needs_option: bool = True, refuse_usage_option: bool = False):
         self.turns = list(turns)
         self.pieces = max(1, pieces)
+        self.usage_delivery = usage_delivery
+        self.usage_needs_option = usage_needs_option
+        self.refuse_usage_option = refuse_usage_option
         self.requests: list[dict] = []
+        self.refused: list[dict] = []             # requests answered 400 for stream_options
         self.transport = httpx.MockTransport(self._handle)
 
     # -- httpx side --------------------------------------------------------------
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
+        if self.refuse_usage_option and "stream_options" in body:
+            self.refused.append(body)
+            return httpx.Response(400, text='{"error": {"message": "Unrecognized request argument supplied: '
+                                            'stream_options", "type": "invalid_request_error"}}')
         self.requests.append(body)
         if not self.turns:
             return httpx.Response(500, text='{"error": "script exhausted"}')
         turn = self.turns.pop(0)
-        return httpx.Response(200, text=self._stream(turn), headers={"content-type": "text/event-stream"})
+        asked = bool((body.get("stream_options") or {}).get("include_usage"))
+        return httpx.Response(200, text=self._stream(turn, asked), headers={"content-type": "text/event-stream"})
 
-    def _stream(self, turn: dict) -> str:
+    def _stream(self, turn: dict, asked: bool = False) -> str:
         chunks: list[dict] = [{"role": "assistant"}]
         content = turn.get("content") or ""
         for piece in _split(content, self.pieces):
@@ -54,8 +153,23 @@ class FakeModel:
             for fragment in fragments[1:]:
                 chunks.append({"tool_calls": [{"index": index, "function": {"arguments": fragment}}]})
         finish = "tool_calls" if turn.get("tool_calls") else "stop"
-        lines = [f"data: {json.dumps({'choices': [{'delta': delta, 'finish_reason': None}]})}" for delta in chunks]
-        lines.append(f"data: {json.dumps({'choices': [{'delta': {}, 'finish_reason': finish}]})}")
+        events = [{"choices": [{"delta": delta, "finish_reason": None}]} for delta in chunks]
+        events.append({"choices": [{"delta": {}, "finish_reason": finish}]})
+        usage = turn.get("usage")
+        if usage is not None and (asked or not self.usage_needs_option):
+            if self.usage_delivery == "final_chunk":
+                for event in events:
+                    event["usage"] = None
+                events.append({"choices": [], "usage": usage})
+            elif self.usage_delivery == "finish_chunk":
+                events[-1]["usage"] = usage
+            elif self.usage_delivery == "every_chunk":
+                for event in events[:-1]:
+                    event["usage"] = {**usage, "completion_tokens": 0}
+                events[-1]["usage"] = usage
+            else:
+                raise ValueError(f"unknown usage_delivery {self.usage_delivery!r}")
+        lines = [f"data: {json.dumps(event)}" for event in events]
         lines.append("data: [DONE]")
         return "\n\n".join(lines) + "\n\n"
 
@@ -85,6 +199,18 @@ class FakeModel:
             if result not in unique:
                 unique.append(result)
         return unique
+
+
+TRACE_EVENTS = ("stage", "tool", "usage")
+
+
+def drop_trace_frames(text: str) -> str:
+    """An SSE response without its ``stage``, ``tool`` and ``usage`` frames: what the host
+    streamed before those events existed."""
+    blocks = [block for block in text.split("\n\n") if block]
+    kept = [block for block in blocks
+            if not any(block.startswith(f"event: {name}\n") for name in TRACE_EVENTS)]
+    return "".join(block + "\n\n" for block in kept)
 
 
 def _split(text: str, pieces: int) -> list[str]:
