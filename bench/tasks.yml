@@ -1,3 +1,16 @@
+# Token bench tasks. Fields:
+#   id, kind (chat | query | tool | none | ask), message
+#   mentions: [{kind, id}]        optional
+#   answers: [text]               optional: sent in turn when the model asks
+#   expect: {tool, params, max_turns}   params compared by value, numbers as numbers;
+#                                 lengths are written in millimetres, units are not compared
+#   requires: [name]              optional: what the host must offer; --skip-requires <name>
+#                                 skips these tasks and reports them as skipped, not wrong
+#                                   basic-tools: create_level, create_grid, move_elements
+#                                     (not in the released package yet)
+#                                   mentions: the chat request's mentions field (not on main yet)
+#   placeholder_ids: true         optional: the mention ids are placeholders; skipped unless
+#                                 --include-placeholder-ids (fill in real ids from the test model)
 - id: query-levels
   kind: query
   message: "List the levels in the current model. Do not change the model."
@@ -24,24 +37,31 @@
 - id: new-level
   kind: tool
   message: "Create a level named F3 at elevation 6000 mm."
+  requires: [basic-tools]
   expect: {tool: create_level, params: {}, max_turns: 3}
 - id: new-grid
   kind: tool
   message: "Create a straight grid named A from (0,0) to (10000,0) mm."
+  requires: [basic-tools]
   expect: {tool: create_grid, params: {}, max_turns: 3}
 - id: move-selection
   kind: tool
   message: "Move the currently selected elements 1000 mm in X, zero in Y and Z."
+  requires: [basic-tools]
   expect: {tool: move_elements, params: {}, max_turns: 3}
 - id: mentioned-level
   kind: tool
   message: "Create a 3000 mm high Basic Wall from (0,0) to (6000,0) on the selected level."
   mentions: [{kind: level, id: 101}]
+  requires: [mentions]
+  placeholder_ids: true
   expect: {tool: create_wall, params: {height: 3000}, max_turns: 3}
 - id: mentioned-link
   kind: query
   message: "List the levels in the selected linked model without changing it."
   mentions: [{kind: link, id: 202}]
+  requires: [mentions]
+  placeholder_ids: true
   expect: {max_turns: 1}
 - id: unsupported-pipe
   kind: none
