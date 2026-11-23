@@ -545,3 +545,109 @@ def test_the_example_file_is_valid_and_holds_no_key():
     # Key prefixes, spelled in pieces so the repository's own key scan finds nothing here.
     prefixes = ["sk" + "-", "AI" + "za", "gh" + "p_", "Bearer"]
     assert text.isascii() and not any(prefix in text for prefix in prefixes)
+
+
+# -- round 2: values YAML cannot read, names that could be a key ----------------------------------
+
+ENTRY = "models:\n  main: {base_url: https://a.example/v1, model: m, api_key_env: K}\nroles: {planner: main}\n"
+LONG_DIGITS = "7" * 5000
+
+UNREADABLE = [
+    # (file text, a made-up value that must not appear anywhere)
+    ("models:\n  main: {base_url: https://a.example/v1, model: m, api_key_env: !!int sk-made-up-123}\n"
+     "roles: {planner: main}\n", "sk-made-up-123"),
+    ("models:\n  main: {base_url: https://a.example/v1, model: !!bool madeupboolvalue, api_key_env: K}\n"
+     "roles: {planner: main}\n", "madeupboolvalue"),
+    ("models:\n  main: {base_url: https://a.example/v1, model: !!float madeupfloatvalue, api_key_env: K}\n"
+     "roles: {planner: main}\n", "madeupfloatvalue"),
+    ("models:\n  main: {base_url: https://a.example/v1, model: 2024-02-30, api_key_env: K}\n"
+     "roles: {planner: main}\n", "2024-02-30"),
+    ("models:\n  main: {base_url: https://a.example/v1, model: !!timestamp madeuptimevalue, api_key_env: K}\n"
+     "roles: {planner: main}\n", "madeuptimevalue"),
+    (f"models:\n  main: {{base_url: https://a.example/v1, model: m, api_key_env: K, max_tokens: {LONG_DIGITS}}}\n"
+     "roles: {planner: main}\n", "7777777777"),
+]
+
+
+@pytest.mark.parametrize("text, value", UNREADABLE)
+def test_a_value_yaml_cannot_read_refuses_the_start_by_its_type_only(make_client, env, tmp_path, text, value,
+                                                                    capsys, caplog):
+    caplog.set_level(logging.DEBUG)
+    path = write_models(tmp_path, text)
+    with pytest.raises(ConfigError) as exc:
+        make_client()
+    message = str(exc.value)
+    assert message.startswith(f"models file {path}: not valid YAML (a value YAML cannot read: "), message
+    assert value not in message and exc.value.__cause__ is None and exc.value.__suppress_context__
+    from backend.main import build_app_or_exit
+    with pytest.raises(SystemExit) as stop:
+        build_app_or_exit()
+    assert stop.value.code == 2
+    captured = capsys.readouterr()
+    assert f"cannot start: models file {path}" in captured.err
+    for text_out in (captured.err, captured.out, caplog.text):
+        assert value not in text_out
+
+
+def test_a_huge_temperature_is_a_plain_problem(make_client, env, tmp_path, capsys):
+    huge = "9" * 400                                         # past what a float holds
+    path = write_models(tmp_path, ENTRY.replace("api_key_env: K}", f"api_key_env: K, temperature: {huge}}}"))
+    with pytest.raises(ConfigError) as exc:
+        make_client()
+    assert str(exc.value) == f"models file {path}: models.main.temperature: must be a number from 0 to 2"
+    for value in (f"-{huge}", "1e400", "-.inf", ".inf"):
+        write_models(tmp_path, ENTRY.replace("api_key_env: K}", f"api_key_env: K, temperature: {value}}}"))
+        with pytest.raises(ConfigError) as exc:
+            make_client()
+        assert "models.main.temperature: must be a number from 0 to 2" in str(exc.value)
+
+
+def test_anything_the_check_trips_over_is_reported_by_type(monkeypatch, tmp_path):
+    from backend import models_file
+
+    def broken(data, path):
+        raise OverflowError("made-up-text-of-the-exception")
+    monkeypatch.setattr(models_file, "parse_models", broken)
+    path = write_models(tmp_path, ENTRY)
+    with pytest.raises(ConfigError) as exc:
+        load_models(path)
+    assert str(exc.value) == f"models file {path}: cannot be checked (OverflowError)"
+
+
+def test_a_long_entry_name_is_shown_by_position(make_client, env, tmp_path):
+    long_name = "a-name-of-17-char"                          # 17 characters: not shown
+    short_name = "sixteen-chars-ok"                          # 16: shown
+    assert len(long_name) == 17 and len(short_name) == 16
+    path = write_models(tmp_path, (
+        f"models:\n  {short_name}: {{base_url: http://a.example/v1, model: m, api_key_env: K}}\n"
+        f"  {long_name}: {{base_url: http://a.example/v1, model: m, api_key_env: K}}\n"
+        f"roles: {{planner: {short_name}}}\n"))
+    with pytest.raises(ConfigError) as exc:
+        make_client()
+    message = str(exc.value)
+    assert f"models.{short_name}.base_url: must be https://" in message
+    assert "models.<entry #2>.base_url: must be https://" in message
+    assert long_name not in message and str(path) in message
+
+
+def test_logs_show_short_names_only(make_client, env, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    long_name = "entry-name-of-24-letters"
+    long_env = "W5A_" + "LONG_VARIABLE_NAME_" * 2 + "XX"      # 44 characters
+    assert len(long_name) == 24 and len(long_env) > 40
+    for name in ("W5A_SHORT_UNSET", long_env):
+        env.delenv(name, raising=False)
+    write_models(tmp_path, (
+        f"models:\n  main: {{base_url: https://a.example/v1, model: m, api_key_env: W5A_SHORT_UNSET}}\n"
+        f"  {long_name}: {{base_url: https://b.example/v1, model: m2, api_key_env: {long_env}}}\n"
+        f"roles: {{planner: main, analyst: {long_name}}}\n"))
+    make_client()
+    warnings = sorted(r.getMessage() for r in caplog.records
+                      if r.levelno == logging.WARNING and r.name == "backend.models")
+    assert warnings == [
+        "models file entry <entry #2>: (a long name, not shown) is not set; its roles need X-LLM-Key from the "
+        "browser until it is",
+        "models file entry main: W5A_SHORT_UNSET is not set; its roles need X-LLM-Key from the browser until it is"]
+    assert long_name not in caplog.text and long_env not in caplog.text
+    # The entry itself is read as written: the label is only how it is shown.
+    assert get_models().entries[long_name].label == "<entry #2>"

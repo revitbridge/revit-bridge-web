@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import math
 import os
 import re
 from collections.abc import Mapping
@@ -81,6 +80,10 @@ _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 # A field name of the file is shown in a message only when it cannot be a key: no digit,
 # no dash, at most 32 characters. Anything else is "a field (name not shown)".
 _SHOWN_NAME = re.compile(r"[a-z_]{1,32}")
+# Names that could be a pasted key are not shown: an entry name longer than this is
+# "<entry #N>" in messages and logs, a longer key variable name is not logged.
+SHOWN_ENTRY_MAX = 16
+SHOWN_ENV_MAX = 40
 _SECRET_WORDS = ("key", "token", "secret", "password", "passwd", "auth", "bearer", "credential", "cookie")
 
 NO_MODEL_FROM_FILE = (
@@ -90,17 +93,24 @@ NO_MODEL_FROM_FILE = (
 
 @dataclass(frozen=True)
 class ModelEntry:
-    """One entry under ``models``; the key itself is never held, only its variable's name."""
+    """One entry under ``models``; the key itself is never held, only its variable's name.
+    ``label`` is the entry as messages and logs show it (``entry_label``)."""
     name: str
     base_url: str
     model: str
     api_key_env: str
     max_tokens: int | None = None
     temperature: float | None = None
+    label: str = ""
 
     def api_key(self) -> str:
         """The key, read now: the variable may be set or changed while the host runs."""
         return os.environ.get(self.api_key_env, "").strip()
+
+    @property
+    def shown_key_env(self) -> str:
+        """The key variable's name as a log line shows it: a long one could be a pasted key."""
+        return self.api_key_env if len(self.api_key_env) <= SHOWN_ENV_MAX else "(a long name, not shown)"
 
 
 @dataclass(frozen=True)
@@ -187,6 +197,12 @@ def _shown(name) -> str:
     return f"'{name}'" if isinstance(name, str) and _SHOWN_NAME.fullmatch(name) else "a field (name not shown)"
 
 
+def entry_label(name: str, position: int) -> str:
+    """An entry as messages and logs name it: its name when it is at most
+    ``SHOWN_ENTRY_MAX`` characters, else ``<entry #N>`` (N counts from 1 in the file)."""
+    return name if len(name) <= SHOWN_ENTRY_MAX else f"<entry #{position}>"
+
+
 def _looks_secret(name) -> bool:
     return isinstance(name, str) and any(word in name.lower() for word in _SECRET_WORDS)
 
@@ -249,15 +265,17 @@ def _max_tokens(field: str, value, problems: list[str]) -> int | None:
 
 def _temperature(field: str, value, problems: list[str]) -> float | None:
     low, high = TEMPERATURE_RANGE
-    if (isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-            and low <= value <= high):
+    # The range alone: it compares an int of any size exactly (no float conversion that
+    # could overflow), and refuses NaN and the infinities.
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and low <= value <= high:
         return float(value)
     problems.append(f"{field}: must be a number from {low:g} to {high:g}")
     return None
 
 
-def _entry(name: str, raw, problems: list[str]) -> ModelEntry | None:
-    prefix = f"models.{name}"
+def _entry(name: str, position: int, raw, problems: list[str]) -> ModelEntry | None:
+    label = entry_label(name, position)
+    prefix = f"models.{label}"
     if not isinstance(raw, dict):
         problems.append(f"{prefix}: must be a mapping with base_url, model and api_key_env")
         return None
@@ -268,8 +286,8 @@ def _entry(name: str, raw, problems: list[str]) -> ModelEntry | None:
         if key == "extra_headers":
             problems.append(f"{prefix}.extra_headers: not allowed (headers could carry a key)")
         elif _looks_secret(key):
-            label = f"{prefix}.{key}" if _SHOWN_NAME.fullmatch(key) else f"{prefix}: a field (name not shown)"
-            problems.append(f"{label}: not allowed - keys never go in this file: put the key in an "
+            where = f"{prefix}.{key}" if _SHOWN_NAME.fullmatch(key) else f"{prefix}: a field (name not shown)"
+            problems.append(f"{where}: not allowed - keys never go in this file: put the key in an "
                             f"environment variable and name that variable in api_key_env")
         else:
             problems.append(f"{prefix}: {_shown(key)} is not a field of an entry "
@@ -286,7 +304,7 @@ def _entry(name: str, raw, problems: list[str]) -> ModelEntry | None:
     if len(problems) > before:
         return None
     return ModelEntry(name=name, base_url=base_url, model=model, api_key_env=key_env,
-                      max_tokens=max_tokens, temperature=temperature)
+                      max_tokens=max_tokens, temperature=temperature, label=label)
 
 
 def parse_models(data, path: Path) -> ModelsFile:
@@ -313,7 +331,7 @@ def parse_models(data, path: Path) -> ModelsFile:
                     problems.append(f"models: the name of entry {position} must be 1-32 letters, digits, '.', "
                                     f"'_' or '-' (not shown)")
                     continue
-                entry = _entry(name, raw, problems)
+                entry = _entry(name, position, raw, problems)
                 if entry is not None:
                     entries[name] = entry
         named = data.get("roles")
@@ -364,7 +382,17 @@ def load_models(path: Path, *, explicit: bool = False) -> ModelsFile | None:
         data = yaml.load(text, Loader=ModelsYamlLoader)  # noqa: S506 - a SafeLoader subclass
     except (yaml.YAMLError, RecursionError) as exc:
         raise ConfigError(f"{where}: {_yaml_problem(exc)}") from None
-    return parse_models(data, path)
+    except Exception as exc:  # noqa: BLE001
+        # PyYAML's constructors raise plain ValueError, KeyError, AttributeError... for a
+        # scalar of the wrong form (!!int text, !!bool x, 2024-02-30, a 5000-digit int), and
+        # their text quotes the value: the exception's type only.
+        raise ConfigError(f"{where}: not valid YAML (a value YAML cannot read: {type(exc).__name__})") from None
+    try:
+        return parse_models(data, path)
+    except ConfigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - whatever the data was, never its text
+        raise ConfigError(f"{where}: cannot be checked ({type(exc).__name__})") from None
 
 
 _loaded: tuple[WebSettings, ModelsFile | None] | None = None
@@ -387,7 +415,7 @@ def reset_models() -> None:
 
 def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
     """One line for where the models come from; one per role entry whose key variable is
-    not set now. Model names, entry names and variable names only."""
+    not set now. Model names, entry labels and short variable names only."""
     if models is None:
         _log.info("no models file at %s: every role uses LLM_* and the request's X-LLM-* headers",
                   settings.models_file)
@@ -399,7 +427,7 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
         entry = models.entries[name]
         if not entry.api_key():
             _log.warning("models file entry %s: %s is not set; its roles need X-LLM-Key from the browser "
-                         "until it is", name, entry.api_key_env)
+                         "until it is", entry.label, entry.shown_key_env)
 
 
 # -- resolving a role ----------------------------------------------------------------------
