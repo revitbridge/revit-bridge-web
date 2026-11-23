@@ -27,9 +27,10 @@ jobs:
             echo "model SDK or vector store found in the environment" >&2
             exit 1
           fi
+      # Exported from a cloud host: every route present (a local one has no relay routes).
       - name: OpenAPI export is current
         run: |
-          uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > /tmp/api.json
+          DEPLOY_MODE=cloud ADMIN_PASSWORD=openapi-export uv run python -c "from backend.main import create_app; import json; print(json.dumps(create_app().openapi(), indent=2))" > /tmp/api.json
           diff -u docs/api-v1.json /tmp/api.json
 
   frontend:
@@ -58,7 +59,21 @@ jobs:
         run: docker build -t revit-bridge-web:ci .
       - name: Smoke
         run: |
-          docker run -d --name web -p 7860:7860 revit-bridge-web:ci
+          # Local mode (the default) refuses to start unless the port is published on loopback,
+          # or with ADMIN_PASSWORD set; a cloud host without ADMIN_PASSWORD refuses too. A refusal
+          # exits 2 at once; a regression that let one start is stopped by timeout (124) and fails.
+          refused() {
+            set +e
+            timeout 60 docker run --rm "$@" revit-bridge-web:ci
+            code=$?
+            set -e
+            echo "docker run $* -> exit $code"
+            test "$code" -eq 2
+          }
+          refused -e BIND_ADDRESS=0.0.0.0
+          refused -e BIND_ADDRESS=127.0.0.1 -e ADMIN_PASSWORD=x
+          refused -e DEPLOY_MODE=cloud
+          docker run -d --name web -p 127.0.0.1:7860:7860 -e BIND_ADDRESS=127.0.0.1 revit-bridge-web:ci
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:7860/health >/dev/null; then break; fi
             sleep 1
@@ -68,6 +83,9 @@ jobs:
           # A fresh container lists exactly the packs shipped in the revit-bridge wheel.
           test "$(curl -fsS http://127.0.0.1:7860/api/v1/bridge/tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 8
           curl -fsS http://127.0.0.1:7860/ | grep -q "<title>revit-bridge</title>"
+          # The local request guard: a proxied request and another host name are refused.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 203.0.113.9' http://127.0.0.1:7860/config.json)" = 403
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: example.com' http://127.0.0.1:7860/config.json)" = 403
           docker logs web
           docker rm -f web
       # The documented smoke: compose with its env file, the ./data bind mount and

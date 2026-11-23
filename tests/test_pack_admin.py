@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from backend.config import ConfigError
 from tests.test_api_v1 import B, WALL, confirm, spec_for
 
 ADMIN = {"X-Admin-Token": "hunter2"}
@@ -39,14 +40,12 @@ def untouched(client, tmp_path):
     assert not list((tmp_path / "data" / "capabilities").glob("*.yaml"))
 
 
-def test_without_admin_password_packs_cannot_be_changed(client, tmp_path):
-    for method, path, body in writes():
-        for headers in ({}, ADMIN):
-            resp = call(client, method, path, body, headers)
-            assert resp.status_code == 503, (method, path, resp.text)
-            assert resp.json() == {"error": "admin_disabled",
-                                   "message": "Set ADMIN_PASSWORD to change capability packs"}
-    untouched(client, tmp_path)
+def test_without_admin_password_packs_cannot_be_changed(make_client, env):
+    # A cloud host without ADMIN_PASSWORD no longer starts (DEPLOY_MODE): the 503
+    # admin_disabled such a host answered is now a refusal at startup.
+    env.delenv("ADMIN_PASSWORD")
+    with pytest.raises(ConfigError, match="ADMIN_PASSWORD"):
+        make_client()
 
 
 @pytest.fixture

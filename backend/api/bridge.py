@@ -3,10 +3,16 @@
 Prefix ``/api/v1/bridge``. Two transports to Revit:
 
 - TCP: the add-in listens locally (``REVIT_BRIDGE_HOST:PORT``), used when no
-  ``X-Slot-Id`` header is sent;
-- WebSocket relay: a paired add-in connected to ``/ws/{device_id}``; the
-  browser selects it with ``X-Device-Id`` + ``X-Device-Key`` (see
-  ``backend.api.devices``).
+  ``X-Device-Id`` header is sent, and always on a local host;
+- WebSocket relay (``DEPLOY_MODE=cloud`` only): a paired add-in connected to
+  ``/ws/{device_id}``; the browser selects it with ``X-Device-Id`` +
+  ``X-Device-Key`` (see ``backend.api.devices``).
+
+``router`` holds the routes of both modes. ``relay_router`` (the add-in socket and
+the device routes) is mounted on a cloud host only; a local host mounts
+``cloud_only_router`` instead, which answers those paths 404 ``cloud_mode_only``.
+On a local host the device headers are not read and the admin checks pass
+without a password.
 
 The flow a page walks is the package's: ``take_snapshot`` -> ``missing_params``
 / ``reconcile`` -> ``validate_spec`` + ``Gate.issue`` (the token stays in the
@@ -36,6 +42,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.requests import HTTPConnection
 
@@ -80,14 +87,27 @@ MAX_EVIDENCE = 200
 # The scope every confirmation and every ledger line belongs to: the device the
 # request drives, or "local" for the add-in on this machine (package default).
 LOCAL_SCOPE = "local"
+CLOUD_MODE_ONLY = "cloud_mode_only"
 
-# Which device this request drives, and the check behind it, live in backend.api.devices.
-set_device_context = devices_api.set_device_context
+
+async def set_device_context(connection: HTTPConnection) -> None:
+    """Which device this request drives. On a cloud host: ``backend.api.devices``
+    reads ``X-Device-Id`` and verifies ``X-Device-Key``. A local host has no devices:
+    it reads no device header at all and every request drives the local add-in."""
+    if not get_settings().cloud:
+        devices_api.request_device.set(None)
+        return
+    await devices_api.set_device_context(connection)
+
+
+def request_device() -> str | None:
+    """The device this request drives; always None on a local host."""
+    return devices_api.current_device() if get_settings().cloud else None
 
 
 def current_scope() -> str:
     """The scope of this request: its device id, or ``"local"`` without one."""
-    return devices_api.current_device() or LOCAL_SCOPE
+    return request_device() or LOCAL_SCOPE
 
 
 router = APIRouter(
@@ -95,6 +115,17 @@ router = APIRouter(
     tags=["bridge"],
     dependencies=[Depends(set_device_context)],
 )
+
+# Cloud only: the add-in socket and the device routes (backend/api/devices.py),
+# with the same prefix, tag, error contract and device dependency as ``router``.
+relay_router = APIRouter(
+    prefix="/api/v1/bridge",
+    tags=["bridge"],
+    dependencies=[Depends(set_device_context)],
+)
+
+# Local only, in place of relay_router: the same paths answer 404 cloud_mode_only.
+cloud_only_router = APIRouter(prefix="/api/v1/bridge", include_in_schema=False)
 
 
 # -- package state of this host ------------------------------------------------
@@ -127,8 +158,9 @@ def reset_bridge_state() -> None:
 
 
 async def get_revit_client():
-    """The selected device's relay client, or the local TCP client (503 when neither answers)."""
-    device_id = devices_api.current_device()
+    """The selected device's relay client, or the local TCP client (503 when neither answers).
+    A local host only ever uses the local TCP client."""
+    device_id = request_device()
     if device_id:
         relay = get_relay()
         if not relay.get_connection(device_id):
@@ -150,8 +182,12 @@ async def require_admin(x_admin_token: str | None = Header(None)) -> None:
     designer's Revit once they confirm its card. The same check as every admin route
     (``WebSettings.admin_token_ok``), in this router's error shape, as ``GET /devices``:
     503 ``admin_disabled`` without ``ADMIN_PASSWORD``, 403 ``admin_required`` for a
-    missing or wrong token. A device key does not stand in for it."""
+    missing or wrong token. A device key does not stand in for it.
+
+    A local host passes without a password: only this machine reaches it."""
     settings = get_settings()
+    if not settings.cloud:
+        return
     if not settings.admin_password:
         raise ApiError(503, "admin_disabled", "Set ADMIN_PASSWORD to change capability packs")
     if not settings.admin_token_ok(x_admin_token):
@@ -586,7 +622,7 @@ async def trigger_selection():
 async def revit_health():
     """Is a Revit reachable: the selected device, else the local TCP add-in."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    device_id = devices_api.current_device()
+    device_id = request_device()
     relay = get_relay()
     relay_status = relay.get_status()
 
@@ -620,11 +656,12 @@ async def revit_health():
             "protocol": "JSON-RPC 2.0 / TCP",
             "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
         }
+    # A local host has no paired devices to mention.
+    paired = f"; {relay_status['connected']} paired device(s) connected" if get_settings().cloud else ""
     return {
         "revit_connected": False, "latency_ms": None,
         "mode": "waiting_for_revit",
-        "detail": f"Local add-in unreachable ({status['error']}); "
-                  f"{relay_status['connected']} paired device(s) connected",
+        "detail": f"Local add-in unreachable ({status['error']}){paired}",
         "endpoint": f"{status['host']}:{status['port']}",
         "bridge_version": bridge_version, "timestamp": now, "devices": relay_status,
     }
@@ -634,11 +671,12 @@ async def revit_health():
 async def service_health():
     """Relay status only; never probes Revit."""
     relay_status = get_relay().get_status()
+    cloud = get_settings().cloud           # a local host has no relay: not ready, no endpoint, 0 devices
     return {
         "status": "ok",
-        "remote_relay_ready": True,
+        "remote_relay_ready": cloud,
         "connected_devices": relay_status["connected"],
-        "websocket_endpoint": "/api/v1/bridge/ws/{device_id}",
+        "websocket_endpoint": "/api/v1/bridge/ws/{device_id}" if cloud else None,
         "devices": relay_status,
     }
 
@@ -649,9 +687,9 @@ async def get_slots():
     return get_relay().get_status()
 
 
-# -- add-in relay --------------------------------------------------------------
+# -- add-in relay (cloud only) -------------------------------------------------
 
-@router.websocket("/ws/{device_id}")
+@relay_router.websocket("/ws/{device_id}")
 async def revit_ws_endpoint(ws: WebSocket, device_id: str):
     """A paired add-in connects here and authenticates with its device token.
 
@@ -741,9 +779,37 @@ async def _handshake_ok(message: str | None, device_id: str) -> bool:
     return await run_in_threadpool(store.verify_device, device_id, token) is not None
 
 
-# -- devices -------------------------------------------------------------------
+# -- devices (cloud only) ------------------------------------------------------
 
-# Pairing, the device list and revocation (backend/api/devices.py) hang on this
-# router, so they share its error contract - but the redeem route needs no device
-# header: the add-in has only its pairing code.
-devices_api.register(router)
+# Pairing, the device list and revocation (backend/api/devices.py) hang on the relay
+# router, which shares this router's error contract - but the redeem route needs no
+# device header: the add-in has only its pairing code.
+devices_api.register(relay_router)
+
+
+# -- a local host: the relay's paths, answered --------------------------------------
+
+def cloud_mode_only() -> ApiError:
+    return ApiError(404, CLOUD_MODE_ONLY,
+                    "Pairing, devices and the add-in relay exist only on a host started with "
+                    "DEPLOY_MODE=cloud; this host is local and talks to the add-in on this machine")
+
+
+_ALL_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+@cloud_only_router.api_route("/devices", methods=_ALL_METHODS)
+@cloud_only_router.api_route("/devices/{rest:path}", methods=_ALL_METHODS)
+@cloud_only_router.api_route("/ws/{rest:path}", methods=_ALL_METHODS)
+async def relay_route_on_a_local_host(rest: str = ""):
+    raise cloud_mode_only()
+
+
+@cloud_only_router.websocket("/ws/{device_id}")
+async def relay_socket_on_a_local_host(ws: WebSocket, device_id: str):
+    """An add-in that tries to connect gets the same 404 as a plain request, before the upgrade."""
+    error = cloud_mode_only()
+    try:
+        await ws.send_denial_response(JSONResponse(status_code=error.status, content=error.payload))
+    except RuntimeError:                       # a server without the denial extension: HTTP 403
+        await ws.close(code=1008, reason=CLOUD_MODE_ONLY)

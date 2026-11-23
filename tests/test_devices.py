@@ -262,7 +262,7 @@ def test_every_admin_check_compares_in_constant_time(make_client, env, monkeypat
 def test_device_list_is_admin_only(make_client, env):
     client = make_client()
     assert client.post(f"{B}/devices/pair", json={"label": "One"}).status_code == 200
-    assert client.get(f"{B}/devices").status_code == 503          # no ADMIN_PASSWORD configured
+    assert client.get(f"{B}/devices").status_code == 403          # no X-Admin-Token (a cloud host has ADMIN_PASSWORD)
 
     env.setenv("ADMIN_PASSWORD", "hunter2")
     client = make_client()

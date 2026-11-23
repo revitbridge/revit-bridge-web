@@ -37,13 +37,18 @@ COPY docker-entrypoint.sh /usr/local/bin/revit-bridge-web-entrypoint
 # on loopback through the bridge gateway (172.x.0.1), so its X-Forwarded-For is
 # trusted by default; with the port bound to a public or LAN address set it in
 # .env (see .env.example). An explicit value replaces this one.
+# REVIT_BRIDGE_WEB_CONTAINER: the server listens on the container's interface
+# (HOST=0.0.0.0); what other machines reach is the address the port is published
+# on. DEPLOY_MODE=local (the default) therefore checks BIND_ADDRESS, which
+# docker-compose.yml passes in, and refuses to start without a loopback one.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
     REVIT_BRIDGE_DATA_DIR=/app/data \
     HOST=0.0.0.0 \
     PORT=7860 \
-    FORWARDED_ALLOW_IPS=127.0.0.1,172.16.0.0/12
+    FORWARDED_ALLOW_IPS=127.0.0.1,172.16.0.0/12 \
+    REVIT_BRIDGE_WEB_CONTAINER=1
 
 # The entrypoint starts as root only long enough to make the data volume
 # writable for appuser, then drops to it (uid 1000).
