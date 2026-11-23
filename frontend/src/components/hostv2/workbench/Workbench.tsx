@@ -1,0 +1,222 @@
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import type { ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
+import { inputValue, saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
+import { diagnosticRange, indentSelection, type Diagnostic, type DryRunReply } from './results'
+import './workbench.css'
+
+interface Props { api: WorkbenchApi; onRun: OnRun; initialDescription?: string }
+
+const actionLabels: Record<Action, string> = {
+  check: 'Check', dryRun: 'Dry run', run: 'Run', save: 'Save', list: 'Tool list', load: 'Open',
+  choices: 'Model options', remove: 'Delete', export: 'Export', import: 'Import',
+}
+
+function ActionStatus({ action, state }: { action: Action; state?: ActionState }) {
+  if (!state || state.status === 'idle') return null
+  return <p className={`hostv2-workbench-status is-${state.status}`} role={state.status === 'error' ? 'alert' : 'status'}>
+    <strong>{actionLabels[action]}: </strong>{state.message}
+  </p>
+}
+
+export function DiagnosticList({ diagnostics, code, locate }: { diagnostics: Diagnostic[]; code: string; locate: (diagnostic: Diagnostic) => void }) {
+  if (!diagnostics.length) return null
+  return <ul className="hostv2-workbench-diagnostics">
+    {diagnostics.map((diagnostic, index) => <li key={index} className={`is-${diagnostic.severity}`}>
+      <button type="button" className="btn-ghost" disabled={!diagnosticRange(code, diagnostic)} onClick={() => locate(diagnostic)}>
+        {diagnostic.file ? `${diagnostic.file}: ` : ''}
+        {diagnostic.line === null ? 'Location unavailable' : `Line ${diagnostic.line}, column ${diagnostic.column ?? '?'}`}
+        {diagnostic.in_wrapper ? ' (wrapper)' : ''}
+      </button>
+      <span>{diagnostic.severity} {diagnostic.id}: {diagnostic.message}</span>
+    </li>)}
+  </ul>
+}
+
+function DryRunResult({ result }: { result: DryRunReply }) {
+  return <section className="hostv2-workbench-result" aria-label="Dry run result">
+    <p className={`hostv2-workbench-rollback ${result.rolled_back === true ? 'is-safe' : 'is-unknown'}`}>
+      {result.rolled_back === true ? 'Model was not changed. The dry run was rolled back.' : 'Rollback is not confirmed. Check the model before continuing.'}
+    </p>
+    <h3>What would change</h3>
+    <dl className="hostv2-workbench-changes">
+      {(['added', 'modified', 'deleted'] as const).map(kind => {
+        const part = result.changes?.[kind]
+        const count = part?.count
+        return <div key={kind}><dt>{kind}</dt><dd>{typeof count === 'number' && Number.isFinite(count) ? count : 'unknown'}</dd></div>
+      })}
+    </dl>
+    {result.changes && <details><summary>Changed categories and element IDs</summary><pre>{JSON.stringify(result.changes, null, 2)}</pre></details>}
+    <h3>Return value</h3><pre>{JSON.stringify(result.result, null, 2)}</pre>
+    {result.hint && <p>{result.hint}</p>}
+    {result.failures.length > 0 && <details open><summary>Revit failures</summary><pre>{JSON.stringify(result.failures, null, 2)}</pre></details>}
+    {result.warnings.length > 0 && <ul>{result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>}
+  </section>
+}
+
+function downloadYaml(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/yaml;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${name.replace(/[^A-Za-z0-9_.-]/g, '_') || 'tool'}.yaml`
+  document.body.appendChild(anchor)
+  try { anchor.click() }
+  finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0) }
+}
+
+export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: OnRun }) {
+  const state = useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot)
+  const { draft, builtin, actions } = state
+  const codeRef = useRef<HTMLTextAreaElement>(null)
+  const linesRef = useRef<HTMLDivElement>(null)
+  const id = useId()
+  const busy = (action: Action) => actions[action]?.status === 'running'
+  const saveReason = saveDisabledReason(state)
+  const editParam = (index: number, patch: Partial<ToolParamDraft>) => model.edit({ parameters: draft.parameters.map((param, i) => i === index ? { ...param, ...patch } : param) })
+  const locate = (diagnostic: Diagnostic) => {
+    const range = diagnosticRange(draft.code, diagnostic)
+    const editor = codeRef.current
+    if (!range || !editor) return
+    editor.focus()
+    editor.setSelectionRange(...range)
+    editor.scrollTop = Math.max(0, (diagnostic.line! - 2) * 20)
+    if (linesRef.current) linesRef.current.scrollTop = editor.scrollTop
+  }
+
+  return <section className="hostv2-workbench" aria-label="Tool workbench">
+    <div className="hostv2-workbench-heading">
+      <h2>Tool workbench</h2>
+      <button type="button" className="btn-secondary" onClick={() => model.newDraft()}>New tool</button>
+      <button type="button" className="btn-secondary" onClick={() => model.copyAsMine()} disabled={!draft.code && !draft.name}>Copy as mine</button>
+    </div>
+    {builtin && <p className="hostv2-workbench-readonly">Built-in tool: read-only. Choose Copy as mine to edit it.</p>}
+    <fieldset disabled={builtin} className="hostv2-workbench-metadata">
+      <legend>Tool details</legend>
+      <label>Name<input className="input-field" value={draft.name} onChange={event => model.edit({ name: event.target.value })} /></label>
+      <label>Description<input className="input-field" value={draft.description} onChange={event => model.edit({ description: event.target.value })} /></label>
+      <label>Validator (optional)<input className="input-field" value={draft.validator ?? ''} onChange={event => model.edit({ validator: event.target.value || undefined })} /></label>
+    </fieldset>
+
+    <label htmlFor={`${id}-code`} className="label-text">C# code</label>
+    <div className="hostv2-workbench-editor">
+      <div className="hostv2-workbench-lines" aria-hidden="true" ref={linesRef}>{draft.code.split('\n').map((_, index) => index + 1).join('\n')}</div>
+      <textarea id={`${id}-code`} ref={codeRef} value={draft.code} readOnly={builtin} spellCheck={false}
+        aria-describedby={`${id}-editor-help`} wrap="off" onChange={event => model.edit({ code: event.target.value })}
+        onScroll={event => { if (linesRef.current) linesRef.current.scrollTop = event.currentTarget.scrollTop }}
+        onKeyDown={event => {
+          if (event.key !== 'Tab' || event.shiftKey || event.nativeEvent.isComposing || builtin) return
+          event.preventDefault()
+          const editor = event.currentTarget
+          const next = indentSelection(draft.code, editor.selectionStart, editor.selectionEnd)
+          model.edit({ code: next.code })
+          requestAnimationFrame(() => editor.setSelectionRange(next.start, next.end))
+        }} />
+    </div>
+    <p id={`${id}-editor-help`} className="hostv2-workbench-help">Tab inserts two spaces. Shift+Tab moves focus out of the editor.</p>
+
+    <fieldset disabled={builtin} className="hostv2-workbench-parameters">
+      <legend>Parameter declarations</legend>
+      {draft.parameters.map((param, index) => <div className="hostv2-workbench-param" key={index}>
+        <label>Name<input className="input-field" value={param.name} onChange={event => editParam(index, { name: event.target.value })} /></label>
+        <label>Type<select className="input-field" value={param.type} onChange={event => editParam(index, { type: event.target.value as ToolParamDraft['type'] })}>
+          {['string', 'double', 'int', 'bool'].map(type => <option key={type}>{type}</option>)}
+        </select></label>
+        <label>Description<input className="input-field" value={param.description} onChange={event => editParam(index, { description: event.target.value })} /></label>
+        <label>Source<select className="input-field" value={param.source} onChange={event => editParam(index, { source: event.target.value as ToolParamDraft['source'], category: undefined })}>
+          {['designer', 'levels', 'family_types', 'elements'].map(source => <option key={source}>{source}</option>)}
+        </select></label>
+        {(param.source === 'family_types' || param.source === 'elements') && <label>Category<input className="input-field" placeholder="OST_Walls" value={param.category ?? ''} onChange={event => editParam(index, { category: event.target.value })} /></label>}
+        <label>Unit<select className="input-field" value={param.unit ?? ''} onChange={event => editParam(index, { unit: event.target.value ? event.target.value as ToolParamDraft['unit'] : undefined })}>
+          <option value="">None</option>{['mm', 'm', 'feet'].map(unit => <option key={unit}>{unit}</option>)}
+        </select></label>
+        <label>Default{param.type === 'bool'
+          ? <select className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: inputValue(param.type, event.target.value) })}>
+              <option value="">No default</option><option value="true">true</option><option value="false">false</option>
+            </select>
+          : <input className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: inputValue(param.type, event.target.value) })} />}
+        </label>
+        <label className="hostv2-workbench-checkbox"><input type="checkbox" checked={param.required} onChange={event => editParam(index, { required: event.target.checked })} />Required</label>
+        <button type="button" className="btn-ghost danger" aria-label={`Remove parameter ${param.name || index + 1}`} onClick={() => model.edit({ parameters: draft.parameters.filter((_, i) => i !== index) })}>Remove</button>
+      </div>)}
+      <button type="button" className="btn-secondary" onClick={() => model.edit({ parameters: [...draft.parameters, { name: '', type: 'string', description: '', source: 'designer', required: true }] })}>Add parameter</button>
+    </fieldset>
+
+    <fieldset className="hostv2-workbench-values">
+      <legend>Values for dry run and run</legend>
+      {draft.parameters.some(param => param.source !== 'designer') && <button type="button" className="btn-secondary" disabled={busy('choices')} onClick={() => { void model.loadChoices() }}>Load model options</button>}
+      {draft.parameters.length === 0 && <p>No parameters.</p>}
+      {draft.parameters.map((param, index) => {
+        const value = Object.hasOwn(state.values, param.name) ? state.values[param.name] : param.default
+        const choices = Object.hasOwn(state.choices, param.name) ? state.choices[param.name] : []
+        const selected = choices.findIndex(choice => JSON.stringify(choice.value) === JSON.stringify(value))
+        return <label key={index}>{param.name || `Parameter ${index + 1}`}{param.required ? ' (required)' : ''}{param.unit ? ` (${param.unit})` : ''}
+          {param.source !== 'designer'
+            ? <select className="input-field" value={selected < 0 ? '' : String(selected)} onChange={event => model.setValue(param.name, event.target.value === '' ? undefined : choices[Number(event.target.value)].value)}>
+                <option value="">{choices.length ? 'Choose a model option' : 'Load model options first'}</option>
+                {choices.map((choice, i) => <option key={i} value={String(i)}>{choice.label}</option>)}
+              </select>
+            : param.type === 'bool'
+              ? <select className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, inputValue(param.type, event.target.value))}>
+                  <option value="">Choose a value</option><option value="true">true</option><option value="false">false</option>
+                </select>
+              : <input className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, inputValue(param.type, event.target.value))} />}
+        </label>
+      })}
+      <ActionStatus action="choices" state={actions.choices} />
+    </fieldset>
+
+    <div className="hostv2-workbench-actions">
+      <button type="button" className="btn-secondary" disabled={busy('check')} onClick={() => { void model.check() }}>{busy('check') ? 'Checking...' : 'Check'}</button>
+      <button type="button" className="btn-secondary" disabled={busy('dryRun')} onClick={() => { void model.dryRun() }}>{busy('dryRun') ? 'Dry-running...' : 'Dry run'}</button>
+      <button type="button" className="btn-primary" disabled={busy('run') || busy('dryRun')} onClick={() => { void model.run(onRun) }}>{busy('run') ? 'Requesting run...' : 'Run'}</button>
+      <button type="button" className="btn-primary" disabled={!!saveReason || busy('save') || busy('dryRun')} title={saveReason ?? undefined} onClick={() => { void model.save() }}>{busy('save') ? 'Saving...' : 'Save as tool'}</button>
+    </div>
+    {saveReason && <p className="hostv2-workbench-help">{saveReason}</p>}
+    {(['check', 'dryRun', 'run', 'save'] as const).map(action => <ActionStatus key={action} action={action} state={actions[action]} />)}
+    {state.check && <section aria-label="Check result">
+      <DiagnosticList diagnostics={state.check.diagnostics} code={draft.code} locate={locate} />
+      {state.check.truncated > 0 && <p>{state.check.truncated} additional diagnostics were omitted.</p>}
+      {[...state.check.warnings, ...state.check.hints.map(hint => hint.text)].length > 0 && <ul>{[...state.check.warnings, ...state.check.hints.map(hint => hint.text)].map((text, i) => <li key={i}>{text}</li>)}</ul>}
+    </section>}
+    {state.dryRun && <>
+      <DiagnosticList diagnostics={state.dryRun.diagnostics} code={draft.code} locate={locate} />
+      <DryRunResult result={state.dryRun} />
+    </>}
+
+    <section className="hostv2-workbench-library" aria-label="My tools">
+      <div className="hostv2-workbench-heading"><h3>My tools</h3>
+        <button type="button" className="btn-secondary" disabled={busy('list')} onClick={() => { void model.refresh() }}>Refresh</button>
+        <label>Import YAML<input type="file" accept=".yaml,.yml,application/yaml,text/yaml" disabled={busy('import')} onChange={event => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (file) void model.importTool(file.text())
+        }} /></label>
+      </div>
+      {(['list', 'load', 'remove', 'export', 'import'] as const).map(action => <ActionStatus key={action} action={action} state={actions[action]} />)}
+      {state.tools.length === 0 && !busy('list') && <p>No tools listed.</p>}
+      <ul className="hostv2-workbench-tools">{state.tools.map(tool => <li key={tool.name}>
+        <div><strong>{tool.name}</strong>{tool.builtin && <span className="hostv2-workbench-badge">Built-in</span>}
+          <p>{tool.description}</p>{tool.origin && <small>{tool.origin}</small>}
+        </div>
+        <div className="hostv2-workbench-actions">
+          <button type="button" className="btn-secondary" onClick={() => { void model.open(tool.name) }}>Open</button>
+          <button type="button" className="btn-secondary" disabled={busy('export')} onClick={() => { void model.exportTool(tool.name, downloadYaml) }}>Export YAML</button>
+          <button type="button" className="btn-ghost danger" disabled={tool.builtin || busy('remove')} onClick={() => model.requestDelete(tool.name)}>Delete</button>
+        </div>
+      </li>)}</ul>
+      {state.deleteName && <div className="hostv2-workbench-delete" role="group" aria-label="Confirm deletion">
+        <p>Delete {state.deleteName}?</p>
+        <button type="button" className="btn-primary" disabled={busy('remove')} onClick={() => { void model.confirmDelete() }}>Confirm delete</button>
+        <button type="button" className="btn-ghost" disabled={busy('remove')} onClick={() => model.cancelDelete()}>Cancel</button>
+      </div>}
+    </section>
+  </section>
+}
+
+export function Workbench({ api, onRun, initialDescription }: Props) {
+  const [model] = useState(() => new WorkbenchModel(api, initialDescription))
+  useEffect(() => { model.setApi(api) }, [model, api])
+  useEffect(() => { void model.refresh() }, [model])
+  return <WorkbenchView model={model} onRun={onRun} />
+}
+
+export default Workbench
