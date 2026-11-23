@@ -244,7 +244,7 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
 | `MODELS_FILE` | `DATA_DIR/models.yml` | The models file: an endpoint, a model and the name of the key's variable per entry, an entry per role (see *Models by role*). No file at the default path: `LLM_*` and the headers, as before. Set it only to read another path; the host then refuses to start when there is no file there, as it does for any file that is not valid. `/config.json` reports each role's model name (`features.models`) and whether the file set them (`features.modelsFile`). |
-| `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
+| `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. In the models file it lets an entry's `base_url` be `http://` to any host (`http://` to loopback is allowed there without it). The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
 | `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify, import), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
@@ -288,8 +288,8 @@ roles:
   or `OTHER_API_KEY=...` in `.env`, never in the file. A variable that is not set does not stop the
   start; the browser can then bring its own key (`X-LLM-Key`), and without one the chat answers 400
   as it does without `LLM_API_KEY`.
-- **An entry** is `base_url` (`https://`, or `http://` to `127.0.0.1` / `localhost` only; no user
-  name, password or query), `model`, `api_key_env`, and optionally `max_tokens` and `temperature`
+- **An entry** is `base_url` (`https://`, or `http://` to `127.0.0.1` / `localhost` - to any host
+  only with `LLM_ALLOW_HTTP=1`; no user name, password or query), `model`, `api_key_env`, and optionally `max_tokens` and `temperature`
   (0 to 2). Nothing else: `api_key`, `key`, `token`, `extra_headers` or any other field refuses
   the start, as do YAML aliases and a key given twice. The message names the file, the field and
   the problem, never a value from the file.
@@ -301,7 +301,9 @@ roles:
   https on a public address unless `LLM_ALLOW_HTTP=1`). A role on another entry is not affected.
   An entry's `max_tokens` / `temperature` apply only while its own endpoint and model are used.
 - **Base URLs** in the file are the operator's settings, treated like `LLM_BASE_URL` (which the host
-  never checks against private addresses); only a browser-supplied URL is.
+  never checks against private addresses); only a browser-supplied URL is. `http://` to another
+  machine (a local model elsewhere on the network) needs `LLM_ALLOW_HTTP=1`, the same switch with the
+  same meaning as for the browser's endpoint.
 
 One model for everything - every role on one entry:
 

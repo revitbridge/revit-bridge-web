@@ -21,8 +21,8 @@ environment variable. Its path is ``MODELS_FILE``, by default ``models.yml`` in
 - **A file**: read and checked once, at startup (``get_models`` from ``create_app``). Any
   problem refuses the start with a ``ConfigError`` naming the file, the field and the
   problem - never a value from the file, which could be a key someone pasted. An entry
-  has ``base_url`` (``https://``, or ``http://`` to a loopback address; no user name,
-  password, query or fragment), ``model``, ``api_key_env`` (the NAME of the environment
+  has ``base_url`` (``https://``, or ``http://`` to a loopback address - to any host with
+  ``LLM_ALLOW_HTTP=1``; no user name, password, query or fragment), ``model``, ``api_key_env`` (the NAME of the environment
   variable that holds the key: capital letters, digits and ``_``) and optionally
   ``max_tokens`` and ``temperature``. Any other field is refused - ``api_key``, ``key``,
   ``token``, ``extra_headers`` included: keys never go in this file. Roles are exactly
@@ -42,7 +42,9 @@ environment variable. Its path is ``MODELS_FILE``, by default ``models.yml`` in
 - **Base URL check**: the host checks a browser-supplied URL (``X-LLM-Base-Url``) and
   never ``LLM_BASE_URL``, the operator's own setting. The file's entries are the
   operator's settings too and are treated like ``LLM_BASE_URL``; they are parsed with
-  the same parser (``backend.llm.endpoint``) and must be https, or http to loopback.
+  the same parser (``backend.llm.endpoint``) and must be https, or http to loopback -
+  or http to any host with ``LLM_ALLOW_HTTP=1``, the switch that lets the browser's
+  endpoint use http, with the same meaning.
 - An entry's ``max_tokens`` / ``temperature`` go with its endpoint and model: a request
   whose headers replace either gets ``stream_completion``'s defaults, as without the file.
 
@@ -211,7 +213,7 @@ def _text(value) -> str | None:
     return value.strip() if isinstance(value, str) else None
 
 
-def _base_url(field: str, value, problems: list[str]) -> str | None:
+def _base_url(field: str, value, problems: list[str], allow_http: bool = False) -> str | None:
     text = _text(value)
     if not text:
         problems.append(f"{field}: must be a URL (text)")
@@ -229,10 +231,10 @@ def _base_url(field: str, value, problems: list[str]) -> str | None:
     if parsed.query or parsed.fragment:
         problems.append(f"{field}: must not have a query (?...) or a fragment (#...)")
         return None
-    if scheme == "https" or (scheme == "http" and is_loopback_host(host)):
+    if scheme == "https" or (scheme == "http" and (allow_http or is_loopback_host(host))):
         return text
     problems.append(f"{field}: must be https:// (http:// only to a loopback address such as "
-                    f"127.0.0.1 or localhost)")
+                    f"127.0.0.1 or localhost, or to any host with LLM_ALLOW_HTTP=1)")
     return None
 
 
@@ -273,7 +275,8 @@ def _temperature(field: str, value, problems: list[str]) -> float | None:
     return None
 
 
-def _entry(name: str, position: int, raw, problems: list[str]) -> ModelEntry | None:
+def _entry(name: str, position: int, raw, problems: list[str],
+           allow_http: bool = False) -> ModelEntry | None:
     label = entry_label(name, position)
     prefix = f"models.{label}"
     if not isinstance(raw, dict):
@@ -295,7 +298,8 @@ def _entry(name: str, position: int, raw, problems: list[str]) -> ModelEntry | N
     for key in REQUIRED_FIELDS:
         if key not in raw:
             problems.append(f"{prefix}.{key}: missing")
-    base_url = _base_url(f"{prefix}.base_url", raw["base_url"], problems) if "base_url" in raw else None
+    base_url = (_base_url(f"{prefix}.base_url", raw["base_url"], problems, allow_http)
+                if "base_url" in raw else None)
     model = _model(f"{prefix}.model", raw["model"], problems) if "model" in raw else None
     key_env = _api_key_env(f"{prefix}.api_key_env", raw["api_key_env"], problems) if "api_key_env" in raw else None
     max_tokens = _max_tokens(f"{prefix}.max_tokens", raw["max_tokens"], problems) if "max_tokens" in raw else None
@@ -307,9 +311,10 @@ def _entry(name: str, position: int, raw, problems: list[str]) -> ModelEntry | N
                       max_tokens=max_tokens, temperature=temperature, label=label)
 
 
-def parse_models(data, path: Path) -> ModelsFile:
+def parse_models(data, path: Path, *, allow_http: bool = False) -> ModelsFile:
     """The file's data (as YAML gave it) checked and read; ``ConfigError`` listing every
-    problem found, each as ``<field>: <problem>``."""
+    problem found, each as ``<field>: <problem>``. ``allow_http`` is ``LLM_ALLOW_HTTP``:
+    an http base URL to any host, not only to loopback."""
     problems: list[str] = []
     entries: dict[str, ModelEntry] = {}
     roles: dict[str, str] = {}
@@ -331,7 +336,7 @@ def parse_models(data, path: Path) -> ModelsFile:
                     problems.append(f"models: the name of entry {position} must be 1-32 letters, digits, '.', "
                                     f"'_' or '-' (not shown)")
                     continue
-                entry = _entry(name, position, raw, problems)
+                entry = _entry(name, position, raw, problems, allow_http)
                 if entry is not None:
                     entries[name] = entry
         named = data.get("roles")
@@ -357,9 +362,10 @@ def parse_models(data, path: Path) -> ModelsFile:
     return ModelsFile(path=path, entries=entries, roles=roles)
 
 
-def load_models(path: Path, *, explicit: bool = False) -> ModelsFile | None:
+def load_models(path: Path, *, explicit: bool = False, allow_http: bool = False) -> ModelsFile | None:
     """The models file at ``path``, checked; None when there is no file and ``explicit`` is
-    false (the default path); ``ConfigError`` for anything else that is not a valid file."""
+    false (the default path); ``ConfigError`` for anything else that is not a valid file.
+    ``allow_http``: ``LLM_ALLOW_HTTP`` (``parse_models``)."""
     where = f"models file {path}"
     try:
         if not path.exists():
@@ -388,7 +394,7 @@ def load_models(path: Path, *, explicit: bool = False) -> ModelsFile | None:
         # their text quotes the value: the exception's type only.
         raise ConfigError(f"{where}: not valid YAML (a value YAML cannot read: {type(exc).__name__})") from None
     try:
-        return parse_models(data, path)
+        return parse_models(data, path, allow_http=allow_http)
     except ConfigError:
         raise
     except Exception as exc:  # noqa: BLE001 - whatever the data was, never its text
@@ -404,7 +410,8 @@ def get_models() -> ModelsFile | None:
     global _loaded
     settings = get_settings()
     if _loaded is None or _loaded[0] is not settings:
-        _loaded = (settings, load_models(settings.models_file, explicit=settings.models_file_explicit))
+        _loaded = (settings, load_models(settings.models_file, explicit=settings.models_file_explicit,
+                                         allow_http=settings.llm_allow_http))
     return _loaded[1]
 
 

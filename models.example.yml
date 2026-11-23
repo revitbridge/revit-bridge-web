@@ -8,7 +8,8 @@
 # model call. Put the key in .env or the environment, not here. A variable that is
 # not set is no startup error: the browser may then bring its own key.
 #
-# An entry: base_url (https://, or http:// to 127.0.0.1 / localhost only), model,
+# An entry: base_url (https://, or http:// to 127.0.0.1 / localhost; http:// to any
+# other host only with LLM_ALLOW_HTTP=1, as for the browser's endpoint), model,
 # api_key_env, and optionally max_tokens (a whole number) and temperature (0 to 2).
 # Nothing else is accepted: api_key, key, token, extra_headers or any other field
 # refuses the start, and so do YAML aliases (*name).

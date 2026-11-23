@@ -73,7 +73,7 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 - **Models by role: `models.yml`**, the one configuration file of the host (`MODELS_FILE`, default
   `DATA_DIR/models.yml`; `models.example.yml` shows it). Each entry is a `base_url` (https, or http
-  to loopback), a `model` and `api_key_env` - the *name* of the environment variable holding the
+  to loopback - to any host with `LLM_ALLOW_HTTP=1`), a `model` and `api_key_env` - the *name* of the environment variable holding the
   key, read on every call; keys never go in the file, and any other field (`api_key`, `key`,
   `token`, `extra_headers`...) is refused. `roles` maps `analyst`, `planner` (required) and
   `supervisor` to entries; a role left out uses the planner's; all three on one entry is "one model

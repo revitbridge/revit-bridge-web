@@ -605,7 +605,7 @@ def test_a_huge_temperature_is_a_plain_problem(make_client, env, tmp_path, capsy
 def test_anything_the_check_trips_over_is_reported_by_type(monkeypatch, tmp_path):
     from backend import models_file
 
-    def broken(data, path):
+    def broken(data, path, **options):
         raise OverflowError("made-up-text-of-the-exception")
     monkeypatch.setattr(models_file, "parse_models", broken)
     path = write_models(tmp_path, ENTRY)
@@ -651,3 +651,30 @@ def test_logs_show_short_names_only(make_client, env, tmp_path, caplog):
     assert long_name not in caplog.text and long_env not in caplog.text
     # The entry itself is read as written: the label is only how it is shown.
     assert get_models().entries[long_name].label == "<entry #2>"
+
+
+@pytest.mark.parametrize("url", ["http://192.168.1.20:11434/v1", "http://models.lan:8080/v1", "http://a.example/v1"])
+def test_http_to_another_host_only_with_llm_allow_http(make_client, env, tmp_path, url):
+    """Loopback http always; http to any other host with LLM_ALLOW_HTTP=1 - the switch that
+    lets the browser's endpoint use http, with the same meaning."""
+    path = write_models(tmp_path, ENTRY.replace("https://a.example/v1", url))
+    with pytest.raises(ConfigError) as exc:
+        make_client()
+    assert str(exc.value) == (f"models file {path}: models.main.base_url: must be https:// (http:// only to a "
+                              f"loopback address such as 127.0.0.1 or localhost, or to any host with "
+                              f"LLM_ALLOW_HTTP=1)")
+    env.setenv("LLM_ALLOW_HTTP", "1")
+    make_client()
+    assert get_models().entries["main"].base_url == url
+    # Still a URL of the two schemes, and still without a user name or a query.
+    for bad in (url.replace("http://", "ftp://"), url.replace("http://", "http://u:p@"), url + "?k=v"):
+        write_models(tmp_path, ENTRY.replace("https://a.example/v1", bad))
+        with pytest.raises(ConfigError):
+            make_client()
+
+
+def test_http_to_loopback_needs_no_switch(make_client, env, tmp_path):
+    for url in ("http://127.0.0.1:11434/v1", "http://localhost:8000/v1", "http://[::1]:9000/v1", "http://127.1/v1"):
+        write_models(tmp_path, ENTRY.replace("https://a.example/v1", f"'{url}'"))      # [::1] needs quotes
+        make_client()
+        assert get_models().entries["main"].base_url == url

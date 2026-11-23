@@ -39,7 +39,8 @@ frontend build works on any address.
                                 is only sent to LLM_BASE_URL: a request with its
                                 own X-LLM-Base-Url must bring X-LLM-Key
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
-                                and a loopback or private address
+                                and a loopback or private address, and a models
+                                file entry use http to any host (not only loopback)
     MODELS_FILE                 the models file: an endpoint, model and key variable
                                 per entry, an entry per role (analyst, planner,
                                 supervisor); default DATA_DIR/models.yml. No file
