@@ -36,7 +36,7 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
   `backend/session.py` (history, the session's fixed system prompt, the turn counter).
-- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs`: the `llm_calls` rows read back.
+- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
