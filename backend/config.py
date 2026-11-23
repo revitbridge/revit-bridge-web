@@ -54,9 +54,15 @@ container's own interface, and what is reachable from outside is the published
 BIND_ADDRESS, so local mode checks that one there (see ``exposed_address``).
 
 The package reads its own variables: REVIT_BRIDGE_DATA_DIR (its data root:
-user capability packs, usage.json, the evidence ledger, auth/devices.json; the
-container sets /app/data), REVIT_BRIDGE_HOST / PORT / TOKEN / TIMEOUT and
-REVIT_BRIDGE_CONFIRM_TTL.
+user capability packs, usage.json, the evidence ledger, auth/devices.json),
+REVIT_BRIDGE_CAPABILITIES_DIR (the user pack directory alone),
+REVIT_BRIDGE_HOST / PORT / TOKEN / TIMEOUT and REVIT_BRIDGE_CONFIRM_TTL. This
+host never sets them: started with ``uv run revit-bridge-web`` it uses the
+package's per-user data root (``revit_bridge.paths.data_root()``:
+%LOCALAPPDATA%/revit-bridge on Windows), the same directory the package's MCP
+server uses, so the tools saved on either side are the other's too. The image
+sets REVIT_BRIDGE_DATA_DIR=/app/data (the ./data volume); docker-compose.yml
+has a commented mount for sharing the machine's tool directory instead.
 
 The 0.1 slot variables (MAX_SLOTS, MCP_BRIDGE_REQUIRE_SLOT_TOKEN,
 MCP_BRIDGE_SLOT_TOKEN_*) are gone: a deployment that still sets one refuses to

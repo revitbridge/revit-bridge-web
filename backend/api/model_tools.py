@@ -16,6 +16,11 @@ tool's docstring, word for word (a test checks it is the description's start),
 and one host note after it: the docstring's fix stage speaks of ``check_code``,
 which this host does not have.
 
+``list_tools`` is read from disk on every call, so a tool saved a moment ago
+(here or by the package's MCP server) is offered at once; each item says
+whether it is ``builtin`` and its ``origin``. Every tool name the model gives is
+checked (``require_tool_name``) before the store is asked.
+
 ``propose_spec`` is what makes the page's spec card appear: the server runs
 ``validate_spec`` and ``reconcile`` on the draft, the page gets an SSE
 ``spec`` event with ``{spec, card, errors, reconcile}``, the model gets
@@ -41,7 +46,7 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api.bridge import (
-    get_revit_client, pack_for, parse_snapshot, snapshot_now, tool_listing,
+    get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
 from backend.api.errors import ApiError
 from backend.session import Session
@@ -227,11 +232,12 @@ async def _query(args: dict, session: Session) -> ToolOutcome:
 
 
 async def _list_tools(args: dict, session: Session) -> ToolOutcome:
-    return ToolOutcome([tool_listing(t) for t in ToolStore().list_tools()])
+    """Read from disk on every call; no directory paths for the model."""
+    return ToolOutcome(list_packs())
 
 
 async def _get_tool_choices(args: dict, session: Session) -> ToolOutcome:
-    name = str(args.get("name", ""))
+    name = require_tool_name(args.get("name"))         # call_tool reports the refusal
     store = ToolStore()
     if store.load(name) is None:
         return ToolOutcome({"error": "unknown_tool", "tool": name})
@@ -248,7 +254,7 @@ async def _get_tool_choices(args: dict, session: Session) -> ToolOutcome:
 
 
 async def _missing_params(args: dict, session: Session) -> ToolOutcome:
-    name = str(args.get("tool", ""))
+    name = require_tool_name(args.get("tool"))         # call_tool reports the refusal
     pack = ToolStore().load(name)
     if pack is None:
         return ToolOutcome({"error": "unknown_tool", "tool": name})
@@ -272,9 +278,10 @@ async def _reconcile(args: dict, session: Session) -> ToolOutcome:
         draft = TaskSpec.model_validate(args.get("spec"))
     except ValidationError as exc:
         return ToolOutcome({"error": "invalid_spec", "message": str(exc)})
+    pack = pack_for(draft, ToolStore())          # a bad tool name is refused before Revit is asked
     given = args.get("snapshot")
     snapshot = parse_snapshot(given) if given is not None else await snapshot_now(await get_revit_client())
-    return ToolOutcome(reconcile(draft, snapshot, pack_for(draft, ToolStore())).model_dump(mode="json"))
+    return ToolOutcome(reconcile(draft, snapshot, pack).model_dump(mode="json"))
 
 
 def guidance_library() -> _guidance.Library:
@@ -319,16 +326,28 @@ async def _get_guidance(args: dict, session: Session) -> ToolOutcome:
 
 # -- the host's tool -----------------------------------------------------------------
 
+def _refused(code: str, message: str) -> ToolOutcome:
+    """A verdict for the model only: no card for the page, the session's last spec unchanged."""
+    return ToolOutcome({"accepted": False, "errors": [{"code": code, "param": None, "message": message}],
+                        "reconcile": None})
+
+
 async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
-    """validate_spec + reconcile; the page sees the card, the model the verdict."""
+    """validate_spec + reconcile; the page sees the card, the model the verdict. A
+    ``run_tool`` spec whose tool is not a tool name is refused before anything else, with
+    no card."""
     given = args.get("spec")
     try:
         spec = TaskSpec.model_validate(given)
     except ValidationError as exc:
         # Nothing the page could render, nothing worth keeping: the verdict goes to
         # the model only and the session's last spec stays what it was.
-        errors = [{"code": "invalid_spec", "param": None, "message": str(exc)}]
-        return ToolOutcome({"accepted": False, "errors": errors, "reconcile": None})
+        return _refused("invalid_spec", str(exc))
+    if spec.action.tool:
+        try:
+            require_tool_name(spec.action.tool)
+        except ApiError as exc:
+            return _refused(exc.payload["error"], exc.payload["message"])
     store = ToolStore()
     session.spec = spec.model_dump(mode="json")
     errors = [e.model_dump() for e in validate_spec(spec, pack_for(spec, store))]

@@ -1032,7 +1032,7 @@
           "bridge"
         ],
         "summary": "List Tools",
-        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape.",
+        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and\n``origin`` (and, on a local host, ``directory``: where the file was read). Read from\ndisk on every call.",
         "operationId": "list_tools_api_v1_bridge_tools_get",
         "responses": {
           "200": {
@@ -1120,7 +1120,7 @@
           "bridge"
         ],
         "summary": "Update Tool",
-        "description": "Change editable fields (admin password required); the package validates the result\nas a v1 pack (422 with problems).",
+        "description": "Change editable fields of a user pack (admin password required on a cloud host); the\npackage validates the result as a v1 pack (422 with problems). A built-in pack is\nread-only: 409 ``builtin_read_only``.",
         "operationId": "update_tool_api_v1_bridge_tools__name__put",
         "parameters": [
           {
@@ -1198,6 +1198,16 @@
               }
             }
           },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
             "content": {
@@ -1225,7 +1235,7 @@
           "bridge"
         ],
         "summary": "Delete Tool",
-        "description": "Delete a user pack or hide a built-in one (admin password required).",
+        "description": "Delete a user pack (admin password required on a cloud host). A built-in pack is\nread-only: 409 ``builtin_read_only``, never hidden. Deleting a user file that carries a\nbuilt-in's name brings the built-in back.",
         "operationId": "delete_tool_api_v1_bridge_tools__name__delete",
         "parameters": [
           {
@@ -1283,6 +1293,16 @@
               }
             }
           },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
             "content": {
@@ -1300,6 +1320,178 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/tools/{name}/export": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Export Tool",
+        "description": "The pack's file as it is on disk - the user file, or the wheel's for a built-in pack -\nas ``text/yaml``. ``POST /tools/import`` takes it back (under another name for a built-in).",
+        "operationId": "export_tool_api_v1_bridge_tools__name__export_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The pack file as stored (YAML text)",
+            "content": {
+              "text/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/tools/import": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Import Tool",
+        "description": "Store a pack file sent as YAML text in the user capabilities directory, as it is.\n\nValidated as the package validates a pack file (``validate_pack``: the v1 layout, 422\n``invalid_pack`` with the problems), its name checked (422 ``invalid_tool_name``), its\ncode reviewed by the sandbox (400 ``blocked``). A built-in pack's name is refused (409\n``builtin_read_only``), and so is the name of a user pack that exists unless\n``overwrite=true`` (409 ``pack_exists``). Admin password required on a cloud host.",
+        "operationId": "import_tool_api_v1_bridge_tools_import_post",
+        "parameters": [
+          {
+            "name": "overwrite",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Overwrite"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Refused as requested (confirmation_required, invalid_category, unknown_kind, blocked, no_validator)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No ADMIN_PASSWORD on this host: packs cannot be changed (admin_disabled)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "A capability pack file (YAML text)",
+          "content": {
+            "text/yaml": {
+              "schema": {
+                "type": "string"
               }
             }
           }
@@ -1679,6 +1871,126 @@
         }
       }
     },
+    "/api/v1/bridge/check": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Check Code",
+        "description": "``checking.check_code``: compile the snippet in Revit without running it - no token,\nnothing changes. The package's reply as it is (``{schema_version, checked, compiled,\nblocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,\nenvironment, warnings}``), with the guidance lessons the MCP tool adds. As the MCP tool\ndoes, code the sandbox refuses is answered before Revit is needed (``blocked: true``);\nno Revit to ask is 503 ``revit_unreachable``, as on every route.",
+        "operationId": "check_code_api_v1_bridge_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/dry-run": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Dry Run Code",
+        "description": "``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group\nthe add-in always rolls back - nothing is kept, the undo stack is untouched, so no\nconfirmation and no token (the package's rule: the gate takes no part in a dry run).\nThe package's reply as it is (``{success, rolled_back, result, error, diagnostics,\nchanges, failures, fingerprint, evidence_id, hint, warnings}``); each request that\nreaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's\nscope. Code the sandbox refuses is answered before Revit is needed (``error:\n\"blocked\"``); no Revit to ask is 503 ``revit_unreachable``.",
+        "operationId": "dry_run_code_api_v1_bridge_dry_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DryRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bridge/execute": {
       "post": {
         "tags": [
@@ -1755,7 +2067,7 @@
           "bridge"
         ],
         "summary": "Solidify Tool",
-        "description": "``ToolStore.solidify``: save working code as a v1 pack (admin password required);\nbest-effort sync to the add-in.",
+        "description": "``ToolStore.solidify``: save working code as a v1 pack in the user capabilities\ndirectory (admin password required on a cloud host; a user pack of the same name is\nreplaced); best-effort sync to the add-in. A built-in pack's name is refused: 409\n``builtin_read_only``.",
         "operationId": "solidify_tool_api_v1_bridge_solidify_post",
         "parameters": [
           {
@@ -1806,6 +2118,16 @@
           },
           "403": {
             "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2605,6 +2927,32 @@
         "type": "object",
         "title": "ChatRequest"
       },
+      "CheckCodeRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "CheckCodeRequest",
+        "description": "``checking.check_code(client, code, parameters)``: the snippet and its ``parameters``\n(the snippet's object[]), as the MCP tool takes them."
+      },
       "ConfirmRequest": {
         "properties": {
           "spec": {
@@ -2623,6 +2971,32 @@
           "spec"
         ],
         "title": "ConfirmRequest"
+      },
+      "DryRunRequest": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parameters"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "DryRunRequest",
+        "description": "``dry_run.dry_run_code(client, code, parameters)``. The package's ``include`` (paths\nof .cs files on the machine running the host, read and sent to Revit) is not offered:\na browser has no business naming files on the server."
       },
       "ErrorBody": {
         "properties": {
