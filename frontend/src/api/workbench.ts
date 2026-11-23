@@ -1,12 +1,12 @@
 /* The workbench's HTTP client: every call the workbench makes goes through this one module.
 
-   `workbenchApi` satisfies `WorkbenchApi`, the interface the workbench component takes (its
-   text is copied below from the component's specification until the component's own types are
-   merged; the names must stay as they are). Each method is a thin call of a v1 route:
+   `workbenchApi` satisfies `WorkbenchApi`, the interface the workbench component takes
+   (types/hostv2.ts, re-exported here). Each method is a thin call of a v1 route:
 
    check      POST /check     the package's check_code reply as it is
    dryRun     POST /dry-run   the package's dry_run_code reply as it is (no token)
    choices    POST /choices   {choices_from}: the package's get_tool_choices for one parameter
+   exists     GET  /tools/{name}             true, or false on 404 unknown_tool
    save       POST /solidify  the draft as a v1 pack (parameters with source, choices_from, unit)
    list       GET  /tools     {name, description, builtin, origin, directory?} (read from disk)
    load       GET  /tools/{name}             the pack as a draft
@@ -30,39 +30,11 @@ import { BridgeApiError, del, get, post, request } from '../components/shared/ht
 import type {
   PackParameter, SolidifyRequest, SolidifyResponse, ToolDetail, ToolInfo, ToolParam,
 } from '../types/api'
+import type { ToolDraft, ToolParamDraft, WorkbenchApi, WorkbenchTool } from '../types/hostv2'
 
-/* -- the workbench component's interface (copied; do not rename) --------------------------- */
+export type { ToolDraft, ToolParamDraft, WorkbenchApi, WorkbenchTool }
 
-export interface ToolParamDraft {
-  name: string; type: 'string' | 'double' | 'int' | 'bool'
-  description: string
-  source: 'designer' | 'levels' | 'family_types' | 'elements'
-  category?: string            // OST_* , when source is family_types or elements
-  unit?: 'mm' | 'm' | 'feet'
-  required: boolean; default?: unknown
-}
-export interface ToolDraft {
-  name: string; description: string; code: string
-  parameters: ToolParamDraft[]; validator?: string
-}
-export interface WorkbenchApi {
-  check(code: string, parameters: ToolParamDraft[]): Promise<unknown>
-  dryRun(code: string, parameters: ToolParamDraft[], values: Record<string, unknown>): Promise<unknown>
-  choices(param: ToolParamDraft): Promise<{ label: string; value: unknown }[]>
-  save(draft: ToolDraft): Promise<{ name: string }>
-  list(): Promise<{ name: string; description: string; builtin: boolean; origin?: string }[]>
-  load(name: string): Promise<ToolDraft>
-  remove(name: string): Promise<void>
-  exportYaml(name: string): Promise<string>
-  importYaml(text: string): Promise<{ name: string }>
-}
-
-/* -- what this client adds ------------------------------------------------------------------- */
-
-/* A list item: the interface's fields plus the directory the file is in (a local host only). */
-export interface WorkbenchTool { name: string; description: string; builtin: boolean; origin: string; directory?: string }
-
-/* POST /tools/import's answer. */
+/* POST /tools/import's answer (the interface's WorkbenchImport and what else the route says). */
 export interface ImportResult { status: string; name: string; version: string; replaced: boolean; revit_synced: boolean }
 
 const B = '/api/v1/bridge'
@@ -160,6 +132,17 @@ export const workbenchApi = {
   choices: async (param: ToolParamDraft): Promise<{ label: string; value: unknown }[]> => {
     const from = choicesFromOf(param)
     return from ? post<{ label: string; value: unknown }[]>(`${B}/choices`, { choices_from: from }) : []
+  },
+
+  /* Asked before a save, which replaces a tool of yours of that name without asking. */
+  exists: async (name: string): Promise<boolean> => {
+    try {
+      await get<ToolDetail>(`${B}/tools/${enc(name)}`)
+      return true
+    } catch (e: unknown) {
+      if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') return false
+      throw e
+    }
   },
 
   save: async (draft: ToolDraft): Promise<{ name: string }> => {

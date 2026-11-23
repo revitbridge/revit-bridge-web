@@ -35,6 +35,9 @@
 .hostv2-workbench-diagnostics li { margin: 6px 0; overflow-wrap: anywhere; }
 .hostv2-workbench-diagnostics button { margin-right: 8px; }
 .hostv2-workbench-result { padding: 12px; margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); min-width: 0; }
+.hostv2-workbench-status p { margin: 0; }
+.hostv2-workbench-status ul { margin: 4px 0 0; padding-left: 18px; }
+.hostv2-workbench-builtins { margin-top: 12px; }
 .hostv2-workbench-rollback { padding: 10px; margin: 0 0 12px; border: 2px solid currentColor; border-radius: var(--radius-xs); font-weight: 600; }
 .hostv2-workbench-rollback.is-safe { color: var(--success); }
 .hostv2-workbench-rollback.is-unknown { color: var(--danger); }

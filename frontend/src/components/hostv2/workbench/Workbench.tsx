@@ -1,10 +1,20 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
-import type { ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import type { ToolParamDraft, WorkbenchApi, WorkbenchTool } from '../../../types/hostv2'
 import { saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
 import { diagnosticRange, dryRunNotSent, indentSelection, type Diagnostic, type DryRunReply } from './results'
 import './workbench.css'
 
-interface Props { api: WorkbenchApi; onRun: OnRun; initialDescription?: string }
+/* canEdit / editNote: whether this host lets the page save, delete and import tools (a cloud
+   host wants the admin password) and why not. runPanel: what the host shows for a run it was
+   asked for (its spec card, confirmation, result), placed under the action buttons. */
+interface Props {
+  api: WorkbenchApi
+  onRun: OnRun
+  initialDescription?: string
+  canEdit?: boolean
+  editNote?: string
+  runPanel?: ReactNode
+}
 
 // Text fields keep what is typed; the model reads numbers from it when the value is used.
 const boolChoice = (text: string) => text === '' ? undefined : text === 'true'
@@ -16,9 +26,18 @@ const actionLabels: Record<Action, string> = {
 
 function ActionStatus({ action, state }: { action: Action; state?: ActionState }) {
   if (!state || state.status === 'idle') return null
-  return <p className={`hostv2-workbench-status is-${state.status}`} role={state.status === 'error' ? 'alert' : 'status'}>
-    <strong>{actionLabels[action]}: </strong>{state.message}
-  </p>
+  return <div className={`hostv2-workbench-status is-${state.status}`} role={state.status === 'error' ? 'alert' : 'status'}>
+    <p><strong>{actionLabels[action]}: </strong>{state.message}</p>
+    {state.details && <ul>{state.details.map((line, index) => <li key={index}>{line}</li>)}</ul>}
+  </div>
+}
+
+function Confirm({ label, question, yes, onYes, onNo }: { label: string; question: string; yes: string; onYes: () => void; onNo: () => void }) {
+  return <div className="hostv2-workbench-delete" role="group" aria-label={label}>
+    <p>{question}</p>
+    <button type="button" className="btn-primary" onClick={onYes}>{yes}</button>
+    <button type="button" className="btn-ghost" onClick={onNo}>Cancel</button>
+  </div>
 }
 
 export function DiagnosticList({ diagnostics, code, locate }: { diagnostics: Diagnostic[]; code: string; locate: (diagnostic: Diagnostic) => void }) {
@@ -70,9 +89,11 @@ function downloadYaml(name: string, text: string) {
   finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0) }
 }
 
-export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: OnRun }) {
+export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchModel; onRun: OnRun; runPanel?: ReactNode }) {
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot)
   const { draft, builtin, actions } = state
+  const own = state.tools.filter(tool => !tool.builtin)
+  const builtins = state.tools.filter(tool => tool.builtin)
   const codeRef = useRef<HTMLTextAreaElement>(null)
   const linesRef = useRef<HTMLDivElement>(null)
   const id = useId()
@@ -100,7 +121,7 @@ export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: 
       <legend>Tool details</legend>
       <label>Name<input className="input-field" value={draft.name} onChange={event => model.edit({ name: event.target.value })} /></label>
       <label>Description<input className="input-field" value={draft.description} onChange={event => model.edit({ description: event.target.value })} /></label>
-      <label>Validator (optional)<input className="input-field" value={draft.validator ?? ''} onChange={event => model.edit({ validator: event.target.value || undefined })} /></label>
+      <label>Validator (JSON object, optional)<input className="input-field" placeholder='{"kind": "created_ids", "category": "OST_Walls"}' value={draft.validator ?? ''} onChange={event => model.edit({ validator: event.target.value || undefined })} /></label>
     </fieldset>
 
     <label htmlFor={`${id}-code`} className="label-text">C# code</label>
@@ -178,7 +199,11 @@ export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: 
       <button type="button" className="btn-primary" disabled={!!saveReason || busy('save') || busy('dryRun')} title={saveReason ?? undefined} onClick={() => { void model.save() }}>{busy('save') ? 'Saving...' : 'Save as tool'}</button>
     </div>
     {saveReason && <p className="hostv2-workbench-help">{saveReason}</p>}
+    {state.replaceName !== null && <Confirm label="Confirm replacing a tool" yes={`Replace ${state.replaceName}`}
+      question={`A tool named ${state.replaceName} exists. Replace it with this draft?`}
+      onYes={() => { void model.confirmReplace() }} onNo={() => model.cancelReplace()} />}
     {(['check', 'dryRun', 'run', 'save'] as const).map(action => <ActionStatus key={action} action={action} state={actions[action]} />)}
+    {runPanel}
     {state.check && <section aria-label="Check result">
       <DiagnosticList diagnostics={state.check.diagnostics} code={draft.code} locate={locate} />
       {state.check.truncated > 0 && <p>{state.check.truncated} additional diagnostics were omitted.</p>}
@@ -192,38 +217,56 @@ export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: 
     <section className="hostv2-workbench-library" aria-label="My tools">
       <div className="hostv2-workbench-heading"><h3>My tools</h3>
         <button type="button" className="btn-secondary" disabled={busy('list')} onClick={() => { void model.refresh() }}>Refresh</button>
-        <label>Import YAML<input type="file" accept=".yaml,.yml,application/yaml,text/yaml" disabled={busy('import')} onChange={event => {
+        {state.canEdit && <label>Import YAML<input type="file" accept=".yaml,.yml,application/yaml,text/yaml" disabled={busy('import')} onChange={event => {
           const file = event.target.files?.[0]
           event.target.value = ''
           if (file) void model.importTool(file.text())
-        }} /></label>
+        }} /></label>}
       </div>
+      {!state.canEdit && state.editNote && <p className="hostv2-workbench-help">{state.editNote}</p>}
       {(['list', 'load', 'remove', 'export', 'import'] as const).map(action => <ActionStatus key={action} action={action} state={actions[action]} />)}
-      {state.tools.length === 0 && !busy('list') && <p>No tools listed.</p>}
-      <ul className="hostv2-workbench-tools">{state.tools.map(tool => <li key={tool.name}>
-        <div><strong>{tool.name}</strong>{tool.builtin && <span className="hostv2-workbench-badge">Built-in</span>}
-          <p>{tool.description}</p>{tool.origin && <small>{tool.origin}</small>}
-        </div>
-        <div className="hostv2-workbench-actions">
-          <button type="button" className="btn-secondary" onClick={() => { void model.open(tool.name) }}>Open</button>
-          <button type="button" className="btn-secondary" disabled={busy('export')} onClick={() => { void model.exportTool(tool.name, downloadYaml) }}>Export YAML</button>
-          <button type="button" className="btn-ghost danger" disabled={tool.builtin || busy('remove')} onClick={() => model.requestDelete(tool.name)}>Delete</button>
-        </div>
-      </li>)}</ul>
+      {state.importReplace && <Confirm label="Confirm replacing a tool" yes={`Replace ${state.importReplace.name}`}
+        question={`A tool named ${state.importReplace.name} exists. Replace it with the imported file?`}
+        onYes={() => { void model.confirmImport() }} onNo={() => model.cancelImport()} />}
       {state.deleteName && <div className="hostv2-workbench-delete" role="group" aria-label="Confirm deletion">
         <p>Delete {state.deleteName}?</p>
         <button type="button" className="btn-primary" disabled={busy('remove')} onClick={() => { void model.confirmDelete() }}>Confirm delete</button>
         <button type="button" className="btn-ghost" disabled={busy('remove')} onClick={() => model.cancelDelete()}>Cancel</button>
       </div>}
+      {own.length === 0 && !busy('list') && <p>No tools of your own yet.</p>}
+      <ToolList tools={own} model={model} busy={busy} canDelete={state.canEdit} />
+      {builtins.length > 0 && <details className="hostv2-workbench-builtins">
+        <summary>Built-in tools ({builtins.length}, read-only: open to read or copy, export)</summary>
+        <ToolList tools={builtins} model={model} busy={busy} canDelete={false} />
+      </details>}
     </section>
   </section>
 }
 
-export function Workbench({ api, onRun, initialDescription }: Props) {
-  const [model] = useState(() => new WorkbenchModel(api, initialDescription))
+function ToolList({ tools, model, busy, canDelete }: { tools: WorkbenchTool[]; model: WorkbenchModel; busy: (action: Action) => boolean; canDelete: boolean }) {
+  if (!tools.length) return null
+  return <ul className="hostv2-workbench-tools">{tools.map(tool => <li key={tool.name}>
+    <div><strong>{tool.name}</strong>{tool.builtin && <span className="hostv2-workbench-badge">Built-in</span>}
+      <p>{tool.description}</p>{(tool.directory || tool.origin) && <small>{tool.directory ?? tool.origin}</small>}
+    </div>
+    <div className="hostv2-workbench-actions">
+      <button type="button" className="btn-secondary" onClick={() => { void model.open(tool.name) }}>Open</button>
+      <button type="button" className="btn-secondary" disabled={busy('export')} onClick={() => { void model.exportTool(tool.name, downloadYaml) }}>Export YAML</button>
+      {canDelete && !tool.builtin && <button type="button" className="btn-ghost danger" disabled={busy('remove')} onClick={() => model.requestDelete(tool.name)}>Delete</button>}
+    </div>
+  </li>)}</ul>
+}
+
+export function Workbench({ api, onRun, initialDescription, canEdit = true, editNote = '', runPanel }: Props) {
+  const [model] = useState(() => {
+    const created = new WorkbenchModel(api, initialDescription)
+    created.setGate(canEdit, editNote)
+    return created
+  })
   useEffect(() => { model.setApi(api) }, [model, api])
+  useEffect(() => { model.setGate(canEdit, editNote) }, [model, canEdit, editNote])
   useEffect(() => { void model.refresh() }, [model])
-  return <WorkbenchView model={model} onRun={onRun} />
+  return <WorkbenchView model={model} onRun={onRun} runPanel={runPanel} />
 }
 
 export default Workbench

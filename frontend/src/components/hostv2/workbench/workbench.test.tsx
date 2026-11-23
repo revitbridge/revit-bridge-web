@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
-import { parseValue, saveDisabledReason, WorkbenchModel } from './model'
+import { BridgeApiError } from '../../shared/http'
+import { errorCode, errorDetails, parseValue, saveDisabledReason, WorkbenchModel } from './model'
 import { diagnosticRange, indentSelection, readCheck, readDryRun } from './results'
 import Workbench, { WorkbenchView } from './Workbench'
 
@@ -18,14 +19,23 @@ function fakeApi() {
     check: vi.fn<WorkbenchApi['check']>().mockResolvedValue(checkReply),
     dryRun: vi.fn<WorkbenchApi['dryRun']>().mockResolvedValue(dryReply),
     choices: vi.fn<WorkbenchApi['choices']>().mockResolvedValue([{ label: 'Level 1', value: 'L1' }]),
+    exists: vi.fn<WorkbenchApi['exists']>().mockResolvedValue(false),
     save: vi.fn<WorkbenchApi['save']>().mockResolvedValue({ name: draft.name }),
-    list: vi.fn<WorkbenchApi['list']>().mockResolvedValue([{ name: draft.name, description: draft.description, builtin: false }]),
+    list: vi.fn<WorkbenchApi['list']>().mockResolvedValue([{ name: draft.name, description: draft.description, builtin: false, origin: 'user' }]),
     load: vi.fn<WorkbenchApi['load']>().mockResolvedValue(structuredClone(draft)),
     remove: vi.fn<WorkbenchApi['remove']>().mockResolvedValue(undefined),
     exportYaml: vi.fn<WorkbenchApi['exportYaml']>().mockResolvedValue('name: test_tool\ncode_template: return 1;\n'),
-    importYaml: vi.fn<WorkbenchApi['importYaml']>().mockResolvedValue({ name: draft.name }),
-  }
+    importYaml: vi.fn<WorkbenchApi['importYaml']>().mockResolvedValue({ name: draft.name, replaced: false }),
+  } satisfies WorkbenchApi
 }
+
+/* An error as components/shared/http.ts throws it: the message, and the server's body. */
+function refusal(status: number, body: Record<string, unknown>) {
+  return Object.assign(new Error(`${status}: ${body.error}${body.message ? `: ${body.message}` : ''}`), { status, body })
+}
+
+// Lets the awaited name lookup of a save (and other chained promises) settle.
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -124,6 +134,7 @@ describe('saving the current dry-run draft', () => {
     })
     await model.dryRun()
     const firstSave = model.save()
+    await flush()
     expect(api.save).toHaveBeenCalledOnce()
     if (change === 'new') model.newDraft()
     if (change === 'open') await model.open(draft.name)
@@ -153,6 +164,7 @@ describe('saving the current dry-run draft', () => {
     api.save.mockReturnValueOnce(pending.promise)
     await model.dryRun()
     const firstSave = model.save()
+    await flush()
     model.edit({ code: 'return 2;' })
     await model.dryRun()
     pending.reject(new Error('Save connection failed'))
@@ -163,6 +175,183 @@ describe('saving the current dry-run draft', () => {
     await model.save()
     expect(api.save).toHaveBeenCalledTimes(2)
     expect(api.save.mock.calls[1][0].code).toBe('return 2;')
+  })
+})
+
+describe('saving never replaces a tool silently', () => {
+  it('asks before replacing a tool of that name; Cancel keeps it, Replace saves', async () => {
+    const { api, model } = await setup()
+    api.exists.mockResolvedValue(true)
+    await model.dryRun()
+    await model.save()
+    expect(api.exists).toHaveBeenCalledWith('test_tool')
+    expect(api.save).not.toHaveBeenCalled()
+    expect(html(model)).toContain('A tool named test_tool exists. Replace it with this draft?')
+    expect(saveDisabledReason(model.getSnapshot())).toBe('Answer whether to replace test_tool first.')
+    model.cancelReplace()
+    expect(model.getSnapshot().replaceName).toBeNull()
+    expect(api.save).not.toHaveBeenCalled()
+    await model.save()
+    await model.confirmReplace()
+    expect(api.save).toHaveBeenCalledOnce()
+    expect(api.save).toHaveBeenCalledWith(draft)
+    expect(model.getSnapshot().actions.save).toEqual({ status: 'success', message: 'Saved test_tool.' })
+    expect(html(model)).not.toContain('Replace it with this draft?')
+  })
+
+  it('an edit withdraws the question; a new name is looked up again', async () => {
+    const { api, model } = await setup()
+    api.exists.mockResolvedValueOnce(true)
+    await model.dryRun()
+    await model.save()
+    model.edit({ name: 'other_tool' })
+    expect(model.getSnapshot().replaceName).toBeNull()
+    await model.confirmReplace()
+    expect(api.save).not.toHaveBeenCalled()
+    await model.save()
+    expect(api.exists).toHaveBeenLastCalledWith('other_tool')
+    expect(api.save.mock.calls[0][0].name).toBe('other_tool')
+  })
+
+  it('shows the server refusal of a built-in name as it is, and frees the button', async () => {
+    const { api, model } = await setup()
+    api.exists.mockResolvedValue(true)
+    api.save.mockRejectedValue(refusal(409, { error: 'builtin_read_only', message: "'test_tool' is a built-in tool and built-in tools are read-only", tool: 'test_tool' }))
+    await model.dryRun()
+    await model.save()
+    await model.confirmReplace()
+    expect(model.getSnapshot().actions.save?.status).toBe('error')
+    expect(html(model)).toContain('409: builtin_read_only: &#x27;test_tool&#x27; is a built-in tool and built-in tools are read-only')
+    expect(html(model)).toMatch(/<button[^>]*class="btn-primary">Save as tool</)
+  })
+
+  it('a failed name lookup is shown and nothing is saved', async () => {
+    const { api, model } = await setup()
+    api.exists.mockRejectedValue(refusal(422, { error: 'invalid_tool_name', message: 'a tool name is letters, digits and _' }))
+    await model.dryRun()
+    await model.save()
+    expect(api.save).not.toHaveBeenCalled()
+    expect(html(model)).toContain('422: invalid_tool_name: a tool name is letters, digits and _')
+    expect(model.getSnapshot().actions.save?.status).toBe('error')
+  })
+
+  it('an edit while the name is looked up stops the save', async () => {
+    const { api, model } = await setup()
+    const pending = deferred<boolean>()
+    api.exists.mockReturnValueOnce(pending.promise)
+    await model.dryRun()
+    const saving = model.save()
+    model.edit({ description: 'changed' })
+    pending.resolve(false)
+    await saving
+    expect(api.save).not.toHaveBeenCalled()
+    expect(model.getSnapshot().actions.save?.message).toBe('The draft changed while its name was looked up. Save again.')
+  })
+})
+
+describe('server refusals are shown as they are, in place', () => {
+  it.each([
+    ['check', refusal(422, { error: 'invalid_pack', problems: ['parameter height: unknown type "length"', 'code_template is empty'] }),
+      ['422: invalid_pack', 'parameter height: unknown type &quot;length&quot;', 'code_template is empty']],
+    ['dryRun', refusal(422, { error: 'render_failed', message: "The package could not fill the draft's template with these values", errors: ["Template still contains placeholder(s) ['width']"] }),
+      ['422: render_failed: The package could not fill the draft&#x27;s template with these values', 'Template still contains placeholder(s) [&#x27;width&#x27;]']],
+    ['check', refusal(429, { error: 'rate_limited', message: 'Too many requests from this address; try again in a minute' }),
+      ['429: rate_limited: Too many requests from this address; try again in a minute']],
+    ['dryRun', refusal(503, { error: 'revit_unreachable', message: 'Revit add-in not reachable' }),
+      ['503: revit_unreachable: Revit add-in not reachable']],
+  ] as const)('%s: %s', async (action, error, shown) => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param({ default: 3000 })] })
+    api[action].mockRejectedValue(error)
+    await model[action]()
+    const page = html(model)
+    for (const text of shown) expect(page).toContain(text)
+    expect(model.getSnapshot().actions[action]?.status).toBe('error')
+    expect(page).not.toContain('Checking...')
+    expect(page).not.toContain('Dry-running...')
+  })
+
+  it('a save the sandbox blocks lists its warnings', async () => {
+    const { api, model } = await setup()
+    api.save.mockRejectedValue(refusal(400, { error: 'blocked', message: 'Code review failed', warnings: ['System.IO.File is not allowed'] }))
+    await model.dryRun()
+    await model.save()
+    expect(html(model)).toContain('400: blocked: Code review failed')
+    expect(html(model)).toContain('<li>System.IO.File is not allowed</li>')
+  })
+
+  it('reads spec errors, text errors and unknown items without dropping any', () => {
+    expect(errorDetails(refusal(422, { error: 'invalid_spec', errors: [{ code: 'missing_param', param: 'height', message: 'height is required' }, 'plain', 7] })))
+      .toEqual(['missing_param (height): height is required', 'plain', '7'])
+    expect(errorDetails(new Error('no body'))).toEqual([])
+    const real = new BridgeApiError(422, JSON.stringify({ error: 'invalid_pack', problems: ['parameters: not a list'] }), 'application/json')
+    expect([real.message, ...errorDetails(real)]).toEqual(['422: invalid_pack', 'parameters: not a list'])
+    expect(errorCode(new BridgeApiError(409, JSON.stringify({ error: 'pack_exists', tool: 'mine' })))).toBe('pack_exists')
+  })
+})
+
+describe('importing asks before replacing', () => {
+  it('asks when the server says a tool of yours has that name, then imports with overwrite', async () => {
+    const { api, model } = await setup()
+    api.importYaml.mockRejectedValueOnce(refusal(409, { error: 'pack_exists', message: "A tool named 'mine' exists", tool: 'mine' }))
+      .mockResolvedValueOnce({ name: 'mine', replaced: true })
+    await model.importTool('name: mine')
+    expect(html(model)).toContain('A tool named mine exists. Replace it with the imported file?')
+    expect(model.getSnapshot().actions.import?.status).toBe('idle')
+    await model.confirmImport()
+    expect(api.importYaml).toHaveBeenLastCalledWith('name: mine', { overwrite: true })
+    expect(model.getSnapshot().actions.import).toEqual({ status: 'success', message: 'Imported mine (replaced).' })
+  })
+
+  it('Cancel keeps the tool there; a built-in name is refused as the server says', async () => {
+    const { api, model } = await setup()
+    api.importYaml.mockRejectedValueOnce(refusal(409, { error: 'pack_exists', tool: 'mine' }))
+    await model.importTool('name: mine')
+    model.cancelImport()
+    expect(api.importYaml).toHaveBeenCalledOnce()
+    expect(model.getSnapshot().importReplace).toBeNull()
+    api.importYaml.mockRejectedValueOnce(refusal(409, { error: 'builtin_read_only', message: "'create_wall' is a built-in tool" }))
+    await model.importTool('name: create_wall')
+    expect(html(model)).toContain('409: builtin_read_only: &#x27;create_wall&#x27; is a built-in tool')
+    expect(model.getSnapshot().importReplace).toBeNull()
+  })
+})
+
+describe('the tool list and the edit gate', () => {
+  it('lists your tools with their directory; built-in tools are read-only, open and export only', async () => {
+    const { api, model } = await setup()
+    api.list.mockResolvedValue([
+      { name: 'mine', description: 'Mine', builtin: false, origin: 'user', directory: 'C:/data/capabilities' },
+      { name: 'create_wall', description: 'Wall', builtin: true, origin: 'builtin' },
+    ])
+    await model.refresh()
+    const page = html(model)
+    const [own, builtins] = page.split('Built-in tools (1, read-only')
+    expect(own).toContain('<strong>mine</strong>')
+    expect(own).toContain('<small>C:/data/capabilities</small>')
+    expect(own).toContain('>Delete</button>')
+    expect(builtins).toContain('<strong>create_wall</strong>')
+    expect(builtins).toContain('>Open</button>')
+    expect(builtins).toContain('>Export YAML</button>')
+    expect(builtins).not.toContain('>Delete</button>')
+  })
+
+  it('a host that does not let the page change tools hides import and delete and says why', async () => {
+    const { api, model } = await setup()
+    model.setGate(false, 'Enter the admin password on the Connect page to edit, delete or save packs.')
+    await model.dryRun()
+    const page = html(model)
+    expect(page).not.toContain('Import YAML')
+    expect(page).not.toContain('>Delete</button>')
+    expect(page).toContain('Enter the admin password on the Connect page')
+    expect(saveDisabledReason(model.getSnapshot())).toBe('Enter the admin password on the Connect page to edit, delete or save packs.')
+    await model.save()
+    await model.importTool('name: x')
+    model.requestDelete(draft.name)
+    expect(api.save).not.toHaveBeenCalled()
+    expect(api.importYaml).not.toHaveBeenCalled()
+    expect(model.getSnapshot().deleteName).toBeNull()
+    expect(renderToStaticMarkup(<Workbench api={api} onRun={() => {}} canEdit={false} editNote="read-only here" />)).not.toContain('Import YAML')
   })
 })
 

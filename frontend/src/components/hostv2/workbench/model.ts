@@ -2,7 +2,8 @@ import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hos
 import { dryRunNotSent, normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
 
 export type Action = 'check' | 'dryRun' | 'run' | 'save' | 'list' | 'load' | 'choices' | 'remove' | 'export' | 'import'
-export interface ActionState { status: 'idle' | 'running' | 'success' | 'error'; message: string }
+// details: what the server sent with a refusal (problems, errors, warnings), line by line.
+export interface ActionState { status: 'idle' | 'running' | 'success' | 'error'; message: string; details?: string[] }
 export type ToolEntry = Awaited<ReturnType<WorkbenchApi['list']>>[number]
 export type Choice = Awaited<ReturnType<WorkbenchApi['choices']>>[number]
 export type OnRun = (draft: ToolDraft, values: Record<string, unknown>) => void | Promise<void>
@@ -18,9 +19,44 @@ export interface WorkbenchState {
   revision: number
   dryRunRevision: number | null
   deleteName: string | null
+  replaceName: string | null                             // save: a tool of this name exists, replace it?
+  importReplace: { name: string; text: string } | null   // import: the same question for a file
+  canEdit: boolean                                       // this host lets this page save, delete, import
+  editNote: string                                       // why not, when it does not
 }
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
+const bodyOf = (error: unknown): Record<string, unknown> | null => {
+  const body = error && typeof error === 'object' && 'body' in error ? (error as { body: unknown }).body : null
+  return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null
+}
+
+/* What the server sent with a refusal, as it sent it: problems (422 invalid_pack), errors (422
+   render_failed: the package's text; invalid_spec: {code, param, message}), warnings (400
+   blocked). Read from the error's body (BridgeApiError of components/shared/http.ts). */
+export function errorDetails(error: unknown): string[] {
+  const body = bodyOf(error)
+  if (!body) return []
+  const lines: string[] = []
+  for (const key of ['problems', 'errors', 'warnings']) {
+    const list = body[key]
+    if (!Array.isArray(list)) continue
+    for (const item of list) {
+      if (typeof item === 'string') lines.push(item)
+      else if (item && typeof item === 'object' && typeof (item as { message?: unknown }).message === 'string') {
+        const { code, param, message } = item as { code?: unknown; param?: unknown; message: string }
+        lines.push(`${typeof code === 'string' ? code : ''}${typeof param === 'string' && param ? ` (${param})` : ''}${typeof code === 'string' ? ': ' : ''}${message}`)
+      } else lines.push(JSON.stringify(item))
+    }
+  }
+  return lines
+}
+
+/* The server's error code of a refusal (body.error), or null. */
+export const errorCode = (error: unknown): string | null => {
+  const code = bodyOf(error)?.error
+  return typeof code === 'string' ? code : null
+}
 const clone = <T,>(value: T): T => structuredClone(value)
 const signature = (draft: ToolDraft) => JSON.stringify([draft.code, draft.parameters])
 const emptyDraft = (description = ''): ToolDraft => ({ name: '', description, code: '', parameters: [] })
@@ -99,7 +135,9 @@ function validType(type: ToolParamDraft['type'], value: unknown): boolean {
 }
 
 export function saveDisabledReason(state: WorkbenchState): string | null {
+  if (!state.canEdit) return state.editNote || 'This host does not let this page save tools.'
   if (state.actions.save?.status === 'running') return 'Wait for the current save to finish before saving again.'
+  if (state.replaceName !== null) return `Answer whether to replace ${state.replaceName} first.`
   if (state.builtin) return 'Built-in tools are read-only. Use Copy as mine first.'
   const problem = parameterProblem(state.draft.parameters)
   if (problem) return problem
@@ -121,14 +159,23 @@ export class WorkbenchModel {
 
   constructor(api: WorkbenchApi, initialDescription = '') {
     this.api = api
-    this.state = { draft: emptyDraft(initialDescription), builtin: false, tools: [], values: {}, choices: {}, actions: {}, check: null, dryRun: null, revision: 0, dryRunRevision: null, deleteName: null }
+    this.state = { draft: emptyDraft(initialDescription), builtin: false, tools: [], values: {}, choices: {}, actions: {}, check: null, dryRun: null, revision: 0, dryRunRevision: null, deleteName: null,
+      replaceName: null, importReplace: null, canEdit: true, editNote: '' }
   }
 
   getSnapshot = () => this.state
   setApi(api: WorkbenchApi) { this.api = api }
+  /* Whether this host lets the page change tools (a cloud host wants the admin password). */
+  setGate(canEdit: boolean, editNote = '') {
+    if (canEdit !== this.state.canEdit || editNote !== this.state.editNote) {
+      this.update({ canEdit, editNote, ...(canEdit ? {} : { replaceName: null, importReplace: null, deleteName: null }) })
+    }
+  }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private update(patch: Partial<WorkbenchState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach(listener => listener()) }
-  private status(action: Action, status: ActionState['status'], message: string) { this.update({ actions: { ...this.state.actions, [action]: { status, message } } }) }
+  private status(action: Action, status: ActionState['status'], message: string, details: string[] = []) {
+    this.update({ actions: { ...this.state.actions, [action]: details.length ? { status, message, details } : { status, message } } })
+  }
   private begin(action: Action, message: string) {
     const ticket = (this.tickets[action] ?? 0) + 1
     this.tickets[action] = ticket
@@ -136,7 +183,7 @@ export class WorkbenchModel {
     return ticket
   }
   private current(action: Action, ticket: number) { return this.tickets[action] === ticket }
-  private fail(action: Action, error: unknown) { this.status(action, 'error', errorMessage(error)) }
+  private fail(action: Action, error: unknown) { this.status(action, 'error', errorMessage(error), errorDetails(error)) }
   // The last word of an action that is still the current one: never left showing "running".
   private settle(action: Action, ticket: number) {
     if (this.current(action, ticket) && this.state.actions[action]?.status === 'running') this.fail(action, 'Stopped before it finished. Try again.')
@@ -149,7 +196,7 @@ export class WorkbenchModel {
     for (const action of ['check', 'dryRun', 'choices', 'run'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
     // values hold only what the designer set; a field without one shows (and uses) the default.
     this.update({ draft: { ...clone(draft), code: normalizeCode(draft.code) }, builtin, revision: this.state.revision + 1, dryRunRevision: null,
-      values: {}, choices: {}, check: null, dryRun: null, deleteName: null,
+      values: {}, choices: {}, check: null, dryRun: null, deleteName: null, replaceName: null,
       actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined, run: undefined },
     })
   }
@@ -159,6 +206,8 @@ export class WorkbenchModel {
     const draft = clone({ ...this.state.draft, ...patch })
     draft.code = normalizeCode(draft.code)
     this.draftVersion++
+    // A pending "replace it?" was asked about the draft as it was: any edit withdraws it.
+    if (this.state.replaceName !== null) { this.update({ replaceName: null }); this.status('save', 'idle', '') }
     if (signature(draft) !== signature(this.state.draft)) {
       this.choicesRevision = -1
       for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
@@ -307,6 +356,9 @@ export class WorkbenchModel {
     finally { this.settle('run', ticket) }
   }
 
+  /* Save never replaces a tool silently: the name is looked up first (api.exists) and, when a
+     tool has it, the designer is asked (replaceName; confirmReplace / cancelReplace). The
+     server keeps the last word: a built-in's name is refused there (409 builtin_read_only). */
   async save() {
     if (this.saveInFlight) return
     const reason = saveDisabledReason(this.state)
@@ -315,17 +367,52 @@ export class WorkbenchModel {
     draft.name = draft.name.trim()
     const version = this.draftVersion
     this.saveInFlight = true
-    const ticket = this.begin('save', 'Saving tool...')
+    const ticket = this.begin('save', `Looking for a tool named ${draft.name}...`)
+    let exists: boolean
+    try { exists = await this.api.exists(draft.name) }
+    catch (error) {
+      this.saveInFlight = false
+      if (this.current('save', ticket)) this.fail('save', error)
+      return
+    }
+    this.saveInFlight = false
+    if (!this.current('save', ticket)) return
+    if (version !== this.draftVersion) { this.fail('save', 'The draft changed while its name was looked up. Save again.'); return }
+    if (exists) {
+      this.update({ replaceName: draft.name })
+      this.status('save', 'idle', '')
+      return
+    }
+    await this.write(draft, version, ticket)
+  }
+  async confirmReplace() {
+    const name = this.state.replaceName
+    if (name === null || this.saveInFlight) return
+    this.update({ replaceName: null })
+    const reason = saveDisabledReason(this.state)
+    if (reason || name !== this.state.draft.name.trim()) { this.fail('save', reason ?? 'The name changed. Save again.'); return }
+    const draft = typedDraft(this.state.draft)
+    draft.name = name
+    await this.write(draft, this.draftVersion, this.begin('save', `Replacing ${name}...`))
+  }
+  cancelReplace() {
+    if (this.state.replaceName === null) return
+    this.update({ replaceName: null })
+    this.status('save', 'idle', '')
+  }
+  private async write(draft: ToolDraft, version: number, ticket: number) {
+    this.saveInFlight = true
     try {
       const result = await this.api.save(draft)
       await this.refresh()
       if (this.current('save', ticket)) this.status('save', 'success', `Saved ${result.name}.${version === this.draftVersion ? '' : ' The current draft has not been saved.'}`)
     } catch (error) { if (this.current('save', ticket)) this.fail('save', error) }
-    finally { this.saveInFlight = false }
+    finally { this.saveInFlight = false; this.settle('save', ticket) }
   }
 
   requestDelete(name: string) {
     const tool = this.state.tools.find(item => item.name === name)
+    if (!this.state.canEdit) { this.fail('remove', this.state.editNote || 'This host does not let this page delete tools.'); return }
     if (!tool || tool.builtin) { this.fail('remove', 'Built-in or unknown tools cannot be deleted.'); return }
     this.update({ deleteName: name })
   }
@@ -334,7 +421,7 @@ export class WorkbenchModel {
     const name = this.state.deleteName
     if (!name || this.state.actions.remove?.status === 'running') return
     const tool = this.state.tools.find(item => item.name === name)
-    if (!tool || tool.builtin) { this.fail('remove', 'Built-in or unknown tools cannot be deleted.'); return }
+    if (!this.state.canEdit || !tool || tool.builtin) { this.fail('remove', 'Built-in or unknown tools cannot be deleted.'); return }
     const ticket = this.begin('remove', `Deleting ${name}...`)
     try {
       await this.api.remove(name)
@@ -343,6 +430,7 @@ export class WorkbenchModel {
       this.status('remove', 'success', `Deleted ${name}.`)
       await this.refresh()
     } catch (error) { if (this.current('remove', ticket)) this.fail('remove', error) }
+    finally { this.settle('remove', ticket) }
   }
 
   async exportTool(name: string, download: (name: string, text: string) => void) {
@@ -353,14 +441,48 @@ export class WorkbenchModel {
       download(name, text)
       this.status('export', 'success', `Exported ${name}.`)
     } catch (error) { if (this.current('export', ticket)) this.fail('export', error) }
+    finally { this.settle('export', ticket) }
   }
+
+  /* An import never replaces a tool silently either: the server refuses a name of yours with
+     409 pack_exists, and the designer is asked (importReplace) before it is sent with overwrite. */
   async importTool(text: string | Promise<string>) {
     if (this.state.actions.import?.status === 'running') return
+    if (!this.state.canEdit) { this.fail('import', this.state.editNote || 'This host does not let this page import tools.'); return }
+    this.update({ importReplace: null })
     const ticket = this.begin('import', 'Importing tool...')
+    let yaml = ''
     try {
-      const result = await this.api.importYaml(await text)
-      if (this.current('import', ticket)) this.status('import', 'success', `Imported ${result.name}.`)
+      yaml = await text
+      const result = await this.api.importYaml(yaml)
+      if (!this.current('import', ticket)) return
+      this.status('import', 'success', `Imported ${result.name}${result.replaced ? ' (replaced)' : ''}.`)
+      await this.refresh()
+    } catch (error) {
+      if (!this.current('import', ticket)) return
+      if (errorCode(error) === 'pack_exists') {
+        const tool = bodyOf(error)?.tool
+        this.update({ importReplace: { name: typeof tool === 'string' ? tool : 'this tool', text: yaml } })
+        this.status('import', 'idle', '')
+      } else this.fail('import', error)
+    } finally { this.settle('import', ticket) }
+  }
+  async confirmImport() {
+    const pending = this.state.importReplace
+    if (!pending || this.state.actions.import?.status === 'running') return
+    this.update({ importReplace: null })
+    const ticket = this.begin('import', `Replacing ${pending.name}...`)
+    try {
+      const result = await this.api.importYaml(pending.text, { overwrite: true })
+      if (!this.current('import', ticket)) return
+      this.status('import', 'success', `Imported ${result.name}${result.replaced ? ' (replaced)' : ''}.`)
       await this.refresh()
     } catch (error) { if (this.current('import', ticket)) this.fail('import', error) }
+    finally { this.settle('import', ticket) }
+  }
+  cancelImport() {
+    if (!this.state.importReplace) return
+    this.update({ importReplace: null })
+    this.status('import', 'idle', '')
   }
 }

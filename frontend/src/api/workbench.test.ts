@@ -46,7 +46,22 @@ describe('workbenchApi', () => {
   it('satisfies the WorkbenchApi interface of the workbench component', () => {
     const api: WorkbenchApi = workbenchApi
     expect(Object.keys(api).sort()).toEqual(
-      ['check', 'choices', 'dryRun', 'exportYaml', 'importYaml', 'list', 'load', 'remove', 'save'])
+      ['check', 'choices', 'dryRun', 'exists', 'exportYaml', 'importYaml', 'list', 'load', 'remove', 'save'])
+  })
+
+  it('exists asks GET /tools/{name}: true when it is there, false on 404 unknown_tool, any other refusal thrown', async () => {
+    const calls = stubFetch(
+      { body: { name: 'mine', code_template: 'return 1;' } },
+      { status: 404, body: { error: 'unknown_tool', message: "Tool 'nope' not found", tool: 'nope' } },
+      { status: 422, body: { error: 'invalid_tool_name', message: 'bad name' } },
+    )
+    expect(await workbenchApi.exists('mine')).toBe(true)
+    expect(await workbenchApi.exists('nope')).toBe(false)
+    const err = await workbenchApi.exists('con').catch((e: unknown) => e as BridgeApiError)
+    expect(err.code).toBe('invalid_tool_name')
+    expect(calls.map(c => [c.init.method ?? 'GET', c.url])).toEqual([
+      ['GET', '/api/v1/bridge/tools/mine'], ['GET', '/api/v1/bridge/tools/nope'], ['GET', '/api/v1/bridge/tools/con'],
+    ])
   })
 
   it('check sends a draft with parameters as pack + sample values, and returns the package reply as it is', async () => {
