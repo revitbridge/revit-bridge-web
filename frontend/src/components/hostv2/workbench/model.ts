@@ -25,13 +25,38 @@ const clone = <T,>(value: T): T => structuredClone(value)
 const signature = (draft: ToolDraft) => JSON.stringify([draft.code, draft.parameters])
 const emptyDraft = (description = ''): ToolDraft => ({ name: '', description, code: '', parameters: [] })
 const empty = (value: unknown) => value === undefined || value === null || value === ''
-const own = (values: Record<string, unknown>, name: string) => Object.hasOwn(values, name) ? values[name] : undefined
 
-export function inputValue(type: ToolParamDraft['type'], value: string): unknown {
-  if (value === '') return undefined
-  if (type === 'bool') return value === 'true' ? true : value === 'false' ? false : value
-  if (type === 'double' || type === 'int') return value.trim() !== '' && Number.isFinite(Number(value)) ? Number(value) : value
-  return value
+// Number fields keep the text the designer typed (state.values, a parameter's default) and are
+// read only when the value is used, from the whole text: typing "2.5" passes through "2.", which
+// must not become 2 and then 25. Text that is not a number is an error, never another value.
+const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/
+const WHOLE = /^[+-]?\d+$/
+
+export type Parsed = { value: unknown } | { error: string }
+
+/* The value of a typed text (or of a value already typed, e.g. a loaded default) for a parameter
+   type; { value: undefined } when it is empty. */
+export function parseValue(type: ToolParamDraft['type'], raw: unknown): Parsed {
+  if (raw === undefined || raw === null) return { value: undefined }
+  if (type === 'string') return typeof raw === 'string' ? { value: raw === '' ? undefined : raw } : { error: 'must be text' }
+  if (type === 'bool') {
+    if (typeof raw === 'boolean') return { value: raw }
+    if (raw === 'true' || raw === 'false') return { value: raw === 'true' }
+    return raw === '' ? { value: undefined } : { error: 'must be true or false' }
+  }
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return { error: 'must be a finite number' }
+    return type === 'int' && !Number.isInteger(raw) ? { error: `${raw} is not a whole number` } : { value: raw }
+  }
+  if (typeof raw !== 'string') return { error: `must be ${type === 'int' ? 'a whole number' : 'a number'}` }
+  const text = raw.trim()
+  if (text === '') return { value: undefined }
+  if (type === 'int') {
+    const value = Number(text)
+    return WHOLE.test(text) && Number.isSafeInteger(value) ? { value } : { error: `"${raw}" is not a whole number` }
+  }
+  const value = Number(text)
+  return DECIMAL.test(text) && Number.isFinite(value) ? { value } : { error: `"${raw}" is not a number` }
 }
 
 export function parameterProblem(parameters: ToolParamDraft[]): string | null {
@@ -41,10 +66,23 @@ export function parameterProblem(parameters: ToolParamDraft[]): string | null {
     if (names.has(param.name)) return `Duplicate parameter: ${param.name}`
     names.add(param.name)
     if ((param.source === 'family_types' || param.source === 'elements') && !param.category?.startsWith('OST_')) return `${param.name}: select a category using its OST_* name.`
-    if (!empty(param.default) && !validType(param.type, param.default)) return `${param.name}: the default must be ${param.type}.`
+    const parsed = parseValue(param.type, param.default)
+    if ('error' in parsed) return `${param.name}: the default ${parsed.error}.`
   }
   return null
 }
+
+/* The declarations as the interface takes them: each default read from its text (none when
+   empty). Call after parameterProblem returned null. */
+export function typedParameters(parameters: ToolParamDraft[]): ToolParamDraft[] {
+  return parameters.map(param => {
+    const { default: raw, ...rest } = clone(param)
+    const parsed = parseValue(param.type, raw)
+    return 'value' in parsed && parsed.value !== undefined ? { ...rest, default: parsed.value } : rest
+  })
+}
+
+const typedDraft = (draft: ToolDraft): ToolDraft => ({ ...clone(draft), parameters: typedParameters(draft.parameters) })
 
 function validType(type: ToolParamDraft['type'], value: unknown): boolean {
   if (type === 'string') return typeof value === 'string'
@@ -55,11 +93,13 @@ function validType(type: ToolParamDraft['type'], value: unknown): boolean {
 export function saveDisabledReason(state: WorkbenchState): string | null {
   if (state.actions.save?.status === 'running') return 'Wait for the current save to finish before saving again.'
   if (state.builtin) return 'Built-in tools are read-only. Use Copy as mine first.'
+  const problem = parameterProblem(state.draft.parameters)
+  if (problem) return problem
   if (state.dryRunRevision !== state.revision) return 'Dry-run the current code and parameter declarations successfully before saving.'
   if (!state.draft.name.trim()) return 'Enter a tool name before saving.'
   if (state.actions.list?.status !== 'success') return 'Refresh the tool list before saving.'
   if (state.tools.some(tool => tool.builtin && tool.name === state.draft.name.trim())) return 'Choose a name different from a built-in tool.'
-  return parameterProblem(state.draft.parameters)
+  return null
 }
 
 export class WorkbenchModel {
@@ -89,15 +129,19 @@ export class WorkbenchModel {
   }
   private current(action: Action, ticket: number) { return this.tickets[action] === ticket }
   private fail(action: Action, error: unknown) { this.status(action, 'error', errorMessage(error)) }
+  // The last word of an action that is still the current one: never left showing "running".
+  private settle(action: Action, ticket: number) {
+    if (this.current(action, ticket) && this.state.actions[action]?.status === 'running') this.fail(action, 'Stopped before it finished. Try again.')
+  }
   reportError(action: Action, error: unknown) { this.fail(action, error) }
 
   private replaceDraft(draft: ToolDraft, builtin: boolean) {
     this.draftVersion++
     this.choicesRevision = -1
-    for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
+    for (const action of ['check', 'dryRun', 'choices', 'run'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
+    // values hold only what the designer set; a field without one shows (and uses) the default.
     this.update({ draft: { ...clone(draft), code: normalizeCode(draft.code) }, builtin, revision: this.state.revision + 1, dryRunRevision: null,
-      values: Object.fromEntries(draft.parameters.filter(param => param.default !== undefined).map(param => [param.name, clone(param.default)])),
-      choices: {}, check: null, dryRun: null, deleteName: null,
+      values: {}, choices: {}, check: null, dryRun: null, deleteName: null,
       actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined, run: undefined },
     })
   }
@@ -111,7 +155,9 @@ export class WorkbenchModel {
       this.choicesRevision = -1
       for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
       this.update({ draft, revision: this.state.revision + 1, dryRunRevision: null, check: null, dryRun: null, choices: {},
-        values: Object.fromEntries(draft.parameters.map(param => [param.name, own(this.state.values, param.name) ?? param.default]).filter(([, value]) => value !== undefined)),
+        // Not seeded from the default: a default typed key by key ("0", "0.", "0.5") would
+        // leave its first keystroke behind as the value.
+        values: Object.fromEntries(draft.parameters.filter(param => Object.hasOwn(this.state.values, param.name)).map(param => [param.name, this.state.values[param.name]])),
         actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined },
       })
     } else this.update({ draft })
@@ -153,9 +199,9 @@ export class WorkbenchModel {
 
   async loadChoices(): Promise<boolean> {
     const revision = this.state.revision
-    const params = clone(this.state.draft.parameters)
-    const problem = parameterProblem(params)
+    const problem = parameterProblem(this.state.draft.parameters)
     if (problem) { this.fail('choices', problem); return false }
+    const params = typedParameters(this.state.draft.parameters)
     const ticket = this.begin('choices', 'Loading model options...')
     const results = await Promise.all(params.filter(param => param.source !== 'designer').map(async param => {
       try { return { name: param.name, items: await this.api.choices(param), error: '' } }
@@ -181,7 +227,14 @@ export class WorkbenchModel {
     }
     const values: [string, unknown][] = []
     for (const param of this.state.draft.parameters) {
-      const value = Object.hasOwn(this.state.values, param.name) ? this.state.values[param.name] : param.default
+      // A value the designer cleared stays cleared (the field shows it empty): the default is
+      // used only while no value was set. A model option is the option's own value, typed by the
+      // server, never parsed from text.
+      const set = Object.hasOwn(this.state.values, param.name)
+      const raw = set ? this.state.values[param.name] : param.default
+      const parsed = param.source !== 'designer' && set && !empty(raw) ? { value: raw } : parseValue(param.type, raw)
+      if ('error' in parsed) { this.fail(action, `${param.name}: ${parsed.error}.`); return null }
+      const value = parsed.value
       if (empty(value)) {
         if (param.required) { this.fail(action, `Fill a value for ${param.name}.`); return null }
         continue
@@ -199,7 +252,7 @@ export class WorkbenchModel {
   async check() {
     const problem = parameterProblem(this.state.draft.parameters)
     if (problem || !this.state.draft.code.trim()) { this.fail('check', problem ?? 'Enter code first.'); return }
-    const draft = clone(this.state.draft)
+    const draft = typedDraft(this.state.draft)
     const ticket = this.begin('check', 'Checking...')
     this.update({ check: null })
     try {
@@ -216,37 +269,41 @@ export class WorkbenchModel {
     const ticket = this.begin('dryRun', 'Preparing dry run...')
     this.update({ dryRunRevision: null, dryRun: null })
     const revision = this.state.revision
-    const values = await this.valuesFor('dryRun')
-    if (!values || !this.current('dryRun', ticket) || revision !== this.state.revision) return
-    const draft = clone(this.state.draft)
-    this.status('dryRun', 'running', 'Dry-running...')
     try {
+      const values = await this.valuesFor('dryRun')
+      if (!values || !this.current('dryRun', ticket) || revision !== this.state.revision) return
+      const draft = typedDraft(this.state.draft)
+      this.status('dryRun', 'running', 'Dry-running...')
       const result = readDryRun(await this.api.dryRun(draft.code, draft.parameters, values))
       if (!this.current('dryRun', ticket) || revision !== this.state.revision) return
       const success = result.success && result.rolled_back === true
       this.update({ dryRun: result, dryRunRevision: success ? revision : null })
       this.status('dryRun', success ? 'success' : 'error', success ? 'Dry run succeeded. Model was not changed.' : result.error ?? (result.rolled_back === true ? 'Dry run failed.' : 'Rollback is not confirmed. Check the model before continuing.'))
     } catch (error) { if (this.current('dryRun', ticket)) this.fail('dryRun', error) }
+    finally { this.settle('dryRun', ticket) }
   }
 
   async run(onRun: OnRun) {
     if (this.state.actions.run?.status === 'running') return
     const ticket = this.begin('run', 'Preparing run...')
     const revision = this.state.revision
-    const values = await this.valuesFor('run')
-    if (!values || !this.current('run', ticket)) return
-    if (revision !== this.state.revision) { this.fail('run', 'The draft changed. Review the values and run again.'); return }
     try {
-      await onRun(clone(this.state.draft), values)
+      const values = await this.valuesFor('run')
+      if (!this.current('run', ticket)) return
+      // An edit while the options were loading makes valuesFor stop without a message of its own.
+      if (revision !== this.state.revision) { this.fail('run', 'The draft changed while the run was being prepared. Review the values and run again.'); return }
+      if (!values) return
+      await onRun(typedDraft(this.state.draft), values)
       if (this.current('run', ticket)) this.status('run', 'success', 'Run requested. Confirmation and execution are handled by the host.')
     } catch (error) { if (this.current('run', ticket)) this.fail('run', error) }
+    finally { this.settle('run', ticket) }
   }
 
   async save() {
     if (this.saveInFlight) return
     const reason = saveDisabledReason(this.state)
     if (reason) { this.fail('save', reason); return }
-    const draft = clone(this.state.draft)
+    const draft = typedDraft(this.state.draft)
     draft.name = draft.name.trim()
     const version = this.draftVersion
     this.saveInFlight = true

@@ -1,10 +1,13 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
-import { inputValue, saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
+import { saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
 import { diagnosticRange, indentSelection, type Diagnostic, type DryRunReply } from './results'
 import './workbench.css'
 
 interface Props { api: WorkbenchApi; onRun: OnRun; initialDescription?: string }
+
+// Text fields keep what is typed; the model reads numbers from it when the value is used.
+const boolChoice = (text: string) => text === '' ? undefined : text === 'true'
 
 const actionLabels: Record<Action, string> = {
   check: 'Check', dryRun: 'Dry run', run: 'Run', save: 'Save', list: 'Tool list', load: 'Open',
@@ -129,10 +132,10 @@ export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: 
           <option value="">None</option>{['mm', 'm', 'feet'].map(unit => <option key={unit}>{unit}</option>)}
         </select></label>
         <label>Default{param.type === 'bool'
-          ? <select className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: inputValue(param.type, event.target.value) })}>
+          ? <select className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: boolChoice(event.target.value) })}>
               <option value="">No default</option><option value="true">true</option><option value="false">false</option>
             </select>
-          : <input className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: inputValue(param.type, event.target.value) })} />}
+          : <input className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: event.target.value === '' ? undefined : event.target.value })} />}
         </label>
         <label className="hostv2-workbench-checkbox"><input type="checkbox" checked={param.required} onChange={event => editParam(index, { required: event.target.checked })} />Required</label>
         <button type="button" className="btn-ghost danger" aria-label={`Remove parameter ${param.name || index + 1}`} onClick={() => model.edit({ parameters: draft.parameters.filter((_, i) => i !== index) })}>Remove</button>
@@ -155,10 +158,10 @@ export function WorkbenchView({ model, onRun }: { model: WorkbenchModel; onRun: 
                 {choices.map((choice, i) => <option key={i} value={String(i)}>{choice.label}</option>)}
               </select>
             : param.type === 'bool'
-              ? <select className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, inputValue(param.type, event.target.value))}>
+              ? <select className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, boolChoice(event.target.value))}>
                   <option value="">Choose a value</option><option value="true">true</option><option value="false">false</option>
                 </select>
-              : <input className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, inputValue(param.type, event.target.value))} />}
+              : <input className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, event.target.value)} />}
         </label>
       })}
       <ActionStatus action="choices" state={actions.choices} />

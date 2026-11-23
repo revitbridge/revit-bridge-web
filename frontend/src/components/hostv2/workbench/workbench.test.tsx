@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
-import { inputValue, saveDisabledReason, WorkbenchModel } from './model'
+import { parseValue, saveDisabledReason, WorkbenchModel } from './model'
 import { diagnosticRange, indentSelection, readCheck, readDryRun } from './results'
 import Workbench, { WorkbenchView } from './Workbench'
 
@@ -188,8 +188,8 @@ describe('model options and input values', () => {
     api.choices.mockResolvedValue([{ label: 'Wall 42', value: 42 }])
     const parameters = [param(), param({ name: 'flip', type: 'bool' }), param({ name: 'wall', type: 'int', source: 'elements', category: 'OST_Walls' })]
     model.edit({ parameters })
-    model.setValue('height', inputValue('double', '0'))
-    model.setValue('flip', inputValue('bool', 'false'))
+    model.setValue('height', '0')
+    model.setValue('flip', false)
     model.setValue('wall', 42)
     await model.dryRun()
     expect(api.dryRun).toHaveBeenCalledWith(draft.code, parameters, { height: 0, flip: false, wall: 42 })
@@ -205,10 +205,10 @@ describe('model options and input values', () => {
     await model.dryRun()
     expect(html(model)).toContain('OST_*')
     model.edit({ parameters: [param({ type: 'int', default: 4 })] })
-    model.setValue('height', 1.5)
+    model.setValue('height', '1.5')
     await model.dryRun()
-    expect(html(model)).toContain('height must be int')
-    model.setValue('height', undefined)
+    expect(html(model)).toContain('height: &quot;1.5&quot; is not a whole number.')
+    model.setValue('height', '')
     await model.dryRun()
     expect(html(model)).toContain('Fill a value for height')
     expect(api.dryRun).not.toHaveBeenCalled()
@@ -246,6 +246,140 @@ describe('model options and input values', () => {
     await model.dryRun()
     expect(Object.keys(api.dryRun.mock.calls[0][2])).toEqual(['__proto__', 'constructor'])
     expect(api.dryRun.mock.calls[0][2].constructor).toBe(2)
+  })
+})
+
+describe('number fields keep the typed text and read it when it is used', () => {
+  it.each([
+    ['2.5', 2.5], ['0.5', 0.5], ['-1.25', -1.25], [' 3000 ', 3000], ['2.', 2], ['.5', 0.5], ['1e3', 1000], ['', undefined],
+  ])('reads %j as a double: %j', (text, value) => {
+    expect(parseValue('double', text)).toEqual({ value })
+  })
+
+  it.each(['abc', '2,5', '1.2.3', '0x10', 'Infinity', 'NaN', '-', '.', '5 mm'])('refuses %j as a number instead of reading it as another value', text => {
+    expect(parseValue('double', text)).toEqual({ error: `"${text}" is not a number` })
+    expect(parseValue('int', text)).toEqual({ error: `"${text}" is not a whole number` })
+  })
+
+  it('reads whole numbers, booleans and loaded values without changing them', () => {
+    expect(parseValue('int', '-4')).toEqual({ value: -4 })
+    expect(parseValue('int', '2.5')).toEqual({ error: '"2.5" is not a whole number' })
+    expect(parseValue('int', 7)).toEqual({ value: 7 })
+    expect(parseValue('double', 2.5)).toEqual({ value: 2.5 })
+    expect(parseValue('bool', 'false')).toEqual({ value: false })
+    expect(parseValue('string', '2.50')).toEqual({ value: '2.50' })
+    expect(parseValue('string', '')).toEqual({ value: undefined })
+  })
+
+  it.each([['2.5', 2.5], ['0.5', 0.5], ['-1.25', -1.25]])('a value typed key by key as %j reaches the dry run as %j', async (text, value) => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param()] })
+    for (let end = 1; end <= text.length; end++) {
+      model.setValue('height', text.slice(0, end))
+      expect(html(model)).toContain(`value="${text.slice(0, end)}"`)
+    }
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenCalledWith(draft.code, [param()], { height: value })
+  })
+
+  it('an empty required value or a non-number is an error shown in place, never sent', async () => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param()] })
+    model.setValue('height', '')
+    await model.dryRun()
+    expect(html(model)).toContain('Fill a value for height')
+    model.setValue('height', '2,5')
+    await model.dryRun()
+    expect(html(model)).toContain('height: &quot;2,5&quot; is not a number.')
+    expect(model.getSnapshot().actions.dryRun?.status).toBe('error')
+    await model.run(() => {})
+    expect(model.getSnapshot().actions.run?.message).toContain('is not a number')
+    expect(api.dryRun).not.toHaveBeenCalled()
+  })
+
+  it('a default typed as 0.5 is declared, checked and saved as 0.5; a bad default blocks all three', async () => {
+    const { api, model } = await setup()
+    for (const text of ['0', '0.', '0.5']) model.edit({ parameters: [param({ required: false, default: text })] })
+    expect(html(model)).toContain('value="0.5"')
+    await model.check()
+    expect(api.check).toHaveBeenCalledWith(draft.code, [param({ required: false, default: 0.5 })])
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenCalledWith(draft.code, [param({ required: false, default: 0.5 })], { height: 0.5 })
+    await model.save()
+    expect(api.save.mock.calls[0][0].parameters).toEqual([param({ required: false, default: 0.5 })])
+
+    model.edit({ parameters: [param({ required: false, default: 'abc' })] })
+    expect(saveDisabledReason(model.getSnapshot())).toBe('height: the default "abc" is not a number.')
+    await model.check()
+    expect(html(model)).toContain('height: the default &quot;abc&quot; is not a number.')
+    expect(api.check).toHaveBeenCalledOnce()
+    model.edit({ parameters: [param({ required: false, default: '' })] })
+    await model.check()
+    expect(api.check).toHaveBeenLastCalledWith(draft.code, [param({ required: false })])
+  })
+})
+
+describe('values and defaults', () => {
+  it('a value field follows the default until the designer sets it, then keeps what was set', async () => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param({ default: '1.5' })] })
+    model.edit({ parameters: [param({ default: '2.5' })] })
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [param({ default: 2.5 })], { height: 2.5 })
+    model.setValue('height', '7.25')
+    model.edit({ parameters: [param({ default: '3.5' })] })
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [param({ default: 3.5 })], { height: 7.25 })
+    model.setValue('height', '')
+    await model.dryRun()
+    expect(html(model)).toContain('Fill a value for height')
+  })
+})
+
+describe('Run is never left waiting', () => {
+  it('a draft edited while the model options load resets Run with a reason, and Run works again', async () => {
+    const { api, model } = await setup()
+    const pending = deferred<{ label: string; value: unknown }[]>()
+    api.choices.mockReturnValueOnce(pending.promise)
+    const level = param({ name: 'level_name', type: 'string', source: 'levels' })
+    model.edit({ parameters: [level] })
+    const onRun = vi.fn()
+    const running = model.run(onRun)
+    expect(model.getSnapshot().actions.run?.status).toBe('running')
+    model.edit({ code: 'return 5;' })
+    pending.resolve([{ label: 'Level 1', value: 'L1' }])
+    await running
+    expect(model.getSnapshot().actions.run).toEqual({ status: 'error', message: 'The draft changed while the run was being prepared. Review the values and run again.' })
+    expect(html(model)).not.toContain('Requesting run...')
+    expect(onRun).not.toHaveBeenCalled()
+
+    await model.run(onRun)
+    expect(model.getSnapshot().actions.run?.message).toBe('Fill a value for level_name.')
+    model.setValue('level_name', 'L1')
+    await model.run(onRun)
+    expect(onRun).toHaveBeenCalledWith({ ...draft, code: 'return 5;', parameters: [level] }, { level_name: 'L1' })
+    expect(model.getSnapshot().actions.run?.status).toBe('success')
+  })
+
+  it('a run whose draft is replaced while preparing leaves no busy Run behind', async () => {
+    const { api, model } = await setup()
+    const pending = deferred<{ label: string; value: unknown }[]>()
+    api.choices.mockReturnValueOnce(pending.promise)
+    model.edit({ parameters: [param({ name: 'level_name', type: 'string', source: 'levels' })] })
+    const onRun = vi.fn()
+    const running = model.run(onRun)
+    model.newDraft()
+    pending.resolve([{ label: 'Level 1', value: 'L1' }])
+    await running
+    expect(model.getSnapshot().actions.run).toBeUndefined()
+    expect(onRun).not.toHaveBeenCalled()
+  })
+
+  it('a host that rejects the run shows its error and frees the button', async () => {
+    const { model } = await setup()
+    await model.run(async () => { throw new Error('Save the tool first') })
+    expect(model.getSnapshot().actions.run).toEqual({ status: 'error', message: 'Save the tool first' })
+    expect(html(model)).toMatch(/<button[^>]*class="btn-primary">Run</)
   })
 })
 
