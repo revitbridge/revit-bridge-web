@@ -46,10 +46,9 @@ describe('the pages', () => {
     expect(html).toContain('3. Compare with no bridge')
     expect(html).toContain('With the bridge')
     expect(html).toContain('bridge=false')
-    // nothing proposed yet: no card, no token panel, no solidify
+    // nothing proposed yet: no card, no token panel
     expect(html).not.toContain('4. Spec card')
     expect(html).not.toContain('5. Confirm and run')
-    expect(html).not.toContain('6. Solidify')
     // no reply yet: no tool activity and no token counts
     expect(html).not.toContain('hostv2-trace')
     expect(html).not.toContain('hostv2-tokens')

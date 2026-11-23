@@ -2,12 +2,10 @@
 
    The request helper is components/shared/http.ts: api/client.ts with the
    rejected body kept, because the pages show the spec errors of /spec/confirm
-   and the pack problems of /solidify line by line. Folded into api/bridge.ts
-   with the device helpers. */
+   line by line. Folded into api/bridge.ts with the device helpers. */
 
 import type {
-  ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport,
-  SolidifyRequest, SolidifyResponse, TaskSpec,
+  ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport, TaskSpec,
 } from '../../types/api'
 import { get, post } from '../shared/http'
 
@@ -30,11 +28,6 @@ export const taskApi = {
   /* Confirmed execution: values as they are in the spec (the projection hash must match). */
   runTool: (name: string, params: Record<string, unknown>, token: string) =>
     post<ExecutionResult>(`${B}/tools/${enc(name)}/run`, { params, token }),
-  execute: (code: string, parameters: unknown[], token: string) =>
-    post<ExecutionResult>(`${B}/execute`, { code, parameters, token }),
-
-  /* Code that worked, saved as a v1 pack. */
-  solidify: (payload: SolidifyRequest) => post<SolidifyResponse>(`${B}/solidify`, payload),
 
   /* The ledger and the re-run of one record's assertion. */
   evidence: (limit = 50, tool = '') =>

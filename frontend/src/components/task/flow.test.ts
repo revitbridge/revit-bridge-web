@@ -46,7 +46,6 @@ function fakeApi(overrides: Partial<FlowApi> = {}): FlowApi & { calls: Array<[st
     reconcile: record('reconcile', ready),
     confirm: record('confirm', { token: 'tok_abcdef0123456789', spec_hash: 'h1', expires_at: '2026-09-22T09:10:00Z', card: 'Task: ...' }),
     runTool: record('runTool', success),
-    execute: record('execute', success),
     ...overrides,
   }
 }
@@ -228,19 +227,6 @@ describe('the task flow', () => {
     expect(s.confirmation?.used).toBe(false)     // a mismatch consumes nothing
     expect(s.reported).toBe(false)
     expect(host.requests).toHaveLength(1)        // no report went to the model
-  })
-
-  it('execute_code runs the confirmed code with its parameters; tampered code is what gets sent', async () => {
-    const codeSpec: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 1;', code_parameters: [] }, parameters: [], interpretations: [] }
-    const host = scriptedHost([{ type: 'spec', spec: codeSpec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
-    const api = fakeApi()
-    const flow = createTaskFlow({ events: host.events, api })
-    await flow.send('brief')
-    await flow.confirm()
-    await flow.runTampered({ code: 'return 2;' })
-    expect(api.calls[1]).toEqual(['execute', ['return 2;', [], 'tok_abcdef0123456789']])
-    // no session yet: the report is skipped, not attempted
-    expect(host.requests).toHaveLength(1)
   })
 
   it('a 422 from /spec/confirm lists the spec errors; a 400 from /run is shown in the result shape', async () => {

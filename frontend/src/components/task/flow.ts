@@ -4,7 +4,8 @@
    the page), the v1 calls from an injected FlowApi, so the whole
    sequence - brief, spec card, confirm, run, tamper, report - runs under
    vitest with a scripted stream and no fetch. The confirmation token lives in
-   this store only: never in localStorage or sessionStorage. */
+   this store only: never in localStorage or sessionStorage. Only saved tools
+   run here (run_tool): the model in this host proposes no code. */
 
 import { createStore } from 'zustand/vanilla'
 import type {
@@ -23,7 +24,6 @@ export interface FlowApi {
   reconcile(spec: TaskSpec): Promise<ReconcileResult>
   confirm(spec: TaskSpec): Promise<ConfirmResponse>
   runTool(name: string, params: Record<string, unknown>, token: string): Promise<ExecutionResult>
-  execute(code: string, parameters: unknown[], token: string): Promise<ExecutionResult>
 }
 
 export interface FlowDeps {
@@ -53,8 +53,8 @@ export interface Confirmation extends ConfirmResponse {
   used: boolean        // an execution reached Revit under it
 }
 
-/* The tamper demo: one parameter value or the code changed after confirmation. */
-export type Tamper = { param: string; value: string } | { code: string }
+/* The tamper demo: one parameter value changed after confirmation. */
+export type Tamper = { param: string; value: string }
 
 export interface TaskState {
   bridge: Transcript
@@ -275,15 +275,9 @@ export function createTaskFlow(deps: FlowDeps) {
     if (!c || getState().running) return null
     setState({ running: true })
     try {
-      let result: ExecutionResult
-      if (c.spec.action.kind === 'run_tool') {
-        const params = paramsOf(c.spec)
-        if (tamper && 'param' in tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
-        result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
-      } else {
-        const code = tamper && 'code' in tamper ? tamper.code : c.spec.action.code ?? ''
-        result = await deps.api.execute(code, c.spec.action.code_parameters ?? [], c.token)
-      }
+      const params = paramsOf(c.spec)
+      if (tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
+      const result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
       setState(s => ({
         execution: result, executionKind: kind, reported: false, running: false,
         // a gate refusal consumed nothing; anything else reached Revit and the token is spent
