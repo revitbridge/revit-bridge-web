@@ -1,7 +1,7 @@
 import type { FetchCandidates, Mention, MentionCandidates, MentionItem, MentionKind } from '../../../types/hostv2'
 import {
-  applyNativeEdit, matchingKinds, mentionLabel, mentionSpans, menuAt, normalizeSelection,
-  replaceRange, serialize, type MentionMenu, type TextSelection,
+  applyKnownNativeEdit, hasLineBreak, indexSpans, matchingKinds, mentionLabel, mentionSpans, menuAt, normalizeKnownSelection,
+  normalizeNewlines, normalizeInputSelection, replaceKnownRange, type MentionMenu, type MentionSpan, type TextSelection,
 } from './model'
 
 export interface MentionCallbacks {
@@ -12,6 +12,7 @@ export interface MentionCallbacks {
 export interface MentionState {
   text: string
   mentions: Mention[]
+  spans: MentionSpan[]
   selection: TextSelection
   menu: MentionMenu | null
   candidates: MentionCandidates | null
@@ -41,12 +42,14 @@ export class MentionController {
   private listeners = new Set<() => void>()
   private timer: ReturnType<typeof setTimeout> | undefined
   private request = 0
-  private beforeComposition: { text: string; mentions: Mention[]; selection: TextSelection } | null = null
+  private beforeComposition: { text: string; spans: MentionSpan[]; selection: TextSelection } | null = null
 
   constructor(text: string, mentions: Mention[], callbacks: MentionCallbacks, disabled = false) {
     this.callbacks = callbacks
+    text = normalizeNewlines(text)
+    const spans = indexSpans(mentionSpans(text, mentions))
     this.state = {
-      ...serialize(text, mentions), selection: at(text.length), menu: null, candidates: null,
+      text, spans, mentions: spans.map(span => span.mention), selection: at(text.length), menu: null, candidates: null,
       status: 'idle', error: '', active: 0, composing: false, disabled,
     }
   }
@@ -66,7 +69,11 @@ export class MentionController {
       this.publish({ disabled })
       if (disabled) this.close()
     }
-    const normalized = serialize(text, mentions)
+    text = normalizeNewlines(text)
+    const spans = indexSpans(mentionSpans(text, mentions))
+    const normalized = { text, spans, mentions: spans.map(span => span.mention) }
+    // A controlled echo carries no offsets. Keep authoritative spans when text
+    // and metadata agree instead of binding them to the first equal plain text.
     if (this.state.composing || (text === this.state.text && sameMentions(normalized.mentions, this.state.mentions))) return
     this.cancel()
     this.publish({ ...normalized, selection: at(Math.min(this.state.selection.end, text.length)),
@@ -89,9 +96,9 @@ export class MentionController {
       this.publish({ menu: null, candidates: null, status: 'idle', error: '', active: 0 })
   }
   private refreshMenu(previous = this.state.menu) {
-    const { text, mentions, selection, disabled, composing } = this.state
+    const { text, spans, selection, disabled, composing } = this.state
     const menu = disabled || composing || selection.start !== selection.end
-      ? null : menuAt(text, mentions, selection.end, previous)
+      ? null : menuAt(text, spans, selection.end, previous)
     if (sameMenu(menu, this.state.menu)) return
     this.cancel()
     this.publish({ menu, active: 0, candidates: null, status: 'idle', error: '' })
@@ -119,57 +126,65 @@ export class MentionController {
   }
   select(selection: TextSelection) {
     if (this.state.disabled || this.state.composing) return
-    const next = normalizeSelection(this.state.text, this.state.mentions, selection)
+    const next = normalizeKnownSelection(this.state.text, this.state.spans, selection)
     if (JSON.stringify(next) !== JSON.stringify(this.state.selection)) {
       this.publish({ selection: next })
       this.refreshMenu()
     }
   }
-  private commit(text: string, mentions: Mention[], caret: number, previous = this.state.menu) {
-    this.publish({ text, mentions, selection: at(caret) })
+  private commit(text: string, spans: MentionSpan[], caret: number, previous = this.state.menu) {
+    spans = indexSpans(spans)
+    const mentions = spans.map(span => span.mention)
+    this.publish({ text, spans, mentions, selection: at(caret) })
     this.refreshMenu(previous)
     this.callbacks.onChange(text, mentions.map(mention => ({ ...mention })))
   }
   editNative(next: string, selection: TextSelection) {
     if (this.state.disabled) return
+    selection = normalizeInputSelection(next, selection)
+    next = normalizeNewlines(next)
     if (this.state.composing) {
       // Let the native IME own the value and caret until compositionend. The
       // parent gets its controlled text updates, but no tags are rewritten yet.
-      this.publish({ text: next, selection })
+      const before = this.beforeComposition
+      const spans = before ? applyKnownNativeEdit(before.text, before.spans, next, before.selection).spans : this.state.spans
+      this.publish({ text: next, spans, selection })
       this.callbacks.onChange(next, this.state.mentions)
       return
     }
-    const { text, mentions, selection: oldSelection } = this.state
+    const { text, spans, selection: oldSelection } = this.state
     // A selected duplicate token cannot be identified from longest-prefix diff
     // alone; use the actual old selection whenever it explains the native edit.
-    const edited = applyNativeEdit(text, mentions, next, oldSelection)
-    this.commit(edited.text, edited.mentions, edited.text === next ? selection.end : edited.caret)
+    const edited = applyKnownNativeEdit(text, spans, next, oldSelection)
+    this.commit(edited.text, edited.spans, edited.text === next ? selection.end : edited.caret)
   }
   replaceSelection(inserted: string) {
     if (this.state.disabled || this.state.composing) return false
-    const { text, mentions, selection } = this.state
-    const edited = replaceRange(text, mentions, selection.start, selection.end, inserted)
-    this.commit(edited.text, edited.mentions, edited.caret)
+    const { text, spans, selection } = this.state
+    const edited = replaceKnownRange(text, spans, selection.start, selection.end, inserted)
+    this.commit(edited.text, edited.spans, edited.caret)
     return true
   }
   compositionStart() {
     if (this.state.disabled) return
-    this.beforeComposition = { text: this.state.text, mentions: this.state.mentions, selection: this.state.selection }
+    this.beforeComposition = { text: this.state.text, spans: this.state.spans, selection: this.state.selection }
     this.close()
     this.publish({ composing: true })
   }
   compositionEnd(text: string, selection: TextSelection) {
+    selection = normalizeInputSelection(text, selection)
+    text = normalizeNewlines(text)
     const previous = this.beforeComposition
     this.beforeComposition = null
     this.publish({ composing: false })
     if (this.state.disabled) return
     if (previous) {
-      const edited = applyNativeEdit(previous.text, previous.mentions, text, previous.selection)
-      this.commit(edited.text, edited.mentions, edited.text === text ? selection.end : edited.caret)
+      const edited = applyKnownNativeEdit(previous.text, previous.spans, text, previous.selection)
+      this.commit(edited.text, edited.spans, edited.text === text ? selection.end : edited.caret)
     } else this.editNative(text, selection)
   }
   selectable(item: MentionItem): boolean {
-    if (item.disabled) return false
+    if (item.disabled || (item.kind !== 'category' && hasLineBreak(item.name))) return false
     const menu = this.state.menu
     if (menu?.mode !== 'items') return false
     return menu.kind === 'type' && !menu.category
@@ -189,33 +204,30 @@ export class MentionController {
     if (!item || !this.selectable(item)) return
     if (item.kind === 'category') {
       const category = String(item.id)
-      this.commit(this.state.text.slice(0, menu.start) + '@type:' + this.state.text.slice(menu.end),
-        this.state.mentions, menu.start + 6,
+      const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, '@type:')
+      this.commit(edited.text, edited.spans, edited.caret,
         { ...menu, category, categoryLabel: item.label || item.name })
       return
     }
     const mention: Mention = { kind: menu.kind, id: elementId(item)!, name: item.name }
     const label = mentionLabel(mention)
-    const spans = mentionSpans(this.state.text, this.state.mentions)
-    const before = spans.filter(span => span.end <= menu.start).map(span => span.mention)
-    const after = spans.filter(span => span.start >= menu.end).map(span => span.mention)
-    this.commit(this.state.text.slice(0, menu.start) + label + this.state.text.slice(menu.end),
-      [...before, mention, ...after], menu.start + label.length)
+    const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, label)
+    this.commit(edited.text, [...edited.spans, { start: edited.caret - label.length, end: edited.caret, index: -1, mention }], edited.caret)
     this.close()
   }
   private pickKind(kind: MentionKind) {
     const menu = this.state.menu
     if (!menu) return
     const prefix = `@${kind}:`
-    this.commit(this.state.text.slice(0, menu.start) + prefix + this.state.text.slice(menu.end),
-      this.state.mentions, menu.start + prefix.length, null)
+    const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, prefix)
+    this.commit(edited.text, edited.spans, edited.caret, null)
   }
   backToCategories() {
     if (this.state.menu?.mode !== 'items' || this.state.menu.kind !== 'type' || this.state.composing || this.state.disabled) return
     this.pickKind('type')
   }
   key(key: string, shift = false, modified = false, nativeComposing = false): boolean {
-    const { disabled, composing, menu, text, mentions, selection } = this.state
+    const { disabled, composing, menu, text, spans, selection } = this.state
     if (disabled || composing || nativeComposing) return false
     if (key === 'Escape' && menu) { this.close(); return true }
     if (key === 'Enter' && shift) return false
@@ -236,7 +248,6 @@ export class MentionController {
       if (text.trim()) this.callbacks.onSubmit()
       return true
     }
-    const spans = mentionSpans(text, mentions)
     if (key === 'Backspace' || key === 'Delete') {
       const touched = selection.start === selection.end
         ? spans.find(span => key === 'Backspace' ? span.end === selection.start : span.start === selection.start)
@@ -244,8 +255,8 @@ export class MentionController {
       if (touched) {
         const start = Math.min(selection.start, touched.start)
         const end = Math.max(selection.end, touched.end)
-        const edited = replaceRange(text, mentions, start, end, '')
-        this.commit(edited.text, edited.mentions, edited.caret)
+        const edited = replaceKnownRange(text, spans, start, end, '')
+        this.commit(edited.text, edited.spans, edited.caret)
         return true
       }
     }

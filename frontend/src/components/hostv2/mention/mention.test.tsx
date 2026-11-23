@@ -294,6 +294,133 @@ describe('candidate and keyboard flow', () => {
     expect(onChange).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
+
+  it('keeps an existing tag identity after equal plain text is pasted before it and echoed', () => {
+    const label = mentionLabel(level)
+    const { controller, onChange } = setup(undefined, label, [level])
+    controller.select(at(0))
+    controller.replaceSelection(label + ' ')
+    const echoed = controller.getSnapshot()
+    expect(echoed.spans).toEqual([{ start: label.length + 1, end: label.length * 2 + 1, index: 0, mention: level }])
+    controller.syncExternal(echoed.text, echoed.mentions.map(mention => ({ ...mention })))
+    expect(controller.getSnapshot().spans[0].start).toBe(label.length + 1)
+    controller.select(at(3))
+    expect(controller.getSnapshot().selection).toEqual(at(3))
+    controller.select(at(echoed.text.length))
+    expect(controller.key('Backspace')).toBe(true)
+    expect(onChange).toHaveBeenLastCalledWith(label + ' ', [])
+    expect(controller.getSnapshot().spans).toEqual([])
+  })
+
+  it('never promotes equal plain text typed in front of an existing tag', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, label, [level])
+    controller.select(at(0))
+    for (const character of label + ' ') {
+      const before = controller.getSnapshot()
+      const caret = before.selection.end
+      controller.editNative(before.text.slice(0, caret) + character + before.text.slice(caret), at(caret + 1))
+      const echo = controller.getSnapshot()
+      controller.syncExternal(echo.text, echo.mentions)
+    }
+    expect(controller.getSnapshot().spans[0].start).toBe(label.length + 1)
+    controller.select(at(label.length))
+    expect(controller.key('Backspace')).toBe(false)
+    controller.editNative(label.slice(0, -1) + ' ' + label, at(label.length - 1))
+    expect(controller.getSnapshot().mentions).toEqual([level])
+    expect(controller.getSnapshot().spans[0].start).toBe(label.length)
+  })
+
+  it('removes only the targeted duplicate id after inserting an unbound equal label', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, label + ' ' + label, [level, level])
+    controller.select(at(0))
+    controller.replaceSelection(label + ' ')
+    expect(controller.getSnapshot().spans.map(span => span.start)).toEqual([label.length + 1, 2 * (label.length + 1)])
+    controller.select(at(controller.getSnapshot().text.length))
+    controller.key('Backspace')
+    expect(controller.getSnapshot().mentions).toEqual([level])
+    expect(controller.getSnapshot().spans).toEqual([{ start: label.length + 1, end: 2 * label.length + 1, index: 0, mention: level }])
+  })
+
+  it('creates a span only for an explicit candidate selection, even beside equal plain text', async () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(async () => result('level', [item()]), label + ' ', [])
+    controller.replaceSelection('@level:')
+    await vi.advanceTimersByTimeAsync(200)
+    controller.choose(0)
+    expect(controller.getSnapshot().mentions).toEqual([level])
+    expect(controller.getSnapshot().spans[0].start).toBe(label.length + 1)
+    expect(controller.getSnapshot().text).toBe(label + ' ' + label)
+  })
+
+  it('keeps span positions across IME text insertion equal to an existing tag', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, label, [level])
+    controller.select(at(0))
+    controller.compositionStart()
+    controller.editNative(label + label, at(label.length))
+    controller.compositionEnd(label + label, at(label.length))
+    expect(controller.getSnapshot().spans[0].start).toBe(label.length)
+    expect(controller.getSnapshot().mentions).toEqual([level])
+  })
+
+  it('normalizes initial CRLF and CR before binding tags and deleting them', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, '\r\n' + label + '\rend', [level])
+    expect(controller.getSnapshot().text).toBe('\n' + label + '\nend')
+    expect(controller.getSnapshot().spans[0].start).toBe(1)
+    controller.select(at(1 + label.length))
+    controller.key('Backspace')
+    expect(controller.getSnapshot().text).toBe('\n\nend')
+    expect(controller.getSnapshot().mentions).toEqual([])
+  })
+
+  it('normalizes external value and compares normalized echoes without publishing in a loop', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup()
+    controller.syncExternal('a\r\n' + label, [level])
+    const listener = vi.fn()
+    const unsubscribe = controller.subscribe(listener)
+    controller.syncExternal('a\r\n' + label, [{ ...level }])
+    controller.syncExternal('a\n' + label, [{ ...level }])
+    expect(listener).not.toHaveBeenCalled()
+    expect(controller.getSnapshot().spans[0].start).toBe(2)
+    unsubscribe()
+  })
+
+  it('normalizes pasted line endings before shifting an existing span', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, label, [level])
+    controller.select(at(0))
+    controller.replaceSelection('a\r\nb\r')
+    expect(controller.getSnapshot().text).toBe('a\nb\n' + label)
+    expect(controller.getSnapshot().selection).toEqual(at(4))
+    expect(controller.getSnapshot().spans[0].start).toBe(4)
+    controller.key('ArrowRight')
+    expect(controller.getSnapshot().selection).toEqual(at(4 + label.length))
+  })
+
+  it('normalizes native input and its raw selection offsets at the input boundary', () => {
+    const label = mentionLabel(level)
+    const { controller } = setup(undefined, label, [level])
+    controller.select(at(0))
+    controller.editNative('a\r\n' + label, at(3))
+    expect(controller.getSnapshot().selection).toEqual(at(2))
+    expect(controller.getSnapshot().spans[0].start).toBe(2)
+    expect(controller.getSnapshot().text).toBe('a\n' + label)
+  })
+
+  it('rejects multiline candidate names explicitly instead of rewriting their identity', async () => {
+    const multiline = item('level', 10, 'Level\r\nOne')
+    const { controller } = setup(async () => result('level', [multiline]))
+    input(controller, '@level:')
+    await vi.advanceTimersByTimeAsync(200)
+    controller.choose(0)
+    expect(controller.getSnapshot().mentions).toEqual([])
+    expect(popup(controller)).toContain('Names with line breaks cannot be inserted as tags.')
+    expect(multiline.name).toBe('Level\r\nOne')
+  })
 })
 
 describe('MentionInput rendering', () => {
@@ -316,5 +443,13 @@ describe('MentionInput rendering', () => {
       onChange={vi.fn()} onSubmit={vi.fn()} fetchCandidates={vi.fn()} />)
     expect(html).toContain('placeholder="Ask Revit"')
     expect(html).not.toContain('mention-popup')
+  })
+  it('reports an unrepresentable external mention without changing its name', () => {
+    const multiline = { ...level, name: 'Level\r\nOne' }
+    const html = renderToStaticMarkup(<MentionInput value={mentionLabel(multiline)} mentions={[multiline]}
+      onChange={vi.fn()} onSubmit={vi.fn()} fetchCandidates={vi.fn()} />)
+    expect(html).toContain('Names with line breaks cannot be represented as tags.')
+    expect(multiline.name).toBe('Level\r\nOne')
+    expect(serialize('\r\n' + mentionLabel(level), [level])).toEqual({ text: '\n' + mentionLabel(level), mentions: [level] })
   })
 })

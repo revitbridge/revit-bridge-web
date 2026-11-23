@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
 import type { FetchCandidates, Mention } from '../../../types/hostv2'
 import { MentionController, type MentionState } from './controller'
-import { matchingKinds, mentionSpans, type TextSelection } from './model'
+import { hasLineBreak, matchingKinds, type TextSelection } from './model'
 import './mention.css'
 
 export interface MentionInputProps {
@@ -44,7 +44,7 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
   }, [state.active, state.candidates])
 
-  const spans = mentionSpans(state.text, state.mentions)
+  const spans = state.spans
   const highlighted = spans.flatMap((span, index) => {
     const prefix = state.text.slice(index === 0 ? 0 : spans[index - 1].end, span.start)
     const isInvalid = invalid.some(item => item.kind === span.mention.kind && item.id === span.mention.id)
@@ -116,6 +116,7 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
       <div className="mention-hint" id={`${id}-hint`}>
         Enter to send. Shift+Enter for a new line. Type @ to select a model item.
         {invalid.length > 0 && <span className="mention-invalid-note"> Some model items are unavailable. Remove or replace the marked tags.</span>}
+        {mentions.some(mention => hasLineBreak(mention.name)) && <span className="mention-invalid-note"> Names with line breaks cannot be represented as tags. Remove or rename those model items.</span>}
       </div>
       <MentionSuggestions state={state} controller={controller} id={id} listRef={list} />
     </div>
@@ -147,6 +148,7 @@ export function MentionSuggestions({ state, controller, id, listRef }: {
             disabled={!controller.selectable(item)} onClick={() => controller.choose(index)}>
             <span className="mention-item-label">{item.label || item.name}</span>
             <span className="mention-item-detail">{item.detail}</span>
+            {item.kind !== 'category' && hasLineBreak(item.name) && <span className="mention-item-detail">Names with line breaks cannot be inserted as tags.</span>}
           </button>
         ))}
       </div>
