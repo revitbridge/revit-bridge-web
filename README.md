@@ -235,7 +235,7 @@ Everything is an environment variable (`.env` for Docker). The browser gets what
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
-| `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters). |
+| `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
 | `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify, import), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
@@ -272,24 +272,38 @@ is the package's `success: false` without consuming the token), and a refusal by
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
 
-The workbench's routes: `POST /check` `{code, parameters?}` is the package's `check_code` (compile in
-Revit, never run; with the lessons for the errors, as the MCP tool adds them) and `POST /dry-run`
-`{code, parameters?}` its `dry_run_code` (run in the open model inside a transaction group that is
-always rolled back - nothing is kept, so no confirmation and no token; one `dry_run` line in the
-evidence ledger). Both answer the package's reply as it is, code the sandbox refuses before Revit is
-asked (`blocked`), and 503 `revit_unreachable` when no add-in answers; the package's `include` (local
-`.cs` files) is not offered. `GET /tools/{name}/export` is the pack file as stored (`text/yaml`);
-`POST /tools/import` takes one (YAML text), validates it as the package validates a pack file (422
-`invalid_pack` with the problems; 400 `blocked` for code the sandbox refuses) and stores it as sent in
-the user directory; a user pack of the same name is replaced only with `?overwrite=true` (409
-`pack_exists` otherwise). Built-in packs are read-only: `PUT` and `DELETE` on one, and saving or
-importing a pack under a built-in's name, are 409 `builtin_read_only` (a user file that already carries
-a built-in's name is the designer's own: it can be edited, and deleting it brings the built-in back).
-Every tool name in a path, a body or a spec is checked before the store is asked: the package's
-identifier pattern (a letter or `_`, then letters, digits, `_`), at most 100 characters, and never a
-Windows device name (`con`, `nul`, `prn`, `aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case) - 422
-`invalid_tool_name`. `GET /tools` is read from disk on every call and marks each pack `builtin` and
-its `origin` (`builtin` or `user`); a local host adds `directory`, where the file is.
+The workbench's routes: `POST /check` is the package's `check_code` (compile in Revit, never run;
+with the lessons for the errors, as the MCP tool adds them) and `POST /dry-run` its `dry_run_code`
+(run in the open model inside a transaction group that is always rolled back - nothing is kept, so
+no confirmation and no token; one `dry_run` line in the evidence ledger). Each takes either
+`{code, parameters?}` (a snippet and its `object[]`) or `{pack, values}`: a draft in the pack format
+(validated with the package's `validate_pack`, 422 `invalid_pack`; its name checked like every tool
+name) and the values by parameter name, whose template the package fills - the draft is saved in a
+store whose user and built-in directories are fresh temporary directories, `render` fills it, the
+directories are removed - so the code checked or dry-run is exactly what the saved pack would send
+(422 `render_failed` with the package's messages in `errors` when it cannot). Any other field (the
+package's `include`: local `.cs` files) is 422. Both answer the package's reply as it is, code the
+sandbox refuses before Revit is asked (`blocked`), and 503 `revit_unreachable` when no add-in
+answers; on a cloud host they count against `/spec/confirm`'s rate limit (429 `rate_limited`), a
+local host does not limit them. `POST /choices` `{choices_from}` (`levels`, `floor_types`,
+`family_types:OST_*`, `elements:OST_*`) gives `[{label, value}]` from the package's
+`get_tool_choices`, the code `GET /tools/{name}/choices` uses, so the values are what a saved pack
+receives. `GET /tools/{name}/export` is the pack file as stored (`text/yaml`); `POST /tools/import`
+takes one (YAML text, at most 256 KB, YAML aliases refused), validates it as the package validates
+a pack file (422 `invalid_pack` with the problems; 400 `blocked` for code the sandbox refuses) and
+stores it as sent in the user directory; a user pack of the same name is replaced only with
+`?overwrite=true` (409 `pack_exists` otherwise). The import takes the current (v1) pack format
+only: a v0 file - an older export, or a hand-written pack without `schema_version` - is refused
+until it is saved once in the current format. Built-in packs are read-only: `PUT` and `DELETE` on one,
+and saving or importing a pack under its name, are 409 `builtin_read_only` - as long as the user
+directory has no file of that name. A user file that carries a built-in's name is the designer's
+own: it can be edited, replaced (import with `overwrite=true`, solidify) and deleted, and deleting
+it brings the built-in back. Every tool name in a path, a body or a spec is checked before the store
+is asked: an ASCII letter or `_`, then ASCII letters, digits, `_` (the shape of the pack schema's
+parameter names), at most 100 characters, and never a Windows device name (`con`, `nul`, `prn`,
+`aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case) - 422 `invalid_tool_name`. `GET /tools` is read from
+disk on every call and marks each pack `builtin` and its `origin` (`builtin` or `user`); a local
+host adds `directory`, where the file is.
 
 A local host puts one guard in front of every route (not in the export, which is a cloud host's): 403
 `local_mode_no_proxy` for a request carrying a proxy forwarding header, 403 `local_mode_host` for a

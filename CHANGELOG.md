@@ -71,22 +71,31 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
-- The workbench's routes (`docs/api-v1.json` gains four operations): `POST /api/v1/bridge/check`
-  `{code, parameters?}` is the package's `check_code` (compile in Revit, never run, with the lessons
-  for the errors as the MCP tool adds them) and `POST /api/v1/bridge/dry-run` `{code, parameters?}`
-  its `dry_run_code` (run in the open model and always rolled back: no confirmation, no token; one
-  `dry_run` ledger line). The replies are the package's as they are; code the sandbox refuses is
-  answered before Revit is needed, no add-in is 503 `revit_unreachable`, and the package's `include`
-  (files on the host's machine) is not offered. `GET /api/v1/bridge/tools/{name}/export` returns the
-  pack file as stored (`text/yaml`); `POST /api/v1/bridge/tools/import` takes one as YAML text,
-  validates it as the package validates a pack file (422 `invalid_pack`, 400 `blocked`) and stores it
-  as sent; an existing user pack is replaced only with `?overwrite=true` (409 `pack_exists`). The
-  import is a pack write: admin password on a cloud host, none on a local one.
+- The workbench's routes (`docs/api-v1.json` gains five operations): `POST /api/v1/bridge/check`
+  is the package's `check_code` (compile in Revit, never run, with the lessons for the errors as the
+  MCP tool adds them) and `POST /api/v1/bridge/dry-run` its `dry_run_code` (run in the open model and
+  always rolled back: no confirmation, no token; one `dry_run` ledger line). Each takes
+  `{code, parameters?}` or `{pack, values}` - a draft in the pack format whose template the package
+  fills (saved and rendered in a store of fresh temporary directories; 422 `invalid_pack` or
+  `render_failed` with the package's messages); any other field, the package's `include` (files on
+  the host's machine) among them, is 422. The replies are the package's as they are; code the
+  sandbox refuses is answered before Revit is needed, no add-in is 503 `revit_unreachable`, and a
+  cloud host counts both against `/spec/confirm`'s rate limit (429 `rate_limited`; a local host
+  does not limit them). `POST /api/v1/bridge/choices` `{choices_from}` returns `[{label, value}]`
+  from the package's `get_tool_choices`. `GET /api/v1/bridge/tools/{name}/export` returns the pack
+  file as stored (`text/yaml`); `POST /api/v1/bridge/tools/import` takes one as YAML text (at most
+  256 KB, checked on `Content-Length` before the body is read; YAML aliases, nesting too deep to read
+  and keys that are not text are 422 `invalid_pack`), validates it as the package validates a pack
+  file (422 `invalid_pack`, 400 `blocked`) and stores it as sent; an existing user pack is replaced
+  only with `?overwrite=true` (409 `pack_exists`). Only the current (v1) format imports: an older v0
+  file has to be saved once in the current format first. The import is a pack write: admin password
+  on a cloud host, none on a local one.
 - `GET /api/v1/bridge/tools` and the model's `list_tools` mark each pack `builtin` (true for the
   wheel's) and its `origin` (`"builtin"` or `"user"`); on a local host the page's listing also has
   `directory`, where the file is. Both are read from disk on every call.
-- Every tool name from a request or from the model is checked before the store sees it: the
-  package's identifier pattern (`IDENTIFIER_RE` of its pack schema), at most 100 characters, and no
+- Every tool name from a request or from the model is checked before the store sees it: ASCII
+  letters, digits and `_`, not starting with a digit (the shape of the pack schema's parameter
+  names, `IDENTIFIER_RE`, without its Unicode letters), at most 100 characters, and no
   Windows device name (`con`, `nul`, `prn`, `aux`, `com0`-`com9`, `lpt0`-`lpt9`, any case; on Windows
   `ToolStore().load("con")` blocks). 422 `invalid_tool_name` from the routes (paths, `POST /solidify`,
   the import, the specs of `/spec/confirm` and `/spec/reconcile`), a result with that error from the
@@ -94,7 +103,8 @@ the host shares your tools with the package's MCP server (see *Changed*).
 - The Capabilities page has a *Workbench* tab, also at `/capabilities/workbench` (a link opens it):
   for now a note that the workbench editor is being wired in, and your own tools with *Export*,
   *Delete* and *Import*. `frontend/src/api/workbench.ts` is the one HTTP client of the workbench
-  (check, dry run, choices, save, list, load, remove, export, import).
+  (check, dry run, choices, save, list, load, remove, export, import); it sends a draft with
+  parameters as `{pack, values}` and asks `/choices` for the options.
 - What the host loop does is visible and counted. `/api/chat` sends three more SSE events next
   to the ones it already sent (whose names, shapes and order are unchanged): `event: stage`
   `{role, model, status}` (`start` before the first model call, `end` before `done` or `error`;
@@ -279,9 +289,12 @@ the host shares your tools with the package's MCP server (see *Changed*).
 - **Built-in packs are read-only.** `PUT` and `DELETE /api/v1/bridge/tools/{name}` on a pack from
   the wheel, and `POST /solidify` or the import under a built-in's name, are 409 `builtin_read_only`
   (before, an edit copied the built-in into the user directory and a delete hid it behind a
-  `.disabled` marker). A user file that already carries a built-in's name is the designer's own:
-  it can be edited, and deleting it brings the built-in back. The Capabilities page offers *Edit*
-  and *Delete* for your own packs only.
+  `.disabled` marker) - as long as the user directory has no file of that name. A user file that
+  already carries a built-in's name is the designer's own: it can be edited, replaced (import with
+  `overwrite=true`, solidify) and deleted, and deleting it brings the built-in back. The
+  Capabilities page offers *Edit* and *Delete* for your own packs only; the task page neither
+  confirms nor runs a spec that is not `run_tool`, and the Skills page no longer says skills enter
+  the prompt.
 - **Your tools are shared with the package's MCP server** when the host runs without a container
   (`uv run revit-bridge-web`): it sets no `REVIT_BRIDGE_DATA_DIR`, so the package uses its per-user
   directory, the one its MCP server uses. The 0.1 repair at startup (moving v0 pack files to

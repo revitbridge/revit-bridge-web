@@ -26,7 +26,7 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 ## Layout
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving, the `revit-bridge-web` console entry (`[project.scripts]`).
-- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence, and the workbench's `check`, `dry-run`, `tools/{name}/export`, `tools/import`), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
+- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in a temporary store, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`, and
   what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); the system prompt
   is the package's `host_instructions()` plus `HOST_PARAGRAPH` (no code, saved tools only, the
@@ -76,8 +76,10 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   never changed, hidden or replaced (409 `builtin_read_only`).
 - The model in the chat writes no code: no `get_guidance`, no skills in the prompt, `propose_spec`
   refuses `execute_code`. Code is tried and saved as a tool by a person on the workbench.
-- Every tool name from a request or from the model goes through `require_tool_name` (the package's
-  `IDENTIFIER_RE`, at most 100 characters, no Windows device name) before any `ToolStore` call.
+- Every tool name from a request or from the model goes through `require_tool_name` (ASCII
+  letters, digits and `_`, at most 100 characters, no Windows device name) before any `ToolStore`
+  call. A draft pack is filled only by the package (`ToolStore.render` in a store of temporary
+  directories): no escaping or substitution in the host or the frontend.
 - The host never sets the package's data variables: without a container the user tools are the
   package's per-user directory, shared with its MCP server. Listings are read from disk on every
   call (no cache). The 0.1 repair at startup touches only `DATA_DIR/capabilities`.
