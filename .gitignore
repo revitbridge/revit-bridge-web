@@ -20,3 +20,6 @@ frontend/*.local
 
 # Runtime data (skills, capability packs, interaction logs)
 data/
+
+# Token bench results (python -m bench run writes ./bench-results by default)
+bench-results/
