@@ -192,11 +192,14 @@ its connection.
    stream ended (stopped, broken off) shows as *interrupted*. The rows are grouped by role, each
    group headed by the role and the model it ran on (see *The chat's roles* below): the analyst
    (no tools), then the planner, or the supervisor after a run. A small-talk or "no tool" reply is
-   the analyst's own, and after a run the supervisor's report is the reply. Below the chat, the
+   the analyst's own, and after a run the supervisor's report is the reply. When the supervisor
+   sends the task back, the planner's new card comes in the same reply, and above it, as *Previous
+   attempt*, what the page itself received from the run (succeeded, failed with its error, or the
+   validator's checks that did not pass) - the model's report is never the only record. Below the chat, the
    *Tokens* panel counts this turn and this session: input (cached tokens included), cache read,
    hit rate, cache write, output and the number of model calls, one row per role that ran and the
    total (the planner alone, with `LLM_SINGLE_MODEL=1`, has the total only). A number the provider
-   did not report shows as *unknown* and makes every total it is part of unknown - never 0. No
+   did not report shows as `-` and makes every total it is part of unknown - never 0. No
    prices. The no-bridge comparison has its own panel.
 3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
@@ -284,6 +287,8 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
 | `LLM_SINGLE_MODEL` | `0` | `1`: the chat runs as one model loop - the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the three roles (see *The chat's roles*). `/config.json` reports it as `features.roles` (`false` with `1`). |
+| `ROLES_PLANNER_TOOLS` | `route` | With the roles: `route` - the planner gets, and may call, the tools of the analyst's route only; `all` - all seven on every route, every one runs (the tool definitions then stay the same for a provider's prompt cache). Any other value refuses the start. For measuring both. |
+| `ROLES_ANALYST` | `on` | With the roles: `off` sends every message straight to the planner with route `tool` (all seven tools); the supervisor still reports runs - planner and supervisor only, to measure whether the analyst pays for itself. Any other value refuses the start. |
 | `MODELS_FILE` | `DATA_DIR/models.yml` | The models file: an endpoint, a model and the name of the key's variable per entry, an entry per role (see *Models by role*). No file at the default path: `LLM_*` and the headers, as before. Set it only to read another path; the host then refuses to start when there is no file there, as it does for any file that is not valid. `/config.json` reports each role's model name (`features.models`) and whether the file set them (`features.modelsFile`). |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. In the models file it lets an entry's `base_url` be `http://` to any host (`http://` to loopback is allowed there without it). The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
@@ -313,7 +318,7 @@ package's role texts, `host_instructions(role=..., code=False)`), its own tools 
 |---|---|---|---|
 | analyst | routes the message: `chat` (talk, answer), `query` (read the model), `tool` (use a saved tool) or `none` (no tool does it); lists the facts still needed | the message with its `@` selections, a digest of the open model (the package's `snapshot_digest`, at most 1200 characters), the tool list (a name and one line each), the open task (its route and tool and the last message you got) | none |
 | planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | `query` route: `query`, `get_project_snapshot`; `tool` route: those and `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` |
-| supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the confirmed spec, a summary of the execution result (its `result` cut to 2000 characters, the validator without its samples), the validator's checks, how often the task went back | `query` (read-only) |
+| supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
 The analyst answers one JSON object; with `chat` or `none` its `note` is the reply (with `none`
 the host adds the workbench link when the note lacks it) and nothing else runs. With `query` or
@@ -321,14 +326,26 @@ the host adds the workbench link when the note lacks it) and nothing else runs. 
 tool is answered `tool_not_offered` and never run. Confirmation and execution stay on the page.
 When the page reports a run, the supervisor answers one JSON verdict: `done`, `ask` (its report and
 question are the reply) or `retry` (its report is shown and the planner proposes again in the same
-reply with the supervisor's fix - a new card to confirm; a task goes back at most twice, then the
-host asks you). The host holds the verdict to the package's: a run whose validator did not pass, or
-that Revit did not report as a success, is never `done` (the host shows the validator's own checks
-and asks), and a refused run (`refused: true`, revit-bridge 0.9.1 and later) is never sent back. A
-role whose answer is not its JSON gets one repair request; after that the analyst's message goes
-to the whole planner (route `tool`) and the supervisor's report is the host's summary of the raw
-result. The digest is read once per session (one snapshot, no model call) and again after each
-reported run; a new task on the page is a new session. Roles pass these hand-offs only - the
+reply with the supervisor's fix - a new card to confirm; a task goes back at most twice in a row,
+then the host asks you; your next message starts the count again). The host holds the verdict to
+the package's, reading the raw result: a run whose validator did not pass, or that Revit did not
+report as a success, is never `done` (the host shows the validator's own checks and asks); a run
+that succeeded with a validator that did not fail is not sent back (you decide); and a refusal by
+nature is never sent back - `refused: true` (revit-bridge 0.9.1: the tool refused the input in
+Revit and nothing was kept), a failed precondition, a validator that could not take its first
+sample, blocked code, or a failure with no ledger line (refused before it ran, or Revit not
+reached). A role whose answer is not its JSON gets one repair request; after that the analyst's
+message goes to the whole planner (route `tool`) and the supervisor's report is the host's summary
+of the raw result. An execution result may be 4 MiB: what the supervisor, the session and the
+host's own reports get of it is cut - each text to 1000 characters, lists to 20 items, a check's
+detail to 300, the checks to 30 (the host's report lists 20), `result` to 2000 - and the
+supervisor's whole message to 16 KB, as the one loop's. The open task is the one a `tool` routing
+opened: a `tool` routing for the same tool continues it, one for another tool replaces it, a run
+reported `done` closes it; reads and small talk leave it as it is. The digest is read once per
+session and device (one snapshot, no model call; when Revit cannot be read, not again for a minute)
+and again after each reported run - so changes made in Revit outside the chat reach the analyst only
+after a reported run, while the planner always reads the model itself; a new task on the page is a
+new session. Roles pass these hand-offs only - the
 planner never sees the analyst's prompt, list or digest, and the supervisor never sees the
 planner's transcript - and each role's prompt and tool definitions stay the same within a session
 (per route for the planner), so a provider's prompt cache can serve them. Every model call is one
@@ -341,13 +358,18 @@ definitions instead of seven) and on reports (a short supervisor prompt instead 
 conversation). In the test suite's scripted flows, with the same model answers, the request bytes
 (one loop -> roles) were: a tool task with a question, an answer and the report 66.6 KB -> 64.7 KB
 (each of the two message turns about 3.3 KB more, the report 9.2 KB less); a read 16.0 KB -> 14.6
-KB; small talk 7.8 KB -> 3.2 KB; "no tool" 22.3 KB -> 3.2 KB. Real models do not follow a script:
+KB; small talk 7.8 KB -> 3.2 KB; "no tool" 22.3 KB -> 3.2 KB. With all seven tools for the planner
+the read is 19.2 KB; without the analyst the tool task is 57.7 KB and the others about the one
+loop's (16.0, 7.8, 22.2 KB). Real models do not follow a script:
 measure with the token bench (`python -m bench`; it records which way the host ran). A tool task
 the designer never runs pays the analyst calls without the report's saving.
 
 `LLM_SINGLE_MODEL=1` runs the chat as one model loop instead (the planner's model, the whole host
 text, all seven tools), request for request and event for event as before the split - the
-comparison baseline and the fallback. Without the bridge (`bridge: false`) there are no roles.
+comparison baseline and the fallback. Without the bridge (`bridge: false`) there are no roles. Two
+more switches exist to measure variants of the roles: `ROLES_PLANNER_TOOLS=all` gives the planner
+all seven tools on every route, and `ROLES_ANALYST=off` leaves the analyst out (planner and
+supervisor). The interaction log (`/api/logs`) names each role that ran in a turn and its model.
 
 ### Models by role (`models.yml`)
 

@@ -41,7 +41,10 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `host_instructions(role=..., code=False)` (`build_role_prompt`: the planner's plus
   `WORKBENCH_LINE`, the analyst's plus `roles.ANALYST_WORKBENCH_LINE`), its own tools and the model
   `models_file.resolve(role, headers)` gives it; the analyst's digest is the package's
-  `snapshot_digest` (`model_digest`: one snapshot per session, again after a reported run).
+  `snapshot_digest` (`model_digest`: one snapshot per session and device scope, again after a
+  reported run; a failed read waits a minute). `ROLES_PLANNER_TOOLS` (`route` / `all`) and
+  `ROLES_ANALYST` (`on` / `off`) are two variants of the roles for measuring (`WebSettings`);
+  `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
   prompt the package's `host_instructions(code=False, mentions=True)` plus `WORKBENCH_LINE`, every
   tool - and so is `bridge: false`; no skills in any prompt;
@@ -49,15 +52,19 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   outside it is `tool_not_offered`, never run), the hand-offs (`analyst_message`, `planner_message`,
   `retry_message`, `supervisor_message`), the parsing of the analyst's and the supervisor's JSON
   (`parse_routing`, `parse_verdict`, one repair call, then `FALLBACK_ROUTING` / `fallback_verdict`),
-  the verdict held to the package's (`enforce`: validator failed or no success is never `done`,
-  `refused` is never `retry`, at most `MAX_RETRIES`) and the session's open task (`RoleTask`);
+  the verdict held to the package's (`enforce` on the raw result: validator failed or no success
+  is never `done`, a run that succeeded is not sent back, a refusal by nature - `refusal_kind`, read
+  from the package's fields - is never `retry`, at most `MAX_RETRIES` in a row), the caps of
+  everything a model or the session gets of a result (`clip`, `execution_summary`,
+  `supervisor_message`: `MESSAGE_KEEP` = the one loop's `EXECUTION_KEEP`) and the session's open
+  task (`RoleTask`, `next_task`: only a `tool` routing opens one);
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
   refuses `execute_code` with `code_not_offered`; no `get_guidance`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
-  counter, the verified picks per device scope, the roles' open task, digest, pending verdict and the
-  spec `/spec/confirm` confirmed with the session); `backend/mention_check.py` the `unknown_mention` check of a spec's
+  counter, the verified picks per device scope, the roles' open task, digests per device scope,
+  pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported); `backend/mention_check.py` the `unknown_mention` check of a spec's
   `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
@@ -67,8 +74,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
 - `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). The host
   decides whether its chat runs in roles (`LLM_SINGLE_MODEL`); the bench records which (`chat` in
-  the results). `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's
-  own `execution`), to measure the report step and the supervisor's send-backs.
+  the results), and how it fed results back (`feedback_policy`; `compare` notes a difference).
+  `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's own
+  `execution`), to measure the report step and the supervisor's send-backs.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
 ## Hard constraints
