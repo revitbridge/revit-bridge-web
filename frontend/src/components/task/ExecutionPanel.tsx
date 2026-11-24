@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import type { ExecutionResult } from '../../types/api'
 import ExecResult from '../shared/ExecResult'
-import { isGateRefusal, paramsOf, type Confirmation, type Tamper } from './flow'
+import { isGateRefusal, paramsOf, type Confirmation, type PreviousAttempt, type Tamper } from './flow'
 import { expiresIn, showValue, tokenPrefix } from './format'
 
 interface Props {
@@ -97,6 +97,21 @@ function TamperDemo({ confirmation, running, onTamper }: { confirmation: Confirm
   )
 }
 
+/* The run the supervisor sent back, as the page itself received it: shown above the planner's
+   new card so the model's report is not the only record of what happened. */
+export function PreviousAttemptPanel({ previous }: { previous: PreviousAttempt }) {
+  return (
+    <section className="card section previous-attempt" aria-label="Previous attempt">
+      <h3 className="heading-display section-title">Previous attempt</h3>
+      <p className="section-copy small" style={{ marginTop: 0 }}>
+        The supervisor sent this task back; the card below is the planner's new proposal. This is what the page
+        received from the run before it:
+      </p>
+      <ExecutionView execution={previous.execution} tampered={previous.executionKind === 'tampered'} />
+    </section>
+  )
+}
+
 export function ExecutionView({ execution, tampered }: { execution: ExecutionResult; tampered?: boolean }) {
   const validation = execution.validation ?? null
   const validationFailed = !execution.success && validation !== null && !validation.passed
@@ -126,7 +141,8 @@ export function ExecutionView({ execution, tampered }: { execution: ExecutionRes
       )}
       {!execution.success && !refusal && !validationFailed && (
         <div className="execution-banner failed">
-          Failed: <code>{execution.error ?? 'error'}</code>{execution.message ? ` - ${execution.message}` : ''}
+          {execution.refused ? 'Refused by the tool in Revit (nothing was kept)' : 'Failed'}: <code>{execution.error ?? 'error'}</code>
+          {execution.message ? ` - ${execution.message}` : ''}
         </div>
       )}
 

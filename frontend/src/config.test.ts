@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseRuntimeConfig } from './config'
 
-const NO_MODELS = { models: { analyst: null, planner: null, supervisor: null }, modelsFile: false }
+const NO_MODELS = { models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false }
 
 describe('parseRuntimeConfig', () => {
   it('reads apiBase / wsBase / features and strips trailing slashes', () => {
@@ -35,8 +35,15 @@ describe('parseRuntimeConfig', () => {
     expect(odd.features.modelsFile).toBe(false)
     expect(parseRuntimeConfig(JSON.stringify({ features: { models: 'main' } })).features.models)
       .toEqual({ analyst: null, planner: null, supervisor: null })
-    // An older host without the fields: no names, not from a file.
+    // An older host without the fields: no names, not from a file, no roles.
     expect(parseRuntimeConfig('{}').features).toMatchObject(NO_MODELS)
+  })
+
+  it('reads whether the chat runs in roles: only true is true (an older host ran one loop)', () => {
+    expect(parseRuntimeConfig(JSON.stringify({ features: { roles: true } })).features.roles).toBe(true)
+    expect(parseRuntimeConfig(JSON.stringify({ features: { roles: false } })).features.roles).toBe(false)
+    expect(parseRuntimeConfig(JSON.stringify({ features: { roles: 'yes' } })).features.roles).toBe(false)
+    expect(parseRuntimeConfig('{}').features.roles).toBe(false)
   })
 
   it('accepts the static config.example.json shape a split deployment ships', async () => {

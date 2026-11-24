@@ -2,16 +2,20 @@
 
 run: every task in a new chat session, answers sent when the model asks, at most
 max_turns user messages. By default nothing runs in Revit: once the model's spec is
-accepted, a fixed execution result goes back to the host so its report step is
-measured too. --execute confirms and runs each accepted spec instead (it changes the
-open model). The host holds the model configuration (LLM_* or MODELS_FILE, read at
-its start: one host process per configuration); the runner sends no model setting
-and no key. Every request carries X-Run-Label <label>-<n>.
+accepted, a fixed execution result (the task's execution, else the fixture) goes back
+to the host so its report step is measured too, and again when the host sends the task
+back with a new card (at most 3 reports). --execute confirms and runs each accepted
+spec instead (it changes the open model), once. The host holds the model configuration
+(LLM_* or MODELS_FILE, read at its start: one host process per configuration) and how
+its chat runs (roles, or one loop with LLM_SINGLE_MODEL=1); the runner sends no model
+setting and no key, and records which (chat). Every request carries X-Run-Label
+<label>-<n>.
 
 compare: task by task, before against after. Exit 1 when a task got worse (fewer
 repeats correct, or as often correct and median input tokens up more than 5%), 3
 when nothing got worse but something could not be compared (an unknown token
-count, a task skipped after), 0 otherwise.
+count, a task skipped after, or runs that fed execution results back differently -
+a NOTE says so), 0 otherwise.
 
 Unknown is never 0: a count the provider did not report is null, and so is every
 sum, difference, median, minimum and maximum that contains it.
@@ -30,7 +34,7 @@ import httpx
 import yaml
 
 from .metrics import TOKEN_FIELDS, compare_exit_code, compare_runs
-from .runner import run_bench, run_labels
+from .runner import FEEDBACK_ONCE, run_bench, run_labels
 
 LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 REQUIRE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -49,6 +53,7 @@ examples:
   python -m bench run --base-url http://127.0.0.1:7860 --label baseline --repeat 3 \\
       --skip-requires basic-tools
   python -m bench compare bench-results/baseline.json bench-results/roles.json
+  python -m bench run --label failures --tasks bench/tasks-supervisor.yml
 
 notes:
   The host's CHAT_RATE_LIMIT (default 30 per minute per address) counts the bench's
@@ -93,6 +98,9 @@ def load_tasks(path: Path) -> list[dict]:
             raise ValueError(f"{task_id}: requires must be a list of names (a-z, 0-9, -)")
         if type(task.get("placeholder_ids", False)) is not bool:
             raise ValueError(f"{task_id}: placeholder_ids must be true or false")
+        if "execution" in task and (not isinstance(task["execution"], dict)
+                                    or type(task["execution"].get("success")) is not bool):
+            raise ValueError(f"{task_id}: execution must be an object with success true or false")
         expect = task.get("expect", {})
         if not isinstance(expect, dict) or not isinstance(expect.get("params", {}), dict):
             raise ValueError(f"{task_id}: expect and params must be objects")
@@ -193,7 +201,11 @@ METRIC_FIELDS = ["calls", *TOKEN_FIELDS, "ms"]
 def print_results(result: dict) -> None:
     summary = result["summary"]
     repeat = result["repeat"]
+    chat = result.get("chat") or {}
+    how = {"roles": "roles", "single": "one loop (LLM_SINGLE_MODEL=1)"}.get(chat.get("host"), "not reported")
+    seen = ", ".join(chat.get("roles_seen") or []) or "none"
     print(f"Label {result['label']}  repeats {repeat}  mode {result['mode']}  host {result['base_url']}")
+    print(f"Chat: {how}; roles in the events: {seen}")
     if repeat > 1:
         print("Numbers: median (min-max) over the repeats.")
     rows = [["Task", "Kind", "Correct", "Role", *METRIC_HEADERS, "Tools"]]
@@ -324,12 +336,26 @@ def command_run(args: argparse.Namespace) -> int:
     return int(any(not task["correct"] for task in scored))
 
 
+def feedback_policy(result: dict) -> str:
+    """How a results file fed execution results back; one written before the bench recorded it
+    reported once per task."""
+    policy = result.get("feedback_policy")
+    return policy if isinstance(policy, str) and policy else FEEDBACK_ONCE
+
+
 def command_compare(args: argparse.Namespace) -> int:
     before = load_result(result_path(args.before, args.out))
     after = load_result(result_path(args.after, args.out))
     rows = compare_runs(before, after)
     print_comparison(rows)
-    return compare_exit_code(rows)
+    code = compare_exit_code(rows)
+    policies = feedback_policy(before), feedback_policy(after)
+    if policies[0] != policies[1]:
+        # A task whose report was sent back is measured over more reports in one of the two runs.
+        print(f"NOTE: the runs fed execution results back differently: before {policies[0]}, after "
+              f"{policies[1]}; a task the host sent back is not comparable on its report step.")
+        code = code or 3
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:

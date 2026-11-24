@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
 import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
-import { ExecutionView } from './ExecutionPanel'
+import { ExecutionView, PreviousAttemptPanel } from './ExecutionPanel'
 import type { Proposal } from './flow'
 import { expiresIn, questionBadge, tokenPrefix } from './format'
 import SpecCard from './SpecCard'
@@ -113,6 +113,32 @@ describe('ExecutionView', () => {
     expect(refusal).toContain('confirmation_invalid')
     expect(refusal).toContain('(mismatch)')
     expect(refusal).toContain('Nothing reached Revit; the token is not consumed.')
+  })
+
+  it('a refusal of the tool in Revit (revit-bridge 0.9.1) says so', () => {
+    const html = renderToStaticMarkup(<ExecutionView execution={{ success: false, error: 'the wall would cut the stair', refused: true, evidence_id: 'ev_r' }} />)
+    expect(html).toContain('Refused by the tool in Revit (nothing was kept)')
+    expect(html).toContain('the wall would cut the stair')
+  })
+})
+
+describe('PreviousAttemptPanel', () => {
+  it('shows the run the supervisor sent back as the page received it, labelled as the previous attempt', () => {
+    const failed: ExecutionResult = {
+      success: false, error: 'validation_failed', tool: 'create_wall',
+      validation: { validator: 'count_delta', passed: false, checks: [{ detail: 'expected +1 OST_Walls, got +0', passed: false }] },
+      evidence_id: 'ev_2',
+    }
+    const html = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: failed, executionKind: 'genuine' }} />)
+    expect(html).toContain('aria-label="Previous attempt"')
+    expect(html).toContain('>Previous attempt</h3>')
+    expect(html).toContain('VALIDATION FAILED')
+    expect(html).toContain('expected +1 OST_Walls, got +0')
+    expect(html).toContain('ev_2')
+    const error = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: { success: false, error: 'Level L9 not found' }, executionKind: 'genuine' }} />)
+    expect(error).toContain('Failed: <code>Level L9 not found</code>')
+    const ok = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: { success: true, error: null, tool: 'create_wall' }, executionKind: 'genuine' }} />)
+    expect(ok).toContain('Executed - create_wall.')
   })
 })
 

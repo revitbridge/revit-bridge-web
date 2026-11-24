@@ -35,9 +35,9 @@ picks. A message without picks sends no such event.
 What the host did is visible in three more events (they add to the stream and
 change nothing else in it):
 
-- ``event: stage`` ``{role, model, status}``: ``start`` after the ``execution``
-  echo and before the first model call, ``end`` after the last one (before
-  ``error`` or ``done``). The role is always ``planner`` until the roles package.
+- ``event: stage`` ``{role, model, status}``: ``start`` before a role's first model
+  call (after the ``execution`` echo and the ``mentions`` report), ``end`` after its
+  last one (before ``error`` or ``done``); one pair per role segment of the turn.
 - ``event: tool`` ``{id, role, name, args, status, ms?, size?, preview?, error?}``:
   ``running`` when a tool call starts, then ``ok`` or ``error`` with the same
   ``id`` when it ends (``error`` when the handler raised - ``error`` is then the
@@ -51,27 +51,47 @@ change nothing else in it):
   a number the provider did not report is ``null``. The same row goes to the
   ``llm_calls`` table with the request's ``X-Run-Label``.
 
-The model is the planner's (``backend.models_file.resolve``): ``LLM_*`` and the
-``X-LLM-*`` headers as before, or, with a models file, the planner's entry there,
-which the headers replace for the request. Events and ``llm_calls`` carry the model
-the call actually went to.
+Three roles (the default; ``backend.roles`` has the table, the hand-offs and the
+parsing). A message with the bridge goes to the **analyst** first: no tools, one JSON
+routing ``{route, tool?, facts_needed, note}`` from the tool list, the digest of the
+open model (the package's ``snapshot_digest``, taken by the host and kept with the
+session until the page reports an execution), the open task and the message. Route
+``chat`` or ``none``: the host streams ``note`` as the reply and the turn ends. Route
+``query`` or ``tool``: the **planner** runs the loop with that route's tools, the
+session's conversation and the message followed by the routing. An execution report
+goes to the **supervisor** (``query`` only): the confirmed spec, the result's summary
+and the validator's checks in, one JSON verdict ``{verdict, report, fix?, question?}``
+out; the host streams ``report`` (and ``question``), holds the verdict to the
+package's (``roles.enforce``) and, on ``retry``, runs the planner again with ``fix``
+(at most ``roles.MAX_RETRIES`` times per task). A role's output that is not its JSON
+gets one repair call, then the host's fallback. ``LLM_SINGLE_MODEL=1`` instead runs the
+one loop of the planner as before the split, request for request and frame for frame.
 
-Within one session the system prompt is the one its first turn was sent with
-(``Session.system_prompt``) and the tool definitions are a constant: the
-prefix a provider caches stays byte for byte the same from call to call.
+Each role's model is ``backend.models_file.resolve(role, headers)``: ``LLM_*`` and the
+``X-LLM-*`` headers as before, or, with a models file, the role's entry there (the
+headers replace the planner's entry, and every role that shares it). Events and
+``llm_calls`` carry the role and the model the call actually went to; ``round`` counts
+the model calls of the turn across its roles.
 
-The system prompt with the bridge is the package's host instructions for a host
+Within one session each prompt is the one its first turn was sent with
+(``Session.system_prompt``, ``Session.role_prompt``) and the tool definitions of a
+role and route are a constant: the prefix a provider caches stays byte for byte the
+same from call to call.
+
+The system prompt of the one loop is the package's host instructions for a host
 whose model writes no code, with the rule for the designer's selections
 (``host_instructions(code=False, mentions=True)``), and one line of this host's
-own, ``WORKBENCH_LINE``: when no saved tool fits, point to the workbench. Skills
-are not part of the prompt (the Skills page still lists and edits them), and
+own, ``WORKBENCH_LINE``: when no saved tool fits, point to the workbench. The roles'
+are the package's role texts (``host_instructions(role=..., code=False)``), the
+planner's with ``WORKBENCH_LINE`` and the analyst's with ``roles.ANALYST_WORKBENCH_LINE``.
+Skills are not part of any prompt (the Skills page still lists and edits them), and
 there is no ``get_guidance``.
 
 A tool result stays in the session up to ``TOOL_RESULT_KEEP`` characters after
 the turn that produced it (head plus a one-line note).
 
 ``bridge: false`` is the comparison mode of the task page: one fixed base
-prompt, no tools, no skills, no execution feedback - what a model would do
+prompt, no tools, no skills, no execution feedback, no roles - what a model would do
 without the bridge.
 
 A round that offers no tools (``bridge: false``, or the last round of a turn)
@@ -85,7 +105,8 @@ import json
 import logging
 import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -93,10 +114,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from revit_bridge import host_instructions
 from revit_bridge.mentions import MAX_MENTIONS, mention_block, resolve_mentions
-from revit_bridge.snapshot import RevitQueryExecutor
+from revit_bridge.snapshot import RevitQueryExecutor, snapshot_digest
 from revit_bridge.snapshot.query import RevitQueryError
 
-from backend.api.bridge import current_scope, get_revit_client, set_device_context
+from backend import roles
+from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
@@ -107,9 +129,9 @@ from backend.llm import (
     tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
-from backend.models_file import NO_MODEL_FROM_FILE, resolve as resolve_model
+from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
-from backend.session import get_session_store
+from backend.session import Session, get_session_store
 
 router = APIRouter(prefix="/api", tags=["chat"])
 _log = logging.getLogger("backend.chat")
@@ -153,8 +175,12 @@ BASE_PROMPT = (
     "questions and requests as helpfully as you can, in their language."
 )
 
-# The one role of the host loop until the roles package splits it (stage/tool/usage events).
-ROLE = "planner"
+# The role of the one loop (LLM_SINGLE_MODEL=1, and bridge: false): the planner's.
+ROLE = roles.PLANNER
+# The roles' texts: the package's, for a host whose model writes no code.
+ROLE_INSTRUCTIONS = {"code": False}
+# Seconds the analyst's digest may take to read (a snapshot); past that it is "not available".
+DIGEST_TIMEOUT = 15.0
 NO_MODEL = ("No model configured: fill in Model settings on the Connect page "
             "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.")
 TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool`` event
@@ -245,6 +271,55 @@ def build_system_prompt(bridge: bool = True) -> str:
     return host_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
 
 
+def build_role_prompt(role: str) -> str:
+    """A role's system prompt: the package's text for it and at most one host line - the
+    planner's notes end with ``WORKBENCH_LINE``, the analyst's text with
+    ``roles.ANALYST_WORKBENCH_LINE`` as a paragraph of its own; the supervisor's as it is."""
+    text = host_instructions(role=role, **ROLE_INSTRUCTIONS)
+    if role == roles.PLANNER:
+        return text.rstrip("\n") + "\n" + WORKBENCH_LINE
+    if role == roles.ANALYST:
+        return text.rstrip("\n") + "\n\n" + roles.ANALYST_WORKBENCH_LINE
+    return text
+
+
+async def model_digest(session: Session, scope: str) -> str:
+    """The analyst's digest of the open model of the device ``scope``: the package's
+    ``snapshot_digest`` of a snapshot the host takes (no model call). Kept with the session per
+    scope and read again only after the page has reported an execution (which drops it) - a new
+    task on the page is a new session; changes made in Revit outside the chat reach the analyst
+    only then (the planner reads the model itself). When the model cannot be read (no add-in,
+    no answer within ``DIGEST_TIMEOUT`` seconds) the analyst is told so, and the host does not
+    try again for ``roles.DIGEST_RETRY_SECONDS``."""
+    if scope in session.digests:
+        return session.digests[scope]
+    failed = session.digest_failures.get(scope)
+    if failed is not None and time.monotonic() - failed[0] < roles.DIGEST_RETRY_SECONDS:
+        return failed[1]
+
+    async def read():
+        return await snapshot_now(await get_revit_client())
+
+    try:
+        snapshot = await asyncio.wait_for(read(), DIGEST_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 - the analyst still routes, without the digest
+        if isinstance(exc, TimeoutError):                  # before OSError: TimeoutError is one
+            why = "timeout"
+        elif isinstance(exc, ApiError):
+            why = str(exc.payload.get("error") or "revit_unreachable")
+        elif isinstance(exc, OSError):
+            why = "revit_unreachable"
+        else:
+            _log.error("reading the digest failed", exc_info=True)
+            why = "snapshot_failed"
+        text = f"not available ({why})"
+        session.digest_failures[scope] = (time.monotonic(), text)
+        return text
+    session.digest_failures.pop(scope, None)
+    session.digests[scope] = snapshot_digest(snapshot, roles.DIGEST_MAX_CHARS)
+    return session.digests[scope]
+
+
 def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
     """The fixed first line, then the ExecutionResult JSON as the page received it - at
     most ``keep`` characters of it. Past that the ``result`` field becomes its head plus
@@ -330,6 +405,300 @@ def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
     return {**message, "content": f"{content[:keep]}\n{note}"}
 
 
+# -- one request: its model calls, events and llm_calls rows ---------------------------------
+
+@dataclass
+class LoopResult:
+    """What a role's loop produced: the text of its last round."""
+    text: str = ""
+
+
+class Turn:
+    """One ``/api/chat`` request: the session, its turn number, the run label, and the model
+    calls made so far (``round`` numbers them across the roles of the turn, from 1). Every
+    ``stage``, ``tool`` and ``usage`` event and every ``llm_calls`` row names the role and the
+    model of the call."""
+
+    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool):
+        self.session = session
+        self.turn = turn
+        self.run_label = run_label
+        self.bridge = bridge
+        self.calls_log = get_log_store()
+        self.round = 0
+        self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
+        self.ran: dict[str, str] = {}                   # role -> model, in the order the roles ran
+
+    def stage(self, role: str, model: str, status: str) -> str:
+        self.open = (role, model) if status == "start" else None
+        if status == "start":
+            self.ran.pop(role, None)
+            self.ran[role] = model
+        return format_sse_event("stage", {"role": role, "model": model, "status": status})
+
+    def models_ran(self) -> str | None:
+        """The interaction log's model of a turn with the roles: each role that ran and its
+        model (``analyst m1, planner m2``); None when none ran."""
+        return ", ".join(f"{role} {model}" for role, model in self.ran.items()) or None
+
+    def close(self) -> list[str]:
+        """``stage end`` of the stage still open, if any: every way the turn ends sends it."""
+        return [self.stage(*self.open, "end")] if self.open is not None else []
+
+    def tool_event(self, role: str, event_id: str, name: str, args: dict, status: str, **extra) -> str:
+        return format_sse_event("tool", {"id": event_id, "role": role, "name": name, "args": args,
+                                         "status": status, **extra})
+
+    async def usage(self, role: str, model: str, round_no: int, stats: CallStats, started: float) -> str:
+        """The ``usage`` event of one model call; its ``llm_calls`` row is written first."""
+        ms = int((time.monotonic() - started) * 1000)
+        counts = stats.usage.as_dict()
+        await asyncio.to_thread(self.calls_log.record_call, session_id=self.session.session_id, turn=self.turn,
+                                round=round_no, role=role, model=model, usage=counts, ms=ms,
+                                run_label=self.run_label)
+        return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
+
+    async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
+                   max_rounds: int, stream: bool, keep: Callable[[dict], None] | None,
+                   offered: tuple[str, ...] | None, out: LoopResult) -> AsyncGenerator[str, None]:
+        """A role's model calls until it answers in text: each call streamed (its text to the page
+        only when ``stream``), each tool call run and fed back, at most ``max_rounds`` rounds with
+        tools and one more without. ``keep`` stores what the session keeps (the assistant turns
+        and the capped tool results); ``offered`` is the role's tool subset - a call of any other
+        tool is answered ``tool_not_offered`` and never run (None: the one loop, every tool).
+        The last round's text ends in ``out``. ``LLMError`` and a raising tool end the turn."""
+        llm = target.llm
+        for round_no in range(max_rounds + 1):
+            # The last round goes out without tools so the model has to answer in text.
+            round_tools = tools if round_no < max_rounds else None
+            self.round += 1
+            this_round = self.round
+            parts: list[str] = []
+            calls = None
+            stats = CallStats()
+            started = time.monotonic()
+            try:
+                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats, **target.options):
+                    if isinstance(item, str):
+                        parts.append(item)
+                        if stream:
+                            yield format_sse(item)
+                    else:
+                        calls = item
+            except LLMError:
+                if stats.accepted:          # the endpoint took the call: it may have cost tokens
+                    yield await self.usage(role, llm.model, this_round, stats, started)
+                raise
+            yield await self.usage(role, llm.model, this_round, stats, started)
+            content = "".join(parts)
+            out.text = content
+            if calls and round_tools is None:
+                # Nothing was offered, so nothing runs: the round ends with the text.
+                _log.warning("not run: %d tool call(s) (%s) from a round without tools "
+                             "(bridge=%s, session %s)", len(calls), ", ".join(c.name for c in calls),
+                             self.bridge, self.session.session_id)
+                if keep is not None:
+                    keep({"role": "assistant", "content": content})
+                break
+            if not calls:
+                if content and keep is not None:
+                    keep(assistant_message(content))
+                break
+            assistant = assistant_message(content, calls)
+            if keep is not None:
+                keep(assistant)
+            messages.append(assistant)
+            for index, call in enumerate(calls, start=1):
+                event_id = f"{self.turn}.{this_round}.{index}"     # unique in the session
+                args = parse_arguments(call.arguments)
+                shown_args = shown_arguments(call.arguments, args)
+                yield self.tool_event(role, event_id, call.name, shown_args, "running")
+                tool_started = time.monotonic()
+                try:
+                    if args is None:
+                        outcome = ToolOutcome({"error": "invalid_args",
+                                               "message": "arguments must be a JSON object"})
+                    elif offered is not None and call.name not in offered:
+                        # Outside the role's subset: refused, never run.
+                        outcome = ToolOutcome({"error": "tool_not_offered", "tool": call.name,
+                                               "message": f"the {role} has only: {', '.join(offered)}"})
+                    else:
+                        outcome = await call_tool(call.name, args, self.session)
+                    reply = tool_message(call, outcome.result)
+                except Exception as exc:
+                    # The turn fails as before; the row still closes. The browser gets the
+                    # exception's type only - its text (paths, internals) goes to the log.
+                    _log.error("tool %s raised in session %s", call.name, self.session.session_id,
+                               exc_info=True)
+                    yield self.tool_event(role, event_id, call.name, shown_args, "error",
+                                          ms=int((time.monotonic() - tool_started) * 1000),
+                                          error=type(exc).__name__)
+                    raise
+                result_text = reply["content"]
+                error = tool_error_text(outcome.result)
+                closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
+                           "preview": result_text[:TOOL_PREVIEW]}
+                if error is not None:
+                    closing["error"] = error
+                yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
+                if outcome.spec_event is not None:
+                    yield format_sse_event("spec", outcome.spec_event)
+                # The session keeps at most the head; this turn sees all of it.
+                if keep is not None:
+                    keep(kept_tool_message(reply))
+                messages.append(reply)
+
+    async def answer_json(self, role: str, target: ModelTarget, messages: list[dict], parse, *,
+                          parsed: list, tools: list[dict] | None = None, offered: tuple[str, ...] | None = None,
+                          max_rounds: int = 0) -> AsyncGenerator[str, None]:
+        """A role whose reply is one JSON object (the analyst, the supervisor): its loop, then
+        ``parse`` on its text; on a ``RoleOutputError`` one repair call (its reply, then
+        ``roles.REPAIR_INSTRUCTION``, no tools) and ``parse`` once more. ``parsed`` gets the
+        result, or None when the repaired reply could not be read either. Never more calls."""
+        out = LoopResult()
+        async for frame in self.loop(role, target, messages, tools, max_rounds=max_rounds, stream=False,
+                                     keep=None, offered=offered, out=out):
+            yield frame
+        try:
+            parsed.append(parse(out.text))
+            return
+        except roles.RoleOutputError as exc:
+            _log.info("%s reply not readable (%s): one repair call (session %s)", role, exc,
+                      self.session.session_id)
+        messages.append({"role": "assistant", "content": out.text})
+        messages.append({"role": "user", "content": roles.REPAIR_INSTRUCTION})
+        again = LoopResult()
+        async for frame in self.loop(role, target, messages, None, max_rounds=0, stream=False,
+                                     keep=None, offered=offered, out=again):
+            yield frame
+        try:
+            parsed.append(parse(again.text))
+        except roles.RoleOutputError as exc:
+            _log.warning("%s reply not readable after the repair (%s): the host falls back (session %s)",
+                         role, exc, self.session.session_id)
+            parsed.append(None)
+
+    async def planner(self, target: ModelTarget, route: str, out: LoopResult) -> AsyncGenerator[str, None]:
+        """The planner's segment: the session's conversation (the caller added its user message)
+        under the planner's prompt, with the route's tools - or all seven on every route with
+        ``ROLES_PLANNER_TOOLS=all``, every one of them offered and run."""
+        session = self.session
+        messages = [{"role": "system", "content": session.role_prompt(roles.PLANNER, build_role_prompt)}]
+        messages.extend(session.window(HISTORY_WINDOW))
+        if get_settings().roles_planner_tools == "all":
+            route = roles.TOOL                    # the tool route has all seven
+        yield self.stage(roles.PLANNER, target.model, "start")
+        async for frame in self.loop(roles.PLANNER, target, messages, roles.ROUTE_DEFINITIONS[route],
+                                     max_rounds=MAX_TOOL_ROUNDS, stream=True, keep=session.add,
+                                     offered=roles.ROUTE_TOOLS[route], out=out):
+            yield frame
+        yield self.stage(roles.PLANNER, target.model, "end")
+
+
+async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str) -> AsyncGenerator[str, None]:
+    """A message with the roles: the analyst routes it (``scope``: the device the request drives,
+    whose digest it reads); chat and none end with its note, query and tool go on to the planner,
+    the routing after the message. With ``ROLES_ANALYST=off`` the message goes straight to the
+    planner with route tool."""
+    session = run.session
+    if get_settings().roles_analyst:
+        analyst = targets[roles.ANALYST]
+        yield run.stage(roles.ANALYST, analyst.model, "start")
+        packs = await asyncio.to_thread(list_packs)
+        names = [p["name"] for p in packs if isinstance(p, dict) and isinstance(p.get("name"), str)]
+        digest = await model_digest(session, scope)
+        messages = [{"role": "system", "content": session.role_prompt(roles.ANALYST, build_role_prompt)},
+                    {"role": "user", "content": roles.analyst_message(roles.tool_lines(packs), digest,
+                                                                       session.role_task, text)}]
+        parsed: list = []
+        async for frame in run.answer_json(roles.ANALYST, analyst, messages,
+                                           lambda reply: roles.parse_routing(reply, names), parsed=parsed):
+            yield frame
+        routing = parsed[0] or roles.FALLBACK_ROUTING
+        yield run.stage(roles.ANALYST, analyst.model, "end")
+        if routing.route in roles.ANSWERED_BY_ANALYST:
+            yield format_sse(roles.analyst_reply(routing))
+            return
+    else:
+        routing = roles.FALLBACK_ROUTING
+    # Only a tool routing opens or continues the open task (roles.next_task).
+    task = roles.next_task(session.role_task, routing) if routing.route == roles.TOOL else None
+    if task is not None:
+        session.role_task = task
+    session.add({"role": "user", "content": roles.planner_message(text, routing, session.pending_verdict)})
+    session.pending_verdict = None
+    out = LoopResult()
+    async for frame in run.planner(targets[roles.PLANNER], routing.route, out):
+        yield frame
+    if task is not None:
+        task.last = out.text
+
+
+async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution: dict,
+                          scope: str) -> AsyncGenerator[str, None]:
+    """An execution report with the roles: the supervisor's verdict, held to the package's
+    (``roles.enforce`` reads the raw result; the supervisor and the session get capped
+    copies); retry runs the planner again with the supervisor's fix."""
+    session = run.session
+    # The open model may have changed: the analyst reads this device's model again.
+    session.digests.pop(scope, None)
+    session.digest_failures.pop(scope, None)
+    task = session.role_task or roles.RoleTask(route=roles.TOOL)
+    session.role_task = task
+    supervisor = targets[roles.SUPERVISOR]
+    # The spec the page confirmed with this session, once: a report without one (the page did
+    # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
+    confirmed = session.confirmed_spec is not None
+    spec = session.confirmed_spec if confirmed else session.spec
+    session.confirmed_spec = None
+    yield run.stage(roles.SUPERVISOR, supervisor.model, "start")
+    messages = [{"role": "system", "content": session.role_prompt(roles.SUPERVISOR, build_role_prompt)},
+                {"role": "user", "content": roles.supervisor_message(spec, execution, task.retries,
+                                                                     confirmed=confirmed)}]
+    parsed: list = []
+    async for frame in run.answer_json(roles.SUPERVISOR, supervisor, messages, roles.parse_verdict, parsed=parsed,
+                                       tools=roles.SUPERVISOR_DEFINITIONS, offered=roles.SUPERVISOR_TOOLS,
+                                       max_rounds=roles.SUPERVISOR_TOOL_ROUNDS):
+        yield frame
+    verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution), execution, task.retries)
+    if verdict.forced:
+        _log.info("the supervisor's verdict became %s (%s) in session %s", verdict.verdict, verdict.forced,
+                  session.session_id)
+    yield run.stage(roles.SUPERVISOR, supervisor.model, "end")
+    reply = verdict.reply()
+    if verdict.verdict != roles.RETRY:
+        yield format_sse(reply)
+        session.pending_verdict = verdict.note()
+        if verdict.verdict == roles.DONE:
+            session.role_task = None
+        else:
+            task.last = reply
+        return
+    yield format_sse(reply + "\n\n")
+    task.retries += 1
+    task.route = roles.TOOL
+    session.pending_verdict = None                # the planner gets this verdict now, as the retry
+    session.add({"role": "user", "content": roles.retry_message(verdict, task.retries)})
+    out = LoopResult()
+    async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
+        yield frame
+    task.last = f"{reply}\n\n{out.text}".strip()
+
+
+def no_model(target: ModelTarget, role: str) -> HTTPException:
+    """400 for a role without a model. Without a models file every role is ``LLM_*`` and the
+    browser's settings; with one, the browser's settings replace the planner's entry only, so a
+    role on another entry needs the key variable its entry names, set on the server."""
+    if target.entry is None:
+        return HTTPException(400, NO_MODEL)
+    models = get_models()
+    if role == roles.PLANNER or (models is not None and models.roles.get(role) == models.roles.get(roles.PLANNER)):
+        return HTTPException(400, NO_MODEL_FROM_FILE)
+    return HTTPException(400, f"No model configured for the {role}: set, on the server, the environment variable "
+                              f"the host's models file names for the {role}'s entry (api_key_env). The browser's "
+                              f"model settings replace the planner's entry only.")
+
+
 @router.post("/chat", dependencies=[Depends(rate_limit)])
 async def chat(req: ChatRequest, request: Request,
                x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
@@ -362,14 +731,30 @@ async def chat(req: ChatRequest, request: Request,
         raise HTTPException(exc.status, str(exc)) from None
     llm = target.llm
     if not llm.configured:
-        raise HTTPException(400, NO_MODEL if target.entry is None else NO_MODEL_FROM_FILE)
+        raise no_model(target, ROLE)
+    # The roles with the bridge, unless LLM_SINGLE_MODEL=1; without the bridge the one loop.
+    settings = get_settings()
+    with_roles = req.bridge and not settings.single_model
+    targets = {ROLE: target}
+    if with_roles:
+        # The role that opens this turn: the analyst (a message; none with ROLES_ANALYST=off) or
+        # the supervisor (a report); the planner may follow either.
+        first = (roles.SUPERVISOR if req.execution is not None
+                 else roles.ANALYST if settings.roles_analyst else None)
+        if first is not None:
+            try:
+                targets[first] = await resolve_model(first, request.headers)
+            except LLMError as exc:
+                raise HTTPException(exc.status, str(exc)) from None
+            if not targets[first].llm.configured:
+                raise no_model(targets[first], first)
 
     session = get_session_store().get_or_create(req.session_id)
     turn = session.next_turn()
     text = req.message if req.message is not None else execution_message(req.execution)
     picks = None
     if req.mentions:
-        # Checked before the model is called, in the model of the device this request drives.
+        # Checked before any model is called, in the model of the device this request drives.
         # The verified picks stay with the session under that device's scope (a spec may bind
         # them in this turn or a later one), the ones found gone leave it; this turn's verified
         # picks - all of this scope - go to the model as the package's block after the
@@ -381,119 +766,62 @@ async def chat(req: ChatRequest, request: Request,
         block = mention_block(picks["resolved"], MENTION_BLOCK_LANGUAGE)
         if block:
             text = f"{text}\n\n{block}"
-    session.add({"role": "user", "content": text})
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
-    tools = TOOL_DEFINITIONS if req.bridge else None
-    # The first turn's prompt for the whole session: the cached prefix stays the same.
-    messages = [{"role": "system", "content": session.system_prompt(req.bridge, build_system_prompt)}]
-    messages.extend(session.window(HISTORY_WINDOW))
-    calls_log = get_log_store()
+    run = Turn(session, turn, run_label, req.bridge)
 
-    def stage(status: str) -> str:
-        return format_sse_event("stage", {"role": ROLE, "model": llm.model, "status": status})
+    if with_roles:
+        scope = current_scope()                   # the device this request drives
+        async def generate() -> AsyncGenerator[str, None]:
+            if req.execution is not None:
+                yield format_sse_event("execution", req.execution)
+            if picks is not None:
+                yield format_sse_event("mentions", picks)
+            segments = (message_roles(run, targets, text, scope) if req.execution is None
+                        else execution_roles(run, targets, req.execution, scope))
+            try:
+                async for frame in segments:
+                    yield frame
+            except LLMError as exc:
+                for frame in run.close():
+                    yield frame
+                yield format_sse_event("error", {"detail": str(exc)})
+                return
+            except Exception:
+                # The turn breaks off as the one loop's does, the open stage closed first.
+                for frame in run.close():
+                    yield frame
+                raise
+            yield SSE_DONE
+    else:
+        session.add({"role": "user", "content": text})
+        tools = TOOL_DEFINITIONS if req.bridge else None
+        # The first turn's prompt for the whole session: the cached prefix stays the same.
+        messages = [{"role": "system", "content": session.system_prompt(req.bridge, build_system_prompt)}]
+        messages.extend(session.window(HISTORY_WINDOW))
 
-    def tool_event(event_id: str, name: str, args: dict, status: str, **extra) -> str:
-        return format_sse_event("tool", {"id": event_id, "role": ROLE, "name": name, "args": args,
-                                         "status": status, **extra})
-
-    async def usage(round_no: int, stats: CallStats, started: float) -> str:
-        """The ``usage`` event of one model call; its ``llm_calls`` row is written first."""
-        ms = int((time.monotonic() - started) * 1000)
-        counts = stats.usage.as_dict()
-        await asyncio.to_thread(calls_log.record_call, session_id=session.session_id, turn=turn,
-                                round=round_no, role=ROLE, model=llm.model, usage=counts, ms=ms,
-                                run_label=run_label)
-        return format_sse_event("usage", {"role": ROLE, "model": llm.model, "round": round_no, **counts, "ms": ms})
-
-    async def generate() -> AsyncGenerator[str, None]:
-        if req.execution is not None:
-            yield format_sse_event("execution", req.execution)
-        if picks is not None:
-            yield format_sse_event("mentions", picks)
-        yield stage("start")
-        try:
-            for round_no in range(MAX_TOOL_ROUNDS + 1):
-                # The last round goes out without tools so the model has to answer in text.
-                round_tools = tools if round_no < MAX_TOOL_ROUNDS else None
-                parts: list[str] = []
-                calls = None
-                stats = CallStats()
-                started = time.monotonic()
-                try:
-                    async for item in stream_completion(llm, messages, tools=round_tools, stats=stats,
-                                                        **target.options):
-                        if isinstance(item, str):
-                            parts.append(item)
-                            yield format_sse(item)
-                        else:
-                            calls = item
-                except LLMError:
-                    if stats.accepted:          # the endpoint took the call: it may have cost tokens
-                        yield await usage(round_no + 1, stats, started)
-                    raise
-                yield await usage(round_no + 1, stats, started)
-                content = "".join(parts)
-                if calls and round_tools is None:
-                    # Nothing was offered, so nothing runs: the round ends with the text.
-                    _log.warning("not run: %d tool call(s) (%s) from a round without tools "
-                                 "(bridge=%s, session %s)", len(calls), ", ".join(c.name for c in calls),
-                                 req.bridge, session.session_id)
-                    session.add({"role": "assistant", "content": content})
-                    break
-                if not calls:
-                    if content:
-                        session.add(assistant_message(content))
-                    break
-                assistant = assistant_message(content, calls)
-                session.add(assistant)
-                messages.append(assistant)
-                for index, call in enumerate(calls, start=1):
-                    event_id = f"{turn}.{round_no + 1}.{index}"     # unique in the session
-                    args = parse_arguments(call.arguments)
-                    shown_args = shown_arguments(call.arguments, args)
-                    yield tool_event(event_id, call.name, shown_args, "running")
-                    tool_started = time.monotonic()
-                    try:
-                        if args is None:
-                            outcome = ToolOutcome({"error": "invalid_args",
-                                                   "message": "arguments must be a JSON object"})
-                        else:
-                            outcome = await call_tool(call.name, args, session)
-                        reply = tool_message(call, outcome.result)
-                    except Exception as exc:
-                        # The turn fails as before; the row still closes. The browser gets the
-                        # exception's type only - its text (paths, internals) goes to the log.
-                        _log.error("tool %s raised in session %s", call.name, session.session_id,
-                                   exc_info=True)
-                        yield tool_event(event_id, call.name, shown_args, "error",
-                                         ms=int((time.monotonic() - tool_started) * 1000),
-                                         error=type(exc).__name__)
-                        raise
-                    result_text = reply["content"]
-                    error = tool_error_text(outcome.result)
-                    closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
-                               "preview": result_text[:TOOL_PREVIEW]}
-                    if error is not None:
-                        closing["error"] = error
-                    yield tool_event(event_id, call.name, shown_args, "error" if error else "ok", **closing)
-                    if outcome.spec_event is not None:
-                        yield format_sse_event("spec", outcome.spec_event)
-                    # The session keeps at most the head; this turn sees all of it.
-                    session.add(kept_tool_message(reply))
-                    messages.append(reply)
-        except LLMError as exc:
-            yield stage("end")
-            yield format_sse_event("error", {"detail": str(exc)})
-            return
-        except Exception:
-            # Anything else ends the turn as before (the response breaks off), but the stage
-            # is closed first. A generator closed by a client that went away (GeneratorExit,
-            # cancellation) can send nothing more: the page marks what stayed open.
-            yield stage("end")
-            raise
-        yield stage("end")
-        yield SSE_DONE
+        async def generate() -> AsyncGenerator[str, None]:
+            if req.execution is not None:
+                yield format_sse_event("execution", req.execution)
+            if picks is not None:
+                yield format_sse_event("mentions", picks)
+            yield run.stage(ROLE, llm.model, "start")
+            try:
+                async for frame in run.loop(ROLE, target, messages, tools, max_rounds=MAX_TOOL_ROUNDS, stream=True,
+                                            keep=session.add, offered=None, out=LoopResult()):
+                    yield frame
+            except LLMError as exc:
+                yield run.stage(ROLE, llm.model, "end")
+                yield format_sse_event("error", {"detail": str(exc)})
+                return
+            except Exception:
+                # Anything else ends the turn as before (the response breaks off), but the stage
+                # is closed first. A generator closed by a client that went away (GeneratorExit,
+                # cancellation) can send nothing more: the page marks what stayed open.
+                yield run.stage(ROLE, llm.model, "end")
+                raise
+            yield run.stage(ROLE, llm.model, "end")
+            yield SSE_DONE
 
     return StreamingResponse(
         log_and_stream(
@@ -503,7 +831,8 @@ async def chat(req: ChatRequest, request: Request,
             client_ip=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
             user_input=text,
-            model=llm.model,
+            # The one loop: the planner's model, as before; the roles: each role that ran and its model.
+            model=(lambda: run.models_ran() or llm.model) if with_roles else llm.model,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Session-Id": session.session_id},

@@ -59,6 +59,14 @@ export interface Confirmation extends ConfirmResponse {
 /* The tamper demo: one parameter value changed after confirmation. */
 export type Tamper = { param: string; value: string }
 
+/* A run whose report came back with a new card (the supervisor sent the task back): what the
+   page itself received from that run, kept above the new card - the model's report is not the
+   only record of what happened. */
+export interface PreviousAttempt {
+  execution: ExecutionResult
+  executionKind: 'genuine' | 'tampered' | null
+}
+
 export interface TaskState {
   bridge: Transcript
   baseline: Transcript          // the same brief with bridge=false
@@ -71,6 +79,7 @@ export interface TaskState {
   executionKind: 'genuine' | 'tampered' | null
   running: boolean
   reported: boolean             // the execution went back to the model
+  previous: PreviousAttempt | null
 }
 
 const emptyTranscript = (): Transcript => ({ messages: [], sessionId: null, streaming: false })
@@ -87,6 +96,7 @@ export const initialState = (): TaskState => ({
   executionKind: null,
   running: false,
   reported: false,
+  previous: null,
 })
 
 export const SPEC_ONLY_REPLY = '(the model proposed a spec: see the card below)'
@@ -227,6 +237,7 @@ export function createTaskFlow(deps: FlowDeps) {
     execution: null,
     executionKind: null,
     reported: false,
+    previous: null,         // a card that answers a message: no earlier attempt to show
   })
 
   /* The designer's message, with the model items picked in it (bridge side only: the
@@ -310,7 +321,7 @@ export function createTaskFlow(deps: FlowDeps) {
       if (tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
       const result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
       setState(s => ({
-        execution: result, executionKind: kind, reported: false, running: false,
+        execution: result, executionKind: kind, reported: false, running: false, previous: null,
         // a gate refusal consumed nothing; anything else reached Revit and the token is spent
         confirmation: s.confirmation && !isGateRefusal(result) ? { ...s.confirmation, used: true } : s.confirmation,
       }))
@@ -325,13 +336,16 @@ export function createTaskFlow(deps: FlowDeps) {
           message: body?.message ?? getErrorMessage(e),
           ...(typeof body?.hint === 'string' ? { hint: body.hint } : {}),
         },
-        executionKind: kind, reported: false, running: false,
+        executionKind: kind, reported: false, running: false, previous: null,
       })
       return null
     }
   }
 
-  /* The execution result goes back to the model for its report. */
+  /* The execution result goes back to the model for its report. With the roles the supervisor
+     reports; when it sends the task back, the planner proposes again in the same reply: the new
+     card replaces this execution (onSpec), to be confirmed and run like the first, and what the
+     page received from this run stays above it as the previous attempt. */
   async function report() {
     const s = getState()
     if (!s.execution || !s.bridge.sessionId || s.bridge.streaming || s.reported) return
@@ -339,7 +353,11 @@ export function createTaskFlow(deps: FlowDeps) {
     const label = s.execution.evidence_id ? `evidence ${s.execution.evidence_id}` : s.execution.error ?? 'result'
     push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
     controller = new AbortController()
-    await consume('bridge', { execution: s.execution, session_id: s.bridge.sessionId })
+    const attempt: PreviousAttempt = { execution: s.execution, executionKind: s.executionKind }
+    await consume('bridge', { execution: s.execution, session_id: s.bridge.sessionId }, evt => {
+      onSpec(evt)
+      setState({ previous: attempt })
+    })
   }
 
   async function run() {

@@ -3,11 +3,18 @@
 By default only ``POST /api/chat`` is called (plus the read-only ``GET /config.json``,
 ``GET /api/usage/runs`` and, for a task that picks model items by name,
 ``GET /api/v1/bridge/mentions``): when the model's spec is accepted, a fixed execution
-result goes back through ``/api/chat`` so the report step is measured too, and
-nothing runs in Revit. With ``execute=True`` an accepted ``run_tool`` spec is
-confirmed (``POST /api/v1/bridge/spec/confirm``) and run
-(``POST /api/v1/bridge/tools/{name}/run``) - that changes the open model - and the
-real result goes back instead.
+result (the task's own ``execution``, else the run's fixture) goes back through
+``/api/chat`` so the report step is measured too, and nothing runs in Revit. When that
+report's reply proposes a new accepted spec (the host's supervisor sent the task back
+to its planner), the fixed result goes back again, as a designer confirming the new
+card would send it, at most ``MAX_FEEDBACK_TURNS`` reports per task. With
+``execute=True`` an accepted ``run_tool`` spec is confirmed
+(``POST /api/v1/bridge/spec/confirm``) and run (``POST /api/v1/bridge/tools/{name}/run``)
+- that changes the open model - and the real result goes back instead, once.
+
+The host decides how its chat runs (three roles, or one loop with
+``LLM_SINGLE_MODEL=1``); the bench only records which (``chat`` in the results: from
+``/config.json`` ``features.roles``, and the roles each task's events named).
 
 A task's ``mentions`` are the designer's picks, sent with its first message (the
 session keeps them for its later turns): ``{kind, id}`` as written, or ``{kind,
@@ -46,6 +53,13 @@ DEFAULT_EXECUTION = {
 }
 ERROR_TEXT = 500                 # characters of a failed request's reason kept in the result
 CONFIRMED_BY = "token-bench"
+# Reports per task in the default mode: the first, and one per time the host's supervisor
+# sends the task back (the host does that at most twice).
+MAX_FEEDBACK_TURNS = 3
+# How a run fed execution results back (``feedback_policy`` in the results; ``compare`` flags two
+# runs that differ). Results written before it was recorded reported once per task.
+FEEDBACK_FOLLOWS = f"follows send-backs (at most {MAX_FEEDBACK_TURNS} reports per task)"
+FEEDBACK_ONCE = "one report per task"
 MENTIONS_PATH = "/api/v1/bridge/mentions"
 PICK_LIMIT = 200                 # the most the host lists for one pick
 
@@ -241,10 +255,20 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
             current = chat(payload)
             specs.extend(event for event in current if accepted(event))
             if specs:
-                execution = (execute_spec(client, base, specs[-1]["spec"], session_id) if execute
-                             else copy.deepcopy(fixture))
-                feedback_turns += 1
-                chat({"execution": execution, "session_id": session_id})
+                if execute:
+                    execution = execute_spec(client, base, specs[-1]["spec"], session_id)
+                    feedback_turns += 1
+                    chat({"execution": execution, "session_id": session_id})
+                    break
+                fixed = task["execution"] if isinstance(task.get("execution"), dict) else fixture
+                while feedback_turns < MAX_FEEDBACK_TURNS:
+                    execution = copy.deepcopy(fixed)
+                    feedback_turns += 1
+                    again = [event for event in chat({"execution": execution, "session_id": session_id})
+                             if accepted(event)]
+                    if not again:
+                        break
+                    specs.extend(again)          # sent back: the new card is confirmed in turn
                 break
     except HostError as exc:
         failure, http_status = str(exc), exc.status
@@ -377,10 +401,21 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
         after, unavailable = host_runs(client, base)
         run["host_usage"] = cross_check(run, after, unavailable)
         runs.append(run)
+    features = host_features(client, base)
     return {
         "version": 2, "label": label, "base_url": base, "repeat": repeat,
         "mode": "execute" if execute else "synthetic",
         "skip_requires": sorted(set(skip_requires)), "include_placeholder_ids": include_placeholder_ids,
-        "host": {"features": host_features(client, base)},
+        "host": {"features": features},
+        "chat": chat_mode(features, runs),
+        "feedback_policy": FEEDBACK_ONCE if execute else FEEDBACK_FOLLOWS,
         "runs": runs, "summary": summarize(runs),
     }
+
+
+def chat_mode(features: dict | None, runs: list[dict]) -> dict:
+    """How the host ran its chat, as it says (``features.roles``: ``roles``, ``single``, or
+    None for a host that does not say), and the roles the events named."""
+    said = (features or {}).get("roles")
+    seen = dict.fromkeys(role for run in runs for task in run["tasks"] for role in task.get("by_role", {}))
+    return {"host": "roles" if said is True else "single" if said is False else None, "roles_seen": list(seen)}

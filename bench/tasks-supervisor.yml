@@ -1,0 +1,44 @@
+# Token bench tasks for the report step: a spec the model gets right, then an execution
+# result that did not succeed, fed back instead of the run's fixture (execution: as the
+# page would report it). Scored like the other tool tasks (the tool and its parameters);
+# what they measure is the report step - with the roles, the supervisor, and the planner
+# again each time the supervisor sends the task back (the host does at most twice; the
+# bench reports the same result again each time, at most 3 reports per task).
+# Fields: as in tasks.yml, plus execution: {success, ...} (an ExecutionResult).
+- id: wall-validator-failed
+  kind: tool
+  message: "Create a wall on F2, 3000 mm high, from (0,0) to (6000,0). Use Basic Wall."
+  expect:
+    tool: create_wall
+    params: {level_name: F2, height: 3000}
+    max_turns: 3
+  execution:
+    success: false
+    tool: create_wall
+    error: validation_failed
+    result: {Status: Success, ElementId: 424242, benchmark_fixture: true}
+    validation:
+      validator: element_count
+      passed: false
+      checks:
+        - {name: count, passed: false, detail: "walls 12 -> 12, expected 13"}
+    evidence_id: ev_benchmark_fixture_validation
+    warnings: ["Synthetic benchmark feedback. No model operation was performed."]
+- id: wall-refused
+  kind: tool
+  message: "Create a wall on F2, 3000 mm high, from (0,0) to (6000,0). Use Basic Wall."
+  expect:
+    tool: create_wall
+    params: {level_name: F2, height: 3000}
+    max_turns: 3
+  # revit-bridge 0.9.1's shape of a pack that refused the input in Revit (an
+  # InvalidOperationException whose message starts "REFUSED: "): refused true, error the text
+  # after the marker, no hint, a ledger line; the add-in rolled back, nothing was kept.
+  execution:
+    success: false
+    tool: create_wall
+    result: null
+    error: "The wall would cut through the stair on F2; choose another start point."
+    refused: true
+    evidence_id: ev_benchmark_fixture_refused
+    warnings: ["Synthetic benchmark feedback. No model operation was performed."]

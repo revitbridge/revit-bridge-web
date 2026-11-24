@@ -937,6 +937,10 @@ async def confirm_spec(req: ConfirmRequest):
     # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
     conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
                                    channel=CONFIRM_CHANNEL, scope=current_scope())
+    session = picks_session(req.session_id)
+    if session is not None:
+        # What the chat's supervisor reads when the page reports this run (backend.roles).
+        session.confirmed_spec = spec.model_dump(mode="json")
     return {"token": conf.token, "spec_hash": conf.spec_hash, "expires_at": conf.expires_at, "card": spec.card()}
 
 

@@ -3,15 +3,20 @@ model (tests/fake_model.py) and fake add-in (tests/fake_revit.py). No provider i
 the model's HTTP client is routed to the script."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from backend import config
 from backend import llm as llm_module
+from backend.api.model_tools import WORKBENCH_LINK
+from bench.__main__ import load_tasks
 from bench.runner import run_bench
 from tests.conftest import _fresh_usage_option_memory, env, local_env, revit  # noqa: F401 - fixtures
-from tests.fake_model import USAGE_SHAPES, FakeModel, text_turn, tool_turn
+from tests.fake_model import USAGE_SHAPES, FakeModel, RoleScriptedModel, json_turn, text_turn, tool_turn
 
 BASE = "http://127.0.0.1:7860"
 WALL = {"level_name": "L1", "start_x": 0, "start_y": 0, "end_x": 5000, "end_y": 0, "height": 3000}
@@ -197,3 +202,116 @@ def test_a_level_the_model_does_not_have_skips_the_task(host):
     task = result["runs"][0]["tasks"][0]
     assert task["skipped"] == "pick not found (level F9)" and task["correct"] is None
     assert model.requests == []
+
+
+# -- the roles (the host's default chat) ----------------------------------------------------
+
+ROUTE_TOOL = {"route": "tool", "tool": "create_wall", "facts_needed": [], "note": ""}
+ROUTE_QUERY = {"route": "query", "facts_needed": [], "note": ""}
+ROUTE_NONE = {"route": "none", "facts_needed": [], "note": "No tool pipes sprinklers."}
+REPORT_DONE = {"verdict": "done", "report": "One wall; the validator passed."}
+
+
+@pytest.fixture
+def roles_host(local_env, revit, monkeypatch):  # noqa: F811 - fixtures imported above
+    """A local host with its default chat, the three roles, on the one LLM_* model; returns
+    (client, model, revit) with a model that answers each role from its own script."""
+    local_env.delenv("LLM_SINGLE_MODEL")
+    local_env.setenv("LLM_BASE_URL", "https://model.example/v1")
+    local_env.setenv("LLM_MODEL", "fake-1")
+    local_env.setenv("LLM_API_KEY", "fake-key-not-real")
+    local_env.setenv("CHAT_RATE_LIMIT", "1000")
+    config.reset_settings()
+    fake = RoleScriptedModel()
+    real_client = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = fake.transport
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(llm_module.httpx, "AsyncClient", patched)
+    from backend.main import create_app
+    with TestClient(create_app(), base_url=BASE, client=("127.0.0.1", 50000)) as client:
+        yield client, fake, revit
+
+
+def test_a_run_under_the_roles_records_each_role_and_reaches_the_supervisor(roles_host):
+    client, model, revit = roles_host
+    # levels: the analyst routes, the planner reads and answers
+    model.script("analyst", json_turn(ROUTE_QUERY, usage=SMALL))
+    model.script("planner", tool_turn(("query", {"kind": "levels"}), usage=FULL), text_turn("L1, L2.", usage=FULL))
+    # wall: the analyst routes, the planner proposes, the supervisor reports the fixed result
+    model.script("analyst", json_turn(ROUTE_TOOL, usage=SMALL))
+    model.script("planner", tool_turn(("propose_spec", {"spec": wall_spec()}), usage=DEEPSEEK),
+                 text_turn("The card is below.", usage=DEEPSEEK))
+    model.script("supervisor", json_turn(REPORT_DONE, usage=NO_CACHE))
+    # pipes: the analyst alone
+    model.script("analyst", json_turn(ROUTE_NONE, usage=SMALL))
+    result = run_bench(client, BASE, "roles", TASKS[:3])
+    run = result["runs"][0]
+    by_id = {task["id"]: task for task in run["tasks"]}
+    for task_id in ("levels", "wall", "pipes"):
+        assert by_id[task_id]["correct"], (task_id, by_id[task_id]["error"])
+    assert model.left() == {}
+    assert result["chat"] == {"host": "roles", "roles_seen": ["analyst", "planner", "supervisor"]}
+    assert result["host"]["features"]["roles"] is True
+    # per role, from the usage events
+    wall = by_id["wall"]
+    assert wall["feedback_turns"] == 1 and wall["usage"]["calls"] == 4
+    assert list(wall["by_role"]) == ["analyst", "planner", "supervisor"]
+    assert wall["by_role"]["analyst"]["input"] == 194 and wall["by_role"]["planner"]["input"] == 2000
+    assert wall["by_role"]["supervisor"]["calls"] == 1 and wall["by_role"]["supervisor"]["cache_read"] is None
+    assert wall["models"] == {"analyst": ["fake-1"], "planner": ["fake-1"], "supervisor": ["fake-1"]}
+    assert wall["text"].endswith("One wall; the validator passed.")
+    pipes = by_id["pipes"]
+    assert pipes["usage"]["calls"] == 1 and list(pipes["by_role"]) == ["analyst"]
+    assert pipes["text"] == f"No tool pipes sprinklers.\n\n{WORKBENCH_LINK}"
+    assert by_id["levels"]["by_role"]["planner"]["tool_calls"] == 1
+    # the host's line agrees, role by role
+    check = run["host_usage"]
+    assert check["match"], check
+    assert set(check["host_by_role"]) == {"analyst", "planner", "supervisor"}
+    assert run["by_role"]["analyst"]["calls"] == 3 and run["by_role"]["supervisor"]["calls"] == 1
+    summary = result["summary"]
+    assert set(summary["by_role"]) == {"analyst", "planner", "supervisor"}
+    # a task with no supervisor call counts it as zero calls, not unknown
+    assert {t["id"]: t["by_role"]["supervisor"]["calls"]["median"] for t in summary["tasks"]
+            if t["runs"] and "supervisor" in t["by_role"]} == {"wall": 1}
+
+
+def test_a_task_sent_back_is_reported_again_until_the_host_asks(roles_host):
+    client, model, revit = roles_host
+    supervisor_tasks = load_tasks(Path(__file__).resolve().parents[1] / "tasks-supervisor.yml")
+    failed = {**supervisor_tasks[0], "expect": {"tool": "create_wall", "params": {"level_name": "L1"}, "max_turns": 3}}
+    model.script("analyst", json_turn(ROUTE_TOOL))
+    model.script("planner", tool_turn(("propose_spec", {"spec": wall_spec()})), text_turn("card"))
+    for attempt in (1, 2):
+        model.script("supervisor", json_turn({"verdict": "retry", "report": f"Not counted ({attempt}).",
+                                              "fix": "check the level"}))
+        model.script("planner", tool_turn(("propose_spec", {"spec": wall_spec()})), text_turn(f"card {attempt}"))
+    model.script("supervisor", json_turn({"verdict": "retry", "report": "Still not counted.", "fix": "again"}))
+    result = run_bench(client, BASE, "sentback", [failed])
+    task = result["runs"][0]["tasks"][0]
+    assert task["error"] is None and task["correct"]
+    assert task["feedback_turns"] == 3 and task["requests"] == 4
+    assert model.left() == {}
+    assert task["by_role"]["supervisor"]["calls"] == 3 and task["by_role"]["planner"]["calls"] == 6
+    assert "sent back 2 times" in task["text"]
+    # every report carried the task's own result, not the run's fixture
+    reports = [json.loads(m["content"].split("\n", 1)[1]) for body in model.requests_of("supervisor")
+               for m in body["messages"] if m["role"] == "user"]
+    assert [r["execution"]["error"] for r in reports] == ["validation_failed"] * 3
+    assert [r["sent_back_so_far"] for r in reports] == [0, 1, 2]
+
+
+def test_the_supervisor_tasks_file_is_valid():
+    tasks = load_tasks(Path(__file__).resolve().parents[1] / "tasks-supervisor.yml")
+    assert [t["id"] for t in tasks] == ["wall-validator-failed", "wall-refused"]
+    assert tasks[0]["execution"]["validation"]["passed"] is False and tasks[1]["execution"]["refused"] is True
+
+
+def test_the_one_loop_is_labelled_as_such(host):
+    client, model, revit = host
+    model.turns += [text_turn("No tool here does this; build one on the workbench.", usage=FULL)]
+    result = run_bench(client, BASE, "single", [TASKS[2]])
+    assert result["chat"] == {"host": "single", "roles_seen": ["planner"]}

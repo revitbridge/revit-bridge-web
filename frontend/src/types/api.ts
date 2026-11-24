@@ -270,6 +270,7 @@ export interface ExecutionResult {
   hint?: string
   reason?: string
   message?: string
+  refused?: boolean      // revit-bridge 0.9.1: the pack refused the input in Revit, nothing was kept
 }
 
 /* One turn of the host loop: exactly one of message / execution; mentions only with a

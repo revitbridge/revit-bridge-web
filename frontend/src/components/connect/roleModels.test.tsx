@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadRuntimeConfig } from '../../config'
 import ConnectPage from '../pages/ConnectPage'
-import { MODELS_FROM_ENV, MODELS_FROM_FILE, roleRows } from './models'
+import { MODELS_FROM_ENV, MODELS_FROM_FILE, ROLES_OFF, ROLES_ON, roleRows } from './models'
 import RoleModels from './RoleModels'
 
 const html = (text: string) => text.replace(/'/g, '&#x27;')
@@ -45,7 +45,7 @@ describe('the roles and their models', () => {
 
   it('says where the names come from: the models file, or the environment and this browser', () => {
     const fromFile = renderToStaticMarkup(
-      <RoleModels models={{ analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }} modelsFile />)
+      <RoleModels models={{ analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }} modelsFile roles />)
     expect(fromFile).toContain('Models by role')
     expect(fromFile).toContain(html(MODELS_FROM_FILE))
     expect(fromFile).not.toContain(html(MODELS_FROM_ENV))
@@ -55,16 +55,27 @@ describe('the roles and their models', () => {
     expect(fromFile).not.toContain('<input')                              // read-only
 
     const fromEnv = renderToStaticMarkup(
-      <RoleModels models={{ analyst: null, planner: null, supervisor: null }} modelsFile={false} />)
+      <RoleModels models={{ analyst: null, planner: null, supervisor: null }} modelsFile={false} roles />)
     expect(fromEnv).toContain(html(MODELS_FROM_ENV))
     expect(fromEnv.match(/<td class="mono">not set<\/td>/g)).toHaveLength(3)
   })
 
+  it('says whether the roles run or one loop does (LLM_SINGLE_MODEL=1)', () => {
+    const models = { analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }
+    const on = renderToStaticMarkup(<RoleModels models={models} modelsFile roles />)
+    expect(on).toContain(html(ROLES_ON))
+    expect(on).not.toContain(html(ROLES_OFF))
+    const off = renderToStaticMarkup(<RoleModels models={models} modelsFile roles={false} />)
+    expect(off).toContain(html(ROLES_OFF))
+    expect(off).not.toContain('Only the planner runs in this version')
+  })
+
   it('the Connect page shows them on a local and on a cloud host, from /config.json', async () => {
     const models = { analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }
-    await host({ mode: 'local', admin: false, maxDevices: 0, models, modelsFile: true })
+    await host({ mode: 'local', admin: false, maxDevices: 0, models, modelsFile: true, roles: true })
     const local = renderToStaticMarkup(<ConnectPage deps={pairingDeps} />)
     expect(local).toContain('Models by role')
+    expect(local).toContain(html(ROLES_ON))
     expect(local).toContain(html(MODELS_FROM_FILE))
     expect(local.indexOf('Models by role')).toBeLessThan(local.indexOf('Bring your own model'))
     expect(local).toMatch(/data-role="planner">.*main-model/)
@@ -73,6 +84,7 @@ describe('the roles and their models', () => {
     const cloud = renderToStaticMarkup(<ConnectPage deps={pairingDeps} />)
     expect(cloud).toContain(html(MODELS_FROM_ENV))
     expect(cloud).toMatch(/data-role="planner">.*env-model/)
+    expect(cloud).toContain(html(ROLES_OFF))                // no roles field: an older host, one loop
     // No path of the server, no address: the host sends names only and the page adds none.
     expect(cloud).not.toContain('models.yml')
   })

@@ -26,6 +26,12 @@ Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Sec
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
 
+**The chat now runs in three roles** - analyst, planner, supervisor - each with its own
+instructions, tools and model (see *Added*). The events keep their shapes; `role` now also takes
+`analyst` and `supervisor`, a turn has one `stage` pair per role, and a reported run may come back
+with a new `spec` (the supervisor sent the task back). `LLM_SINGLE_MODEL=1` keeps the chat as it was
+(one loop, the planner's model), request for request and event for event.
+
 **The model in the chat no longer writes code** (see *Changed*): it runs saved tools only, and code
 becomes a tool on the workbench. Built-in packs are now read-only: a client that edited, hid or
 replaced one gets 409 `builtin_read_only` (see *Changed*). Started with `uv run revit-bridge-web`,
@@ -72,6 +78,67 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*), the default. A
+  message goes to the **analyst** (the package's `host_instructions(role="analyst", code=False)`
+  and one host line linking the workbench; no tools): it sees the message with its selections
+  block, the package's `snapshot_digest` of the open model (one snapshot per session, read again
+  after each reported run, no model call), the tool list (a name and one line each) and the open
+  task, and answers one JSON routing `{route, tool?, facts_needed, note}`. `chat` and `none`: the
+  note is the reply (`none` with the workbench link, added by the host when missing). `query` and
+  `tool`: the **planner** (`host_instructions(role="planner", code=False)` and `WORKBENCH_LINE`)
+  runs the loop with the session's conversation, the message followed by the routing, and that
+  route's tools only - `query` and `get_project_snapshot` for a read, all seven for a tool; any
+  other call is answered `tool_not_offered` and never run. A reported run goes to the
+  **supervisor** (`host_instructions(role="supervisor", code=False)`; `query` only): the confirmed
+  spec (`/spec/confirm` with the chat's `session_id` now keeps it on the session), a summary of the
+  result (its `result` cut to 2000 characters, the validator without its samples) and how often the
+  task went back; it answers one JSON verdict `{verdict: done|retry|ask, report, fix?, question?}`.
+  The host streams the report (and the question); `retry` runs the planner again in the same reply
+  with the fix (a new `spec` event), at most twice in a row (a message of the designer starts the
+  count again), then the host asks. The host holds the verdict to the package's, on the raw result:
+  `done` on a validator that did not pass, or on a run Revit did not report as a success, becomes
+  `ask` with the validator's own checks; `retry` on a run that succeeded with a validator that did
+  not fail becomes `ask` (the designer decides); a refusal by nature is never sent back - `refused:
+  true` (revit-bridge 0.9.1; handled when present), `preconditions_failed`, `validator_before_failed`,
+  `blocked`, or a failure with no `evidence_id` (refused before it ran, Revit not reached). Without
+  a spec the page confirmed in this session the supervisor gets the last proposal as
+  `proposed_spec`; a confirmation is used up when its run is reported. What the supervisor, the
+  session and the host's own reports get of a result (up to 4 MiB) is cut: texts to 1000
+  characters, lists to 20 items, a check's detail to 300, 30 checks (the failed ones first),
+  `result` to 2000, the supervisor's message to 16 KB in all. The open task: a `tool` routing opens
+  or continues it, another tool replaces it, `done` closes it; reads and small talk leave it. The
+  digest is kept per session and device, not read again within a minute after a failure. A role's
+  answer that is not its JSON gets one repair request, then the host falls back (the analyst: route
+  `tool` with the whole planner; the supervisor: the host's summary of the raw result, `ask`). A
+  role without a model is a 400 that names the role (a role on its own models-file entry needs its
+  key variable on the server: the browser's settings replace the planner's entry only); the
+  interaction log names each role that ran and its model. Two switches for measuring variants:
+  **`ROLES_PLANNER_TOOLS=all`** (the planner gets and may run all seven tools on every route) and
+  **`ROLES_ANALYST=off`** (no analyst: every message goes to the planner with route `tool`, the
+  supervisor still reports); any other value refuses the start. Each role's
+  model is `models_file.resolve(role, headers)` (without a models file all three use the one model;
+  the browser's settings replace the planner's entry only); every `stage`, `tool` and `usage`
+  event and every `llm_calls` row carries its role and that model, and `round` counts the turn's
+  calls across roles. `CHAT_RATE_LIMIT` still counts requests, not model calls. **`LLM_SINGLE_MODEL=1`**
+  runs the chat as one loop exactly as before (`/config.json` `features.roles`: `false`); without
+  the bridge there are no roles either. In the suite's scripted flows (same model answers) the
+  request bytes, one loop -> roles: a tool task with a question, an answer and the report 66.6 KB ->
+  64.7 KB (each message turn about 3.3 KB more for the analyst, the report 9.2 KB less), a read
+  16.0 -> 14.6 KB, small talk 7.8 -> 3.2 KB, "no tool" 22.3 -> 3.2 KB.
+- The task page: the tool timeline groups by role under the role and model name; the token panel
+  has one row per role that ran and the total, and shows a count the provider did not report as
+  `-` (as the Token page does; it said *unknown*); the analyst's and the supervisor's replies are
+  ordinary assistant messages; a report the supervisor sends back shows the planner's new card,
+  ready to confirm, with *Previous attempt* above it - what the page itself received from that run.
+  A run refused by the tool in Revit (`refused: true`) says so. The Connect page's *Models by role*
+  says whether the roles run or one loop does (`features.roles`).
+- Token bench: the results record how the host ran its chat (`chat`: `features.roles` and the roles
+  the events named; the host decides, `LLM_SINGLE_MODEL`). In the default mode a report answered
+  with a new card is reported again (at most 3 reports per task), and a task may carry its own
+  `execution` result; `bench/tasks-supervisor.yml` has two such tasks (a failed validator, a run
+  refused in Revit in revit-bridge 0.9.1's shape). The results record that policy
+  (`feedback_policy`); `compare` notes two runs whose policies differ (results written before
+  reported once per task) and then exits 3 when nothing got worse.
 - **The designer's picks: `@level`, `@type`, `@link` in the chat** (revit-bridge 0.9's
   `mentions`). `GET /api/v1/bridge/mentions?kind=level|type|link&category=&q=&limit=` is the
   package's `mention_candidates` reply as it is (types by category, the categories first; a link

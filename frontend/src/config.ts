@@ -20,6 +20,7 @@ export interface RuntimeFeatures {
   maxDevices: number
   models: RoleModels
   modelsFile: boolean     // the names come from the host's models file, not LLM_* / this browser
+  roles: boolean          // the chat runs in three roles; false: one model loop (LLM_SINGLE_MODEL=1, or an older host)
 }
 
 export interface RuntimeConfig {
@@ -33,7 +34,7 @@ const NO_MODELS: RoleModels = { analyst: null, planner: null, supervisor: null }
 const DEFAULTS: RuntimeConfig = {
   apiBase: '',
   wsBase: '',
-  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20, models: NO_MODELS, modelsFile: false },
+  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20, models: NO_MODELS, modelsFile: false, roles: false },
 }
 
 /* features.models as the host wrote it: a text name per role, anything else (an older host
@@ -64,6 +65,7 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
     features: {
       ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
       models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
+      roles: features.roles === true,
     },
   }
 }

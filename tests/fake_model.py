@@ -222,6 +222,62 @@ class FakeModel:
         return unique
 
 
+ROLE_OPENINGS = {"You are the analyst": "analyst", "You are the planner": "planner",
+                 "You are the supervisor": "supervisor"}
+
+
+def role_of(body: dict) -> str:
+    """The role a request was made for, read off its system prompt (the package's role texts
+    open with "You are the <role>"); "single" for the one loop's prompt (or none)."""
+    messages = body.get("messages") or []
+    system = messages[0].get("content", "") if messages and messages[0].get("role") == "system" else ""
+    return next((role for opening, role in ROLE_OPENINGS.items() if system.startswith(opening)), "single")
+
+
+class RoleScriptedModel(FakeModel):
+    """A ``FakeModel`` that answers each role from its own script: ``scripts`` maps
+    ``analyst`` / ``planner`` / ``supervisor`` (and ``single``, the one loop) to turns; a
+    request takes the next turn of its role's script. ``roles`` lists the role of every
+    request, in the order they came."""
+
+    def __init__(self, scripts: dict[str, list[dict]] | None = None, **options):
+        super().__init__([], **options)
+        self.scripts: dict[str, list[dict]] = {role: list(turns) for role, turns in (scripts or {}).items()}
+        self.roles: list[str] = []
+
+    def script(self, role: str, *turns: dict) -> None:
+        self.scripts.setdefault(role, []).extend(turns)
+
+    def left(self) -> dict[str, int]:
+        return {role: len(turns) for role, turns in self.scripts.items() if turns}
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        if self.refuse_usage_option and "stream_options" in body:
+            self.refused.append(body)
+            return httpx.Response(400, text='{"error": {"message": "stream_options not supported"}}')
+        role = role_of(body)
+        self.requests.append(body)
+        self.roles.append(role)
+        turns = self.scripts.get(role) or []
+        if not turns:
+            return httpx.Response(500, text=f'{{"error": "script of {role} exhausted"}}')
+        turn = turns.pop(0)
+        asked = bool((body.get("stream_options") or {}).get("include_usage"))
+        return httpx.Response(200, text=self._stream(turn, asked), headers={"content-type": "text/event-stream"})
+
+    def requests_of(self, role: str) -> list[dict]:
+        return [body for body, r in zip(self.requests, self.roles) if r == role]
+
+
+def json_turn(value: dict, *, usage: dict | None = None, wrap: str = "{}") -> dict:
+    """A role's JSON reply as text (``wrap``: ``"{}"`` as is, or ``"fence"`` in a Markdown fence)."""
+    text = json.dumps(value, ensure_ascii=False)
+    if wrap == "fence":
+        text = f"```json\n{text}\n```"
+    return text_turn(text, usage=usage)
+
+
 TRACE_EVENTS = ("stage", "tool", "usage")
 
 
