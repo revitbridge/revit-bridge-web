@@ -1,9 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
+import type { ExistingTool, ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
 import { BridgeApiError } from '../../shared/http'
 import { errorCode, errorDetails, parseValue, saveDisabledReason, WorkbenchModel } from './model'
 import { diagnosticRange, indentSelection, readCheck, readDryRun } from './results'
+import { downloadYaml, REVOKE_AFTER_MS } from './download'
 import Workbench, { WorkbenchView } from './Workbench'
 
 const draft: ToolDraft = { name: 'test_tool', description: 'Test tool', code: 'var x = 1;\nreturn x;', parameters: [] }
@@ -19,7 +20,7 @@ function fakeApi() {
     check: vi.fn<WorkbenchApi['check']>().mockResolvedValue(checkReply),
     dryRun: vi.fn<WorkbenchApi['dryRun']>().mockResolvedValue(dryReply),
     choices: vi.fn<WorkbenchApi['choices']>().mockResolvedValue([{ label: 'Level 1', value: 'L1' }]),
-    exists: vi.fn<WorkbenchApi['exists']>().mockResolvedValue(false),
+    lookup: vi.fn<WorkbenchApi['lookup']>().mockResolvedValue(null),
     save: vi.fn<WorkbenchApi['save']>().mockResolvedValue({ name: draft.name }),
     list: vi.fn<WorkbenchApi['list']>().mockResolvedValue([{ name: draft.name, description: draft.description, builtin: false, origin: 'user' }]),
     load: vi.fn<WorkbenchApi['load']>().mockResolvedValue(structuredClone(draft)),
@@ -33,6 +34,9 @@ function fakeApi() {
 function refusal(status: number, body: Record<string, unknown>) {
   return Object.assign(new Error(`${status}: ${body.error}${body.message ? `: ${body.message}` : ''}`), { status, body })
 }
+
+// What lookup answers for a saved tool of that name.
+const existing = (dropped: string[] = [], unseen: string[] = []): ExistingTool => ({ name: draft.name, dropped, unseen })
 
 // Lets the awaited name lookup of a save (and other chained promises) settle.
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -181,15 +185,15 @@ describe('saving the current dry-run draft', () => {
 describe('saving never replaces a tool silently', () => {
   it('asks before replacing a tool of that name; Cancel keeps it, Replace saves', async () => {
     const { api, model } = await setup()
-    api.exists.mockResolvedValue(true)
+    api.lookup.mockResolvedValue(existing())
     await model.dryRun()
     await model.save()
-    expect(api.exists).toHaveBeenCalledWith('test_tool')
+    expect(api.lookup).toHaveBeenCalledWith('test_tool')
     expect(api.save).not.toHaveBeenCalled()
     expect(html(model)).toContain('A tool named test_tool exists. Replace it with this draft?')
     expect(saveDisabledReason(model.getSnapshot())).toBe('Answer whether to replace test_tool first.')
     model.cancelReplace()
-    expect(model.getSnapshot().replaceName).toBeNull()
+    expect(model.getSnapshot().replace).toBeNull()
     expect(api.save).not.toHaveBeenCalled()
     await model.save()
     await model.confirmReplace()
@@ -199,23 +203,41 @@ describe('saving never replaces a tool silently', () => {
     expect(html(model)).not.toContain('Replace it with this draft?')
   })
 
+  it('names what the saved tool loses and needs its own click for that; Cancel there saves nothing', async () => {
+    const { api, model } = await setup()
+    api.lookup.mockResolvedValue(existing(['preconditions (1)', 'applies_when (2)'], ['revit_versions', 'fixtures']))
+    await model.dryRun()
+    await model.save()
+    expect(html(model)).toContain('this page cannot see revit_versions, fixtures, which are not kept if the saved file has them.')
+    await model.confirmReplace()
+    expect(api.save).not.toHaveBeenCalled()
+    expect(html(model)).toContain('These parts of the saved test_tool will not be kept: preconditions (1); applies_when (2).')
+    expect(html(model)).toContain('Replace and drop them')
+    model.cancelReplace()
+    expect(api.save).not.toHaveBeenCalled()
+    await model.save()
+    await model.confirmReplace()
+    await model.confirmReplace()
+    expect(api.save).toHaveBeenCalledOnce()
+  })
+
   it('an edit withdraws the question; a new name is looked up again', async () => {
     const { api, model } = await setup()
-    api.exists.mockResolvedValueOnce(true)
+    api.lookup.mockResolvedValueOnce(existing())
     await model.dryRun()
     await model.save()
     model.edit({ name: 'other_tool' })
-    expect(model.getSnapshot().replaceName).toBeNull()
+    expect(model.getSnapshot().replace).toBeNull()
     await model.confirmReplace()
     expect(api.save).not.toHaveBeenCalled()
     await model.save()
-    expect(api.exists).toHaveBeenLastCalledWith('other_tool')
+    expect(api.lookup).toHaveBeenLastCalledWith('other_tool')
     expect(api.save.mock.calls[0][0].name).toBe('other_tool')
   })
 
   it('shows the server refusal of a built-in name as it is, and frees the button', async () => {
     const { api, model } = await setup()
-    api.exists.mockResolvedValue(true)
+    api.lookup.mockResolvedValue(existing())
     api.save.mockRejectedValue(refusal(409, { error: 'builtin_read_only', message: "'test_tool' is a built-in tool and built-in tools are read-only", tool: 'test_tool' }))
     await model.dryRun()
     await model.save()
@@ -227,7 +249,7 @@ describe('saving never replaces a tool silently', () => {
 
   it('a failed name lookup is shown and nothing is saved', async () => {
     const { api, model } = await setup()
-    api.exists.mockRejectedValue(refusal(422, { error: 'invalid_tool_name', message: 'a tool name is letters, digits and _' }))
+    api.lookup.mockRejectedValue(refusal(422, { error: 'invalid_tool_name', message: 'a tool name is letters, digits and _' }))
     await model.dryRun()
     await model.save()
     expect(api.save).not.toHaveBeenCalled()
@@ -237,12 +259,12 @@ describe('saving never replaces a tool silently', () => {
 
   it('an edit while the name is looked up stops the save', async () => {
     const { api, model } = await setup()
-    const pending = deferred<boolean>()
-    api.exists.mockReturnValueOnce(pending.promise)
+    const pending = deferred<ExistingTool | null>()
+    api.lookup.mockReturnValueOnce(pending.promise)
     await model.dryRun()
     const saving = model.save()
     model.edit({ description: 'changed' })
-    pending.resolve(false)
+    pending.resolve(null)
     await saving
     expect(api.save).not.toHaveBeenCalled()
     expect(model.getSnapshot().actions.save?.message).toBe('The draft changed while its name was looked up. Save again.')
@@ -261,7 +283,7 @@ describe('server refusals are shown as they are, in place', () => {
       ['503: revit_unreachable: Revit add-in not reachable']],
   ] as const)('%s: %s', async (action, error, shown) => {
     const { api, model } = await setup()
-    model.edit({ parameters: [param({ default: 3000 })] })
+    model.edit({ parameters: [param({ required: false, default: 3000 })] })
     api[action].mockRejectedValue(error)
     await model[action]()
     const page = html(model)
@@ -269,6 +291,19 @@ describe('server refusals are shown as they are, in place', () => {
     expect(model.getSnapshot().actions[action]?.status).toBe('error')
     expect(page).not.toContain('Checking...')
     expect(page).not.toContain('Dry-running...')
+  })
+
+  it('code with a leftover placeholder and no parameters is refused by the dry run, so Save stays off', async () => {
+    const { api, model } = await setup()
+    model.edit({ code: 'return $"{x}";' })
+    api.dryRun.mockRejectedValue(refusal(422, { error: 'render_failed', message: "The package could not fill the draft's template with these values",
+      errors: ["Template still contains placeholder(s) ['x']: declare them as parameters or remove them from the code"] }))
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenCalledWith('return $"{x}";', [], {})
+    expect(html(model)).toContain('Template still contains placeholder(s) [&#x27;x&#x27;]')
+    expect(saveDisabledReason(model.getSnapshot())).toContain('Dry-run')
+    await model.save()
+    expect(api.save).not.toHaveBeenCalled()
   })
 
   it('a save the sandbox blocks lists its warnings', async () => {
@@ -393,7 +428,7 @@ describe('model options and input values', () => {
     model.edit({ parameters: [param({ source: 'elements' })] })
     await model.dryRun()
     expect(html(model)).toContain('OST_*')
-    model.edit({ parameters: [param({ type: 'int', default: 4 })] })
+    model.edit({ parameters: [param({ type: 'int' })] })
     model.setValue('height', '1.5')
     await model.dryRun()
     expect(html(model)).toContain('height: &quot;1.5&quot; is not a whole number.')
@@ -511,17 +546,126 @@ describe('number fields keep the typed text and read it when it is used', () => 
 describe('values and defaults', () => {
   it('a value field follows the default until the designer sets it, then keeps what was set', async () => {
     const { api, model } = await setup()
-    model.edit({ parameters: [param({ default: '1.5' })] })
-    model.edit({ parameters: [param({ default: '2.5' })] })
+    const optional = (fallback: unknown) => param({ required: false, default: fallback })
+    model.edit({ parameters: [optional('1.5')] })
+    model.edit({ parameters: [optional('2.5')] })
     await model.dryRun()
-    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [param({ default: 2.5 })], { height: 2.5 })
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [optional(2.5)], { height: 2.5 })
     model.setValue('height', '7.25')
-    model.edit({ parameters: [param({ default: '3.5' })] })
+    model.edit({ parameters: [optional('3.5')] })
     await model.dryRun()
-    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [param({ default: 3.5 })], { height: 7.25 })
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [optional(3.5)], { height: 7.25 })
+    expect(html(model)).not.toContain('will be used')
+  })
+
+  it('a cleared optional value sends nothing, and the field says the default will be used', async () => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param({ required: false, default: '3.5' })] })
     model.setValue('height', '')
+    expect(html(model)).toContain('default 3.5 will be used')
     await model.dryRun()
-    expect(html(model)).toContain('Fill a value for height')
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [param({ required: false, default: 3.5 })], {})
+    model.edit({ parameters: [param({ required: false, type: 'string', default: 'abc' })] })
+    model.setValue('height', '')
+    expect(html(model)).toContain('default &quot;abc&quot; will be used')
+  })
+
+  it('entering a default clears Required; a declaration with both is refused before any request', async () => {
+    const { api, model } = await setup()
+    model.edit({ parameters: [param()] })
+    expect(html(model)).toMatch(/<input type="checkbox" checked=""\/>Required/)
+    model.setDefault(0, '5')
+    expect(model.getSnapshot().draft.parameters[0]).toMatchObject({ default: '5', required: false })
+    expect(html(model)).toMatch(/<input type="checkbox"\/>Required/)
+    model.setDefault(0, undefined)
+    expect(model.getSnapshot().draft.parameters[0]).toMatchObject({ default: undefined, required: false })
+    model.edit({ parameters: [param({ required: true, default: '5' })] })
+    expect(saveDisabledReason(model.getSnapshot())).toBe('height: a parameter with a default is not required.')
+    await model.check()
+    await model.dryRun()
+    expect(html(model)).toContain('height: a parameter with a default is not required.')
+    expect(api.check).not.toHaveBeenCalled()
+    expect(api.dryRun).not.toHaveBeenCalled()
+  })
+
+  it('a default of null is a default: kept apart from none, sent as null, and its field says so', async () => {
+    const { api, model } = await setup()
+    const withNull = param({ type: 'string', required: false, default: null })
+    model.edit({ parameters: [withNull] })
+    expect(parseValue('string', null)).toEqual({ value: null })
+    expect(html(model)).toContain('placeholder="null (the saved default)"')
+    expect(html(model)).toContain('default null will be used')
+    await model.check()
+    expect(api.check).toHaveBeenLastCalledWith(draft.code, [withNull])
+    await model.dryRun()
+    expect(api.dryRun).toHaveBeenLastCalledWith(draft.code, [withNull], {})
+    model.edit({ parameters: [{ ...withNull, required: true }] })
+    expect(saveDisabledReason(model.getSnapshot())).toBe('height: a parameter with a default is not required.')
+  })
+
+  it('a model option is selected by its typed value: a default typed as "3" selects the option 3', async () => {
+    const { api, model } = await setup()
+    api.choices.mockResolvedValue([{ label: 'Wall 2', value: 2 }, { label: 'Wall 3', value: 3 }])
+    model.edit({ parameters: [param({ name: 'wall', type: 'int', source: 'elements', category: 'OST_Walls', required: false, default: '3' })] })
+    await model.loadChoices()
+    expect(html(model)).toContain('<option value="1" selected="">Wall 3</option>')
+    await model.dryRun()
+    expect(api.dryRun.mock.calls[0][2]).toEqual({ wall: 3 })
+  })
+})
+
+describe('export download', () => {
+  it('keeps the file URL for a minute, so a browser that starts the download late still gets it', () => {
+    vi.useFakeTimers()
+    const anchor = { href: '', download: '', click: vi.fn(), remove: vi.fn() }
+    const revoke = vi.fn()
+    vi.stubGlobal('document', { createElement: () => anchor, body: { appendChild: vi.fn() } })
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:1', revokeObjectURL: revoke })
+    try {
+      downloadYaml('my tool', 'name: my_tool\n')
+      expect(anchor).toMatchObject({ href: 'blob:1', download: 'my_tool.yaml' })
+      expect(anchor.click).toHaveBeenCalledOnce()
+      vi.advanceTimersByTime(REVOKE_AFTER_MS - 1)
+      expect(revoke).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(1)
+      expect(revoke).toHaveBeenCalledWith('blob:1')
+      expect(REVOKE_AFTER_MS).toBe(60_000)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('the host learns of every draft change', () => {
+  it('edit, setValue, open, copy and new each call the listener; a refused edit of a built-in does not', async () => {
+    const { api, model } = await setup()
+    const changed = vi.fn()
+    model.setDraftListener(changed)
+    model.edit({ code: 'return 7;' })
+    model.edit({ description: 'only the text' })
+    model.setValue('height', '1')
+    expect(changed).toHaveBeenCalledTimes(3)
+    await model.open(draft.name)
+    model.copyAsMine()
+    model.newDraft()
+    expect(changed).toHaveBeenCalledTimes(6)
+    api.list.mockResolvedValue([{ name: draft.name, description: '', builtin: true, origin: 'builtin' }])
+    await model.refresh()
+    await model.open(draft.name)
+    changed.mockClear()
+    model.edit({ code: 'changed' })
+    expect(changed).not.toHaveBeenCalled()
+    model.setDraftListener(null)
+    model.setValue('height', '2')
+    expect(changed).not.toHaveBeenCalled()
+  })
+
+  it('Run is off while the host says a run is in progress', async () => {
+    const { model } = await setup()
+    const locked = renderToStaticMarkup(<WorkbenchView model={model} onRun={() => {}} runLocked />)
+    expect(locked).toMatch(/<button[^>]*disabled=""[^>]*title="A run is in progress; wait for its result."[^>]*>Run</)
+    expect(locked).toContain('A run is in progress; wait for its result.')
   })
 })
 

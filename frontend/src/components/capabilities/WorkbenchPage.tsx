@@ -2,28 +2,29 @@
    component (components/hostv2/workbench) on the real client (api/workbench.ts) - paste or write
    a C# snippet, check it, dry-run it against the open model, save it as a tool; your own tools
    listed with their directory, opened, exported, deleted, imported; the built-in ones read-only
-   (open to read or copy, export). Run confirms and runs the saved tool (workbenchRun.ts). On a
-   cloud host saving, deleting and importing need the admin password (shared/packAdmin). */
+   (open to read or copy, export). Run confirms and runs the saved tool (workbenchRun.ts: the
+   card goes with any change to the draft, Confirm checks the saved tool again, and Run is off
+   while a run is in progress). On a cloud host saving, deleting and importing need the admin
+   password (shared/packAdmin). */
 
-import { useCallback, useState } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { workbenchApi } from '../../api/workbench'
-import type { TaskSpec } from '../../types/api'
-import type { ToolDraft, WorkbenchApi } from '../../types/hostv2'
+import type { WorkbenchApi } from '../../types/hostv2'
 import { Workbench } from '../hostv2/workbench'
 import { usePackGate } from '../shared/packAdmin'
 import { ExecutionView } from '../task/ExecutionPanel'
 import { tokenPrefix } from '../task/format'
 import { SpecTable } from '../task/SpecCard'
-import { confirmRun, workbenchRunApi, workbenchSpec, type RunOutcome, type WorkbenchRunApi } from './workbenchRun'
+import { WorkbenchRun, workbenchRunApi, type RunState, type WorkbenchRunApi } from './workbenchRun'
 
-type RunState = { spec: TaskSpec; running: boolean; outcome: RunOutcome | null }
-
-export function RunPanel({ run, onConfirm, onClose }: { run: RunState; onConfirm: () => void; onClose: () => void }) {
-  const { spec, running, outcome } = run
+export function RunPanel({ state, onConfirm, onClose }: { state: RunState; onConfirm: () => void; onClose: () => void }) {
+  const { card, notice } = state
+  if (!card) return notice ? <p className="tool-warning-status" role="status">{notice}</p> : null
+  const { spec, defaults, running, outcome } = card
   return (
     <section className="hostv2-workbench-result" aria-label="Run the saved tool">
       <h3>Run {spec.action.tool}</h3>
-      <SpecTable spec={spec} />
+      <SpecTable spec={spec} defaults={defaults} />
       {!outcome && <>
         <p className="section-copy small">
           Confirm issues a one-time token for exactly these values and runs the saved tool under it; the
@@ -56,25 +57,11 @@ export function RunPanel({ run, onConfirm, onClose }: { run: RunState; onConfirm
   )
 }
 
-export default function WorkbenchPage({ api = workbenchApi, runApi = workbenchRunApi }: { api?: WorkbenchApi; runApi?: WorkbenchRunApi }) {
+/* runner: the run state to use (a test passes one); by default the page makes its own. */
+export default function WorkbenchPage({ api = workbenchApi, runApi = workbenchRunApi, runner }: { api?: WorkbenchApi; runApi?: WorkbenchRunApi; runner?: WorkbenchRun }) {
   const gate = usePackGate()
-  const [run, setRun] = useState<RunState | null>(null)
-
-  // The workbench's Run: refused (the reason shows on the workbench) unless the draft is the
-  // saved tool; otherwise its spec card appears under the workbench's buttons.
-  const onRun = useCallback(async (draft: ToolDraft, values: Record<string, unknown>) => {
-    setRun(null)
-    const spec = await workbenchSpec(runApi, draft, values)
-    setRun({ spec, running: false, outcome: null })
-  }, [runApi])
-
-  const confirm = async () => {
-    if (!run || run.running || run.outcome) return
-    const spec = run.spec
-    setRun({ spec, running: true, outcome: null })
-    const outcome = await confirmRun(runApi, spec)
-    setRun(current => current && current.spec === spec ? { spec, running: false, outcome } : current)
-  }
+  const [run] = useState(() => runner ?? new WorkbenchRun(runApi))
+  const state = useSyncExternalStore(run.subscribe, run.getSnapshot, run.getSnapshot)
 
   return (
     <div className="space-y-4">
@@ -90,8 +77,9 @@ export default function WorkbenchPage({ api = workbenchApi, runApi = workbenchRu
           revit-bridge MCP server of Claude Code and the other coding frameworks.
         </p>
       </div>
-      <Workbench api={api} onRun={onRun} canEdit={gate.canEdit} editNote={gate.note}
-        runPanel={run && <RunPanel run={run} onConfirm={() => { void confirm() }} onClose={() => setRun(null)} />} />
+      <Workbench api={api} onRun={run.onRun} canEdit={gate.canEdit} editNote={gate.note}
+        onDraftChange={run.draftChanged} runLocked={state.card?.running ?? false}
+        runPanel={<RunPanel state={state} onConfirm={() => { void run.confirm() }} onClose={run.close} />} />
     </div>
   )
 }

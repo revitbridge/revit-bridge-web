@@ -1,12 +1,16 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { ToolParamDraft, WorkbenchApi, WorkbenchTool } from '../../../types/hostv2'
-import { saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
+import { defaultOf, fieldValue, saveDisabledReason, WorkbenchModel, type Action, type ActionState, type OnRun } from './model'
 import { diagnosticRange, dryRunNotSent, indentSelection, type Diagnostic, type DryRunReply } from './results'
+import { downloadYaml } from './download'
 import './workbench.css'
 
 /* canEdit / editNote: whether this host lets the page save, delete and import tools (a cloud
    host wants the admin password) and why not. runPanel: what the host shows for a run it was
-   asked for (its spec card, confirmation, result), placed under the action buttons. */
+   asked for (its spec card, confirmation, result), placed under the action buttons.
+   onDraftChange: called on every change to the draft or its values, so the host can drop what
+   it built from the draft as it was. runLocked: the host is running something Run started;
+   Run is off until it has its result. */
 interface Props {
   api: WorkbenchApi
   onRun: OnRun
@@ -14,10 +18,14 @@ interface Props {
   canEdit?: boolean
   editNote?: string
   runPanel?: ReactNode
+  onDraftChange?: () => void
+  runLocked?: boolean
 }
 
 // Text fields keep what is typed; the model reads numbers from it when the value is used.
 const boolChoice = (text: string) => text === '' ? undefined : text === 'true'
+const shown = (value: unknown) => value === undefined || value === null ? '' : String(value)
+const RUN_LOCKED = 'A run is in progress; wait for its result.'
 
 const actionLabels: Record<Action, string> = {
   check: 'Check', dryRun: 'Dry run', run: 'Run', save: 'Save', list: 'Tool list', load: 'Open',
@@ -79,17 +87,7 @@ function DryRunResult({ result }: { result: DryRunReply }) {
   </section>
 }
 
-function downloadYaml(name: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/yaml;charset=utf-8' }))
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `${name.replace(/[^A-Za-z0-9_.-]/g, '_') || 'tool'}.yaml`
-  document.body.appendChild(anchor)
-  try { anchor.click() }
-  finally { anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 0) }
-}
-
-export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchModel; onRun: OnRun; runPanel?: ReactNode }) {
+export function WorkbenchView({ model, onRun, runPanel, runLocked = false }: { model: WorkbenchModel; onRun: OnRun; runPanel?: ReactNode; runLocked?: boolean }) {
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot, model.getSnapshot)
   const { draft, builtin, actions } = state
   const own = state.tools.filter(tool => !tool.builtin)
@@ -100,6 +98,7 @@ export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchMode
   const busy = (action: Action) => actions[action]?.status === 'running'
   const saveReason = saveDisabledReason(state)
   const editParam = (index: number, patch: Partial<ToolParamDraft>) => model.edit({ parameters: draft.parameters.map((param, i) => i === index ? { ...param, ...patch } : param) })
+  const setDefault = (index: number, value: unknown) => model.setDefault(index, value)
   const locate = (diagnostic: Diagnostic) => {
     const range = diagnosticRange(draft.code, diagnostic)
     const editor = codeRef.current
@@ -156,11 +155,13 @@ export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchMode
         <label>Unit<select className="input-field" value={param.unit ?? ''} onChange={event => editParam(index, { unit: event.target.value ? event.target.value as ToolParamDraft['unit'] : undefined })}>
           <option value="">None</option>{['mm', 'm', 'feet'].map(unit => <option key={unit}>{unit}</option>)}
         </select></label>
+        {/* A default makes the parameter optional (the package refuses a required one with a default). */}
         <label>Default{param.type === 'bool'
-          ? <select className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: boolChoice(event.target.value) })}>
-              <option value="">No default</option><option value="true">true</option><option value="false">false</option>
+          ? <select className="input-field" value={shown(param.default)} onChange={event => setDefault(index, boolChoice(event.target.value))}>
+              <option value="">{param.default === null ? 'null (the saved default)' : 'No default'}</option><option value="true">true</option><option value="false">false</option>
             </select>
-          : <input className="input-field" value={param.default === undefined ? '' : String(param.default)} onChange={event => editParam(index, { default: event.target.value === '' ? undefined : event.target.value })} />}
+          : <input className="input-field" value={shown(param.default)} placeholder={param.default === null ? 'null (the saved default)' : undefined}
+              onChange={event => setDefault(index, event.target.value === '' ? undefined : event.target.value)} />}
         </label>
         <label className="hostv2-workbench-checkbox"><input type="checkbox" checked={param.required} onChange={event => editParam(index, { required: event.target.checked })} />Required</label>
         <button type="button" className="btn-ghost danger" aria-label={`Remove parameter ${param.name || index + 1}`} onClick={() => model.edit({ parameters: draft.parameters.filter((_, i) => i !== index) })}>Remove</button>
@@ -173,9 +174,14 @@ export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchMode
       {draft.parameters.some(param => param.source !== 'designer') && <button type="button" className="btn-secondary" disabled={busy('choices')} onClick={() => { void model.loadChoices() }}>Load model options</button>}
       {draft.parameters.length === 0 && <p>No parameters.</p>}
       {draft.parameters.map((param, index) => {
+        // The text the field shows: the designer's as typed, else the default.
         const value = Object.hasOwn(state.values, param.name) ? state.values[param.name] : param.default
         const choices = Object.hasOwn(state.choices, param.name) ? state.choices[param.name] : []
-        const selected = choices.findIndex(choice => JSON.stringify(choice.value) === JSON.stringify(value))
+        // Options compare by typed value: a default typed as "3" selects the option 3.
+        const typed = JSON.stringify(fieldValue(param, state.values))
+        const selected = choices.findIndex(choice => JSON.stringify(choice.value) === typed)
+        const fallback = defaultOf(param)
+        const usesDefault = param.source === 'designer' && fallback.has && shown(value).trim() === ''
         return <label key={index}>{param.name || `Parameter ${index + 1}`}{param.required ? ' (required)' : ''}{param.unit ? ` (${param.unit})` : ''}
           {param.source !== 'designer'
             ? <select className="input-field" value={selected < 0 ? '' : String(selected)} onChange={event => model.setValue(param.name, event.target.value === '' ? undefined : choices[Number(event.target.value)].value)}>
@@ -183,10 +189,11 @@ export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchMode
                 {choices.map((choice, i) => <option key={i} value={String(i)}>{choice.label}</option>)}
               </select>
             : param.type === 'bool'
-              ? <select className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, boolChoice(event.target.value))}>
+              ? <select className="input-field" value={shown(value)} onChange={event => model.setValue(param.name, boolChoice(event.target.value))}>
                   <option value="">Choose a value</option><option value="true">true</option><option value="false">false</option>
                 </select>
-              : <input className="input-field" value={value === undefined ? '' : String(value)} onChange={event => model.setValue(param.name, event.target.value)} />}
+              : <input className="input-field" value={shown(value)} onChange={event => model.setValue(param.name, event.target.value)} />}
+          {usesDefault && <small className="hostv2-workbench-help">default {JSON.stringify(fallback.value)} will be used</small>}
         </label>
       })}
       <ActionStatus action="choices" state={actions.choices} />
@@ -195,12 +202,17 @@ export function WorkbenchView({ model, onRun, runPanel }: { model: WorkbenchMode
     <div className="hostv2-workbench-actions">
       <button type="button" className="btn-secondary" disabled={busy('check')} onClick={() => { void model.check() }}>{busy('check') ? 'Checking...' : 'Check'}</button>
       <button type="button" className="btn-secondary" disabled={busy('dryRun')} onClick={() => { void model.dryRun() }}>{busy('dryRun') ? 'Dry-running...' : 'Dry run'}</button>
-      <button type="button" className="btn-primary" disabled={busy('run') || busy('dryRun')} onClick={() => { void model.run(onRun) }}>{busy('run') ? 'Requesting run...' : 'Run'}</button>
+      <button type="button" className="btn-primary" disabled={runLocked || busy('run') || busy('dryRun')} title={runLocked ? RUN_LOCKED : undefined} onClick={() => { void model.run(onRun) }}>{busy('run') ? 'Requesting run...' : 'Run'}</button>
       <button type="button" className="btn-primary" disabled={!!saveReason || busy('save') || busy('dryRun')} title={saveReason ?? undefined} onClick={() => { void model.save() }}>{busy('save') ? 'Saving...' : 'Save as tool'}</button>
     </div>
+    {runLocked && <p className="hostv2-workbench-help">{RUN_LOCKED}</p>}
     {saveReason && <p className="hostv2-workbench-help">{saveReason}</p>}
-    {state.replaceName !== null && <Confirm label="Confirm replacing a tool" yes={`Replace ${state.replaceName}`}
-      question={`A tool named ${state.replaceName} exists. Replace it with this draft?`}
+    {state.replace?.step === 'replace' && <Confirm label="Confirm replacing a tool" yes={`Replace ${state.replace.name}`}
+      question={`A tool named ${state.replace.name} exists. Replace it with this draft?${state.replace.unseen.length
+        ? ` A save writes the whole file again; this page cannot see ${state.replace.unseen.join(', ')}, which are not kept if the saved file has them.` : ''}`}
+      onYes={() => { void model.confirmReplace() }} onNo={() => model.cancelReplace()} />}
+    {state.replace?.step === 'drop' && <Confirm label="Confirm dropping parts of the saved tool" yes="Replace and drop them"
+      question={`These parts of the saved ${state.replace.name} will not be kept: ${state.replace.dropped.join('; ')}.`}
       onYes={() => { void model.confirmReplace() }} onNo={() => model.cancelReplace()} />}
     {(['check', 'dryRun', 'run', 'save'] as const).map(action => <ActionStatus key={action} action={action} state={actions[action]} />)}
     {runPanel}
@@ -257,7 +269,7 @@ function ToolList({ tools, model, busy, canDelete }: { tools: WorkbenchTool[]; m
   </li>)}</ul>
 }
 
-export function Workbench({ api, onRun, initialDescription, canEdit = true, editNote = '', runPanel }: Props) {
+export function Workbench({ api, onRun, initialDescription, canEdit = true, editNote = '', runPanel, onDraftChange, runLocked = false }: Props) {
   const [model] = useState(() => {
     const created = new WorkbenchModel(api, initialDescription)
     created.setGate(canEdit, editNote)
@@ -265,8 +277,9 @@ export function Workbench({ api, onRun, initialDescription, canEdit = true, edit
   })
   useEffect(() => { model.setApi(api) }, [model, api])
   useEffect(() => { model.setGate(canEdit, editNote) }, [model, canEdit, editNote])
+  useEffect(() => { model.setDraftListener(onDraftChange ?? null); return () => model.setDraftListener(null) }, [model, onDraftChange])
   useEffect(() => { void model.refresh() }, [model])
-  return <WorkbenchView model={model} onRun={onRun} runPanel={runPanel} />
+  return <WorkbenchView model={model} onRun={onRun} runPanel={runPanel} runLocked={runLocked} />
 }
 
 export default Workbench

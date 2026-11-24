@@ -19,7 +19,9 @@ export interface WorkbenchState {
   revision: number
   dryRunRevision: number | null
   deleteName: string | null
-  replaceName: string | null                             // save: a tool of this name exists, replace it?
+  // save: a tool of this name exists, replace it? step 'drop' is the second question, asked when
+  // the saved tool has parts a save cannot keep (dropped).
+  replace: { name: string; dropped: string[]; unseen: string[]; step: 'replace' | 'drop' } | null
   importReplace: { name: string; text: string } | null   // import: the same question for a file
   canEdit: boolean                                       // this host lets this page save, delete, import
   editNote: string                                       // why not, when it does not
@@ -71,9 +73,11 @@ const WHOLE = /^[+-]?\d+$/
 export type Parsed = { value: unknown } | { error: string }
 
 /* The value of a typed text (or of a value already typed, e.g. a loaded default) for a parameter
-   type; { value: undefined } when it is empty. */
+   type; { value: undefined } when it is empty. null stays null: a pack may declare `default:
+   null`, which is a default (the package fills null when no value is given), not "no default". */
 export function parseValue(type: ToolParamDraft['type'], raw: unknown): Parsed {
-  if (raw === undefined || raw === null) return { value: undefined }
+  if (raw === undefined) return { value: undefined }
+  if (raw === null) return { value: null }
   if (type === 'string') return typeof raw === 'string' ? { value: raw === '' ? undefined : raw } : { error: 'must be text' }
   if (type === 'bool') {
     if (typeof raw === 'boolean') return { value: raw }
@@ -104,12 +108,30 @@ export function parameterProblem(parameters: ToolParamDraft[]): string | null {
     if ((param.source === 'family_types' || param.source === 'elements') && !param.category?.startsWith('OST_')) return `${param.name}: select a category using its OST_* name.`
     const parsed = parseValue(param.type, param.default)
     if ('error' in parsed) return `${param.name}: the default ${parsed.error}.`
+    // The package refuses both (capabilities/schema.py): a default means "not required".
+    if (parsed.value !== undefined && param.required) return `${param.name}: a parameter with a default is not required.`
   }
   return null
 }
 
+/* Whether the declaration has a default (null counts), and its typed value. */
+export function defaultOf(param: ToolParamDraft): { has: boolean; value: unknown } {
+  const parsed = parseValue(param.type, param.default)
+  return 'value' in parsed && parsed.value !== undefined ? { has: true, value: parsed.value } : { has: false, value: undefined }
+}
+
+/* The value a field holds, typed: the designer's (a model option as the server gave it, text
+   read as the type), else the default. undefined when there is none or the text does not read. */
+export function fieldValue(param: ToolParamDraft, values: Record<string, unknown>): unknown {
+  if (!Object.hasOwn(values, param.name)) return defaultOf(param).value
+  const own = values[param.name]
+  if (param.source !== 'designer') return own
+  const parsed = parseValue(param.type, own)
+  return 'value' in parsed ? parsed.value : undefined
+}
+
 /* The declarations as the interface takes them: each default read from its text (none when
-   empty). Call after parameterProblem returned null. */
+   empty; null kept). Call after parameterProblem returned null. */
 export function typedParameters(parameters: ToolParamDraft[]): ToolParamDraft[] {
   return parameters.map(param => {
     const { default: raw, ...rest } = clone(param)
@@ -137,7 +159,7 @@ function validType(type: ToolParamDraft['type'], value: unknown): boolean {
 export function saveDisabledReason(state: WorkbenchState): string | null {
   if (!state.canEdit) return state.editNote || 'This host does not let this page save tools.'
   if (state.actions.save?.status === 'running') return 'Wait for the current save to finish before saving again.'
-  if (state.replaceName !== null) return `Answer whether to replace ${state.replaceName} first.`
+  if (state.replace !== null) return `Answer whether to replace ${state.replace.name} first.`
   if (state.builtin) return 'Built-in tools are read-only. Use Copy as mine first.'
   const problem = parameterProblem(state.draft.parameters)
   if (problem) return problem
@@ -156,19 +178,24 @@ export class WorkbenchModel {
   private choicesRevision = -1
   private saveInFlight = false
   private api: WorkbenchApi
+  private draftListener: (() => void) | null = null
 
   constructor(api: WorkbenchApi, initialDescription = '') {
     this.api = api
     this.state = { draft: emptyDraft(initialDescription), builtin: false, tools: [], values: {}, choices: {}, actions: {}, check: null, dryRun: null, revision: 0, dryRunRevision: null, deleteName: null,
-      replaceName: null, importReplace: null, canEdit: true, editNote: '' }
+      replace: null, importReplace: null, canEdit: true, editNote: '' }
   }
 
   getSnapshot = () => this.state
   setApi(api: WorkbenchApi) { this.api = api }
+  /* Told of every change to the draft or its values (edit, setValue, a draft opened, copied or
+     new): the host drops what it built from the draft as it was, e.g. a run card. */
+  setDraftListener(listener: (() => void) | null) { this.draftListener = listener }
+  private draftChanged() { this.draftListener?.() }
   /* Whether this host lets the page change tools (a cloud host wants the admin password). */
   setGate(canEdit: boolean, editNote = '') {
     if (canEdit !== this.state.canEdit || editNote !== this.state.editNote) {
-      this.update({ canEdit, editNote, ...(canEdit ? {} : { replaceName: null, importReplace: null, deleteName: null }) })
+      this.update({ canEdit, editNote, ...(canEdit ? {} : { replace: null, importReplace: null, deleteName: null }) })
     }
   }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -196,9 +223,10 @@ export class WorkbenchModel {
     for (const action of ['check', 'dryRun', 'choices', 'run'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
     // values hold only what the designer set; a field without one shows (and uses) the default.
     this.update({ draft: { ...clone(draft), code: normalizeCode(draft.code) }, builtin, revision: this.state.revision + 1, dryRunRevision: null,
-      values: {}, choices: {}, check: null, dryRun: null, deleteName: null, replaceName: null,
+      values: {}, choices: {}, check: null, dryRun: null, deleteName: null, replace: null,
       actions: { ...this.state.actions, check: undefined, dryRun: undefined, choices: undefined, save: this.saveInFlight ? this.state.actions.save : undefined, run: undefined },
     })
+    this.draftChanged()
   }
 
   edit(patch: Partial<ToolDraft>) {
@@ -206,8 +234,9 @@ export class WorkbenchModel {
     const draft = clone({ ...this.state.draft, ...patch })
     draft.code = normalizeCode(draft.code)
     this.draftVersion++
+    this.draftChanged()
     // A pending "replace it?" was asked about the draft as it was: any edit withdraws it.
-    if (this.state.replaceName !== null) { this.update({ replaceName: null }); this.status('save', 'idle', '') }
+    if (this.state.replace !== null) { this.update({ replace: null }); this.status('save', 'idle', '') }
     if (signature(draft) !== signature(this.state.draft)) {
       this.choicesRevision = -1
       for (const action of ['check', 'dryRun', 'choices'] as const) this.tickets[action] = (this.tickets[action] ?? 0) + 1
@@ -219,7 +248,16 @@ export class WorkbenchModel {
       })
     } else this.update({ draft })
   }
-  setValue(name: string, value: unknown) { this.update({ values: { ...this.state.values, [name]: value } }) }
+  /* The default field of parameter `index`: entering a default clears Required (the package
+     refuses a required parameter with a default); clearing it leaves Required as it is. */
+  setDefault(index: number, value: unknown) {
+    const patch: Partial<ToolParamDraft> = value === undefined ? { default: undefined } : { default: value, required: false }
+    this.edit({ parameters: this.state.draft.parameters.map((param, i) => i === index ? { ...param, ...patch } : param) })
+  }
+  setValue(name: string, value: unknown) {
+    this.update({ values: { ...this.state.values, [name]: value } })
+    this.draftChanged()
+  }
   newDraft() { this.replaceDraft(emptyDraft(), false); this.tickets.load = (this.tickets.load ?? 0) + 1; this.status('load', 'idle', '') }
   copyAsMine() {
     const draft = clone(this.state.draft)
@@ -284,9 +322,11 @@ export class WorkbenchModel {
     }
     const values: [string, unknown][] = []
     for (const param of this.state.draft.parameters) {
-      // A value the designer cleared stays cleared (the field shows it empty): the default is
-      // used only while no value was set. A model option is the option's own value, typed by the
-      // server, never parsed from text.
+      // A field the designer left empty (cleared, or a default of null) sends no value: a
+      // required one is an error, an optional one gets its default from the package, as the
+      // saved tool would (the field says "default X will be used"). An unset field sends what it
+      // shows, the default. A model option is the option's own value, typed by the server,
+      // never parsed from text.
       const set = Object.hasOwn(this.state.values, param.name)
       const raw = set ? this.state.values[param.name] : param.default
       const parsed = param.source !== 'designer' && set && !empty(raw) ? { value: raw } : parseValue(param.type, raw)
@@ -356,9 +396,11 @@ export class WorkbenchModel {
     finally { this.settle('run', ticket) }
   }
 
-  /* Save never replaces a tool silently: the name is looked up first (api.exists) and, when a
-     tool has it, the designer is asked (replaceName; confirmReplace / cancelReplace). The
-     server keeps the last word: a built-in's name is refused there (409 builtin_read_only). */
+  /* Save never replaces a tool silently: the name is looked up first (api.lookup) and, when a
+     tool has it, the designer is asked (replace; confirmReplace / cancelReplace). When the saved
+     tool has parts a save cannot keep (lookup's dropped), a second question names them and
+     needs its own click. The server keeps the last word: a built-in's name is refused there
+     (409 builtin_read_only). */
   async save() {
     if (this.saveInFlight) return
     const reason = saveDisabledReason(this.state)
@@ -368,8 +410,8 @@ export class WorkbenchModel {
     const version = this.draftVersion
     this.saveInFlight = true
     const ticket = this.begin('save', `Looking for a tool named ${draft.name}...`)
-    let exists: boolean
-    try { exists = await this.api.exists(draft.name) }
+    let existing: Awaited<ReturnType<WorkbenchApi['lookup']>>
+    try { existing = await this.api.lookup(draft.name) }
     catch (error) {
       this.saveInFlight = false
       if (this.current('save', ticket)) this.fail('save', error)
@@ -378,26 +420,27 @@ export class WorkbenchModel {
     this.saveInFlight = false
     if (!this.current('save', ticket)) return
     if (version !== this.draftVersion) { this.fail('save', 'The draft changed while its name was looked up. Save again.'); return }
-    if (exists) {
-      this.update({ replaceName: draft.name })
+    if (existing) {
+      this.update({ replace: { name: draft.name, dropped: [...existing.dropped], unseen: [...(existing.unseen ?? [])], step: 'replace' } })
       this.status('save', 'idle', '')
       return
     }
     await this.write(draft, version, ticket)
   }
   async confirmReplace() {
-    const name = this.state.replaceName
-    if (name === null || this.saveInFlight) return
-    this.update({ replaceName: null })
+    const pending = this.state.replace
+    if (pending === null || this.saveInFlight) return
+    if (pending.step === 'replace' && pending.dropped.length) { this.update({ replace: { ...pending, step: 'drop' } }); return }
+    this.update({ replace: null })
     const reason = saveDisabledReason(this.state)
-    if (reason || name !== this.state.draft.name.trim()) { this.fail('save', reason ?? 'The name changed. Save again.'); return }
+    if (reason || pending.name !== this.state.draft.name.trim()) { this.fail('save', reason ?? 'The name changed. Save again.'); return }
     const draft = typedDraft(this.state.draft)
-    draft.name = name
-    await this.write(draft, this.draftVersion, this.begin('save', `Replacing ${name}...`))
+    draft.name = pending.name
+    await this.write(draft, this.draftVersion, this.begin('save', `Replacing ${pending.name}...`))
   }
   cancelReplace() {
-    if (this.state.replaceName === null) return
-    this.update({ replaceName: null })
+    if (this.state.replace === null) return
+    this.update({ replace: null })
     this.status('save', 'idle', '')
   }
   private async write(draft: ToolDraft, version: number, ticket: number) {

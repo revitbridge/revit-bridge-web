@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadRuntimeConfig } from '../config'
 import { useSessionStore } from '../store'
 import { BridgeApiError } from '../components/shared/http'
+import { WorkbenchModel } from '../components/hostv2/workbench/model'
+import type { ToolDetail } from '../types/api'
 import {
-  choicesFromOf, draftPack, draftParameter, packParameter, parseValidator, sampleValues, workbenchApi,
+  choicesFromOf, defaultDisplayName, draftPack, draftParameter, packParameter, parseValidator, sampleValues, workbenchApi,
   type ToolParamDraft, type WorkbenchApi,
 } from './workbench'
 
@@ -25,6 +27,12 @@ function stubFetch(...replies: Array<{ status?: number; body: unknown; type?: st
 }
 
 const body = (c: Call) => JSON.parse(String(c.init.body))
+
+// GET /tools/{name} of a plain user tool; tests override what they need.
+const detail = (): ToolDetail => ({
+  name: 'mine', display_name: 'Mine', description: 'Mine', version: '1.0.0', code_template: 'return 1;', parameters: [],
+  tags: [], execution_count: 0, source_query: '', preconditions: [], applies_when: [], not_for: [], validator: null,
+})
 
 const level: ToolParamDraft = { name: 'level_name', type: 'string', description: 'Level', source: 'levels', required: true }
 const height: ToolParamDraft = { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', required: false, default: 3000 }
@@ -46,18 +54,22 @@ describe('workbenchApi', () => {
   it('satisfies the WorkbenchApi interface of the workbench component', () => {
     const api: WorkbenchApi = workbenchApi
     expect(Object.keys(api).sort()).toEqual(
-      ['check', 'choices', 'dryRun', 'exists', 'exportYaml', 'importYaml', 'list', 'load', 'remove', 'save'])
+      ['check', 'choices', 'dryRun', 'exportYaml', 'importYaml', 'list', 'load', 'lookup', 'remove', 'save'])
   })
 
-  it('exists asks GET /tools/{name}: true when it is there, false on 404 unknown_tool, any other refusal thrown', async () => {
+  it('lookup asks GET /tools/{name}: what a save over it drops, null on 404 unknown_tool, any other refusal thrown', async () => {
     const calls = stubFetch(
-      { body: { name: 'mine', code_template: 'return 1;' } },
+      { body: { ...detail(), display_name: 'My tool', version: '1.2.0', preconditions: [{ kind: 'levels_min', value: 2 }], applies_when: ['a', 'b'], not_for: ['c'], tags: ['t'] } },
       { status: 404, body: { error: 'unknown_tool', message: "Tool 'nope' not found", tool: 'nope' } },
       { status: 422, body: { error: 'invalid_tool_name', message: 'bad name' } },
     )
-    expect(await workbenchApi.exists('mine')).toBe(true)
-    expect(await workbenchApi.exists('nope')).toBe(false)
-    const err = await workbenchApi.exists('con').catch((e: unknown) => e as BridgeApiError)
+    expect(await workbenchApi.lookup('mine')).toEqual({
+      name: 'mine',
+      dropped: ['display name "My tool"', 'version 1.2.0 (saved again as 1.0.0)', 'preconditions (1)', 'applies_when (2)', 'not_for (1)', 'tags (1)'],
+      unseen: ['revit_versions', 'fixtures', 'approved_by', 'approved_at'],
+    })
+    expect(await workbenchApi.lookup('nope')).toBeNull()
+    const err = await workbenchApi.lookup('con').catch((e: unknown) => e as BridgeApiError)
     expect(err.code).toBe('invalid_tool_name')
     expect(calls.map(c => [c.init.method ?? 'GET', c.url])).toEqual([
       ['GET', '/api/v1/bridge/tools/mine'], ['GET', '/api/v1/bridge/tools/nope'], ['GET', '/api/v1/bridge/tools/con'],
@@ -76,11 +88,18 @@ describe('workbenchApi', () => {
     })
   })
 
-  it('check and dryRun send a draft without parameters as code', async () => {
-    const calls = stubFetch({ body: {} })
-    await workbenchApi.check('return 1;', [])
-    await workbenchApi.dryRun('return 1;', [], {})
-    expect(calls.map(body)).toEqual([{ code: 'return 1;' }, { code: 'return 1;' }])
+  it('check and dryRun send a draft without parameters as a pack too, so a leftover {x} is the package\'s refusal', async () => {
+    const leftover = 'return $"{x}";'
+    const refused = { error: 'render_failed', message: "The package could not fill the draft's template with these values",
+      errors: ["Template still contains placeholder(s) ['x']: declare them as parameters or remove them from the code"] }
+    const calls = stubFetch({ status: 422, body: refused })
+    const checked = await workbenchApi.check(leftover, []).catch((e: unknown) => e as BridgeApiError)
+    const dryRun = await workbenchApi.dryRun(leftover, [], {}).catch((e: unknown) => e as BridgeApiError)
+    expect(calls.map(body)).toEqual([{ pack: draftPack(leftover, []), values: {} }, { pack: draftPack(leftover, []), values: {} }])
+    for (const err of [checked, dryRun]) {
+      expect(err.code).toBe('render_failed')
+      expect(err.body?.errors).toEqual(refused.errors)
+    }
   })
 
   it('dryRun sends the draft as pack with the designer values, no token', async () => {
@@ -169,27 +188,93 @@ describe('workbenchApi', () => {
     expect(calls[0].url).toBe('/api/v1/bridge/tools')
   })
 
-  it('load reads a pack back as a draft', async () => {
+  it('load reads a pack back as a draft, each parameter with the declaration it came from', async () => {
+    const stored = [
+      { name: 'level_name', type: 'string', source: 'tool:levels', choices_from: 'levels', required: true, description: 'Level' },
+      { name: 'height', type: 'double', source: 'default', default: 3000, unit: 'mm', required: false, description: 'Height (mm)' },
+      { name: 'floor_type', type: 'string', source: 'tool:floor_types', choices_from: 'floor_types', required: true },
+      { name: 'count', type: 'integer', source: 'designer', required: true },
+    ]
     const calls = stubFetch({ body: {
       name: 'create_wall', display_name: 'Create Wall', description: 'Wall', version: '1.0.0', code_template: 'return 1;',
-      parameters: [
-        { name: 'level_name', type: 'string', source: 'tool:levels', choices_from: 'levels', required: true, description: 'Level' },
-        { name: 'height', type: 'double', source: 'default', default: 3000, unit: 'mm', required: false, description: 'Height (mm)' },
-        { name: 'floor_type', type: 'string', source: 'tool:floor_types', choices_from: 'floor_types', required: true },
-        { name: 'count', type: 'integer', source: 'designer', required: true },
-      ],
+      parameters: stored, source_query: 'a wall on a level',
       validator: { kind: 'count_delta', category: 'OST_Walls', expected: 1 },
     } })
     expect(await workbenchApi.load('create wall')).toEqual({
       name: 'create_wall', description: 'Wall', code: 'return 1;', validator: '{"kind":"count_delta","category":"OST_Walls","expected":1}',
+      keep: { source_query: 'a wall on a level' },
       parameters: [
-        { name: 'level_name', type: 'string', description: 'Level', source: 'levels', required: true },
-        { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', required: false, default: 3000 },
-        { name: 'floor_type', type: 'string', description: '', source: 'family_types', category: 'OST_Floors', required: true },
-        { name: 'count', type: 'int', description: '', source: 'designer', required: true },
+        { name: 'level_name', type: 'string', description: 'Level', source: 'levels', required: true, loaded: stored[0] },
+        { name: 'height', type: 'double', description: 'Height (mm)', source: 'designer', unit: 'mm', required: false, default: 3000, loaded: stored[1] },
+        { name: 'floor_type', type: 'string', description: '', source: 'family_types', category: 'OST_Floors', required: true, loaded: stored[2] },
+        { name: 'count', type: 'int', description: '', source: 'designer', required: true, loaded: stored[3] },
       ],
     })
     expect(calls[0].url).toBe('/api/v1/bridge/tools/create%20wall')
+  })
+
+  it('an opened tool saves its parameters as declared while the designer leaves their source as shown', () => {
+    const stored = [
+      { name: 'level_name', type: 'string', description: 'Level', source: 'answer', choices_from: 'levels', required: true },
+      { name: 'height', type: 'number', description: 'Height', source: 'default', default: 3000, unit: 'mm', required: false },
+      { name: 'floor', type: 'string', description: 'Floor', source: 'tool:floor_types', choices_from: 'floor_types', required: true },
+      { name: 'count', type: 'integer', description: 'Count', source: 'designer', required: true },
+      { name: 'note', type: 'string', description: 'Note', source: 'designer', default: null, required: false },
+    ]
+    for (const p of stored) expect(packParameter(draftParameter(p))).toEqual(p)
+    const floor = draftParameter(stored[2])
+    expect(choicesFromOf(floor)).toBe('floor_types')
+    // The designer changes the source or category: the workbench's own mapping.
+    expect(packParameter({ ...floor, category: 'OST_Roofs' })).toMatchObject({ source: 'tool:family_types', choices_from: 'family_types:OST_Roofs' })
+    expect(packParameter({ ...draftParameter(stored[0]), source: 'designer' })).toMatchObject({ source: 'designer' })
+    expect(packParameter({ ...draftParameter(stored[0]), source: 'designer' })).not.toHaveProperty('choices_from')
+    // A removed default cannot stay source default.
+    expect(packParameter({ ...draftParameter(stored[1]), default: undefined, required: true })).toMatchObject({ source: 'designer', required: true })
+    expect(packParameter({ ...draftParameter(stored[3]), type: 'double' }).type).toBe('double')
+  })
+
+  it('open, edit the description, save: what /solidify carries survives, what it cannot is named first', async () => {
+    const saved = {
+      ...detail(), name: 'raise_floors', display_name: 'Raise Floors', description: 'Old text', code_template: 'return "{floor}";',
+      source_query: 'raise the floors', preconditions: [{ kind: 'levels_min', value: 2 }], applies_when: ['raise floors'],
+      validator: { kind: 'count_delta', category: 'OST_Floors', expected: 0 },
+      parameters: [{ name: 'floor', type: 'string', description: 'Floor type', source: 'tool:floor_types', choices_from: 'floor_types', required: true }],
+    }
+    const calls: Call[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push({ url, init })
+      const reply = url.endsWith('/tools') ? [{ name: 'raise_floors', description: 'Old text', builtin: false, origin: 'user' }]
+        : url.endsWith('/tools/raise_floors') ? saved
+        : url.endsWith('/choices') ? [{ label: 'Generic 150', value: 'Generic 150' }]
+        : url.endsWith('/dry-run') ? { success: true, rolled_back: true, result: null, changes: null, diagnostics: [], warnings: [] }
+        : { status: 'solidified', name: 'raise_floors', display_name: 'Raise Floors', version: '1.0.0', revit_synced: false }
+      return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } })
+    }))
+    const model = new WorkbenchModel(workbenchApi)
+    await model.refresh()
+    await model.open('raise_floors')
+    model.edit({ description: 'New text' })
+    model.setValue('floor', 'Generic 150')
+    await model.dryRun()
+    await model.save()
+    expect(model.getSnapshot().replace).toMatchObject({ step: 'replace', dropped: ['preconditions (1)', 'applies_when (1)'] })
+    await model.confirmReplace()
+    expect(model.getSnapshot().replace?.step).toBe('drop')
+    expect(calls.some(c => c.url.endsWith('/solidify'))).toBe(false)
+    await model.confirmReplace()
+    const choices = calls.filter(c => c.url.endsWith('/choices')).map(body)
+    expect(choices).toEqual([{ choices_from: 'floor_types' }])
+    const solidify = calls.find(c => c.url.endsWith('/solidify'))!
+    expect(body(solidify)).toEqual({
+      name: 'raise_floors', code: 'return "{floor}";', description: 'New text', source_query: 'raise the floors',
+      validator: { kind: 'count_delta', category: 'OST_Floors', expected: 0 },
+      parameters: [{ name: 'floor', type: 'string', description: 'Floor type', source: 'tool:floor_types', choices_from: 'floor_types', required: true }],
+    })
+    expect(model.getSnapshot().actions.save?.status).toBe('success')
+  })
+
+  it("the package's display name for a pack name (str.title)", () => {
+    expect(['raise_walls', 'make_2d_plan', 'ABC_def'].map(defaultDisplayName)).toEqual(['Raise Walls', 'Make 2D Plan', 'Abc Def'])
   })
 
   it('remove deletes the pack', async () => {
@@ -226,7 +311,10 @@ describe('the mapping helpers', () => {
   it('packParameter and draftParameter round-trip a draft', () => {
     for (const p of [level, height, wallType, wall]) {
       const pack = packParameter(p)
-      expect(draftParameter({ ...pack, unit: pack.unit ?? undefined })).toEqual(p)
+      const back = draftParameter({ ...pack, unit: pack.unit ?? undefined })
+      expect(back.loaded).toEqual({ ...pack, unit: pack.unit ?? undefined })
+      expect({ ...back, loaded: undefined }).toEqual({ ...p, loaded: undefined })
+      expect(packParameter(back)).toEqual(pack)
     }
   })
 
