@@ -18,8 +18,9 @@ protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal o
 finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
 that ran without it does not. See *Added* and *Changed* (deploy modes).
 
-The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image). The system
-prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
+The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image); `uv.lock` pins
+0.9.1, whose 22 built-in tools the pages, the model and the bench now see (see *Changed*). The
+system prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. The chat has one new event, `mentions`,
 sent only for a message that carries picks (see *Added*); the other events are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
@@ -121,10 +122,11 @@ the host shares your tools with the package's MCP server (see *Changed*).
   event and every `llm_calls` row carries its role and that model, and `round` counts the turn's
   calls across roles. `CHAT_RATE_LIMIT` still counts requests, not model calls. **`LLM_SINGLE_MODEL=1`**
   runs the chat as one loop exactly as before (`/config.json` `features.roles`: `false`); without
-  the bridge there are no roles either. In the suite's scripted flows (same model answers) the
-  request bytes, one loop -> roles: a tool task with a question, an answer and the report 66.6 KB ->
-  64.7 KB (each message turn about 3.3 KB more for the analyst, the report 9.2 KB less), a read
-  16.0 -> 14.6 KB, small talk 7.8 -> 3.2 KB, "no tool" 22.3 -> 3.2 KB.
+  the bridge there are no roles either. In the suite's scripted flows (same model answers,
+  revit-bridge 0.9.1's 22 built-in tools) the request bytes, one loop -> roles: a tool task with a
+  question, an answer and the report 66.6 KB -> 69.7 KB (each message turn about 5.8 KB more for the
+  analyst, the report 9.2 KB less), a read 16.0 -> 17.1 KB, small talk 7.8 -> 5.7 KB, "no tool"
+  38.0 -> 5.7 KB (with 0.9.0's eight tools: 64.7, 14.6, 3.2 and 22.3 -> 3.2 KB).
 - The task page: the tool timeline groups by role under the role and model name; the token panel
   has one row per role that ran and the total, and shows a count the provider did not report as
   `-` (as the Token page does; it said *unknown*); the analyst's and the supervisor's replies are
@@ -497,7 +499,34 @@ the host shares your tools with the package's MCP server (see *Changed*).
   refusals).
 - `docs/api-v1.json` is exported from a cloud host (`DEPLOY_MODE=cloud ADMIN_PASSWORD=...` before
   the export command; CI does the same) and is unchanged: every route is still there.
-- Requires `revit-bridge>=0.9,<0.10` (0.9.0 in `uv.lock`; the image installs it from PyPI). From
+- `uv.lock` pins revit-bridge 0.9.1 (the requirement stays `>=0.9,<0.10`; the image installs it
+  from PyPI). From 0.9.0 to 0.9.1 no route, TaskSpec, gate, prompt or model tool definition changed
+  (`docs/api-v1.json` is the same export; the system prompts and tool definitions of every role and
+  of the one loop are the same bytes), and nothing the host imports changed its name or signature.
+  What changed for the host:
+  - 14 more built-in packs, 22 in all: `create_level`, `create_grid`, `create_door`,
+    `create_window`, `create_room`, `create_roof_by_footprint`, `create_ceiling`, `set_parameter`,
+    `move_elements`, `change_type`, `delete_selected`, `count_by_level`, `list_types`,
+    `elements_in_link`. `GET /tools`, the Packs page and the workbench list them read-only; a user
+    pack of one of these names made before is the designer's own as before. The analyst's tool list
+    (one line per tool) is 3.4 KB instead of 0.9 KB, 2.5 KB more in every analyst call, and the one
+    loop's `list_tools` answer is 15.7 KB longer (the byte comparison of the roles above). With
+    `LLM_SINGLE_MODEL=1` the chat is still request for request and frame for frame what it was: the
+    code before this change, on the same 0.9.1, sends and streams the same bytes.
+  - A pack may refuse its input in Revit: `run_pack` then answers `refused: true` with the pack's
+    reason as `error`, no hint, a ledger line with `refused: true`; nothing was kept and the pack's
+    counters do not move; *Validate* on that line is 400 `not_executed`. The run route passes it
+    through as before and the roles never send it back; the task page, *Packs* and the workbench's
+    *Run* now show it as *Refused by the tool in Revit: <reason>* in the refusal colour (it was the
+    red failure banner), a result with `refused: true` never counts as a gate refusal whatever its
+    text, and the Evidence page lists such a line as *refused by the tool* and shows the field.
+  - Token bench: `new-level`, `new-grid` and `move-selection` no longer need `--skip-requires
+    basic-tools` and expect the packs' own parameters (`create_level` name and elevation,
+    `create_grid` name and both points, `move_elements` x, y, z); a query task answered with one of
+    0.9.1's read-only packs (`count_by_level`, `list_types`, `elements_in_link`) counts as correct,
+    as `query_levels` and `query_model_stats` did; the refused fixture of `tasks-supervisor.yml`
+    has the run route's keys.
+- Before that, in this cycle: `revit-bridge>=0.9,<0.10` (0.9.0 in `uv.lock`). From
   0.8.2 to 0.9.0 nothing the host imports changed its name, signature or reply, and no route,
   pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export and `GET /tools` lists the
   same eight packs. The package's `host_instructions()` names revit-bridge 0.9 in its first line

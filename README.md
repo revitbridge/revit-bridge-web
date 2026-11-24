@@ -195,7 +195,10 @@ its connection.
    the analyst's own, and after a run the supervisor's report is the reply. When the supervisor
    sends the task back, the planner's new card comes in the same reply, and above it, as *Previous
    attempt*, what the page itself received from the run (succeeded, failed with its error, or the
-   validator's checks that did not pass) - the model's report is never the only record. Below the chat, the
+   validator's checks that did not pass) - the model's report is never the only record. A run the
+   tool itself refused in Revit (revit-bridge 0.9.1 `refused: true`: the input could not be used, the
+   add-in kept nothing) shows as *Refused by the tool in Revit* with the tool's reason, on the task
+   page, *Packs* and the workbench alike - not as a failure. Below the chat, the
    *Tokens* panel counts this turn and this session: input (cached tokens included), cache read,
    hit rate, cache write, output and the number of model calls, one row per role that ran and the
    total (the planner alone, with `LLM_SINGLE_MODEL=1`, has the total only). A number the provider
@@ -233,7 +236,8 @@ its connection.
    prompt.
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
-   *Validate* re-runs its assertion against the model as it is now.
+   *Validate* re-runs its assertion against the model as it is now. A run the tool refused in Revit
+   is listed as *refused by the tool* with its reason; there is nothing to validate.
 5. **Token** (`/token`) - the measured runs: every chat sent with an `X-Run-Label` header (the token
    bench sends one per run) is counted under that label. One line per run - time, model calls,
    input, cache read, cache write, output, time - and one per role and model under it. Pick two runs
@@ -355,14 +359,17 @@ planner's transcript - and each role's prompt and tool definitions stay the same
 The split costs one more model call per message (the analyst) and one round trip more before the
 planner starts; it saves where the analyst answers alone (small talk, no tool), on reads (two tool
 definitions instead of seven) and on reports (a short supervisor prompt instead of the whole
-conversation). In the test suite's scripted flows, with the same model answers, the request bytes
-(one loop -> roles) were: a tool task with a question, an answer and the report 66.6 KB -> 64.7 KB
-(each of the two message turns about 3.3 KB more, the report 9.2 KB less); a read 16.0 KB -> 14.6
-KB; small talk 7.8 KB -> 3.2 KB; "no tool" 22.3 KB -> 3.2 KB. With all seven tools for the planner
-the read is 19.2 KB; without the analyst the tool task is 57.7 KB and the others about the one
-loop's (16.0, 7.8, 22.2 KB). Real models do not follow a script:
-measure with the token bench (`python -m bench`; it records which way the host ran). A tool task
-the designer never runs pays the analyst calls without the report's saving.
+conversation). In the test suite's scripted flows, with the same model answers and revit-bridge
+0.9.1's 22 built-in tools, the request bytes (one loop -> roles) are: a tool task with a question,
+an answer and the report 66.6 KB -> 69.7 KB (each of the two message turns about 5.8 KB more, the
+report 9.2 KB less); a read 16.0 KB -> 17.1 KB; small talk 7.8 KB -> 5.7 KB; "no tool" 38.0 KB ->
+5.7 KB. With all seven tools for the planner the read is 21.7 KB; without the analyst the tool task
+is 57.7 KB and the others about the one loop's (15.9, 7.8, 37.9 KB). The analyst's message starts
+with the tool list, one line per tool (at most 160 characters): 3.4 KB for 22 tools (0.9 KB for
+0.9.0's eight), so each analyst call grew by 2.5 KB; in the one loop the tools themselves only
+reach the model through `list_tools`, whose answer grew by 15.7 KB. Real models do not follow a
+script: measure with the token bench (`python -m bench`; it records which way the host ran). A
+tool task the designer never runs pays the analyst calls without the report's saving.
 
 `LLM_SINGLE_MODEL=1` runs the chat as one model loop instead (the planner's model, the whole host
 text, all seven tools), request for request and event for event as before the split - the
