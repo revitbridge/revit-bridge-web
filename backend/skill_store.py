@@ -22,8 +22,8 @@ text, for whoever needs it). Of the wheel's skills only ``PROMPT_SKILLS`` are
 enabled by default: ``revit-core``, the contract every snippet follows. The
 ``revit-bridge`` protocol is written for an MCP host (``check_code``,
 ``confirm_spec``, ``execute_code`` and the verification tools); this host's
-protocol is the package's ``host_instructions()`` plus its own paragraph (see
-``backend.api.chat``). The add-in phase skills are for building a standalone
+protocol is the package's ``host_instructions(code=False, mentions=True)`` plus
+one line of its own (see ``backend.api.chat``). The add-in phase skills are for building a standalone
 add-in, and ``references/`` and ``lessons/`` are material read on demand. A
 file's own ``enabled`` front matter still decides for itself. A mounted
 ``SKILLS_DIR`` is enabled by default throughout: mounting it is the operator's

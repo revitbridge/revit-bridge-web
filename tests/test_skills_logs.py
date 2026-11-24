@@ -43,14 +43,16 @@ def test_the_wheel_s_skills_are_listed_and_stay_out_of_the_prompt(make_client, e
     assert get_skill_store().update("builtin:revit-bridge/SKILL", content="x") is None
     assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
 
-    expected = host_instructions().strip() + "\n\n" + chat_module.HOST_PARAGRAPH
+    expected = host_instructions(code=False, mentions=True).rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
     prompt = chat_module.build_system_prompt()
     assert prompt == expected
     for skill in (core, protocol, addin):
         assert skill["content"] not in prompt
-    # 4,288 bytes with revit-bridge 0.8.2; 6,007 with the revit-core skill and the
-    # get_guidance pointer it carried before.
-    assert len(prompt.encode("utf-8")) < 4_500
+    # 3,689 bytes with revit-bridge 0.9.0 (the package's text without code, with the
+    # selections rule, and the host's workbench line); 4,288 with 0.8.2's full text and the
+    # host's own paragraph, 6,007 with the revit-core skill and the get_guidance pointer it
+    # carried before.
+    assert len(prompt.encode("utf-8")) < 4_000
     assert chat_module.build_system_prompt(bridge=False) == chat_module.BASE_PROMPT
 
     # No built-in skills, every skill switched off, or a mounted SKILLS_DIR whose files are

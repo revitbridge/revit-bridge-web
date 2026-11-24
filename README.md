@@ -222,13 +222,13 @@ its connection.
    count the provider did not report shows as `-`, and so does every total and difference it is
    part of. Read-only; on a cloud host it asks for the admin password (as `/api/logs` does).
 
-The system prompt is the package's `host_instructions()` (this host's protocol) and one paragraph
-of this host's own: here the model never writes or proposes code, has no `get_guidance`, uses saved
-tools only and, when none fits, says so and links the workbench - about 4.3 KB, with seven tool
-definitions of about 3.4 KB (6 KB and eight tools, 11.2 KB in all, while skills and `get_guidance`
-were part of it). The package's text still describes `execute_code` and the snippet contract; the
-host's paragraph after it is what holds here, until a package release brings a variant without
-code. The task page's "without the bridge" comparison sends the same message with `bridge: false`
+The system prompt is the package's host instructions for a host whose model writes no code
+(`host_instructions(code=False, mentions=True)`: no `execute_code`, snippet contract or
+`get_guidance`; saved tools only; the rule for the designer's `@` selections) and one line of this
+host's own: when no tool fits, link the workbench - about 3.7 KB, with seven tool definitions of
+about 3.4 KB (4.3 KB with the package's full text and a host paragraph that overrode its code
+parts; 6 KB and eight tools, 11.2 KB in all, while skills and `get_guidance` were part of it).
+The task page's "without the bridge" comparison sends the same message with `bridge: false`
 (one plain prompt, no tools). A session keeps the system prompt of its first turn, so every call
 starts with the same system message and tool definitions and a provider's prompt cache can serve
 them.

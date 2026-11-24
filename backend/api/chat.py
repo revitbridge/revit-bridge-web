@@ -45,14 +45,12 @@ Within one session the system prompt is the one its first turn was sent with
 (``Session.system_prompt``) and the tool definitions are a constant: the
 prefix a provider caches stays byte for byte the same from call to call.
 
-The system prompt with the bridge is the package's host instructions (this
-host's protocol) and one paragraph of this host's own, ``HOST_PARAGRAPH``: the
-model here never writes or proposes code, uses saved tools only and, when none
-fits, says so and points to the workbench. The package's text still speaks of
-``execute_code`` and the snippet contract (a variant without code comes with a
-later release); the paragraph after it is what this host holds the model to.
-Skills are no longer part of the prompt (the Skills page still lists and edits
-them), and there is no ``get_guidance``.
+The system prompt with the bridge is the package's host instructions for a host
+whose model writes no code, with the rule for the designer's selections
+(``host_instructions(code=False, mentions=True)``), and one line of this host's
+own, ``WORKBENCH_LINE``: when no saved tool fits, point to the workbench. Skills
+are not part of the prompt (the Skills page still lists and edits them), and
+there is no ``get_guidance``.
 
 A tool result stays in the session up to ``TOOL_RESULT_KEEP`` characters after
 the turn that produced it (head plus a one-line note).
@@ -116,19 +114,19 @@ EXECUTION_ELISION_NOTE = ("[execution result elided after {kept} characters; the
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
 
-# This host's own paragraph after the package's host instructions (which still describe
-# execute_code and the snippet contract): the model here never writes code. The link is
-# the workbench page's path as a relative Markdown link, which the chat renders as a link.
-HOST_PARAGRAPH = (
-    "## In this host: saved tools only, no code\n"
-    "This host runs only saved tools (capability packs). Here you never write, show or propose C# "
-    "code: there is no execute_code and no get_guidance, and propose_spec refuses an execute_code "
-    "spec. Everything above about writing code, the snippet contract and execute_code does not "
-    "apply here. Pick a tool from list_tools, fill its parameters (missing_params, get_tool_choices, "
-    "reconcile) and propose a run_tool spec. When no saved tool fits the request, write no code: "
-    "tell the designer that no tool here does this, describe in one sentence the tool they would "
-    f"need, and point them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - "
-    "a new tool is tried and saved there, then it is in list_tools."
+# The package's text for a host whose model writes no code (no execute_code, snippet
+# contract or blocked_code; "Write code" is on its never-list), with the rule for the
+# "Designer's selections" block: a session's prompt is fixed at its first turn and picks
+# may come on any later one, so the rule is always in it.
+INSTRUCTIONS = {"code": False, "mentions": True}
+
+# This host's one line after the package's text, the last of its Notes: where a tool that
+# does not exist yet is made. The link is the workbench page's path as a relative Markdown
+# link, which the chat renders as a link.
+WORKBENCH_LINE = (
+    "- When no tool fits, describe in one sentence the tool the designer would need and point "
+    f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
+    "tried and saved there, then it is in list_tools."
 )
 
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
@@ -205,11 +203,11 @@ def rate_limit(request: Request) -> None:
 
 
 def build_system_prompt(bridge: bool = True) -> str:
-    """The package's host instructions and ``HOST_PARAGRAPH``; the base prompt without the
-    bridge. No skills, no lessons: the model here writes no code."""
+    """The package's host instructions without code and with the selections rule, then
+    ``WORKBENCH_LINE``; the base prompt without the bridge. No skills, no lessons."""
     if not bridge:
         return BASE_PROMPT
-    return host_instructions().strip() + "\n\n" + HOST_PARAGRAPH
+    return host_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
 
 
 def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:

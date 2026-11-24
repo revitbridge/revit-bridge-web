@@ -29,8 +29,8 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 - `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in a temporary store, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`, and
   what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); the system prompt
-  is the package's `host_instructions()` plus `HOST_PARAGRAPH` (no code, saved tools only, the
-  workbench link) - no skills;
+  is the package's `host_instructions(code=False, mentions=True)` plus one host line,
+  `WORKBENCH_LINE` (the workbench link) - no skills;
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
   refuses `execute_code` with `code_not_offered`; no `get_guidance`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage

@@ -77,10 +77,11 @@ def test_host_loop_walks_the_bridge_flow(revit, client, model):
     assert tokens(frames) == "Which level, L1 or L2? And where does the wall end?"
     assert events(frames, "spec") == [] and frames[-1] == ("done", None)
 
-    # What the model was shown: the bridge prompt and this host's paragraph (no skills), the seven tools.
+    # What the model was shown: the bridge prompt without code and this host's line (no skills), the seven tools.
     first = model.requests[0]
     assert first["messages"][0]["role"] == "system"
-    assert first["messages"][0]["content"] == host_instructions().strip() + "\n\n" + chat_module.HOST_PARAGRAPH
+    assert first["messages"][0]["content"] == (host_instructions(code=False, mentions=True).rstrip("\n") + "\n"
+                                               + chat_module.WORKBENCH_LINE)
     assert "## Skills" not in first["messages"][0]["content"] and "# revit-core" not in first["messages"][0]["content"]
     assert "# revit-bridge" not in first["messages"][0]["content"]       # the MCP host's protocol stays off
     assert {t["function"]["name"] for t in first["tools"]} == set(TOOL_NAMES)
@@ -303,7 +304,7 @@ def test_no_bridge_mode_sends_no_tools_and_no_skills(client, model):
     model.turns.append(text_turn("Which level?"))
     client.post("/api/chat", json={"message": "draw a wall from the origin"}, headers=HEADERS)
     assert "tools" in model.requests[1] and "## Skills" not in model.requests[1]["messages"][0]["content"]
-    assert model.requests[1]["messages"][0]["content"].endswith(chat_module.HOST_PARAGRAPH)
+    assert model.requests[1]["messages"][0]["content"].endswith(chat_module.WORKBENCH_LINE)
 
 
 def test_chat_with_the_bridge_checks_the_device_headers(client, device, model):

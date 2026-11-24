@@ -328,10 +328,13 @@ the host shares your tools with the package's MCP server (see *Changed*).
 ### Changed
 
 - **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,444 bytes of
-  definitions instead of 5,147), and the system prompt is the package's `host_instructions()` and
-  one paragraph of this host's: here the model never writes or proposes code, uses saved tools only
-  and, when none fits, says so and links `[workbench](/capabilities/workbench)` (4,288 bytes instead
-  of 6,007: no skills, no `get_guidance` pointer). `propose_spec` with an `execute_code` spec shows no
+  definitions instead of 5,147), and the system prompt is the package's text for a host whose model
+  writes no code, `host_instructions(code=False, mentions=True)` (revit-bridge 0.9: no
+  `execute_code`, snippet contract or `blocked_code`, "Write code" on its never-list, and the rule
+  for the designer's `@` selections), and one line of this host's: when no tool fits, link
+  `[workbench](/capabilities/workbench)` - 3,689 bytes instead of 6,007 (no skills, no
+  `get_guidance` pointer). With revit-bridge 0.8 it was the package's full text and a paragraph of
+  this host's that set its code parts aside (4,288 bytes). `propose_spec` with an `execute_code` spec shows no
   card and answers `{accepted: false, errors: [{code: "code_not_offered", ...}], reconcile: null}`.
   The Skills page and `/api/skills` stay; the skills no longer enter the prompt. The task page loses
   the free-code execution, the code branch of the tamper demo and the *Solidify* panel; running a
