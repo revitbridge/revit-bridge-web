@@ -85,9 +85,12 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render (`features.chatModes` / `chatModeDefault` feed `components/task/chatMode.ts` and the task page's `ChatModeSelect`: the pick in `localStorage`, sent as `mode` by `flow.ts`); pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
-- `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). The host
-  decides whether its chat runs in roles (`LLM_SINGLE_MODEL`); the bench records which (`chat` in
-  the results), and how it fed results back (`feedback_policy`; `compare` notes a difference).
+- `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). `--mode`
+  (default `auto`) goes as the chat mode with every request; the bench records it (`chat_mode`), the
+  host's default and the modes its turns ran in (`chat`), and how it fed results back
+  (`feedback_policy`) and confirmed ready proposals (`confirm_policy`; `--confirm once`, the
+  unattended mode: one "yes" when the host's tool events show a ready `reconcile` and no
+  `propose_spec`, `runner.waits_for_confirmation`; `compare` notes a difference in either).
   `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's own
   `execution`), to measure the report step and the supervisor's send-backs.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.

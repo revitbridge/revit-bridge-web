@@ -255,8 +255,9 @@ def test_a_run_under_the_roles_records_each_role_and_reaches_the_supervisor(role
     for task_id in ("levels", "wall", "pipes"):
         assert by_id[task_id]["correct"], (task_id, by_id[task_id]["error"])
     assert model.left() == {}
-    assert result["chat"] == {"host": "roles", "roles_seen": ["analyst", "planner", "supervisor"]}
-    assert result["host"]["features"]["roles"] is True
+    assert result["chat"] == {"host": "roles_analyst", "modes_seen": ["roles_analyst"],
+                              "roles_seen": ["analyst", "planner", "supervisor"]}
+    assert result["host"]["features"]["roles"] is True and result["chat_mode"] == "auto"
     # per role, from the usage events
     wall = by_id["wall"]
     assert wall["feedback_turns"] == 1 and wall["usage"]["calls"] == 4
@@ -316,7 +317,7 @@ def test_the_one_loop_is_labelled_as_such(host):
     client, model, revit = host
     model.turns += [text_turn("No tool here does this; build one on the workbench.", usage=FULL)]
     result = run_bench(client, BASE, "single", [TASKS[2]])
-    assert result["chat"] == {"host": "single", "roles_seen": ["planner"]}
+    assert result["chat"] == {"host": "single", "modes_seen": ["single"], "roles_seen": ["planner"]}
 
 
 # -- the tasks of the packs revit-bridge 0.9.1 added ---------------------------------------------
@@ -422,3 +423,77 @@ def test_the_refused_fixture_has_the_run_route_s_shape(env):  # noqa: F811 - fix
     for key in ("success", "result", "validation", "preconditions_failed", "refused"):
         assert fixture[key] == out[key], key
     assert isinstance(fixture["error"], str) and not fixture["error"].startswith("REFUSED")
+
+
+# -- the chat mode and --confirm once against the host ------------------------------------------------
+
+WALL_TASK = {"id": "wall", "kind": "tool", "message": "A wall on L1, 3000 high, (0,0) to (5000,0).",
+             "expect": {"tool": "create_wall", "params": {"level_name": "L1", "height": 3000}, "max_turns": 3}}
+LEVELS_TASK = {"id": "levels", "kind": "query", "message": "List the levels.", "expect": {"max_turns": 1}}
+
+
+def test_the_mode_reaches_the_host_and_its_record(host):
+    """A local host (its default here: the one loop) runs the mode the bench asks for in every
+    request - planner + supervisor: the report goes to the supervisor - and the host records it."""
+    client, model, revit = host
+    model.turns += [tool_turn(("propose_spec", {"spec": wall_spec()}), usage=FULL),
+                    text_turn("The card is below.", usage=FULL),
+                    json_turn({"verdict": "done", "report": "One wall."}, usage=FULL),
+                    tool_turn(("query", {"kind": "levels"}), usage=SMALL), text_turn("L1, L2.", usage=SMALL)]
+    result = run_bench(client, BASE, "moded", [WALL_TASK, LEVELS_TASK], mode="roles")
+    tasks = {task["id"]: task for task in result["runs"][0]["tasks"]}
+    assert tasks["wall"]["correct"] and tasks["levels"]["correct"], [t["error"] for t in tasks.values()]
+    assert model.turns == []
+    assert result["chat_mode"] == "roles"
+    assert result["chat"] == {"host": "single", "modes_seen": ["roles"], "roles_seen": ["planner", "supervisor"]}
+    assert tasks["wall"]["modes"] == ["roles"] and tasks["wall"]["text"].endswith("One wall.")
+    assert all(body.get("mode") is None for body in model.requests)          # the mode never reaches the model
+    runs = {row["run_label"]: row for row in client.get("/api/usage/runs").json()["items"]}
+    assert runs["moded-1"]["mode"] == "roles"
+    assert result["runs"][0]["host_usage"]["match"]
+
+
+def test_mode_single_on_a_host_with_the_analyst(roles_host):
+    client, model, revit = roles_host
+    model.script("single", tool_turn(("query", {"kind": "levels"})), text_turn("L1, L2."))
+    result = run_bench(client, BASE, "one", [LEVELS_TASK], mode="single")
+    assert result["runs"][0]["tasks"][0]["correct"] and model.roles == ["single", "single"]
+    assert result["chat"]["host"] == "roles_analyst" and result["chat"]["modes_seen"] == ["single"]
+
+
+def test_confirm_once_lets_the_model_reach_propose_spec(host):
+    """The model reconciles a ready spec and stops in text asking for a yes (a structural sign the
+    host streams: a ready reconcile, no propose_spec); --confirm once sends one yes, the model
+    proposes, and the task is scored on that - with the yes turn's tokens counted. Nothing runs in
+    Revit: the report gets the fixed result."""
+    client, model, revit = host
+    stop = [tool_turn(("reconcile", {"spec": wall_spec()}), usage=FULL),
+            text_turn("Everything is ready. Reply yes to create the wall.", usage=FULL)]
+    model.turns += [*stop,
+                    tool_turn(("propose_spec", {"spec": wall_spec()}), usage=SMALL), text_turn("The card is below.", usage=SMALL),
+                    text_turn("One wall was created.", usage=SMALL)]
+    result = run_bench(client, BASE, "auto", [WALL_TASK], confirm="once")
+    task = result["runs"][0]["tasks"][0]
+    assert task["correct"] and task["error"] is None, task["error"]
+    assert (task["turns"], task["confirm_turns"], task["feedback_turns"], task["requests"]) == (1, 1, 1, 3)
+    assert task["usage"]["calls"] == 5 and task["usage"]["input"] == 2 * 12000 + 3 * 194
+    assert [m["content"] for m in model.requests[2]["messages"] if m["role"] == "user"][-1] == "yes"
+    assert result["confirm_policy"] == "once" and result["mode"] == "synthetic"
+    assert not any("Wall.Create" in str(request.get("params", {}).get("code", "")) for request in revit.requests)
+    assert result["runs"][0]["host_usage"]["match"]
+
+    # The same model without --confirm: the task stops at the text and is not correct.
+    model.turns += list(stop)
+    task = run_bench(client, BASE, "manual", [WALL_TASK])["runs"][0]["tasks"][0]
+    assert not task["correct"] and task["confirm_turns"] == 0 and task["requests"] == 1
+
+
+def test_confirm_once_needs_a_ready_reconcile(host):
+    client, model, revit = host
+    unknown_level = wall_spec()
+    for binding in unknown_level["parameters"]:
+        if binding["name"] == "level_name":
+            binding["value"] = "L9"
+    model.turns += [tool_turn(("reconcile", {"spec": unknown_level})), text_turn("Which level? L9 does not exist.")]
+    task = run_bench(client, BASE, "notready", [WALL_TASK], confirm="once")["runs"][0]["tasks"][0]
+    assert task["confirm_turns"] == 0 and task["requests"] == 1 and model.turns == []

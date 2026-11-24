@@ -239,16 +239,29 @@ its connection.
    *Validate* re-runs its assertion against the model as it is now. A run the tool refused in Revit
    is listed as *refused by the tool* with its reason; there is nothing to validate.
 5. **Token** (`/token`) - the measured runs: every chat sent with an `X-Run-Label` header (the token
-   bench sends one per run) is counted under that label. One line per run - time, model calls,
-   input, cache read, cache write, output, time - and one per role and model under it. Pick two runs
-   to see them side by side with the difference (B - A) of each count, in total and per role. A
-   count the provider did not report shows as `-`, and so does every total and difference it is
-   part of. Read-only; on a cloud host it asks for the admin password (as `/api/logs` does).
+   bench sends one per run) is counted under that label. One line per run - its chat mode, time,
+   model calls, input, cache read, cache write, output, time - and one per role and model under it.
+   Pick two runs to see them side by side with the difference (B - A) of each count, in total and
+   per role. A count the provider did not report shows as `-`, and so does every total and
+   difference it is part of. Read-only; on a cloud host it asks for the admin password (as
+   `/api/logs` does).
 
-The chat runs in three roles, each with its own prompt (see *The chat's roles* under
+The token bench drives a running host the way the page does and measures each task
+(`python -m bench run --label <name>`; `python -m bench run --help` lists the options). Unattended
+runs use **`--confirm once`** (the automatic mode): when a tool or ask task's turn stops at a
+proposal that is ready for confirmation - the host's tool events show a `reconcile` that came back
+`ready` and no `propose_spec` - the bench answers one "yes" and scores the task on what follows; the
+extra turn's tokens are counted (`confirm_turns`). Nothing runs in Revit unless `--execute` is given.
+`--mode auto|single|roles|roles_analyst` (default `auto`, the host's default) goes as the chat mode
+with every request; the results record it and the modes the host ran (a cloud host runs its
+default: the bench sends no admin token). Example: `python -m bench run --label nightly --repeat 3
+--confirm once`.
+
+The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
+`roles_analyst` - each with its own prompt (see *Chat modes* and *The chat's roles* under
 *Configure*): the analyst's is 1.8 KB, the planner's 3.5 KB with up to seven tool definitions
-(4 KB; two, 1.6 KB, for a read), the supervisor's 1.6 KB with one (1 KB). With
-`LLM_SINGLE_MODEL=1` it is one loop, as before the split: its system prompt is the package's host
+(4 KB; two, 1.6 KB, for a read), the supervisor's 1.6 KB with one (1 KB). In mode `single`
+(`LLM_SINGLE_MODEL=1`) it is one loop, as before the split: its system prompt is the package's host
 instructions for a host whose model writes no code
 (`host_instructions(code=False, mentions=True)`: no `execute_code`, snippet contract or
 `get_guidance`; saved tools only; the rule for the designer's `@` selections) and one line of this

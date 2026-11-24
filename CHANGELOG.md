@@ -86,6 +86,17 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **Token bench: `--mode` and `--confirm`.** `--mode auto|single|roles|roles_analyst` (default
+  `auto`) goes as `mode` with every chat request of the run; the results record it (`chat_mode`)
+  with the host's default and the modes its turns ran in (`chat.host`, `chat.modes_seen`, each
+  task's `modes`), and the table header shows it. `--confirm never|once` (default `never`, as
+  before): with `once`, a tool or ask task whose turn ends with no accepted spec while the host's
+  tool events show a proposal ready for confirmation (its last `reconcile` came back `ready`, no
+  `propose_spec` was called) gets one more user message, "yes", and is scored on what follows; the
+  extra turn's tokens are counted and each task records `confirm_turns` (the results:
+  `confirm_policy`; `compare` notes two runs that differ in it, exit 3). This is the unattended
+  ("automatic") mode: `python -m bench run --label <name> --confirm once`. It runs nothing more in
+  Revit: without `--execute` the report step still gets the fixed result.
 - **Chat modes** (README, *Chat modes*): `single` (one model loop), `roles` (planner +
   supervisor), `roles_analyst` (analyst + planner + supervisor) and `auto`, the host's default -
   `single` with `LLM_SINGLE_MODEL=1`, else `roles_analyst` with `ROLES_ANALYST=on`, else `roles`.
