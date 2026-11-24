@@ -30,6 +30,16 @@ def test_the_tools_array_has_no_get_guidance_and_does_not_change(client, model):
     assert sent == {json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)}
 
 
+def test_the_query_tool_is_described_as_the_package_describes_it():
+    """The kinds 0.9 added (links, type_categories) and args.link_id, in the MCP tool's own words."""
+    import revit_bridge.mcp_server as mcp
+    described = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "query")["function"]["description"]
+    assert " ".join(mcp.query.__doc__.split()).startswith(described)
+    for words in ("links (every linked model instance", "type_categories (", "args.link_id",
+                  "must never be passed to a tool that acts on the open model."):
+        assert words in described, words
+
+
 def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     model.turns += [tool_turn(("get_guidance", {"stage": "orient"})), text_turn("ok")]
     assert client.post("/api/chat", json={"message": "x"}, headers=HEADERS).status_code == 200

@@ -327,8 +327,9 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Changed
 
-- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,444 bytes of
-  definitions instead of 5,147), and the system prompt is the package's text for a host whose model
+- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,959 bytes of
+  definitions instead of 5,147; 3,444 before `query` named the kinds `links` and `type_categories`
+  and `args.link_id`, in the words of the package's MCP tool), and the system prompt is the package's text for a host whose model
   writes no code, `host_instructions(code=False, mentions=True)` (revit-bridge 0.9: no
   `execute_code`, snippet contract or `blocked_code`, "Write code" on its never-list, and the rule
   for the designer's `@` selections), and one line of this host's: when no tool fits, link

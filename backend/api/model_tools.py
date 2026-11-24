@@ -76,7 +76,14 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "query",
         "description": "Read-only model query, no confirmation needed. kinds: levels, grids, "
                        "family_types (args.categories), elements (args.category, args.limit<=200), "
-                       "selection, view_elements (args.limit<=200), units, counts (args.categories).",
+                       "selection, view_elements (args.limit<=200), units, counts (args.categories), "
+                       "links (every linked model instance: id, name, loaded, document_title, "
+                       "origin_mm, rotated), type_categories (the categories that have types, with "
+                       "counts). args.link_id - the id of a loaded link from kind links - makes "
+                       "levels, family_types, elements, counts and type_categories read that linked "
+                       "model: the reply is in the link's own coordinates and carries the link's "
+                       "origin and rotation; the element, level and type ids in it belong to the "
+                       "linked file and must never be passed to a tool that acts on the open model.",
         "parameters": {"type": "object", "properties": {
             "kind": {"type": "string"},
             "args": {"type": "object", "description": "arguments of the kind, see the description"},

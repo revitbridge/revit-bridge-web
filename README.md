@@ -226,8 +226,10 @@ The system prompt is the package's host instructions for a host whose model writ
 (`host_instructions(code=False, mentions=True)`: no `execute_code`, snippet contract or
 `get_guidance`; saved tools only; the rule for the designer's `@` selections) and one line of this
 host's own: when no tool fits, link the workbench - about 3.7 KB, with seven tool definitions of
-about 3.4 KB (4.3 KB with the package's full text and a host paragraph that overrode its code
-parts; 6 KB and eight tools, 11.2 KB in all, while skills and `get_guidance` were part of it).
+about 4 KB (`query` names the kinds `links` and `type_categories` and `args.link_id`, in the
+package's MCP tool's words). Before: 4.3 KB with the package's full text and a host paragraph that
+overrode its code parts, and 3.4 KB of tools; 6 KB and eight tools, 11.2 KB in all, while skills
+and `get_guidance` were part of it.
 The task page's "without the bridge" comparison sends the same message with `bridge: false`
 (one plain prompt, no tools). A session keeps the system prompt of its first turn, so every call
 starts with the same system message and tool definitions and a provider's prompt cache can serve
