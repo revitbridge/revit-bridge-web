@@ -4,9 +4,7 @@ from __future__ import annotations
 import json
 
 from backend.config import WebSettings
-
-# Packs shipped read-only inside the revit-bridge 0.2 wheel.
-BUILTIN_PACKS = 8
+from tests.conftest import builtin_pack_names
 
 
 def test_health_and_config_json(make_client, env):
@@ -87,7 +85,7 @@ def test_the_spa_fallback_never_answers_500_and_keeps_api_typos_out(env, tmp_pat
     assert client.get("/health").json()["status"] == "ok"
     assert client.get("/config.json").json()["apiBase"] == ""
     assert "paths" in client.get("/openapi.json").json()
-    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS
+    assert {t["name"] for t in client.get("/api/v1/bridge/tools").json()} == builtin_pack_names()
     assert client.get("/api/skills").status_code == 200
     assert client.get("/favicon.svg").text == "<svg/>"
     assert client.get("/assets/app.js").text == "console.log(1)"
@@ -125,7 +123,7 @@ def test_cors_wildcard_never_allows_credentials(make_client, env):
 def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path):
     tools = client.get("/api/v1/bridge/tools").json()
     names = sorted(t["name"] for t in tools)
-    assert len(names) == BUILTIN_PACKS and len(set(names)) == BUILTIN_PACKS
+    assert names == sorted(builtin_pack_names())             # every wheel pack, each once, nothing else
     assert "create_wall" in names and "query_levels" in names
 
     # The package reads its built-in packs in place; the user directory under
@@ -168,7 +166,7 @@ def test_pack_edits_land_in_the_user_directory(make_client, env, tmp_path):
         refused = getattr(client, method)("/api/v1/bridge/tools/query_levels", headers=admin, **kwargs)
         assert refused.status_code == 409 and refused.json()["error"] == "builtin_read_only"
     assert not list(user_dir.glob("query_levels*"))           # no copy, no .disabled marker
-    assert len(client.get("/api/v1/bridge/tools").json()) == BUILTIN_PACKS
+    assert sorted(t["name"] for t in client.get("/api/v1/bridge/tools").json()) == sorted(builtin_pack_names())
 
 
 def test_health_routes_without_revit(client):

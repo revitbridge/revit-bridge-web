@@ -109,9 +109,17 @@ export const NOT_OFFERED: SpecError = {
 }
 const GATE_REFUSALS: readonly string[] = ['confirmation_required', 'confirmation_invalid']
 
-/* A gate refusal: nothing reached Revit and the token is still whole. */
+/* A gate refusal: nothing reached Revit and the token is still whole. A pack that refused its
+   input in Revit (refused: true) is never one, whatever its text says: it reached Revit and
+   spent the token. */
 export function isGateRefusal(result: ExecutionResult | null): boolean {
-  return !!result && GATE_REFUSALS.includes(result.error ?? '')
+  return !!result && result.refused !== true && GATE_REFUSALS.includes(result.error ?? '')
+}
+
+/* revit-bridge 0.9.1: the pack refused its input in Revit; the add-in kept nothing. Read from the
+   package's field, never from the text (which is the pack's own words, after its marker). */
+export function isToolRefusal(result: ExecutionResult | null): boolean {
+  return !!result && result.success !== true && result.refused === true
 }
 
 /* The values the token is bound to, exactly as the spec carries them (3000, not "3000"). */

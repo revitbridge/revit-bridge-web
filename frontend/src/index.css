@@ -1163,6 +1163,7 @@ select {
 .outcome { font-weight: 600; }
 .outcome.ok { color: var(--success); }
 .outcome.failed { color: var(--danger); }
+.outcome.refused { color: var(--warning); }
 
 .evidence-fields {
   display: grid;

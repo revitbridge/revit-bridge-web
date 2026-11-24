@@ -15,6 +15,7 @@ import pytest
 from starlette.testclient import WebSocketDenialResponse
 
 from backend.config import ConfigError, WebSettings, exposed_address, is_loopback
+from tests.conftest import builtin_pack_names
 from tests.test_api_v1 import B, spec_for
 
 CLOUD_ONLY = {
@@ -602,8 +603,10 @@ def local_with_a_skill(make_client, local_env, tmp_path):
 
 
 def nothing_changed(client) -> None:
-    tools = {t["name"]: t for t in client.get(f"{B}/tools").json()}
-    assert "create_beam" in tools and "count_walls" not in tools and "x" not in tools and len(tools) == 8
+    # Exactly the wheel's packs, each listed once: none added (count_walls, count_doors, "x" from a
+    # form body, any other name) and none deleted or hidden (create_beam among them).
+    names = [t["name"] for t in client.get(f"{B}/tools").json()]
+    assert sorted(names) == sorted(builtin_pack_names()) and "create_beam" in names
     assert client.get(f"{B}/tools/query_levels").json()["description"] != "changed"
     skill = client.get(f"/api/skills/{SKILL}").json()
     assert (skill["content"], skill["enabled"]) == ("Desks face north.", True)

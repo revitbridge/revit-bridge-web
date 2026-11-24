@@ -21,9 +21,10 @@ Tests run as a cloud host by default (`tests/conftest.py` `env`: `DEPLOY_MODE=cl
 `ADMIN_PASSWORD`); `local_env` gives a local one, whose requests must look like a browser on this
 machine (`make_client(**LOCAL)`: Host `127.0.0.1:7860`, peer `127.0.0.1`; TestClient's `testserver`
 is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
-`tests/test_deploy_mode.py` covers what differs. The suite's chat is the one model loop
-(`env` sets `LLM_SINGLE_MODEL=1`: the tests written before the roles describe it, and passing them
-unchanged is what shows the switch keeps it); `roles_env` gives the host's default, the three roles,
+`tests/test_deploy_mode.py` covers what differs; `tests/test_refused.py` runs a pack's refusal
+(revit-bridge 0.9.1 `refused: true`) through the package with the add-in's own reply. The suite's
+chat is the one model loop (`env` sets `LLM_SINGLE_MODEL=1`: the tests written before the roles
+describe it, and passing them unchanged is what shows the switch keeps it); `roles_env` gives the host's default, the three roles,
 with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own script
 (`tests/test_roles.py`).
 
@@ -156,7 +157,10 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 ## Dependency on the package
 
 `pyproject.toml` requires `revit-bridge>=0.9,<0.10` from PyPI; `uv.lock` pins the exact
-release. When the host needs something newer, bump the constraint and `uv lock`.
+release (0.9.1: 22 built-in packs). When the host needs something newer, bump the constraint and
+`uv lock`. No test counts the built-in packs or names the first one: compare a listing with
+`tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
+a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).
 
 ## Commits
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 from revit_bridge.capabilities import ToolStore
 
 from backend.upgrade import LEGACY_DIR, quarantine_legacy_packs
+from tests.conftest import builtin_pack_names
 
 # What 0.1 seeded into DATA_DIR/capabilities: the v0 layout, no schema_version.
 V0_CREATE_WALL = """\
@@ -51,7 +52,7 @@ def test_legacy_pack_copies_are_moved_aside_at_startup(make_client, tmp_path, ca
     assert (user_dir / "count_walls.yaml").read_bytes() == v1_before
 
     tools = {t["name"]: t for t in client.get("/api/v1/bridge/tools").json()}
-    assert len(tools) == 9  # the eight wheel packs plus the v1 user pack
+    assert set(tools) == builtin_pack_names() | {"count_walls"}  # the wheel's packs plus the v1 user pack
     assert tools["create_wall"]["version"] == "1.0.0"  # the wheel's pack, not the 0.1 copy
     assert tools["count_walls"]["description"] == "How many walls"
     assert client.get("/api/v1/bridge/tools/create_wall").json()["code_template"] != 'return "v0";'

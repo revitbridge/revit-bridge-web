@@ -18,6 +18,7 @@ from backend.api import chat as chat_module
 from backend.api.model_tools import TOOL_DEFINITIONS, WORKBENCH_LINK
 from backend.log_store import get_log_store
 from backend.session import get_session_store
+from tests.conftest import builtin_pack_names
 from tests.fake_model import USAGE_SHAPES, RoleScriptedModel, json_turn, text_turn, tool_turn
 from tests.test_api_v1 import B, WALL, spec_for
 from tests.test_host_loop import HEADERS, events, sse, tokens
@@ -111,7 +112,10 @@ def test_route_chat_is_the_analysts_note_and_nothing_else(client, model):
     assert body["messages"][0] == {"role": "system", "content": chat_module.build_role_prompt("analyst")}
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
     sent = body["messages"][1]["content"]
-    assert sent.startswith("Tools:\n- create_beam: ") and "\n- create_wall: " in sent
+    # First the tool list: every pack of the wheel, one "- <name>: <description>" line each, by name.
+    listed = sent.split("\n\n", 1)[0].split("\n")
+    assert listed[0] == "Tools:"
+    assert [line.split(": ", 1)[0] for line in listed[1:]] == [f"- {name}" for name in sorted(builtin_pack_names())]
     assert "\n\nDigest of the open model:\nnot available (revit_unreachable)\n\n" in sent   # no add-in here
     assert sent.endswith("Designer's message:\nhi")
     # The run count of a pack is not in the list: the bytes stay the same after a run.

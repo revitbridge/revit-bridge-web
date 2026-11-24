@@ -13,8 +13,6 @@
 #                                 lengths are written in millimetres, units are not compared
 #   requires: [name]              optional: what the host must offer; --skip-requires <name>
 #                                 skips these tasks and reports them as skipped, not wrong
-#                                   basic-tools: create_level, create_grid, move_elements
-#                                     (not in the released package yet)
 #   placeholder_ids: true         optional: the literal mention ids are placeholders; skipped
 #                                 unless --include-placeholder-ids (fill in real ids from the
 #                                 test model, or pick by name instead)
@@ -44,18 +42,15 @@
 - id: new-level
   kind: tool
   message: "Create a level named F3 at elevation 6000 mm."
-  requires: [basic-tools]
-  expect: {tool: create_level, params: {}, max_turns: 3}
+  expect: {tool: create_level, params: {name: F3, elevation: 6000}, max_turns: 3}
 - id: new-grid
   kind: tool
   message: "Create a straight grid named A from (0,0) to (10000,0) mm."
-  requires: [basic-tools]
-  expect: {tool: create_grid, params: {}, max_turns: 3}
+  expect: {tool: create_grid, params: {name: A, start_x: 0, start_y: 0, end_x: 10000, end_y: 0}, max_turns: 3}
 - id: move-selection
   kind: tool
   message: "Move the currently selected elements 1000 mm in X, zero in Y and Z."
-  requires: [basic-tools]
-  expect: {tool: move_elements, params: {}, max_turns: 3}
+  expect: {tool: move_elements, params: {x: 1000, y: 0, z: 0}, max_turns: 3}
 # Skipped (pick not found) when the open model has no level named F2.
 - id: mentioned-level
   kind: tool

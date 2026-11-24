@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import type { ExecutionResult } from '../../types/api'
 import ExecResult from '../shared/ExecResult'
-import { isGateRefusal, paramsOf, type Confirmation, type PreviousAttempt, type Tamper } from './flow'
+import { isGateRefusal, isToolRefusal, paramsOf, type Confirmation, type PreviousAttempt, type Tamper } from './flow'
 import { expiresIn, showValue, tokenPrefix } from './format'
 
 interface Props {
@@ -116,8 +116,9 @@ export function ExecutionView({ execution, tampered }: { execution: ExecutionRes
   const validation = execution.validation ?? null
   const validationFailed = !execution.success && validation !== null && !validation.passed
   const refusal = isGateRefusal(execution)
+  const toolRefused = isToolRefusal(execution)
   const preconditions = execution.preconditions_failed ?? []
-  const tone = execution.success ? 'ok' : refusal ? 'refused' : 'failed'
+  const tone = execution.success ? 'ok' : refusal || toolRefused ? 'refused' : 'failed'
 
   return (
     <div className={`execution-view tone-${tone}`} data-testid="execution-view">
@@ -139,9 +140,15 @@ export function ExecutionView({ execution, tampered }: { execution: ExecutionRes
           Executed{validation ? ` and validated by ${validation.validator}` : ''}{execution.tool ? ` - ${execution.tool}` : ''}.
         </div>
       )}
-      {!execution.success && !refusal && !validationFailed && (
+      {toolRefused && (
+        <div className="execution-banner refused">
+          Refused by the tool in Revit: <code>{execution.error ?? 'no reason given'}</code>
+          <div className="muted small-mono">Nothing was kept: the add-in rolled the run back. The token is spent.</div>
+        </div>
+      )}
+      {!execution.success && !refusal && !toolRefused && !validationFailed && (
         <div className="execution-banner failed">
-          {execution.refused ? 'Refused by the tool in Revit (nothing was kept)' : 'Failed'}: <code>{execution.error ?? 'error'}</code>
+          Failed: <code>{execution.error ?? 'error'}</code>
           {execution.message ? ` - ${execution.message}` : ''}
         </div>
       )}

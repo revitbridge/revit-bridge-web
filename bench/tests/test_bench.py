@@ -270,7 +270,8 @@ def test_query_needs_successful_read_tool_and_no_accepted_spec(tool_name):
 
 
 @pytest.mark.parametrize("tool_name,correct", [
-    ("query_levels", True), ("query_model_stats", True), ("create_wall", False),
+    ("query_levels", True), ("query_model_stats", True), ("count_by_level", True), ("list_types", True),
+    ("elements_in_link", True), ("create_wall", False), ("create_level", False), ("move_elements", False),
 ])
 def test_a_query_answered_with_a_read_only_pack_counts(tool_name, correct):
     host = FakeHost([response(("spec", spec(tool_name)), ("", "Card below")), response(("", "Reported"))])
@@ -318,11 +319,11 @@ def test_without_the_flags_the_marked_tasks_run():
     assert len(host.requests) == 2
 
 
-def test_example_tasks_mark_unreleased_tools_and_pick_their_mentions():
+def test_example_tasks_need_nothing_unreleased_and_pick_their_mentions():
     tasks = load_tasks(Path(__file__).parents[1] / "tasks.yml")
     assert len(tasks) == 12
-    marked = {item["id"]: item.get("requires") for item in tasks if item.get("requires")}
-    assert marked == {"new-level": ["basic-tools"], "new-grid": ["basic-tools"], "move-selection": ["basic-tools"]}
+    # create_level, create_grid and move_elements ship with revit-bridge 0.9.1: no task is marked.
+    assert [item["id"] for item in tasks if item.get("requires")] == []
     assert {item["id"] for item in tasks if item.get("placeholder_ids")} == set()
     mentions = {item["id"]: item["mentions"] for item in tasks if item.get("mentions")}
     assert mentions == {"mentioned-level": [{"kind": "level", "pick": {"name": "F2"}}],

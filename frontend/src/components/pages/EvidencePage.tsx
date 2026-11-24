@@ -6,6 +6,7 @@ import { useStore } from 'zustand'
 import { taskApi } from '../task/api'
 import EvidenceDetails from '../evidence/EvidenceDetails'
 import { createEvidenceFlow, type EvidenceApi, type EvidenceFlow } from '../evidence/evidenceFlow'
+import { outcomeOf } from '../evidence/fields'
 
 let sharedFlow: EvidenceFlow | null = null
 function flowFor(api?: EvidenceApi): EvidenceFlow {
@@ -50,6 +51,7 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
               <tbody>
                 {state.records.map(r => {
                   const open = state.expanded === r.id
+                  const outcome = outcomeOf(r)
                   return [
                     <tr key={r.id} className={`evidence-row${open ? ' is-open' : ''}`} onClick={() => flow.expand(r.id)}>
                       <td>{r.ts}</td>
@@ -57,7 +59,7 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
                       <td>{r.host}</td>
                       <td>{r.action}</td>
                       <td className="mono">{r.tool ?? '-'}</td>
-                      <td><span className={`outcome ${r.success ? 'ok' : 'failed'}`}>{r.success ? 'success' : r.error ?? 'failed'}</span></td>
+                      <td><span className={`outcome ${outcome.tone}`}>{outcome.text}</span></td>
                       <td>{r.validation ? <span className={`outcome ${r.validation.passed ? 'ok' : 'failed'}`}>{r.validation.validator} {r.validation.passed ? 'passed' : 'FAILED'}</span> : <span className="muted">-</span>}</td>
                       <td>{r.confirmed_by ?? '-'}</td>
                       <td>{r.duration_ms ?? '-'}</td>

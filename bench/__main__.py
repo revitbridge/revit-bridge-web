@@ -50,8 +50,7 @@ EXECUTE_WARNING = (
 )
 EPILOG = """\
 examples:
-  python -m bench run --base-url http://127.0.0.1:7860 --label baseline --repeat 3 \\
-      --skip-requires basic-tools
+  python -m bench run --base-url http://127.0.0.1:7860 --label baseline --repeat 3
   python -m bench compare bench-results/baseline.json bench-results/roles.json
   python -m bench run --label failures --tasks bench/tasks-supervisor.yml
 
@@ -372,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--tasks", type=Path, default=Path(__file__).with_name("tasks.yml"),
                      help="task file (default: the bench's tasks.yml)")
     run.add_argument("--skip-requires", action="append", metavar="NAME",
-                     help="skip tasks that require NAME (repeatable, or comma-separated), e.g. basic-tools")
+                     help="skip tasks that require NAME (repeatable, or comma-separated)")
     run.add_argument("--include-placeholder-ids", action="store_true",
                      help="also run tasks whose mention ids are placeholders (skipped by default)")
     run.add_argument("--execution-fixture", type=Path,

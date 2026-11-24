@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from revit_bridge import execution
 
 from backend.api import bridge as bridge_module
+from tests.conftest import builtin_pack_names
 from tests.fake_revit import FakeRevit, model_handler
 
 B = "/api/v1/bridge"
@@ -95,8 +96,9 @@ def test_query_without_a_revit_is_503(client):
 
 def test_tools_listing_has_the_mcp_list_tools_shape(client):
     tools = client.get(f"{B}/tools").json()
-    assert len(tools) == 8
-    wall = next(t for t in tools if t["name"] == "create_wall")
+    # Exactly the wheel's packs, each once.
+    assert sorted(t["name"] for t in tools) == sorted(builtin_pack_names())
+    wall =next(t for t in tools if t["name"] == "create_wall")
     # The MCP shape plus where the pack comes from (no directory on a cloud host).
     assert set(wall) == {"name", "description", "version", "parameters", "preconditions", "validator", "used",
                          "builtin", "origin"}
@@ -145,7 +147,8 @@ def test_tool_detail_update_and_delete_of_a_user_pack(make_client, env, tmp_path
 
     assert client.delete(f"{B}/tools/count_walls", headers=admin).json() == {"status": "deleted", "name": "count_walls"}
     assert client.delete(f"{B}/tools/count_walls", headers=admin).status_code == 404
-    assert not user_file.exists() and len(client.get(f"{B}/tools").json()) == 8
+    assert not user_file.exists()
+    assert sorted(t["name"] for t in client.get(f"{B}/tools").json()) == sorted(builtin_pack_names())
 
 
 def test_tool_choices_come_from_revit(revit, client):

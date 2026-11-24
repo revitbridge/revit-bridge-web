@@ -115,10 +115,26 @@ describe('ExecutionView', () => {
     expect(refusal).toContain('Nothing reached Revit; the token is not consumed.')
   })
 
-  it('a refusal of the tool in Revit (revit-bridge 0.9.1) says so', () => {
-    const html = renderToStaticMarkup(<ExecutionView execution={{ success: false, error: 'the wall would cut the stair', refused: true, evidence_id: 'ev_r' }} />)
-    expect(html).toContain('Refused by the tool in Revit (nothing was kept)')
-    expect(html).toContain('the wall would cut the stair')
+  it('a refusal of the tool in Revit (revit-bridge 0.9.1) says so, as a refusal and not as a failure', () => {
+    // The run route's payload for such a run, as the package builds it (no hint).
+    const refused: ExecutionResult = {
+      success: false, tool: 'create_level', result: null, error: 'A level named "L1" already exists. Choose another name.',
+      validation: null, evidence_id: 'ev_r', warnings: [], preconditions_failed: [], refused: true,
+    }
+    const html = renderToStaticMarkup(<ExecutionView execution={refused} />)
+    expect(html).toContain('tone-refused')
+    expect(html).toContain('execution-banner refused')
+    expect(html).toContain('Refused by the tool in Revit: <code>A level named &quot;L1&quot; already exists. Choose another name.</code>')
+    expect(html).toContain('Nothing was kept')
+    expect(html).not.toContain('execution-banner failed')
+    expect(html).not.toContain('Failed')
+    expect(html).not.toContain('Refused by the gate')
+    expect(html).toContain('ev_r')
+    // Even a stray hint or a gate code as its text does not make it a crash or a gate refusal.
+    const odd = renderToStaticMarkup(<ExecutionView execution={{ ...refused, error: 'confirmation_invalid', hint: 'write fresh code' }} />)
+    expect(odd).toContain('Refused by the tool in Revit: <code>confirmation_invalid</code>')
+    expect(odd).not.toContain('Refused by the gate')
+    expect(odd).not.toContain('write fresh code')
   })
 })
 
