@@ -9,7 +9,8 @@ snapshot the model took, the last ``spec`` it proposed and the most recent
 first turn was sent with (per ``bridge`` value), so every later call of the
 session starts with the same bytes and a provider's prefix cache keeps
 matching, and counts its turns (``llm_calls`` and the trace events number
-them). It never holds a confirmation
+them), and keeps the designer's picks the package verified in any of its turns
+(``mentions``: a spec may bind only those, see ``backend.mention_check``). It never holds a confirmation
 token: the token lives in the browser's memory and the gate's ``pending/``
 directory is the server-side record. Model settings travel with every
 request as headers (see ``backend.llm``), so nothing secret is held here.
@@ -21,12 +22,16 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from backend.mention_check import mention_evidence
+
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
 # Live sessions held at once. A session keeps at most MAX_HISTORY messages (tool results
 # capped at 8-16 KB, execution reports at 16 KB), so this bounds the memory sessions
 # take even when a page is reloaded in a loop; a demo host has a handful at a time.
 MAX_SESSIONS = 300
+# Verified picks a session keeps (at most 20 come with one message).
+MAX_MENTIONS = 200
 
 
 @dataclass
@@ -42,6 +47,19 @@ class Session:
     # bridge (True / False) -> the system prompt of this session's first turn in that mode
     system_prompts: dict[bool, str] = field(default_factory=dict)
     turns: int = 0
+    # The designer's picks the package verified in this session (resolve_mentions items), by
+    # the evidence a spec gives for them, "mention:<kind>#<id>"; the latest reading of each.
+    mentions: dict[str, dict] = field(default_factory=dict)
+
+    def remember_mentions(self, items: list[dict]) -> None:
+        """Keep verified picks for this turn and every later one; a pick verified again takes
+        its new reading (a renamed level), and past ``MAX_MENTIONS`` the oldest goes."""
+        for item in items:
+            key = mention_evidence(item.get("kind"), item.get("id"))
+            self.mentions.pop(key, None)
+            self.mentions[key] = item
+        while len(self.mentions) > MAX_MENTIONS:
+            del self.mentions[next(iter(self.mentions))]
 
     def system_prompt(self, bridge: bool, build) -> str:
         """The session's system prompt for ``bridge``: built by ``build(bridge)`` on first

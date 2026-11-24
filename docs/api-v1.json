@@ -1026,6 +1026,136 @@
         }
       }
     },
+    "/api/v1/bridge/mentions": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Mention Items",
+        "description": "What the designer can pick after ``@level``, ``@type`` or ``@link``: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?}], total, truncated, warnings?}``. ``type`` without\n``category`` lists the categories (items of kind ``category`` whose ``id`` is the OST_*\nname); a link that is not loaded is listed with ``disabled: true`` and its ``reason``. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
+        "operationId": "mention_items_api_v1_bridge_mentions_get",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "description": "level, type or link",
+              "title": "Kind"
+            },
+            "description": "level, type or link"
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "type only: an OST_* category; without it the categories are listed",
+              "title": "Category"
+            },
+            "description": "type only: an OST_* category; without it the categories are listed"
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "keep the items whose name, label, family or category contains this (case-insensitive)",
+              "title": "Q"
+            },
+            "description": "keep the items whose name, label, family or category contains this (case-insensitive)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "at most this many items (1-200, default 50)",
+              "title": "Limit"
+            },
+            "description": "at most this many items (1-200, default 50)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The package failed (snapshot_failed, query_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bridge/tools": {
       "get": {
         "tags": [
@@ -1747,7 +1877,7 @@
           "bridge"
         ],
         "summary": "Reconcile Spec",
-        "description": "``reconcile``: the draft TaskSpec against the snapshot (given, or taken now).",
+        "description": "``reconcile``: the draft TaskSpec against the snapshot (given, or taken now). A\nparameter bound to a pick (evidence ``mention:<kind>#<id>``) that is not one verified in\nthe chat session ``session_id``, or not bound as that pick is, is 422 ``invalid_spec``\nwith ``errors`` of code ``unknown_mention``, before Revit is asked.",
         "operationId": "reconcile_spec_api_v1_bridge_spec_reconcile_post",
         "requestBody": {
           "content": {
@@ -1817,7 +1947,7 @@
           "bridge"
         ],
         "summary": "Confirm Spec",
-        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}``.\nThe token belongs to the browser session and never enters the model context.",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\n(or not bound as that pick is) among them, code ``unknown_mention``.\nThe token belongs to the browser session and never enters the model context.",
         "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
         "requestBody": {
           "content": {
@@ -2971,6 +3101,42 @@
         "title": "CallRow",
         "description": "One model call."
       },
+      "ChatMention": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Kind",
+            "description": "level, type or link"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "the item's element id"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "what the page showed; not sent to the model"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "ChatMention",
+        "description": "A model item the designer picked in the message (``@level``, ``@type``, ``@link``), as\n``GET /api/v1/bridge/mentions`` listed it. Only ``kind`` and ``id`` are checked and used:\nthe model gets the item as the package reads it from Revit now, never the page's\n``label``."
+      },
       "ChatRequest": {
         "properties": {
           "message": {
@@ -3012,6 +3178,22 @@
             "type": "boolean",
             "title": "Bridge",
             "default": true
+          },
+          "mentions": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChatMention"
+                },
+                "type": "array",
+                "maxItems": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mentions",
+            "description": "The designer's picks in this message (with message and the bridge only), checked against the open model before the model is called: the event mentions reports each, and the verified ones reach the model as the package's selections block."
           }
         },
         "type": "object",
@@ -3098,6 +3280,19 @@
             "type": "string",
             "title": "Confirmed By",
             "default": "designer"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "The chat session the spec comes from (the X-Session-Id of /api/chat): a parameter bound to a pick (evidence mention:<kind>#<id>) must be one the designer made and the package verified in that session. Without it no such binding is accepted."
           }
         },
         "type": "object",
@@ -3306,6 +3501,19 @@
               }
             ],
             "title": "Snapshot"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "The chat session the spec comes from (the X-Session-Id of /api/chat): a parameter bound to a pick (evidence mention:<kind>#<id>) must be one the designer made and the package verified in that session. Without it no such binding is accepted."
           }
         },
         "type": "object",
