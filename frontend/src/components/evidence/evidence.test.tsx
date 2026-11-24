@@ -6,7 +6,7 @@ import type { EvidenceRecord } from '../../types/api'
 import { BridgeApiError } from '../shared/http'
 import EvidenceDetails from './EvidenceDetails'
 import { createEvidenceFlow } from './evidenceFlow'
-import { RECORD_FIELDS } from './fields'
+import { fieldsOf, outcomeOf, RECORD_FIELDS } from './fields'
 
 const record: EvidenceRecord = {
   id: 'ev_20260922T090000_abc123', ts: '2026-09-22T09:00:00Z', host: 'web', action: 'run_tool',
@@ -61,6 +61,19 @@ describe('EvidenceDetails', () => {
     expect(html).toContain('tok_ab')
     expect(html).toContain('&quot;x&quot;: 3000')
     expect(html).toContain('>Validate</button>')
+  })
+
+  it('a line of a pack that refused its input (revit-bridge 0.9.1) shows refused, in the list and in the fields', () => {
+    const refused: EvidenceRecord = { ...record, tool: 'create_level', success: false, error: 'A level named "L1" already exists.',
+      result_summary: null, validation: null, refused: true }
+    expect(outcomeOf(refused)).toEqual({ tone: 'refused', text: 'refused by the tool: A level named "L1" already exists.' })
+    expect(outcomeOf({ ...refused, refused: undefined })).toEqual({ tone: 'failed', text: 'A level named "L1" already exists.' })
+    expect(outcomeOf(record)).toEqual({ tone: 'ok', text: 'success' })
+    expect(fieldsOf(refused)).toEqual([...RECORD_FIELDS, 'refused'])
+    expect(fieldsOf(record)).toEqual(RECORD_FIELDS)
+    const html = renderToStaticMarkup(<EvidenceDetails record={refused} onValidate={() => {}} />)
+    expect(html).toContain('<dt>refused</dt><dd>true</dd>')
+    expect(renderToStaticMarkup(<EvidenceDetails record={record} onValidate={() => {}} />)).not.toContain('<dt>refused</dt>')
   })
 
   it('renders the re-validation report', () => {

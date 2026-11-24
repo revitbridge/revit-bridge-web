@@ -2,7 +2,7 @@
 
 import type { EvidenceRecord } from '../../types/api'
 import type { Revalidation } from './evidenceFlow'
-import { RECORD_FIELDS, showField } from './fields'
+import { fieldsOf, showField } from './fields'
 
 interface Props {
   record: EvidenceRecord
@@ -15,7 +15,7 @@ export default function EvidenceDetails({ record, revalidation, onValidate }: Pr
   return (
     <div className="evidence-details">
       <dl className="evidence-fields">
-        {RECORD_FIELDS.map(field => {
+        {fieldsOf(record).map(field => {
           const value = record[field]
           const block = value !== null && typeof value === 'object' && !(Array.isArray(value) && value.length === 0)
           return (

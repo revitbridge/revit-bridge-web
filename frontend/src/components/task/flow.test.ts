@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BridgeApiError } from '../shared/http'
 import { sumUsage } from '../hostv2/trace'
-import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, NOT_OFFERED, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
+import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, isGateRefusal, isToolRefusal, NOT_OFFERED, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
 import type { ExecutionResult, HostEvent, HostRequest, Question, ReconcileResult, TaskSpec } from '../../types/api'
 import type { Mention } from '../../types/hostv2'
 
@@ -273,6 +273,29 @@ describe('the task flow', () => {
     s = flow.store.getState()
     expect(s.proposal?.card).toBe('c3')
     expect(s.previous).toBeNull()
+  })
+
+  it('a run the tool refused in Revit (revit-bridge 0.9.1) spent the token and goes to the model like any run', async () => {
+    const refused: ExecutionResult = {
+      success: false, tool: 'create_structural_column', result: null, error: 'There is already a column at that point.',
+      validation: null, evidence_id: 'ev_r', warnings: [], preconditions_failed: [], refused: true,
+    }
+    const host = scriptedHost(
+      [{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }],
+      [{ type: 'execution', execution: refused }, { type: 'token', text: 'The tool refused: a column is already there.' }, { type: 'done' }],
+    )
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool: vi.fn().mockResolvedValue(refused) }) })
+    await flow.send('brief')
+    await flow.confirm()
+    await flow.run()
+    const s = flow.store.getState()
+    expect(s.execution).toEqual(refused)
+    expect(s.confirmation?.used).toBe(true)                  // it reached Revit: the token is spent
+    expect(host.requests[1]).toEqual({ execution: refused, session_id: 's1' })
+    expect(isGateRefusal(refused) || isGateRefusal({ ...refused, error: 'confirmation_invalid' })).toBe(false)
+    expect(isToolRefusal(refused)).toBe(true)
+    expect(isToolRefusal({ ...refused, refused: undefined })).toBe(false)
+    expect(isToolRefusal({ ...refused, success: true })).toBe(false)
   })
 
   it('tamper demo: an edited value under the same token is refused and nothing is reported', async () => {

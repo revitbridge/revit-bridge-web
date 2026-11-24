@@ -339,6 +339,8 @@ export interface EvidenceRecord {
   duration_ms: number | null
   preconditions_failed: string[]
   warnings: string[]
+  // revit-bridge 0.9.1: only on a run_tool line whose pack refused the input in Revit (nothing kept)
+  refused?: true
 }
 
 /* POST /evidence/{id}/validate: the recorded assertion re-run against the model now. */

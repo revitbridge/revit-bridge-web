@@ -9,6 +9,19 @@ export const RECORD_FIELDS: Array<keyof EvidenceRecord> = [
   'success', 'error', 'result_summary', 'validation', 'duration_ms', 'preconditions_failed', 'warnings',
 ]
 
+/* The fields of one record: the ledger's, then `refused` on the lines that carry it. */
+export function fieldsOf(record: EvidenceRecord): Array<keyof EvidenceRecord> {
+  return record.refused === true ? [...RECORD_FIELDS, 'refused'] : RECORD_FIELDS
+}
+
+/* The list's outcome: success; a pack's refusal in Revit (revit-bridge 0.9.1: refused true,
+   nothing was kept; the error is the pack's own text); else the error. */
+export function outcomeOf(record: Pick<EvidenceRecord, 'success' | 'error' | 'refused'>): { tone: 'ok' | 'refused' | 'failed'; text: string } {
+  if (record.success) return { tone: 'ok', text: 'success' }
+  if (record.refused === true) return { tone: 'refused', text: `refused by the tool: ${record.error ?? 'no reason given'}` }
+  return { tone: 'failed', text: record.error ?? 'failed' }
+}
+
 export function showField(value: unknown): string {
   if (value === null || value === undefined) return '-'
   if (typeof value === 'string') return value || '-'
