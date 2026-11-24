@@ -58,15 +58,16 @@ class Session:
     # reading of each. An id means something only in the model it was read from.
     picks: dict[tuple[str, str], dict] = field(default_factory=dict)
     # The roles (backend.roles): each role's system prompt of the session's first turn that
-    # used it; the task the next message may continue (route, tool, how often it was sent
-    # back, the last message the designer got); the analyst's digest of the open model and
-    # whether an execution was reported since it was read; the supervisor's last verdict
-    # until the planner has seen it; the spec the page confirmed last (/spec/confirm with
-    # this session), which the supervisor reads instead of the last proposed one.
+    # used it; the task the next message may continue (tool, how often it was sent back,
+    # the last message the designer got); the analyst's digest of the open model per device
+    # scope (dropped when the page reports an execution) and, per scope, when the last read
+    # failed and what the analyst was told; the supervisor's last verdict until the planner
+    # has seen it; the spec the page confirmed (/spec/confirm with this session) until its
+    # execution is reported - the supervisor reads it instead of the last proposed one.
     role_prompts: dict[str, str] = field(default_factory=dict)
     role_task: RoleTask | None = None
-    digest: str | None = None
-    digest_stale: bool = False
+    digests: dict[str, str] = field(default_factory=dict)
+    digest_failures: dict[str, tuple[float, str]] = field(default_factory=dict)
     pending_verdict: dict | None = None
     confirmed_spec: dict | None = None
 

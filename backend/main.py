@@ -132,6 +132,11 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
     log_deploy_mode(settings)
     log_models(settings, models)
+    if settings.single_model:
+        _log.info("chat: one model loop (LLM_SINGLE_MODEL=1)")
+    else:
+        _log.info("chat: roles (planner tools: %s, analyst: %s)", settings.roles_planner_tools,
+                  "on" if settings.roles_analyst else "off")
     return app
 
 

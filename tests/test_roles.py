@@ -184,6 +184,8 @@ def test_route_tool_proposes_and_the_supervisor_reports(revit, client, model):
     assert run["success"] is True
     model.script("supervisor", json_turn({**DONE, "report": f"One wall; validator passed ({run['evidence_id']})."},
                                          usage=USAGE_SHAPES["openai"][0]))
+    confirmed_spec = session.confirmed_spec
+    assert confirmed_spec is not None and session.digests          # the analyst's digest of this device
     frames = report(client, session_id, run)
     assert names(frames) == ["execution", "stage", "usage", "stage", "token", "done"]
     assert tokens(frames) == f"One wall; validator passed ({run['evidence_id']})."
@@ -197,7 +199,7 @@ def test_route_tool_proposes_and_the_supervisor_reports(revit, client, model):
     head, payload = body["messages"][1]["content"].split("\n", 1)
     assert head == roles.SUPERVISOR_PREFIX
     payload = json.loads(payload)
-    assert payload["confirmed_spec"] == session.confirmed_spec
+    assert payload["confirmed_spec"] == confirmed_spec and "proposed_spec" not in payload
     assert payload["execution"]["evidence_id"] == run["evidence_id"] and payload["execution"]["success"] is True
     assert set(payload["execution"]["validation"]) == {"validator", "passed", "checks"}
     assert payload["execution"]["validation"]["checks"] == run["validation"]["checks"]
@@ -205,7 +207,8 @@ def test_route_tool_proposes_and_the_supervisor_reports(revit, client, model):
     dumped = json.dumps(body)
     assert "propose_spec" not in dumped and "Analyst's routing" not in dumped
     assert session.role_task is None and session.pending_verdict["verdict"] == "done"
-    assert session.digest_stale is True
+    # The run is reported: its confirmation is used up, and the analyst reads the model again.
+    assert session.confirmed_spec is None and session.digests == {}
 
     # The next message: the analyst sees no open task, the planner learns the verdict once.
     model.script("analyst", json_turn(ROUTING_QUERY))
@@ -229,6 +232,12 @@ def test_the_confirmed_spec_reaches_the_supervisor_not_the_last_proposal(revit, 
     report(client, session_id, OK)
     sent = json.loads(user_text(model.requests_of("supervisor")[0]).split("\n", 1)[1])
     assert sent["confirmed_spec"]["interpretations"][0]["text"] == "on L1"
+    # A second report without a new confirmation (the bench's fixed result does this): the
+    # planner's last proposal, labelled as proposed - never as confirmed.
+    model.script("supervisor", json_turn(DONE))
+    report(client, session_id, OK)
+    sent = json.loads(user_text(model.requests_of("supervisor")[1]).split("\n", 1)[1])
+    assert "confirmed_spec" not in sent and sent["proposed_spec"] == session.spec
 
 
 # -- the supervisor's verdicts --------------------------------------------------------------
@@ -263,6 +272,44 @@ def test_retry_goes_back_to_the_planner_twice_then_the_host_asks(revit, client, 
     assert [s["role"] for s in events(frames, "stage")] == ["supervisor", "supervisor"]
     session = get_session_store().get(session_id)
     assert session.role_task.retries == 2 and session.pending_verdict["verdict"] == "ask"
+    # The designer writes again: a new attempt, the send-backs count from 0.
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", text_turn("Which level then?"))
+    client.post("/api/chat", json={"message": "try L1 instead", "session_id": session_id}, headers=HEADERS)
+    assert session.role_task.retries == 0 and session.role_task.tool == "create_wall"
+
+
+def test_a_retry_clears_the_verdict_the_planner_has_not_seen(revit, client, model):
+    session_id = wall_turn(client, model)
+    model.script("supervisor", json_turn({"verdict": "ask", "report": "Failed.", "question": "Again?"}))
+    report(client, session_id, FAILED)
+    session = get_session_store().get(session_id)
+    assert session.pending_verdict["verdict"] == "ask"
+    model.script("supervisor", json_turn({"verdict": "retry", "report": "No L9.", "fix": "use L1"}))
+    model.script("planner", text_turn("New card."))
+    report(client, session_id, FAILED)
+    assert session.pending_verdict is None                    # the retry message carried the verdict
+    retry = user_text(model.requests_of("planner")[-1])
+    assert retry.startswith(roles.RETRY_PREFIX) and roles.VERDICT_PREFIX not in retry
+
+
+def test_a_run_that_succeeded_is_not_sent_back(revit, client, model):
+    session_id = wall_turn(client, model)
+    model.script("supervisor", json_turn({"verdict": "retry", "report": "It worked, but L2 looks better.",
+                                          "fix": "use level L2"}))
+    calls = len(model.requests)
+    frames = report(client, session_id, OK)
+    assert len(model.requests) == calls + 1                    # no planner: the designer decides
+    assert tokens(frames) == ("It worked, but L2 looks better.\n\nRevit reported success and the validator did not "
+                              "fail, so the host does not send this run back; you decide whether anything should "
+                              "change.\n\nShould anything change? (the supervisor suggested: use level L2)")
+    assert get_session_store().get(session_id).role_task.retries == 0
+    # The send-back cap on a run that succeeded does not say it failed (validator failed, Revit ran).
+    capped = roles.enforce(roles.Verdict("retry", "Checks off.", fix="redo"),
+                           {**VALIDATION_FAILED, "success": True}, roles.MAX_RETRIES)
+    assert "sent back 2 times; the host" in capped.report and "did not succeed" not in capped.report
+    capped = roles.enforce(roles.Verdict("retry", "Failed.", fix="redo"), FAILED, roles.MAX_RETRIES)
+    assert "sent back 2 times and still did not succeed" in capped.report
 
 
 def test_ask_shows_the_report_and_the_question(revit, client, model):
@@ -297,20 +344,48 @@ def test_a_failed_validator_is_never_done(revit, client, model):
         "Revit did not report success, so this is not done: Level 'L9' not found")
 
 
-def test_a_refused_execution_is_never_sent_back(revit, client, model):
+# Failures that are refusals by nature, as the package's fields say (revit_bridge.execution):
+# 0.9.1's refused (the pack refused the input in Revit; error is the text after the marker), and on
+# any version the runs it stopped before they changed anything.
+REFUSALS = {
+    "refused": ({"success": False, "tool": "create_wall", "error": "the wall would cut the stair", "refused": True,
+                 "evidence_id": "ev_r", "warnings": []},
+                "the tool refused the input in Revit; nothing was kept. the wall would cut the stair"),
+    "preconditions": ({"success": False, "tool": "create_wall", "error": "preconditions_failed",
+                       "preconditions_failed": ["the active document is read-only"], "evidence_id": "ev_p",
+                       "warnings": []}, "a precondition failed. preconditions_failed"),
+    "validator_before": ({"success": False, "tool": "create_wall", "error": "validator_before_failed",
+                          "evidence_id": "ev_v", "warnings": ["validator.before: TimeoutError"]},
+                         "the validator could not take its first sample. validator_before_failed"),
+    "blocked": ({"success": False, "error": "blocked", "warnings": ["File.Delete"]},
+                "the code was blocked. blocked"),
+    "not_recorded": ({"success": False, "error": "Parameter validation failed: height must be a number"},
+                     "nothing was run or recorded. Parameter validation failed: height must be a number"),
+}
+
+
+@pytest.mark.parametrize("name", list(REFUSALS))
+def test_a_refusal_by_nature_is_never_sent_back(revit, client, model, name):
+    execution, why = REFUSALS[name]
     session_id = wall_turn(client, model)
-    refused = {"success": False, "tool": "create_wall", "error": "preconditions_failed", "refused": True,
-               "message": "the document is read-only", "warnings": []}
     model.script("supervisor", json_turn({"verdict": "retry", "report": "Retrying.", "fix": "try again"}))
     calls = len(model.requests)
-    frames = report(client, session_id, refused)
+    frames = report(client, session_id, execution)
     assert len(model.requests) == calls + 1                    # no planner
-    assert tokens(frames) == ("The execution was refused, nothing ran: preconditions_failed: the document is "
-                              "read-only\n\n" + roles.DEFAULT_QUESTION)
+    assert tokens(frames) == f"This run is not sent back: {why}\n\n{roles.DEFAULT_QUESTION}"
     assert get_session_store().get(session_id).role_task.retries == 0
-    # The supervisor's own ask stands; 0.9.0 results (no refused field) may still be sent back.
-    model.script("supervisor", json_turn({"verdict": "ask", "report": "Refused: read-only.", "question": "Save as?"}))
-    assert tokens(report(client, session_id, refused)) == "Refused: read-only.\n\nSave as?"
+    # Nor called done; the supervisor's own ask stands.
+    model.script("supervisor", json_turn({"verdict": "done", "report": "Fine."}),
+                 json_turn({"verdict": "ask", "report": "Refused.", "question": "Change the input?"}))
+    assert tokens(report(client, session_id, execution)).startswith("This run is not sent back")
+    assert tokens(report(client, session_id, execution)) == "Refused.\n\nChange the input?"
+
+
+def test_a_failure_that_ran_may_be_sent_back():
+    """The other failures - Revit threw, the validator found the model unchanged - stay retry."""
+    for execution in (FAILED, VALIDATION_FAILED):
+        assert roles.refusal_kind(execution) is None
+        assert roles.enforce(roles.Verdict("retry", "r", fix="f"), execution, 0).verdict == "retry"
 
 
 # -- output that is not the JSON asked for ---------------------------------------------------
@@ -716,7 +791,276 @@ def test_a_failed_validator_keeps_its_own_words():
 def test_the_execution_summary_cuts_the_result_and_drops_the_samples():
     big = {**OK, "result": {"ids": list(range(2000))}, "unknown_field": "x" * 50}
     summary = roles.execution_summary(big)
-    assert isinstance(summary["result"], str) and summary["result"].endswith("characters in all]")
+    assert isinstance(summary["result"], str) and summary["result"].endswith(" characters)")
     assert len(summary["result"]) < roles.RESULT_KEEP + 50
     assert "unknown_field" not in summary and "before" not in summary["validation"]
     assert roles.execution_summary({"success": True}) == {"success": True}
+
+
+# -- round 2: caps, the task's life, the switches, the log, the digest -------------------------
+
+def supervisor_request_bytes(model) -> int:
+    return len(json.dumps(model.requests_of("supervisor")[-1], ensure_ascii=False))
+
+
+HUGE = {
+    "error": {"success": False, "tool": "create_wall", "error": "e" * 4_000_000, "evidence_id": "ev_h",
+              "warnings": ["w" * 5000] * 20},
+    "checks": {**VALIDATION_FAILED, "validation": {
+        "validator": "element_count", "passed": False,
+        "checks": [{"name": f"check-{i}", "passed": i % 3 != 0, "detail": f"detail {i}"} for i in range(10_000)]}},
+    "detail": {**VALIDATION_FAILED, "validation": {
+        "validator": "element_count", "passed": False,
+        "checks": [{"name": "count", "passed": False, "detail": "d" * 1_000_000}]},
+        "result": {"ids": list(range(200_000))}},
+}
+
+
+@pytest.mark.parametrize("name", list(HUGE))
+def test_a_huge_result_reaches_no_model_report_or_session_whole(revit, client, model, name):
+    execution = HUGE[name]
+    assert len(json.dumps(execution)) <= chat_module.MAX_EXECUTION_CHARS          # the route takes it
+    session_id = wall_turn(client, model)
+    model.script("supervisor", json_turn({"verdict": "done", "report": "All good."}))
+    frames = report(client, session_id, execution)
+    message = user_text(model.requests_of("supervisor")[-1])
+    assert len(message) <= roles.MESSAGE_KEEP == chat_module.EXECUTION_KEEP
+    assert supervisor_request_bytes(model) < 30_000
+    reply = tokens(frames)
+    assert len(reply) < 12_000 and "All good" not in reply                       # the rules still fire
+    assert reply.startswith("The validator did not pass" if name != "error" else "Revit did not report success")
+    session = get_session_store().get(session_id)
+    assert len(json.dumps(session.pending_verdict)) < 3 * roles.TEXT_MAX
+    assert len(json.dumps(session.history)) < 40_000                             # nothing of it went in
+    if name == "checks":
+        sent = json.loads(message.split("\n", 1)[1])["execution"]["validation"]
+        assert len(sent["checks"]) == roles.CHECKS_MAX and sent["checks_more"] == 10_000 - roles.CHECKS_MAX
+        assert all(c["passed"] is False for c in sent["checks"])                   # the failed ones first
+        assert reply.count("\n- ") == roles.CHECKS_SHOWN and "more checks)" in reply
+    # A huge report of the supervisor's own is cut before it goes back to the planner.
+    model.script("supervisor", json_turn({"verdict": "retry", "report": "r" * 100_000, "fix": "f" * 100_000}))
+    model.script("planner", text_turn("again"))
+    report(client, session_id, FAILED)
+    retry = user_text(model.requests_of("planner")[-1])
+    assert len(retry) < 3 * roles.TEXT_MAX
+
+
+def test_a_spec_too_large_for_the_message_goes_as_its_head():
+    spec = {"task": "t" * 50_000, "parameters": []}
+    message = roles.supervisor_message(spec, OK, 0)
+    assert len(message) <= roles.MESSAGE_KEEP
+    payload = json.loads(message.split("\n", 1)[1])
+    assert isinstance(payload["confirmed_spec"], str) and payload["confirmed_spec"].endswith(" characters)")
+    assert payload["execution"]["evidence_id"] == "ev_3"
+
+
+def test_a_query_opens_no_task_and_another_tool_opens_a_new_one(revit, client, model):
+    model.script("analyst", json_turn(ROUTING_QUERY))
+    model.script("planner", text_turn("L1 and L2."))
+    resp = client.post("/api/chat", json={"message": "levels?"}, headers=HEADERS)
+    session_id = resp.headers["X-Session-Id"]
+    session = get_session_store().get(session_id)
+    assert session.role_task is None
+
+    def say(routing, reply, message="next"):
+        model.script("analyst", json_turn(routing))
+        model.script("planner", text_turn(reply))
+        client.post("/api/chat", json={"message": message, "session_id": session_id}, headers=HEADERS)
+
+    say(ROUTING_TOOL, "Which level?")
+    task = session.role_task
+    assert (task.tool, task.last, task.retries) == ("create_wall", "Which level?", 0)
+    task.retries = 1
+    say(ROUTING_QUERY, "L1 and L2.")                       # a read in between: the task stays as it was
+    assert session.role_task is task and task.last == "Which level?" and task.retries == 1
+    say({**ROUTING_TOOL, "tool": "create_floor"}, "Which floor type?")
+    assert session.role_task is not task
+    assert (session.role_task.tool, session.role_task.retries) == ("create_floor", 0)
+
+
+def test_the_planner_tools_switch_gives_it_all_seven(make_client, env, revit, model):
+    env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_PLANNER_TOOLS", "all")
+    client = make_client()
+    model.script("analyst", json_turn(ROUTING_QUERY))
+    model.script("planner", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})), text_turn("ok"))
+    frames = sse(client.post("/api/chat", json={"message": "levels?"}, headers=HEADERS).text)
+    planner = model.requests_of("planner")[0]
+    assert planner["tools"] == TOOL_DEFINITIONS                # every route
+    assert len(events(frames, "spec")) == 1                    # and every one runs
+    assert events(frames, "tool")[-1]["status"] == "ok"
+
+
+def test_the_analyst_switch_sends_every_message_to_the_planner(make_client, env, revit, model):
+    env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_ANALYST", "off")
+    client = make_client()
+    model.script("planner", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})), text_turn("card"))
+    resp = client.post("/api/chat", json={"message": "a wall"}, headers=HEADERS)
+    frames = sse(resp.text)
+    assert model.roles == ["planner", "planner"]
+    assert [(s["role"], s["status"]) for s in events(frames, "stage")] == [("planner", "start"), ("planner", "end")]
+    assert model.requests[0]["tools"] == TOOL_DEFINITIONS
+    assert user_text(model.requests[0]).endswith(
+        roles.ROUTING_PREFIX + ' {"route": "tool", "facts_needed": [], "note": ""}')
+    model.script("supervisor", json_turn(DONE))
+    report(client, resp.headers["X-Session-Id"], OK)
+    assert model.roles[-1] == "supervisor"                     # the supervisor still reports
+
+
+@pytest.mark.parametrize("variable, value", [("ROLES_PLANNER_TOOLS", "some"), ("ROLES_ANALYST", "1")])
+def test_a_switch_with_another_value_refuses_the_start(make_client, env, variable, value):
+    from backend.config import ConfigError
+    env.setenv(variable, value)
+    with pytest.raises(ConfigError, match=variable):
+        make_client()
+
+
+def test_a_missing_model_names_the_role(roles_env, tmp_path, monkeypatch, model):
+    path = tmp_path / "data" / "models.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(THREE, encoding="utf-8")
+    roles_env.setenv("W6_FAKE_P_KEY", "made-up-p-key")           # the analyst's and supervisor's are not set
+    from backend.main import create_app
+    with TestClient(create_app()) as client:
+        detail = client.post("/api/chat", json={"message": "hi"}).json()["detail"]
+        assert "for the analyst" in detail and "api_key_env" in detail and "Connect page" not in detail
+        roles_env.delenv("W6_FAKE_P_KEY")
+        detail = client.post("/api/chat", json={"message": "hi"}).json()["detail"]
+        assert detail == chat_module.NO_MODEL_FROM_FILE             # the planner's: the browser can fill it in
+    assert model.requests == []
+
+
+def test_the_interaction_log_names_each_role_that_ran(revit, client, model):
+    wall_turn(client, model)
+    rows = get_log_store().query()["items"]
+    assert rows[0]["model"] == "analyst fake-1, planner fake-1"
+    model.script("analyst", json_turn({"route": "chat", "facts_needed": [], "note": "hi"}))
+    client.post("/api/chat", json={"message": "hello"}, headers=HEADERS)
+    assert get_log_store().query()["items"][0]["model"] == "analyst fake-1"
+
+
+def test_the_digest_is_kept_per_device_and_a_failed_read_waits(monkeypatch):
+    import asyncio
+
+    from backend.session import Session
+
+    titles = iter(["Model A", "Model B"])
+    reads: list[int] = []
+
+    async def snapshot(client_, categories=None):
+        reads.append(1)
+        return {"document": {"title": next(titles)}, "levels": [], "fingerprint": "f"}
+
+    async def no_client():
+        return None
+
+    monkeypatch.setattr(chat_module, "get_revit_client", no_client)
+    monkeypatch.setattr(chat_module, "snapshot_now", snapshot)
+    session = Session(session_id="s")
+    a = asyncio.run(chat_module.model_digest(session, "device-a"))
+    b = asyncio.run(chat_module.model_digest(session, "device-b"))
+    assert a.startswith("Document: Model A") and b.startswith("Document: Model B") and len(reads) == 2
+    assert asyncio.run(chat_module.model_digest(session, "device-a")) == a and len(reads) == 2
+
+    async def unreachable(client_, categories=None):
+        reads.append(1)
+        raise OSError("refused")
+
+    monkeypatch.setattr(chat_module, "snapshot_now", unreachable)
+    assert asyncio.run(chat_module.model_digest(session, "device-c")) == "not available (revit_unreachable)"
+    assert asyncio.run(chat_module.model_digest(session, "device-c")) == "not available (revit_unreachable)"
+    assert len(reads) == 3                                      # not tried again within the minute
+    monkeypatch.setattr(roles, "DIGEST_RETRY_SECONDS", 0.0)
+    asyncio.run(chat_module.model_digest(session, "device-c"))
+    assert len(reads) == 4
+
+
+# -- the old suite's key cases, in both modes ---------------------------------------------------
+
+@pytest.fixture(params=["single", "roles"])
+def mode(request, env):
+    if request.param == "roles":
+        env.delenv("LLM_SINGLE_MODEL")
+    return request.param
+
+
+@pytest.fixture
+def mode_client(mode, make_client):
+    return make_client(raise_server_exceptions=False)
+
+
+def planner_script(model, mode, *turns) -> str:
+    """The turns of the one loop, or of the planner after an analyst that routes to tool. The
+    role whose requests to read."""
+    if mode == "roles":
+        model.script("analyst", json_turn({"route": "tool", "facts_needed": [], "note": ""}))
+        model.script("planner", *turns)
+        return "planner"
+    model.script("single", *turns)
+    return "single"
+
+
+def test_both_modes_a_tool_that_raises_closes_its_row_and_the_stage(mode, mode_client, model, monkeypatch):
+    import contextlib
+
+    from tests.test_trace_usage import _recording
+
+    async def broken(name, arguments, session):
+        raise RuntimeError("boom at C:\\secret")
+
+    monkeypatch.setattr(chat_module, "call_tool", broken)
+    chunks = _recording(monkeypatch)
+    role = planner_script(model, mode, tool_turn(("list_tools", {})), text_turn("never"))
+    with contextlib.suppress(Exception):
+        mode_client.post("/api/chat", json={"message": "x"}, headers=HEADERS)
+    frames = sse("".join(chunks))
+    tools = events(frames, "tool")
+    first = "1.2.1" if mode == "roles" else "1.1.1"
+    assert [(t["id"], t["role"], t["status"]) for t in tools] == [(first, "planner", "running"),
+                                                                    (first, "planner", "error")]
+    assert tools[1]["error"] == "RuntimeError" and "secret" not in "".join(chunks)
+    assert events(frames, "stage")[-1] == {"role": "planner", "model": "fake-1", "status": "end"}
+    assert len(model.requests_of(role)) == 1
+
+
+def test_both_modes_keep_the_head_of_a_large_tool_result(mode, mode_client, model, monkeypatch):
+    from backend.api.model_tools import ToolOutcome
+    big = {"items": [{"id": i, "name": f"element-{i:05d}"} for i in range(1500)]}
+
+    async def fake_call_tool(name, arguments, session):
+        return ToolOutcome(big)
+
+    monkeypatch.setattr(chat_module, "call_tool", fake_call_tool)
+    role = planner_script(model, mode, tool_turn(("query", {"kind": "levels"})), text_turn("many"))
+    resp = mode_client.post("/api/chat", json={"message": "list"}, headers=HEADERS)
+    full = json.dumps(big, ensure_ascii=False)
+    sent = [m for m in model.requests_of(role)[1]["messages"] if m.get("role") == "tool"]
+    assert sent[0]["content"] == full
+    stored = [m for m in get_session_store().get(resp.headers["X-Session-Id"]).history if m.get("role") == "tool"][0]
+    assert stored["content"].startswith(full[:chat_module.TOOL_RESULT_KEEP]) and len(stored["content"]) < len(full)
+
+
+def test_both_modes_send_a_window_of_40_messages(mode, mode_client, model):
+    planner_script(model, mode, text_turn("first"))
+    resp = mode_client.post("/api/chat", json={"message": "start"}, headers=HEADERS)
+    session = get_session_store().get(resp.headers["X-Session-Id"])
+    for i in range(30):
+        session.add({"role": "user", "content": f"u{i}"})
+        session.add({"role": "assistant", "content": f"a{i}"})
+    role = planner_script(model, mode, text_turn("ok"))
+    mode_client.post("/api/chat", json={"message": "last", "session_id": session.session_id}, headers=HEADERS)
+    messages = model.requests_of(role)[-1]["messages"]
+    assert messages[0]["role"] == "system" and len(messages) - 1 <= chat_module.HISTORY_WINDOW
+    assert messages[1]["role"] == "user" and messages[-1]["content"].startswith("last")
+
+
+def test_both_modes_refuse_a_pick_that_was_not_made(mode, make_client, picker, model):
+    client = make_client()
+    forged = spec_for("create_wall", **{**WALL, "level_name": "L1"})
+    forged["parameters"][0].update(source="tool", evidence="mention:level#1", unit=None)
+    role = planner_script(model, mode, tool_turn(("propose_spec", {"spec": forged})), text_turn("card"))
+    frames = sse(client.post("/api/chat", json={"message": "a wall"}, headers=HEADERS).text)
+    verdict = [json.loads(m["content"]) for m in model.requests_of(role)[-1]["messages"] if m["role"] == "tool"][0]
+    assert verdict["accepted"] is False and verdict["errors"][0]["code"] == "unknown_mention"
+    assert events(frames, "spec")[0]["errors"][0]["code"] == "unknown_mention"

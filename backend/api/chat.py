@@ -129,7 +129,7 @@ from backend.llm import (
     tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
-from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, resolve as resolve_model
+from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import Session, get_session_store
 
@@ -283,32 +283,41 @@ def build_role_prompt(role: str) -> str:
     return text
 
 
-async def model_digest(session: Session) -> str:
-    """The analyst's digest of the open model: the package's ``snapshot_digest`` of a snapshot
-    the host takes (no model call). Kept with the session and read again only when the page
-    has reported an execution since (``Session.digest_stale``) - a new task on the page is a
-    new session. When the model cannot be read (no add-in, no answer within
-    ``DIGEST_TIMEOUT`` seconds) the analyst is told so, and the next turn tries again."""
-    if session.digest is not None and not session.digest_stale:
-        return session.digest
+async def model_digest(session: Session, scope: str) -> str:
+    """The analyst's digest of the open model of the device ``scope``: the package's
+    ``snapshot_digest`` of a snapshot the host takes (no model call). Kept with the session per
+    scope and read again only after the page has reported an execution (which drops it) - a new
+    task on the page is a new session; changes made in Revit outside the chat reach the analyst
+    only then (the planner reads the model itself). When the model cannot be read (no add-in,
+    no answer within ``DIGEST_TIMEOUT`` seconds) the analyst is told so, and the host does not
+    try again for ``roles.DIGEST_RETRY_SECONDS``."""
+    if scope in session.digests:
+        return session.digests[scope]
+    failed = session.digest_failures.get(scope)
+    if failed is not None and time.monotonic() - failed[0] < roles.DIGEST_RETRY_SECONDS:
+        return failed[1]
 
     async def read():
         return await snapshot_now(await get_revit_client())
 
     try:
         snapshot = await asyncio.wait_for(read(), DIGEST_TIMEOUT)
-    except TimeoutError:                          # before OSError: TimeoutError is one
-        return "not available (timeout)"
-    except ApiError as exc:
-        return f"not available ({exc.payload.get('error') or 'revit_unreachable'})"
-    except OSError:
-        return "not available (revit_unreachable)"
-    except Exception:  # noqa: BLE001 - the analyst still routes, without the digest
-        _log.error("reading the digest failed", exc_info=True)
-        return "not available (snapshot_failed)"
-    session.digest = snapshot_digest(snapshot, roles.DIGEST_MAX_CHARS)
-    session.digest_stale = False
-    return session.digest
+    except Exception as exc:  # noqa: BLE001 - the analyst still routes, without the digest
+        if isinstance(exc, TimeoutError):                  # before OSError: TimeoutError is one
+            why = "timeout"
+        elif isinstance(exc, ApiError):
+            why = str(exc.payload.get("error") or "revit_unreachable")
+        elif isinstance(exc, OSError):
+            why = "revit_unreachable"
+        else:
+            _log.error("reading the digest failed", exc_info=True)
+            why = "snapshot_failed"
+        text = f"not available ({why})"
+        session.digest_failures[scope] = (time.monotonic(), text)
+        return text
+    session.digest_failures.pop(scope, None)
+    session.digests[scope] = snapshot_digest(snapshot, roles.DIGEST_MAX_CHARS)
+    return session.digests[scope]
 
 
 def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
@@ -418,10 +427,19 @@ class Turn:
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
+        self.ran: dict[str, str] = {}                   # role -> model, in the order the roles ran
 
     def stage(self, role: str, model: str, status: str) -> str:
         self.open = (role, model) if status == "start" else None
+        if status == "start":
+            self.ran.pop(role, None)
+            self.ran[role] = model
         return format_sse_event("stage", {"role": role, "model": model, "status": status})
+
+    def models_ran(self) -> str | None:
+        """The interaction log's model of a turn with the roles: each role that ran and its
+        model (``analyst m1, planner m2``); None when none ran."""
+        return ", ".join(f"{role} {model}" for role, model in self.ran.items()) or None
 
     def close(self) -> list[str]:
         """``stage end`` of the stage still open, if any: every way the turn ends sends it."""
@@ -562,10 +580,13 @@ class Turn:
 
     async def planner(self, target: ModelTarget, route: str, out: LoopResult) -> AsyncGenerator[str, None]:
         """The planner's segment: the session's conversation (the caller added its user message)
-        under the planner's prompt, with the route's tools."""
+        under the planner's prompt, with the route's tools - or all seven on every route with
+        ``ROLES_PLANNER_TOOLS=all``, every one of them offered and run."""
         session = self.session
         messages = [{"role": "system", "content": session.role_prompt(roles.PLANNER, build_role_prompt)}]
         messages.extend(session.window(HISTORY_WINDOW))
+        if get_settings().roles_planner_tools == "all":
+            route = roles.TOOL                    # the tool route has all seven
         yield self.stage(roles.PLANNER, target.model, "start")
         async for frame in self.loop(roles.PLANNER, target, messages, roles.ROUTE_DEFINITIONS[route],
                                      max_rounds=MAX_TOOL_ROUNDS, stream=True, keep=session.add,
@@ -574,49 +595,66 @@ class Turn:
         yield self.stage(roles.PLANNER, target.model, "end")
 
 
-async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str) -> AsyncGenerator[str, None]:
-    """A message with the roles: the analyst routes it; chat and none end with its note, query
-    and tool go on to the planner, the routing after the message."""
+async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str) -> AsyncGenerator[str, None]:
+    """A message with the roles: the analyst routes it (``scope``: the device the request drives,
+    whose digest it reads); chat and none end with its note, query and tool go on to the planner,
+    the routing after the message. With ``ROLES_ANALYST=off`` the message goes straight to the
+    planner with route tool."""
     session = run.session
-    analyst = targets[roles.ANALYST]
-    yield run.stage(roles.ANALYST, analyst.model, "start")
-    packs = await asyncio.to_thread(list_packs)
-    names = [p["name"] for p in packs if isinstance(p, dict) and isinstance(p.get("name"), str)]
-    digest = await model_digest(session)
-    messages = [{"role": "system", "content": session.role_prompt(roles.ANALYST, build_role_prompt)},
-                {"role": "user", "content": roles.analyst_message(roles.tool_lines(packs), digest,
-                                                                   session.role_task, text)}]
-    parsed: list = []
-    async for frame in run.answer_json(roles.ANALYST, analyst, messages,
-                                       lambda reply: roles.parse_routing(reply, names), parsed=parsed):
-        yield frame
-    routing = parsed[0] or roles.FALLBACK_ROUTING
-    yield run.stage(roles.ANALYST, analyst.model, "end")
-    if routing.route in roles.ANSWERED_BY_ANALYST:
-        yield format_sse(roles.analyst_reply(routing))
-        return
-    task = roles.next_task(session.role_task, routing)
-    session.role_task = task
+    if get_settings().roles_analyst:
+        analyst = targets[roles.ANALYST]
+        yield run.stage(roles.ANALYST, analyst.model, "start")
+        packs = await asyncio.to_thread(list_packs)
+        names = [p["name"] for p in packs if isinstance(p, dict) and isinstance(p.get("name"), str)]
+        digest = await model_digest(session, scope)
+        messages = [{"role": "system", "content": session.role_prompt(roles.ANALYST, build_role_prompt)},
+                    {"role": "user", "content": roles.analyst_message(roles.tool_lines(packs), digest,
+                                                                       session.role_task, text)}]
+        parsed: list = []
+        async for frame in run.answer_json(roles.ANALYST, analyst, messages,
+                                           lambda reply: roles.parse_routing(reply, names), parsed=parsed):
+            yield frame
+        routing = parsed[0] or roles.FALLBACK_ROUTING
+        yield run.stage(roles.ANALYST, analyst.model, "end")
+        if routing.route in roles.ANSWERED_BY_ANALYST:
+            yield format_sse(roles.analyst_reply(routing))
+            return
+    else:
+        routing = roles.FALLBACK_ROUTING
+    # Only a tool routing opens or continues the open task (roles.next_task).
+    task = roles.next_task(session.role_task, routing) if routing.route == roles.TOOL else None
+    if task is not None:
+        session.role_task = task
     session.add({"role": "user", "content": roles.planner_message(text, routing, session.pending_verdict)})
     session.pending_verdict = None
     out = LoopResult()
     async for frame in run.planner(targets[roles.PLANNER], routing.route, out):
         yield frame
-    task.last = out.text
+    if task is not None:
+        task.last = out.text
 
 
-async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution: dict) -> AsyncGenerator[str, None]:
-    """An execution report with the roles: the supervisor's verdict, held to the package's;
-    retry runs the planner again with the supervisor's fix."""
+async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution: dict,
+                          scope: str) -> AsyncGenerator[str, None]:
+    """An execution report with the roles: the supervisor's verdict, held to the package's
+    (``roles.enforce`` reads the raw result; the supervisor and the session get capped
+    copies); retry runs the planner again with the supervisor's fix."""
     session = run.session
-    session.digest_stale = True                   # the open model may have changed
+    # The open model may have changed: the analyst reads this device's model again.
+    session.digests.pop(scope, None)
+    session.digest_failures.pop(scope, None)
     task = session.role_task or roles.RoleTask(route=roles.TOOL)
     session.role_task = task
     supervisor = targets[roles.SUPERVISOR]
-    spec = session.confirmed_spec if session.confirmed_spec is not None else session.spec
+    # The spec the page confirmed with this session, once: a report without one (the page did
+    # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
+    confirmed = session.confirmed_spec is not None
+    spec = session.confirmed_spec if confirmed else session.spec
+    session.confirmed_spec = None
     yield run.stage(roles.SUPERVISOR, supervisor.model, "start")
     messages = [{"role": "system", "content": session.role_prompt(roles.SUPERVISOR, build_role_prompt)},
-                {"role": "user", "content": roles.supervisor_message(spec, execution, task.retries)}]
+                {"role": "user", "content": roles.supervisor_message(spec, execution, task.retries,
+                                                                     confirmed=confirmed)}]
     parsed: list = []
     async for frame in run.answer_json(roles.SUPERVISOR, supervisor, messages, roles.parse_verdict, parsed=parsed,
                                        tools=roles.SUPERVISOR_DEFINITIONS, offered=roles.SUPERVISOR_TOOLS,
@@ -639,6 +677,7 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     yield format_sse(reply + "\n\n")
     task.retries += 1
     task.route = roles.TOOL
+    session.pending_verdict = None                # the planner gets this verdict now, as the retry
     session.add({"role": "user", "content": roles.retry_message(verdict, task.retries)})
     out = LoopResult()
     async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
@@ -646,8 +685,18 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     task.last = f"{reply}\n\n{out.text}".strip()
 
 
-def no_model(target: ModelTarget) -> HTTPException:
-    return HTTPException(400, NO_MODEL if target.entry is None else NO_MODEL_FROM_FILE)
+def no_model(target: ModelTarget, role: str) -> HTTPException:
+    """400 for a role without a model. Without a models file every role is ``LLM_*`` and the
+    browser's settings; with one, the browser's settings replace the planner's entry only, so a
+    role on another entry needs the key variable its entry names, set on the server."""
+    if target.entry is None:
+        return HTTPException(400, NO_MODEL)
+    models = get_models()
+    if role == roles.PLANNER or (models is not None and models.roles.get(role) == models.roles.get(roles.PLANNER)):
+        return HTTPException(400, NO_MODEL_FROM_FILE)
+    return HTTPException(400, f"No model configured for the {role}: set, on the server, the environment variable "
+                              f"the host's models file names for the {role}'s entry (api_key_env). The browser's "
+                              f"model settings replace the planner's entry only.")
 
 
 @router.post("/chat", dependencies=[Depends(rate_limit)])
@@ -682,20 +731,23 @@ async def chat(req: ChatRequest, request: Request,
         raise HTTPException(exc.status, str(exc)) from None
     llm = target.llm
     if not llm.configured:
-        raise no_model(target)
+        raise no_model(target, ROLE)
     # The roles with the bridge, unless LLM_SINGLE_MODEL=1; without the bridge the one loop.
-    with_roles = req.bridge and not get_settings().single_model
+    settings = get_settings()
+    with_roles = req.bridge and not settings.single_model
     targets = {ROLE: target}
     if with_roles:
-        # The role that opens this turn: the analyst (a message) or the supervisor (a report);
-        # the planner may follow either.
-        first = roles.ANALYST if req.execution is None else roles.SUPERVISOR
-        try:
-            targets[first] = await resolve_model(first, request.headers)
-        except LLMError as exc:
-            raise HTTPException(exc.status, str(exc)) from None
-        if not targets[first].llm.configured:
-            raise no_model(targets[first])
+        # The role that opens this turn: the analyst (a message; none with ROLES_ANALYST=off) or
+        # the supervisor (a report); the planner may follow either.
+        first = (roles.SUPERVISOR if req.execution is not None
+                 else roles.ANALYST if settings.roles_analyst else None)
+        if first is not None:
+            try:
+                targets[first] = await resolve_model(first, request.headers)
+            except LLMError as exc:
+                raise HTTPException(exc.status, str(exc)) from None
+            if not targets[first].llm.configured:
+                raise no_model(targets[first], first)
 
     session = get_session_store().get_or_create(req.session_id)
     turn = session.next_turn()
@@ -719,13 +771,14 @@ async def chat(req: ChatRequest, request: Request,
     run = Turn(session, turn, run_label, req.bridge)
 
     if with_roles:
+        scope = current_scope()                   # the device this request drives
         async def generate() -> AsyncGenerator[str, None]:
             if req.execution is not None:
                 yield format_sse_event("execution", req.execution)
             if picks is not None:
                 yield format_sse_event("mentions", picks)
-            segments = (message_roles(run, targets, text) if req.execution is None
-                        else execution_roles(run, targets, req.execution))
+            segments = (message_roles(run, targets, text, scope) if req.execution is None
+                        else execution_roles(run, targets, req.execution, scope))
             try:
                 async for frame in segments:
                     yield frame
@@ -778,7 +831,8 @@ async def chat(req: ChatRequest, request: Request,
             client_ip=get_client_ip(request),
             user_agent=request.headers.get("user-agent", ""),
             user_input=text,
-            model=llm.model,
+            # The one loop: the planner's model, as before; the roles: each role that ran and its model.
+            model=(lambda: run.models_ran() or llm.model) if with_roles else llm.model,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Session-Id": session.session_id},

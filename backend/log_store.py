@@ -21,7 +21,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -382,9 +382,10 @@ async def log_and_stream(
     client_ip: str = "unknown",
     user_agent: str = "",
     user_input: str = "",
-    model: str | None = None,
+    model: str | Callable[[], str | None] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Pass an SSE stream through unchanged and log the assembled reply after it ends.
+    model may be a function, called then: the model (or models) the stream actually used.
 
     Frames are inspected by type: string ``data:`` payloads are the reply,
     an ``event: error`` frame (the model endpoint failed; no exception is
@@ -410,6 +411,6 @@ async def log_and_stream(
             store.log,
             module=module, session_id=session_id, client_ip=client_ip,
             user_agent=user_agent, user_input=user_input,
-            assistant_output="".join(tokens), model=model,
+            assistant_output="".join(tokens), model=model() if callable(model) else model,
             duration_ms=int((time.time() - start) * 1000), status=status,
         )

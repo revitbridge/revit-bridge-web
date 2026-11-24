@@ -52,7 +52,14 @@ frontend build works on any address.
                                 fallback. Default: three roles - analyst, planner,
                                 supervisor - each with its own text, tools and
                                 model (backend.roles)
-    ADMIN_PASSWORD              cloud only, required there: the X-Admin-Token of
+    ROLES_PLANNER_TOOLS         with the roles: "route" (default) - the planner gets
+                                and may call the tools of the analyst's route only;
+                                "all" - all seven on every route (a prefix that stays
+                                the same for a provider's cache). For measuring both
+    ROLES_ANALYST               with the roles: "on" (default); "off" - every message
+                                goes straight to the planner with route tool, the
+                                supervisor still reports (planner + supervisor)
+    ADMIN_PASSWORD             cloud only, required there: the X-Admin-Token of
                                 pack and skill changes, /api/logs and the device list
     MAX_DEVICES                 cloud only: how many paired add-ins may be
                                 connected at once (default 20)
@@ -144,6 +151,10 @@ class WebSettings:
     models_file_explicit: bool = False
     # LLM_SINGLE_MODEL=1: the one model loop of the chat instead of the three roles.
     single_model: bool = False
+    # With the roles: the planner's tools ("route" or "all", ROLES_PLANNER_TOOLS) and whether
+    # the analyst routes each message (ROLES_ANALYST on / off).
+    roles_planner_tools: str = "route"
+    roles_analyst: bool = True
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
@@ -190,6 +201,8 @@ class WebSettings:
             models_file=Path(models_file) if models_file else data_dir / MODELS_FILE_NAME,
             models_file_explicit=bool(models_file),
             single_model=env_flag("LLM_SINGLE_MODEL", env),
+            roles_planner_tools=_choice(env.get("ROLES_PLANNER_TOOLS"), "ROLES_PLANNER_TOOLS", ("route", "all")),
+            roles_analyst=_choice(env.get("ROLES_ANALYST"), "ROLES_ANALYST", ("on", "off")) == "on",
             admin_password=env.get("ADMIN_PASSWORD", "") if cloud else "",
             max_devices=_int(env.get("MAX_DEVICES"), DEFAULT_MAX_DEVICES, "MAX_DEVICES") if cloud else 0,
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
@@ -352,6 +365,16 @@ def _refuse_exposed_local(env: Mapping[str, str], host: str) -> None:
             f"DEPLOY_MODE=local serves this machine only, but {name} is {address}, which other "
             f"machines can reach: use {name}=127.0.0.1 ({default}), or DEPLOY_MODE=cloud with "
             f"ADMIN_PASSWORD to serve other machines")
+
+
+def _choice(raw: str | None, name: str, choices: tuple[str, ...]) -> str:
+    """One of ``choices`` (any case, surrounding space ignored); unset or empty is the first."""
+    value = (raw or "").strip().lower()
+    if not value:
+        return choices[0]
+    if value not in choices:
+        raise ConfigError(f"{name} must be {' or '.join(choices)} (default {choices[0]})")
+    return value
 
 
 def _int(raw: str | None, default: int, name: str) -> int:

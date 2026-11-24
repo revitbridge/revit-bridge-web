@@ -58,7 +58,7 @@ def env(tmp_path, monkeypatch):
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
                 "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT",
                 "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER", "MODELS_FILE",
-                "LLM_SINGLE_MODEL"):
+                "LLM_SINGLE_MODEL", "ROLES_PLANNER_TOOLS", "ROLES_ANALYST"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DEPLOY_MODE", "cloud")
     monkeypatch.setenv("ADMIN_PASSWORD", FIXTURE_ADMIN_PASSWORD)
