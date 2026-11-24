@@ -1,14 +1,17 @@
 /* POST /api/chat - the host loop's SSE stream from the designer's own model.
 
    chatEvents() yields every event of one turn (HostEvent, spec 10.10): the session
-   id, reply tokens, the spec card the model proposed, the execution the page
-   reported, what the host did (stage, tool, usage), a model error, done.
+   id, what the host found for the message's picks (mentions), reply tokens, the spec
+   card the model proposed, the execution the page reported, what the host did (stage,
+   tool, usage), a model error, done.
    chatStream() is the older text-only view of the same stream (session / token /
    error) and stays as it was. */
 
 import { apiStream } from './client'
 import { llmHeaders } from '../store'
-import type { ExecutionResult, HostEvent, HostRequest, ReconcileResult, SpecError, TaskSpec } from '../types/api'
+import type {
+  ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, ReconcileResult, SpecError, TaskSpec,
+} from '../types/api'
 import type { Role, ToolEvent } from '../types/hostv2'
 
 const ROLES: readonly string[] = ['analyst', 'planner', 'supervisor']
@@ -95,6 +98,7 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (!isRecord(parsed)) return null
     return { type: 'execution', execution: parsed as unknown as ExecutionResult }
   }
+  if (event === 'mentions') return mentionsEvent(parsed)
   if (event === 'stage' || event === 'tool' || event === 'usage') return traceEvent(event, parsed)
   if (event === '' && typeof parsed === 'string') return { type: 'token', text: parsed }
   return null
@@ -102,6 +106,25 @@ export function parseSseFrame(frame: string): HostEvent | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/* event: mentions {resolved, not_found, invalid, unresolved, warnings?}; a list that is
+   missing or not a list is empty, an entry that is not an object is dropped. */
+function mentionsEvent(parsed: unknown): HostEvent | null {
+  if (!isRecord(parsed)) return null
+  const list = (key: string) => (Array.isArray(parsed[key]) ? parsed[key] : []).filter(isRecord)
+  const problems = (key: string): MentionProblem[] => list(key).map(entry => ({
+    kind: typeof entry.kind === 'string' ? entry.kind : null,
+    id: entry.id,
+    reason: typeof entry.reason === 'string' ? entry.reason : key,
+  }))
+  const event: Extract<HostEvent, { type: 'mentions' }> = {
+    type: 'mentions',
+    resolved: list('resolved') as unknown as MentionReport['resolved'],
+    not_found: problems('not_found'), invalid: problems('invalid'), unresolved: problems('unresolved'),
+  }
+  if (Array.isArray(parsed.warnings)) event.warnings = parsed.warnings.filter((w): w is string => typeof w === 'string')
+  return event
 }
 
 /* error.detail: message, then error, then the raw text (the bridge's {error, message?}
@@ -139,6 +162,7 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.message !== undefined) body.message = request.message
   if (request.execution !== undefined) body.execution = request.execution
   if (request.bridge !== undefined) body.bridge = request.bridge
+  if (request.mentions?.length) body.mentions = request.mentions
   const resp = await apiStream('/api/chat', body, llmHeaders(), signal)
   const sid = resp.headers.get('X-Session-Id')
   if (sid) yield { type: 'session', id: sid }

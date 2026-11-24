@@ -154,9 +154,16 @@ export function mentionStartAt(text: string, spans: MentionSpan[], caret: number
   return spans.some(span => start >= span.start && start < span.end) ? null : start
 }
 
+// An '@' right after an ASCII letter or digit is inside a word ("bob@level", an e-mail
+// address): it opens nothing. After a space, punctuation, the start of the text or a
+// line, or any other character - a Chinese character, Chinese being written without
+// spaces - it does.
+const IN_A_WORD = /[A-Za-z0-9]/
+
 export function menuAt(text: string, spans: MentionSpan[], caret: number, previous: MentionMenu | null): MentionMenu | null {
   const start = mentionStartAt(text, spans, caret)
   if (start === null) return null
+  if (start > 0 && IN_A_WORD.test(text[start - 1])) return null
   const query = text.slice(start, caret)
   const items = /^@(link|type|level):([^\r\n@]*)$/i.exec(query)
   if (items) {

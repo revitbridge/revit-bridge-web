@@ -6,7 +6,7 @@
 import { useState } from 'react'
 import { useStore } from 'zustand'
 import { chatEvents } from '../../api/chat'
-import { taskApi } from '../task/api'
+import { flowApi } from '../task/api'
 import ChatPanel from '../task/ChatPanel'
 import ExecutionPanel from '../task/ExecutionPanel'
 import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
@@ -20,8 +20,8 @@ const STEPS = ['Snapshot', 'Brief', 'Spec card', 'Confirm and run', 'Report']
 /* One flow for the tab's lifetime, so switching pages keeps the conversation. */
 let sharedFlow: TaskFlow | null = null
 function flowFor(events?: EventSource): TaskFlow {
-  if (events) return createTaskFlow({ events, api: taskApi })
-  sharedFlow ??= createTaskFlow({ events: chatEvents, api: taskApi })
+  if (events) return createTaskFlow({ events, api: flowApi })
+  sharedFlow ??= createTaskFlow({ events: chatEvents, api: flowApi })
   return sharedFlow
 }
 
@@ -60,9 +60,9 @@ export default function TaskPage({ events }: { events?: EventSource }) {
         </p>
         <div className={`task-columns${state.compare ? ' two' : ''}`}>
           <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions}
-            onSend={t => flow.send(t)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
+            onSend={(t, picked) => flow.send(t, picked)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
             placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
-            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below."
+            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below. Type @ to pick a level, a type or a link from the open model: the model gets what you picked, checked against the model."
             showTrace />
           {state.compare && (
             <ChatPanel title="Without the bridge (baseline)" transcript={state.baseline}

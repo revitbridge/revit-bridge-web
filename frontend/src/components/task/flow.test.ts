@@ -3,6 +3,7 @@ import { BridgeApiError } from '../shared/http'
 import { sumUsage } from '../hostv2/trace'
 import { canConfirm, coerceLike, createTaskFlow, initialState, interpretationsOf, NOT_OFFERED, paramsOf, SPEC_ONLY_REPLY, usageOf, type FlowApi } from './flow'
 import type { ExecutionResult, HostEvent, HostRequest, Question, ReconcileResult, TaskSpec } from '../../types/api'
+import type { Mention } from '../../types/hostv2'
 
 const spec: TaskSpec = {
   task: 'Place a structural column at (3000, 3000) on L1',
@@ -177,7 +178,8 @@ describe('the task flow', () => {
     expect(interpretationsOf(flow.store.getState().proposal!)).toEqual([{ param: 'x', text: '3000 read as mm', confirmed: false }])
     await flow.toggleInterpretation('3000 read as mm', true)
     const s = flow.store.getState()
-    expect(api.calls).toEqual([['reconcile', [{ ...spec, interpretations: [{ param: 'x', text: '3000 read as mm', confirmed: true }] }]]])
+    // No session event in this turn: no session id goes with the draft.
+    expect(api.calls).toEqual([['reconcile', [{ ...spec, interpretations: [{ param: 'x', text: '3000 read as mm', confirmed: true }] }, null]]])
     expect(s.proposal?.reconcile?.ready).toBe(true)
     expect(s.proposal?.spec.interpretations?.[0].confirmed).toBe(false)   // the model's spec is untouched
     expect(canConfirm(s)).toBe(true)
@@ -193,7 +195,7 @@ describe('the task flow', () => {
     await flow.send('brief')
     await flow.confirm()
     let s = flow.store.getState()
-    expect(api.calls).toEqual([['confirm', [spec]]])
+    expect(api.calls).toEqual([['confirm', [spec, 's1']]])                // the chat session goes with the spec
     expect(s.confirmation).toMatchObject({ token: 'tok_abcdef0123456789', expires_at: '2026-09-22T09:10:00Z', used: false })
     expect(s.confirmation?.spec).toEqual(spec)
 
@@ -382,5 +384,63 @@ describe('the helpers', () => {
     expect(coerceLike('abc', 3000)).toBe('abc')
     expect(coerceLike('true', false)).toBe(true)
     expect(coerceLike('L2', 'L1')).toBe('L2')
+  })
+})
+
+describe("the designer's picks", () => {
+  const f2: Mention = { kind: 'level', id: 312, name: 'F2' }
+  const f9: Mention = { kind: 'level', id: 99, name: 'F9' }
+  const report: HostEvent = {
+    type: 'mentions',
+    resolved: [{ kind: 'level', id: 312, name: 'F2', label: 'F2', detail: '3000 mm', elevation_mm: 3000 }],
+    not_found: [{ kind: 'level', id: 99, reason: 'not_found' }], invalid: [], unresolved: [],
+  }
+
+  it('go with the message on the bridge side only, and the sent message takes what the mentions event says', async () => {
+    const host = scriptedHost(
+      [{ type: 'session', id: 's1' }, report, { type: 'token', text: 'On F2.' }, { type: 'done' }],
+      [{ type: 'session', id: 'without' }, { type: 'token', text: 'guesses' }, { type: 'done' }],
+    )
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    flow.setCompare(true)
+    await flow.send('  a wall on @level:F2 or @level:F9 ', [f2, f9])
+    const message = 'a wall on @level:F2 or @level:F9'
+    expect(host.requests).toEqual([
+      { message, session_id: null, bridge: true,
+        mentions: [{ kind: 'level', id: 312, label: 'F2' }, { kind: 'level', id: 99, label: 'F9' }] },
+      { message, session_id: null, bridge: false },               // the comparison has no model to check them against
+    ])
+    const s = flow.store.getState()
+    expect(s.bridge.messages[0]).toEqual({ role: 'user', content: message, mentions: [
+      { ...f2, status: 'resolved' }, { ...f9, status: 'not_found', reason: 'not_found' }] })
+    expect(s.bridge.messages[1]).toMatchObject({ role: 'assistant', content: 'On F2.' })
+    expect(s.baseline.messages[0]).toEqual({ role: 'user', content: message })
+  })
+
+  it('a message without picks is sent as before: no mentions field, nothing on the message', async () => {
+    const host = scriptedHost([{ type: 'token', text: 'ok' }, { type: 'done' }], [{ type: 'done' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('plain')
+    await flow.send('also plain', [])
+    expect(host.requests).toEqual([{ message: 'plain', session_id: null, bridge: true },
+                                   { message: 'also plain', session_id: null, bridge: true }])
+    expect(flow.store.getState().bridge.messages.filter(m => m.role === 'user')).toEqual([
+      { role: 'user', content: 'plain' }, { role: 'user', content: 'also plain' }])
+  })
+
+  it('picks stay pending when the turn ends before the host said anything about them', async () => {
+    const host = scriptedHost([{ type: 'error', detail: 'model down' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('on @level:F2', [f2])
+    expect(flow.store.getState().bridge.messages[0].mentions).toEqual([{ ...f2, status: 'pending' }])
+  })
+
+  it('a reconcile of the draft carries the chat session too', async () => {
+    const host = scriptedHost([{ type: 'session', id: 's1' }, specEvent, { type: 'done' }])
+    const api = fakeApi()
+    const flow = createTaskFlow({ events: host.events, api })
+    await flow.send('brief')
+    await flow.toggleInterpretation('3000 read as mm', true)
+    expect(api.calls.map(([name, args]) => [name, args[1]])).toEqual([['reconcile', 's1']])
   })
 })

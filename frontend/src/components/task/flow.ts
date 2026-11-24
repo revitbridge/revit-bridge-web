@@ -12,17 +12,20 @@ import type {
   ChatMessage, ConfirmResponse, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   SpecError, TaskSpec,
 } from '../../types/api'
-import type { TraceEvent, UsageEvent } from '../../types/hostv2'
+import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
 import { interruptOpen } from '../hostv2/trace/events'
+import { mentionRefs, pendingMentions, withReport } from './mentions'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
 
 export type EventSource = (request: HostRequest, signal?: AbortSignal) => AsyncIterable<HostEvent>
 
+/* reconcile and confirm carry the chat session the spec comes from: a parameter bound to
+   one of the designer's picks is accepted only for a pick checked in that session. */
 export interface FlowApi {
-  reconcile(spec: TaskSpec): Promise<ReconcileResult>
-  confirm(spec: TaskSpec): Promise<ConfirmResponse>
+  reconcile(spec: TaskSpec, sessionId: string | null): Promise<ReconcileResult>
+  confirm(spec: TaskSpec, sessionId: string | null): Promise<ConfirmResponse>
   runTool(name: string, params: Record<string, unknown>, token: string): Promise<ExecutionResult>
 }
 
@@ -141,6 +144,17 @@ export function canConfirm(s: TaskState): boolean {
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>
+type MentionsEvent = Extract<HostEvent, { type: 'mentions' }>
+
+/* The turn's mentions event onto the picks of the message it answers (the last user message). */
+function reportPicks(t: Transcript, report: MentionsEvent): Transcript {
+  const at = t.messages.findLastIndex(m => m.role === 'user')
+  const message = t.messages[at]
+  if (!message?.mentions) return t
+  const messages = t.messages.slice()
+  messages[at] = { ...message, mentions: withReport(message.mentions, report) }
+  return { ...t, messages }
+}
 type Side = 'bridge' | 'baseline'
 
 export function createTaskFlow(deps: FlowDeps) {
@@ -173,6 +187,7 @@ export function createTaskFlow(deps: FlowDeps) {
         if (isTraceEvent(evt)) { update(m => ({ ...m, trace: [...(m.trace ?? []), evt] })); continue }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
         if (evt.type === 'execution') continue          // the echo of what the page sent
+        if (evt.type === 'mentions') { patch(side, t => reportPicks(t, evt)); continue }
         if (evt.type === 'error') {
           reply += `${reply ? '\n\n' : ''}**Model error:** ${evt.detail}`
           show(reply)
@@ -214,13 +229,18 @@ export function createTaskFlow(deps: FlowDeps) {
     reported: false,
   })
 
-  async function send(text: string) {
+  /* The designer's message, with the model items picked in it (bridge side only: the
+     comparison has no model to check them against, and gets the text as typed). */
+  async function send(text: string, mentions: Mention[] = []) {
     const s = getState()
     const message = text.trim()
     if (!message || s.bridge.streaming || s.baseline.streaming) return
     controller = new AbortController()
-    push('bridge', { role: 'user', content: message })
-    const jobs = [consume('bridge', { message, session_id: s.bridge.sessionId, bridge: true }, onSpec)]
+    const picked = mentions.length > 0
+    push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}) })
+    const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
+    if (picked) request.mentions = mentionRefs(mentions)
+    const jobs = [consume('bridge', request, onSpec)]
     if (s.compare) {
       push('baseline', { role: 'user', content: message })
       jobs.push(consume('baseline', { message, session_id: s.baseline.sessionId, bridge: false }))
@@ -246,7 +266,7 @@ export function createTaskFlow(deps: FlowDeps) {
     const draft: TaskSpec = { ...p.draft, interpretations: list }
     setState({ proposal: { ...p, draft, reconciling: true } })
     try {
-      const reconcile = await deps.api.reconcile(draft)
+      const reconcile = await deps.api.reconcile(draft, getState().bridge.sessionId)
       setState(s => s.proposal?.draft === draft
         ? { proposal: { ...s.proposal, reconcile, reconcileError: null, reconciling: false } }
         : {})
@@ -268,7 +288,7 @@ export function createTaskFlow(deps: FlowDeps) {
     }
     setState({ confirming: true, confirmErrors: [] })
     try {
-      const issued = await deps.api.confirm(spec)
+      const issued = await deps.api.confirm(spec, s.bridge.sessionId)
       setState({
         confirmation: { ...issued, spec, used: false },
         confirming: false, execution: null, executionKind: null, reported: false,

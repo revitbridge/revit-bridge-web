@@ -2,41 +2,65 @@
    without the bridge when the comparison is on. A question's kind is a badge
    and what it holds up its tooltip: shown only, the spec card gates on
    reconcile.ready. With showTrace each reply has its tool activity above it
-   (the trace of its turn: one row per tool call, expandable). */
+   (the trace of its turn: one row per tool call, expandable).
+
+   The input is the mention input: `@` offers @link, @type and @level, and a picked
+   model item is one tag (components/hostv2/mention). A sent message shows its picks
+   with what the host found for each (the turn's `mentions` event); a pick the host
+   found gone or not valid is marked when it is in the input again. */
 
 import { Fragment, useEffect, useRef, useState } from 'react'
-import type { Question } from '../../types/api'
+import type { Question, SentMention } from '../../types/api'
+import type { FetchCandidates, Mention } from '../../types/hostv2'
+import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
+import { fetchCandidates as fetchFromHost, mentionNote, unavailableMentions } from './mentions'
 
 interface Props {
   title: string
   transcript: Transcript
   questions?: Question[]
-  onSend?: (text: string) => void        // absent: a read-only mirror (the no-bridge side)
+  onSend?: (text: string, mentions: Mention[]) => void   // absent: a read-only mirror (the no-bridge side)
   onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
   onReset?: () => void
   disabled?: boolean
   placeholder?: string
   hint?: string
   showTrace?: boolean                    // the tool activity above each reply (the bridge side)
+  fetchCandidates?: FetchCandidates      // the picker's candidates (default: GET /api/v1/bridge/mentions)
 }
 
-export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint, showTrace }: Props) {
+function SentMentions({ mentions }: { mentions: SentMention[] }) {
+  return (
+    <div className="chat-mentions">
+      {mentions.map((m, i) => (
+        <span key={i} className={`chat-mention is-${m.status}`} title={mentionNote(m)}>
+          @{m.kind}:{m.name}<span className="chat-mention-note">{mentionNote(m)}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
+  showTrace, fetchCandidates = fetchFromHost }: Props) {
   const [input, setInput] = useState('')
+  const [mentions, setMentions] = useState<Mention[]>([])
   const scroll = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight })
   }, [transcript.messages])
 
-  const send = () => {
-    const text = input.trim()
-    if (!text || !onSend || disabled) return
+  const send = (text: string, picked: Mention[]) => {
+    const message = text.trim()
+    if (!message || !onSend || disabled) return
     setInput('')
-    onSend(text)
+    setMentions([])
+    onSend(message, picked)
   }
 
   return (
@@ -57,6 +81,7 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
               {m.role === 'assistant'
                 ? <div className="markdown-body"><Markdown>{m.content || '...'}</Markdown></div>
                 : m.content}
+              {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
             </div>
           </Fragment>
         ))}
@@ -88,11 +113,12 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
       </div>
       {onSend && (
         <div className="chat-input-row">
-          <textarea className="input-field" value={input} onChange={e => setInput(e.target.value)}
-            placeholder={placeholder} disabled={disabled}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }} />
+          <MentionInput value={input} mentions={mentions}
+            onChange={(text, picked) => { setInput(text); setMentions(picked) }}
+            onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
+            placeholder={placeholder} invalid={unavailableMentions(transcript.messages)} />
           <div className="chat-buttons">
-            <button className="btn-primary" onClick={send} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
+            <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
             {onReset && <button className="btn-ghost" onClick={onReset} disabled={transcript.streaming}>New session</button>}
           </div>
         </div>
