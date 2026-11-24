@@ -39,8 +39,9 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
   `backend/session.py` (history, the session's fixed system prompt, the turn counter, the verified
-  picks); `backend/mention_check.py` the `unknown_mention` check of a spec's `mention:` evidence
-  against the session's picks (model's `propose_spec` and the HTTP spec routes).
+  picks per device scope); `backend/mention_check.py` the `unknown_mention` check of a spec's
+  `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
+  HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
@@ -95,8 +96,9 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 - The designer's picks (`@level`, `@type`, `@link`): what to offer, whether a pick exists and the
   text the model gets all come from the package (`revit_bridge.mentions`). The host only keeps the
   verified items on the session and compares a spec's `mention:` evidence strings and values with
-  them (`backend/mention_check.py`: an item's `name`, a link's `id`); the page sends only `{kind,
-  id, label}`, and the label never reaches the model.
+  them (`backend/mention_check.py`: the name the package's block shows - a link's label, else its
+  name), per device scope; `/spec/confirm` reads the bound picks again with the package before a
+  token. The page sends only `{kind, id}`.
 - Every tool name from a request or from the model goes through `require_tool_name` (ASCII
   letters, digits and `_`, at most 100 characters, no Windows device name) before any `ToolStore`
   call. A draft pack is filled only by the package (`ToolStore.render` in a store of temporary

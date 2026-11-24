@@ -20,7 +20,8 @@ that ran without it does not. See *Added* and *Changed* (deploy modes).
 
 The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
-`reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
+`reconcile` cannot find now also comes as a question. The chat has one new event, `mentions`,
+sent only for a message that carries picks (see *Added*); the other events are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
@@ -81,21 +82,30 @@ the host shares your tools with the package's MCP server (see *Changed*).
   the bridge only): the host checks them with the package's `resolve_mentions` before the model is
   called and starts the turn with **`event: mentions`** `{resolved, not_found, invalid,
   unresolved, warnings?}`; the verified picks follow the designer's words as the package's
-  "Designer's selections" block and stay with the session for its later turns; picks not found or
-  not valid are not sent; with Revit unreachable every pick is `unresolved` with the reason and
-  the turn runs without them. A message without picks is unchanged (no event, the text as typed).
-  A spec parameter bound to a pick (evidence `mention:<kind>#<id>`) must be one verified in that
-  session, with its value (a level's or a type's name, a link's id) and the source the package's
-  rule gives (`tool` for a parameter whose value comes from the model, else `designer`): otherwise
-  `unknown_mention`, on the model's `propose_spec` and on `POST /spec/reconcile` and `POST
-  /spec/confirm`, which take an optional `session_id` for it (422 `invalid_spec` with the
-  `errors`). In `docs/api-v1.json`: the new path, `ChatMention`, `ChatRequest.mentions` and
-  `session_id` on the two spec requests. The task page's input is the mention input: `@` offers
-  the three kinds, a picked item is one tag, the list comes from the route above (a listing that
-  does not answer within 10 s gives up, and Enter sends), and an `@` right after an ASCII letter or
-  digit opens nothing (`bob@level`) while one after a space, punctuation or a Chinese character
-  does. A sent message shows each pick with what the host found, and a pick found gone is struck
-  through when it is used again; the confirmation and the reconciliation send the session id.
+  "Designer's selections" block and stay with the session, per device, for its later turns (a
+  pick a later turn finds gone leaves it); picks not found or not valid are not sent; with Revit
+  unreachable, or no answer within 15 s, every pick is `unresolved` with the reason
+  (`revit_unreachable`, `timeout`, ...) and the turn runs without them. A message without picks
+  is unchanged (no event, the text as typed). A spec parameter whose evidence starts with
+  `mention` must bind a pick verified in that session for the same device, as exactly
+  `mention:<level|type|link>#<id>`, of the kind the parameter takes (as its pack declares it), to
+  the name the package's block shows (a level's or a type's name, a link's label or else its
+  name), with the source the package's rule gives (`tool` for a parameter whose value comes from
+  the model, else `designer`): otherwise `unknown_mention`, on the model's `propose_spec` and
+  `reconcile` and on `POST /spec/reconcile` and `POST /spec/confirm`, which take an optional
+  `session_id` for it (422 `invalid_spec` with the `errors`). `/spec/confirm` reads a spec's
+  picks again from the open model before it issues a token: one gone or renamed since is
+  `unknown_mention`; without Revit 503 `revit_unreachable` (503 `revit_error`, 504
+  `revit_timeout`); a spec without picks needs no Revit. In `docs/api-v1.json`: the new path,
+  `ChatMention`, `ChatRequest.mentions`, `session_id` on the two spec requests, and 503 and 504
+  on `/spec/confirm`. The task page's input is the mention input: `@` offers the three kinds, a
+  picked item is one tag, the list comes from the route above (a listing that does not answer
+  within 10 s gives up, and Enter sends), and an `@` right after an ASCII letter or digit opens
+  nothing (`bob@level`) while one after a space, punctuation or a Chinese character does. Each
+  item is sent once (`{kind, id}`, no label), at most 20 per message (more: the message stays in
+  the box with a note). A sent message shows each pick with what the host found, and a pick found
+  gone is struck through when it is in the box again; the confirmation and the reconciliation
+  send the session id.
 - **Models by role: `models.yml`**, the one configuration file of the host (`MODELS_FILE`, default
   `DATA_DIR/models.yml`; `models.example.yml` shows it). Each entry is a `base_url` (https, or http
   to loopback - to any host with `LLM_ALLOW_HTTP=1`), a `model` and `api_key_env` - the *name* of the environment variable holding the
@@ -356,7 +366,8 @@ the host shares your tools with the package's MCP server (see *Changed*).
   {name | first: true, category?}}`, looked up through `GET /api/v1/bridge/mentions` before the
   task's first message (nothing found, or two items of that name, fails the task before any chat);
   the picks go with the first message only, each result records the mentions sent, and `--execute`
-  confirms with the chat session. `mentioned-level` and `mentioned-link` in `bench/tasks.yml` pick
+  confirms with the chat session. A pick that finds nothing skips the task (`skipped: pick not
+  found (<kind> <name>)`), unscored. `mentioned-level` and `mentioned-link` in `bench/tasks.yml` pick
   by name (F2) and the first loaded link instead of placeholder ids, no longer `requires:
   [mentions]`; `mentioned-level` also expects `level_name: F2`. `bench/tests` is in the pytest
   paths, so `uv run pytest` (and CI) runs it.
