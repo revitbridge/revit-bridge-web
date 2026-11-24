@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from backend.config import ConfigError
+from tests.conftest import builtin_pack_names
 from tests.test_api_v1 import B, WALL, confirm, spec_for
 
 ADMIN = {"X-Admin-Token": "hunter2"}
@@ -49,8 +50,10 @@ def call(client, method: str, path: str, body, headers=None):
 
 
 def untouched(client, tmp_path):
-    names = {t["name"] for t in client.get(f"{B}/tools").json()}
-    assert "create_beam" in names and not names & {"count_walls", "count_doors"} and len(names) == 8
+    # Exactly the wheel's packs, each listed once: none added (count_walls, count_doors or any
+    # other name) and none deleted or hidden (create_beam among them).
+    names = [t["name"] for t in client.get(f"{B}/tools").json()]
+    assert sorted(names) == sorted(builtin_pack_names()) and "create_beam" in names
     assert client.get(f"{B}/tools/query_levels").json()["description"] != "changed"
     assert not list((tmp_path / "data" / "capabilities").glob("*.yaml"))
 
@@ -107,7 +110,7 @@ def test_with_the_admin_password_packs_change(admin_client, tmp_path):
 
 def test_anyone_still_lists_reads_asks_and_runs_packs(revit, admin_client):
     client = admin_client
-    assert len(client.get(f"{B}/tools").json()) == 8
+    assert sorted(t["name"] for t in client.get(f"{B}/tools").json()) == sorted(builtin_pack_names())
     assert client.get(f"{B}/tools/create_wall").json()["name"] == "create_wall"
     assert client.get(f"{B}/tools/create_wall/choices").status_code == 200
     asked = client.post(f"{B}/tools/create_wall/missing-params", json={"known": {}})

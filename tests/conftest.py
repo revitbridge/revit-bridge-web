@@ -35,6 +35,18 @@ def _fresh_usage_option_memory():
 FIXTURE_ADMIN_PASSWORD = "fixture-admin-password"
 
 
+def builtin_pack_names() -> set[str]:
+    """The packs the installed revit-bridge wheel ships, read from the package's own built-in
+    directory (the store's rule: ``*.yaml`` not starting with ``_``) - what a host lists,
+    read-only, before anyone saves a pack. A test compares a listing with this set, so it does
+    not depend on how many packs a release ships or which name sorts first."""
+    from revit_bridge.paths import builtin_capabilities_dir
+    names = {p.stem for p in builtin_capabilities_dir().glob("*.yaml") if p.is_file() and not p.name.startswith("_")}
+    # The suite uses these as built-in packs (read-only, listed, runnable).
+    assert {"create_wall", "create_beam", "query_levels"} <= names, sorted(names)
+    return names
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Point the host at a private data dir and no Revit; returns monkeypatch.
