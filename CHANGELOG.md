@@ -138,14 +138,23 @@ the host shares your tools with the package's MCP server (see *Changed*).
   so), *Save as tool* (name, description, validator as a JSON object; only after a successful
   dry run of the same code and declarations, and it asks before replacing a tool of that name)
   and *Run* (the saved tool through the spec card, `/spec/confirm` and `/tools/{name}/run`, as on
-  the Packs page; a draft that is not the saved tool is refused with "save it first"). Number
-  fields keep the text as typed and read it when used: `2.5` stays 2.5, `2,5` is an error. Your
-  own tools are listed with their directory (open, export, delete, import - an import asks before
-  replacing); the built-in ones are read-only (open to read or copy, export). A refusal of the
-  server shows in place with its problems, errors or warnings. On a cloud host saving, deleting
-  and importing need the admin password. `frontend/src/api/workbench.ts` is the one HTTP client
-  of the workbench (check, dry run, choices, exists, save, list, load, remove, export, import); it
-  sends a draft with parameters as `{pack, values}` and asks `/choices` for the options.
+  the Packs page; a draft whose code, parameters or validator differ from the saved tool is
+  refused with "save it first"; the card goes with any change to the draft or a value, *Confirm*
+  reads the saved tool again first, and Run is off while a run is in progress). Number fields keep
+  the text as typed and read it when used: `2.5` stays 2.5, `2,5` is an error. An empty value field
+  of a parameter with a default sends no value and says "default X will be used" (also on the
+  card); entering a default clears *Required*, as the pack format wants; a pack's `default: null`
+  stays a default. Saving an opened tool keeps its source query and each parameter's own source
+  (`floor_types`, `answer`, `default`) and type spelling; what `/solidify` cannot carry
+  (preconditions, applies_when, not_for, display name, version, revit_versions, fixtures, the
+  approval) is named before a replace and needs its own click. Your own tools are listed with
+  their directory (open, export, delete, import - an import asks before replacing); the built-in
+  ones are read-only (open to read or copy, export). A refusal of the server shows in place with
+  its problems, errors or warnings. On a cloud host saving, deleting and importing need the admin
+  password. `frontend/src/api/workbench.ts` is the one HTTP client of the workbench (check, dry
+  run, choices, lookup, save, list, load, remove, export, import); it always sends a draft as
+  `{pack, values}`, so the package fills the template (a leftover `{x}` is its 422
+  `render_failed`), and asks `/choices` for the options.
 - What the host loop does is visible and counted. `/api/chat` sends three more SSE events next
   to the ones it already sent (whose names, shapes and order are unchanged): `event: stage`
   `{role, model, status}` (`start` before the first model call, `end` before `done` or `error`;

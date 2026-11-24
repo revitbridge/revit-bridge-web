@@ -193,9 +193,18 @@ its connection.
    line), *Dry run* it against the open model (the values first, real options for levels, types and
    elements; it shows what would be added, modified and deleted and the return value, and is always
    rolled back) and *Save as tool* - only after a successful dry run of that same code and those
-   declarations, and it asks before replacing a tool of the same name. *Run* runs the saved tool
-   through the spec card and the confirmation, as *Packs* does; a draft that differs from the saved
-   tool must be saved first. Below the editor: your own tools (with the directory they are in) to
+   declarations, and it asks before replacing a tool of the same name. A value field left empty
+   for a parameter with a default sends no value: the tool uses its default, and the field and the
+   spec card say "default X will be used". A parameter with a default is never required. Saving an
+   opened tool keeps what the workbench does not show but the save can carry (the source query,
+   each parameter's own source such as floor types); what it cannot carry - preconditions,
+   applies_when, not_for, the display name, the version (saved again as 1.0.0), and revit_versions,
+   fixtures and the approval if the file has them - is named before you replace the tool, and
+   needs its own click. *Run* runs the saved tool through the spec card and the confirmation, as
+   *Packs* does; a draft that differs from the saved tool (code, parameters or validator) must be
+   saved first. The card goes as soon as the draft or a value changes, *Confirm* reads the saved
+   tool again and runs nothing if it changed meanwhile, and Run waits while a run is in progress.
+   Below the editor: your own tools (with the directory they are in) to
    open, *Export* (the pack file), *Delete* and *Import* (a pack file; it asks before replacing), and
    the built-in ones, read-only (open to read or copy as yours, export). On a cloud host saving,
    deleting and importing need the admin password. *Skills*: the Markdown protocols of the package
