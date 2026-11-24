@@ -703,6 +703,16 @@ def test_verdict_parse_keeps_fix_and_question_where_they_belong():
     assert v.reply() == "r"
 
 
+def test_a_failed_validator_keeps_its_own_words():
+    execution = {"success": False, "error": "validation_failed",
+                 "validation": {"validator": "v", "passed": False,
+                                "checks": [{"name": "ratio", "passed": False, "detail": "expected 1: "},
+                                           {"name": "bare", "passed": False, "detail": ""}]}}
+    forced = roles.enforce(roles.Verdict("done", "ok"), execution, 0)
+    assert forced.report == ("The validator did not pass, so this is not done:\n"
+                             "- ratio (failed): expected 1: \n- bare (failed)")
+
+
 def test_the_execution_summary_cuts_the_result_and_drops_the_samples():
     big = {**OK, "result": {"ids": list(range(2000))}, "unknown_field": "x" * 50}
     summary = roles.execution_summary(big)

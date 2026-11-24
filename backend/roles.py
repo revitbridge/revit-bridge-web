@@ -301,8 +301,12 @@ def checks_of(execution: dict) -> list[dict]:
 
 
 def _check_line(check: dict) -> str:
+    """One validator check as the host shows it: ``- <name> (passed|failed): <detail>``, the
+    detail as the package wrote it (none: no colon)."""
     state = "passed" if check.get("passed") is True else "failed"
-    return f"- {check.get('name', '?')} ({state}): {check.get('detail', '')}".rstrip(": ")
+    head = f"- {check.get('name', '?')} ({state})"
+    detail = check.get("detail")
+    return f"{head}: {detail}" if isinstance(detail, str) and detail else head
 
 
 def _error_text(execution: dict) -> str:
