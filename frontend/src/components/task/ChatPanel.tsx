@@ -17,7 +17,7 @@ import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
-import { fetchCandidates as fetchFromHost, mentionNote, unavailableMentions } from './mentions'
+import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
   title: string
@@ -49,18 +49,26 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
   showTrace, fetchCandidates = fetchFromHost }: Props) {
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
+  const [notice, setNotice] = useState('')
   const scroll = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight })
   }, [transcript.messages])
 
+  /* A message with more picks than the host takes is not sent: the box keeps it and says why. */
   const send = (text: string, picked: Mention[]) => {
     const message = text.trim()
     if (!message || !onSend || disabled) return
+    const problem = tooManyPicks(picked)
+    if (problem) {
+      setNotice(problem)
+      return
+    }
+    setNotice('')
     setInput('')
     setMentions([])
-    onSend(message, picked)
+    onSend(message, distinctMentions(picked))
   }
 
   return (
@@ -114,15 +122,16 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
       {onSend && (
         <div className="chat-input-row">
           <MentionInput value={input} mentions={mentions}
-            onChange={(text, picked) => { setInput(text); setMentions(picked) }}
+            onChange={(text, picked) => { setInput(text); setMentions(picked); setNotice('') }}
             onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
-            placeholder={placeholder} invalid={unavailableMentions(transcript.messages)} />
+            placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
             {onReset && <button className="btn-ghost" onClick={onReset} disabled={transcript.streaming}>New session</button>}
           </div>
         </div>
       )}
+      {onSend && notice && <p className="chat-notice" role="alert">{notice}</p>}
     </div>
   )
 }

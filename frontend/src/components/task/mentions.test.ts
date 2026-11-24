@@ -3,8 +3,8 @@ import type { ChatMessage, MentionReport, SentMention } from '../../types/api'
 import type { Mention } from '../../types/hostv2'
 import { MentionController } from '../hostv2/mention/controller'
 import {
-  fetchMentionCandidates, MENTION_TIMEOUT_MS, mentionNote, mentionRefs, pendingMentions, TIMEOUT_MESSAGE,
-  unavailableMentions, withReport,
+  distinctMentions, fetchMentionCandidates, MAX_PICKS, MENTION_TIMEOUT_MS, mentionNote, mentionRefs, pendingMentions,
+  TIMEOUT_MESSAGE, tooManyPicks, unavailableInInput, unavailableMentions, withReport,
 } from './mentions'
 
 const f2: Mention = { kind: 'level', id: 312, name: 'F2' }
@@ -93,9 +93,18 @@ describe('the picker asks the host', () => {
 })
 
 describe('the picks of a message', () => {
-  it('go to the chat as kind, id and the label the page showed', () => {
-    expect(mentionRefs([f2, wall])).toEqual([{ kind: 'level', id: 312, label: 'F2' }, { kind: 'type', id: 401, label: 'Generic - 200mm' }])
-    expect(pendingMentions([f2])).toEqual([{ ...f2, status: 'pending' }])
+  it('go to the chat as kind and id only, each item once', () => {
+    expect(mentionRefs([f2, wall, { ...f2, name: 'F2 again' }])).toEqual([{ kind: 'level', id: 312 }, { kind: 'type', id: 401 }])
+    expect(pendingMentions([f2, f2])).toEqual([{ ...f2, status: 'pending' }])
+    expect(distinctMentions([wall, f2, wall])).toEqual([wall, f2])
+  })
+
+  it('at most 20 different items go with one message; the designer is told before it is sent', () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i): Mention => ({ kind: 'level', id: 1000 + i, name: `L${i}` }))
+    expect(tooManyPicks(many(MAX_PICKS))).toBeNull()
+    expect(tooManyPicks([...many(MAX_PICKS), ...many(MAX_PICKS)])).toBeNull()     // the same 20 twice
+    expect(tooManyPicks(many(MAX_PICKS + 1))).toBe(
+      'This message picks 21 model items; at most 20 can go with one message. Remove some tags, then send.')
   })
 
   it('take what the mentions event says about each, by kind and id', () => {
@@ -128,6 +137,9 @@ describe('the picks of a message', () => {
     messages.push(sent({ ...mep, status: 'resolved' }), sent({ ...wall, status: 'pending' }))
     expect(unavailableMentions(messages)).toEqual([wall])   // a pending pick says nothing yet
     expect(unavailableMentions([])).toEqual([])
+    // The input marks only those of them that are in it now.
+    expect(unavailableInInput(messages, [f2, wall])).toEqual([wall])
+    expect(unavailableInInput(messages, [f2])).toEqual([])
   })
 
   it('read on their chips as what happened to them', () => {

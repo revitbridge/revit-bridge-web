@@ -509,6 +509,15 @@ select {
   margin-bottom: 6px;
 }
 
+/* Why the message in the box was not sent (it stays there). */
+.chat-notice {
+  margin: 0;
+  padding: 0 12px 12px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* The picks of a sent message, with what the host found for each. */
 .chat-mentions {
   display: flex;

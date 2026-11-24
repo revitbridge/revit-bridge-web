@@ -403,11 +403,11 @@ describe("the designer's picks", () => {
     )
     const flow = createTaskFlow({ events: host.events, api: fakeApi() })
     flow.setCompare(true)
-    await flow.send('  a wall on @level:F2 or @level:F9 ', [f2, f9])
+    await flow.send('  a wall on @level:F2 or @level:F9 ', [f2, f9, f2])          // F2 twice: sent once
     const message = 'a wall on @level:F2 or @level:F9'
     expect(host.requests).toEqual([
       { message, session_id: null, bridge: true,
-        mentions: [{ kind: 'level', id: 312, label: 'F2' }, { kind: 'level', id: 99, label: 'F9' }] },
+        mentions: [{ kind: 'level', id: 312 }, { kind: 'level', id: 99 }] },
       { message, session_id: null, bridge: false },               // the comparison has no model to check them against
     ])
     const s = flow.store.getState()

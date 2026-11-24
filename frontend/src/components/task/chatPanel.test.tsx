@@ -57,14 +57,25 @@ describe('ChatPanel and the mention input', () => {
     expect(off).not.toHaveBeenCalled()
   })
 
-  it('picks the host found gone or not valid are marked in the input', () => {
+  it('picks found gone earlier are marked only while they are in the input: an empty box marks none', () => {
     const messages: ChatMessage[] = [
       { role: 'user', content: 'on @level:F2 in @link:MEP.rvt as @type:Generic - 200mm', mentions: [
         { ...f2, status: 'resolved' }, { ...mep, status: 'not_found', reason: 'not_loaded' },
         { ...wall, status: 'invalid', reason: 'invalid' }] },
       { role: 'assistant', content: 'MEP.rvt is not loaded.' },
     ]
-    expect(render({ ...empty, messages }, { onSend: vi.fn() }).input?.invalid).toEqual([mep, wall])
+    // The box starts empty (what is in it is tested with unavailableInInput in mentions.test.ts).
+    expect(render({ ...empty, messages }, { onSend: vi.fn() }).input?.invalid).toEqual([])
+  })
+
+  it('each item is sent once, and a message with more than 20 different items is not sent', () => {
+    const onSend = vi.fn()
+    const { input } = render(empty, { onSend })
+    input?.onSubmit('@level:F2 @level:F2 @link:MEP.rvt', [f2, f2, mep])
+    expect(onSend).toHaveBeenCalledWith('@level:F2 @level:F2 @link:MEP.rvt', [f2, mep])
+    const many = Array.from({ length: 21 }, (_, i): Mention => ({ kind: 'level', id: 1000 + i, name: `L${i}` }))
+    input?.onSubmit('too many', many)
+    expect(onSend).toHaveBeenCalledTimes(1)
   })
 
   it('a sent message shows its picks with what the host found', () => {

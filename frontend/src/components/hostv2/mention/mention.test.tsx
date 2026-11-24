@@ -444,6 +444,15 @@ describe('MentionInput rendering', () => {
     expect(html).toContain('Some model items are unavailable.')
     expect(fetch).not.toHaveBeenCalled()
   })
+  it('says items are unavailable only when an unavailable one is in the text', () => {
+    const gone: Mention = { kind: 'level', id: 99, name: 'Gone' }
+    const props = { onChange: vi.fn(), onSubmit: vi.fn(), fetchCandidates: vi.fn() }
+    const here = renderToStaticMarkup(<MentionInput value={mentionLabel(gone)} mentions={[gone]} invalid={[gone]} {...props} />)
+    expect(here).toContain('Some model items are unavailable.')
+    const elsewhere = renderToStaticMarkup(<MentionInput value={mentionLabel(level)} mentions={[level]} invalid={[gone]} {...props} />)
+    expect(elsewhere).not.toContain('Some model items are unavailable.')
+    expect(elsewhere).not.toContain('is-invalid')
+  })
   it('renders the placeholder for empty input and has no popup', () => {
     const html = renderToStaticMarkup(<MentionInput value="" mentions={[]} placeholder="Ask Revit"
       onChange={vi.fn()} onSubmit={vi.fn()} fetchCandidates={vi.fn()} />)

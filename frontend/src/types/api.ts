@@ -174,11 +174,11 @@ export interface SentMention extends Mention {
   reason?: string
 }
 
-/* A pick as POST /api/chat takes it: the element id, and the label the page showed. */
+/* A pick as POST /api/chat takes it: the kind and the element id (the host also takes a
+   `label`, which this page does not send: the host reads the item from the model). */
 export interface MentionRef {
   kind: string
   id: number
-  label?: string
 }
 
 /* One pick the host could not use (event: mentions): as the request named it, and why. */

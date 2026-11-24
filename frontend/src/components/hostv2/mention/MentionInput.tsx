@@ -63,6 +63,8 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
   const hasActive = state.menu?.mode === 'kinds' ? kinds.length > 0
     : items[state.active] && controller.selectable(items[state.active])
 
+  // The note speaks of the tags in the text only: a pick found gone earlier and not here says nothing.
+  const invalidHere = spans.some(span => invalid.some(item => item.kind === span.mention.kind && item.id === span.mention.id))
   const dropsUnrepresentable = state.dropped.some(mention => hasLineBreak(mention.name))
   const dropsMissing = state.dropped.some(mention => !hasLineBreak(mention.name))
 
@@ -99,7 +101,7 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
       </div>
       <div className="mention-hint" id={`${id}-hint`}>
         Enter to send. Shift+Enter for a new line. Type @ to select a model item.
-        {invalid.length > 0 && <span className="mention-invalid-note"> Some model items are unavailable. Remove or replace the marked tags.</span>}
+        {invalidHere && <span className="mention-invalid-note"> Some model items are unavailable. Remove or replace the marked tags.</span>}
         {dropsUnrepresentable && <span className="mention-invalid-note"> Names with line breaks cannot be represented as tags. Remove or rename those model items.</span>}
         {dropsMissing && <span className="mention-invalid-note"> Some selected model items were not found in the text and were removed.</span>}
       </div>

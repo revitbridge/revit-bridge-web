@@ -45,13 +45,36 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: { category
 
 export const fetchCandidates: FetchCandidates = (kind, opts) => fetchMentionCandidates(kind, opts)
 
-/* The picks as POST /api/chat takes them: kind and element id, and the label the page showed. */
-export const mentionRefs = (mentions: Mention[]): MentionRef[] =>
-  mentions.map(m => ({ kind: m.kind, id: m.id, label: m.name }))
+/* The most picks one message may carry (the host refuses more). */
+export const MAX_PICKS = 20
 
-/* The picks of a message being sent: nothing is known about them yet. */
+/* Each model item once (by kind and id), in the order first picked. */
+export function distinctMentions(mentions: Mention[]): Mention[] {
+  const seen = new Set<string>()
+  return mentions.filter(m => {
+    const key = `${m.kind}#${m.id}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/* Why a message cannot be sent with these picks, or null: more than MAX_PICKS different items. */
+export function tooManyPicks(mentions: Mention[]): string | null {
+  const count = distinctMentions(mentions).length
+  return count > MAX_PICKS
+    ? `This message picks ${count} model items; at most ${MAX_PICKS} can go with one message. Remove some tags, then send.`
+    : null
+}
+
+/* The picks as POST /api/chat takes them: kind and element id, each item once. The name the
+   page shows is not sent: the host reads the item from the model. */
+export const mentionRefs = (mentions: Mention[]): MentionRef[] =>
+  distinctMentions(mentions).map(m => ({ kind: m.kind, id: m.id }))
+
+/* The picks of a message being sent, each item once: nothing is known about them yet. */
 export const pendingMentions = (mentions: Mention[]): SentMention[] =>
-  mentions.map(m => ({ ...m, status: 'pending' }))
+  distinctMentions(mentions).map(m => ({ ...m, status: 'pending' }))
 
 const sameItem = (kind: unknown, id: unknown, m: Mention) => kind === m.kind && id === m.id
 
@@ -68,7 +91,7 @@ export function withReport(sent: SentMention[], report: MentionReport): SentMent
 }
 
 /* The picks the host last found gone or not valid in this conversation (one per item;
-   a later turn that verified it clears it). The input marks them when they are used again. */
+   a later turn that verified it clears it). */
 export function unavailableMentions(messages: ChatMessage[]): Mention[] {
   const latest = new Map<string, SentMention>()
   for (const message of messages) {
@@ -79,6 +102,12 @@ export function unavailableMentions(messages: ChatMessage[]): Mention[] {
   return [...latest.values()]
     .filter(m => m.status === 'not_found' || m.status === 'invalid')
     .map(({ kind, id, name }) => ({ kind, id, name }))
+}
+
+/* Of the picks now in the input, those the host last found gone or not valid: the input marks
+   them (and says so) only while they are there. */
+export function unavailableInInput(messages: ChatMessage[], inInput: Mention[]): Mention[] {
+  return unavailableMentions(messages).filter(m => inInput.some(p => p.kind === m.kind && p.id === m.id))
 }
 
 /* How a sent pick reads on its chip. */
