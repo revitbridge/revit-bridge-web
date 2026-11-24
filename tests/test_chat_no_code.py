@@ -30,6 +30,16 @@ def test_the_tools_array_has_no_get_guidance_and_does_not_change(client, model):
     assert sent == {json.dumps(TOOL_DEFINITIONS, ensure_ascii=False)}
 
 
+def test_the_query_tool_is_described_as_the_package_describes_it():
+    """The kinds 0.9 added (links, type_categories) and args.link_id, in the MCP tool's own words."""
+    import revit_bridge.mcp_server as mcp
+    described = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "query")["function"]["description"]
+    assert " ".join(mcp.query.__doc__.split()).startswith(described)
+    for words in ("links (every linked model instance", "type_categories (", "args.link_id",
+                  "must never be passed to a tool that acts on the open model."):
+        assert words in described, words
+
+
 def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     model.turns += [tool_turn(("get_guidance", {"stage": "orient"})), text_turn("ok")]
     assert client.post("/api/chat", json={"message": "x"}, headers=HEADERS).status_code == 200
@@ -37,10 +47,20 @@ def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     assert reply["error"] == "unknown_tool" and "get_guidance" not in reply["known"]
 
 
-def test_the_system_prompt_is_the_host_instructions_and_the_host_paragraph(client, model):
+def test_the_system_prompt_is_the_package_text_without_code_and_one_host_line(client, model):
     system = chat_module.build_system_prompt(True)
-    assert system == host_instructions().strip() + "\n\n" + chat_module.HOST_PARAGRAPH
-    assert system.endswith(chat_module.HOST_PARAGRAPH) and system.count(chat_module.HOST_PARAGRAPH) == 1
+    package = host_instructions(code=False, mentions=True)
+    assert system == package.rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
+    # The package's text is the no-code one, with the selections rule; nothing of the code variant.
+    assert "## Designer's selections" in package and "- Write code:" in package
+    for words in ("execute_code", "snippet contract", "Snippet contract", "blocked_code", "get_guidance",
+                  "check_code"):
+        assert words not in system, words
+    # The host adds exactly one line, the last one, and it is the only place the workbench is named.
+    host_lines = [line for line in system.split("\n") if line not in package.split("\n")]
+    assert host_lines == [chat_module.WORKBENCH_LINE] and system.split("\n")[-1] == chat_module.WORKBENCH_LINE
+    assert system.count(f"[workbench]({WORKBENCH_PATH})") == 1 and "workbench" not in package
+    assert "\n" not in chat_module.WORKBENCH_LINE and chat_module.WORKBENCH_LINE.startswith("- ")
     # No skills, no lesson pointer - not even the enabled ones.
     store = get_skill_store()
     enabled = [s for s in store.list_all() if s.get("enabled")]
@@ -49,13 +69,12 @@ def test_the_system_prompt_is_the_host_instructions_and_the_host_paragraph(clien
         assert store.get(skill["id"])["content"].strip() not in system
     assert "## Skills" not in system and "## Guidance" not in system and "call get_guidance" not in system
     assert "# revit-core" not in system
-    # The paragraph says what the model may not do and where a missing tool is made.
-    paragraph = chat_module.HOST_PARAGRAPH
-    for words in ("never write, show or propose C# code", "no execute_code and no get_guidance",
-                  "propose_spec refuses an execute_code spec", "list_tools",
-                  f"[workbench]({WORKBENCH_PATH})"):
-        assert words in paragraph, words
-    assert paragraph.isascii()
+    # The package says the model writes no code; the host's line says where a missing tool is made.
+    assert "Write code: if no tool fits, say that no existing tool can do it." in system
+    assert "{kind: run_tool, tool}" in system and "propose_spec" in system
+    for words in ("When no tool fits", "list_tools", f"[workbench]({WORKBENCH_PATH})"):
+        assert words in chat_module.WORKBENCH_LINE, words
+    assert chat_module.WORKBENCH_LINE.isascii()
     model.turns.append(text_turn("hi"))
     client.post("/api/chat", json={"message": "hi"}, headers=HEADERS)
     assert model.requests[0]["messages"][0] == {"role": "system", "content": system}
@@ -100,7 +119,7 @@ def test_when_no_tool_fits_the_reply_points_to_the_workbench(client, model):
     listing = model.tool_results("list_tools")[0]
     assert all({"builtin", "origin"} <= set(t) and "directory" not in t for t in listing)
     assert not any("rotate" in t["name"] for t in listing)
-    assert chat_module.HOST_PARAGRAPH in model.requests[0]["messages"][0]["content"]
+    assert model.requests[0]["messages"][0]["content"].endswith("\n" + chat_module.WORKBENCH_LINE)
 
 
 def test_the_code_not_offered_message_is_ascii_and_names_the_workbench():

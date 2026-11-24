@@ -21,7 +21,12 @@ gives is checked (``require_tool_name``) before the store is asked.
 ``validate_spec`` and ``reconcile`` on the draft, the page gets an SSE
 ``spec`` event with ``{spec, card, errors, reconcile}``, the model gets
 ``{accepted, errors, reconcile}`` - accepted only when there are no errors
-and the reconciliation is ``ready``.
+and the reconciliation is ``ready``. Besides the package's errors, a parameter
+bound to a pick (evidence ``mention:<kind>#<id>``) that the package did not
+verify in this session for the device the chat drives, or not bound as that pick
+is, is an ``unknown_mention`` error (``backend.mention_check``); the model's
+``reconcile`` answers such a draft as ``POST /spec/reconcile`` does
+(``{error: "invalid_spec", message, errors}``).
 """
 from __future__ import annotations
 
@@ -38,15 +43,17 @@ from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api.bridge import (
-    get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
+    current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
 from backend.api.errors import ApiError
+from backend.mention_check import mention_errors
 from backend.session import Session
 
 PROPOSE_SPEC = "propose_spec"
 
 # The workbench page, where a person tries code and saves it as a tool. The host's
-# prompt paragraph (backend.api.chat) and the code_not_offered verdict both name it.
+# line in the system prompt (backend.api.chat.WORKBENCH_LINE) and the code_not_offered
+# verdict both name it.
 WORKBENCH_PATH = "/capabilities/workbench"
 WORKBENCH_LINK = f"[workbench]({WORKBENCH_PATH})"
 
@@ -76,7 +83,14 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "query",
         "description": "Read-only model query, no confirmation needed. kinds: levels, grids, "
                        "family_types (args.categories), elements (args.category, args.limit<=200), "
-                       "selection, view_elements (args.limit<=200), units, counts (args.categories).",
+                       "selection, view_elements (args.limit<=200), units, counts (args.categories), "
+                       "links (every linked model instance: id, name, loaded, document_title, "
+                       "origin_mm, rotated), type_categories (the categories that have types, with "
+                       "counts). args.link_id - the id of a loaded link from kind links - makes "
+                       "levels, family_types, elements, counts and type_categories read that linked "
+                       "model: the reply is in the link's own coordinates and carries the link's "
+                       "origin and rotation; the element, level and type ids in it belong to the "
+                       "linked file and must never be passed to a tool that acts on the open model.",
         "parameters": {"type": "object", "properties": {
             "kind": {"type": "string"},
             "args": {"type": "object", "description": "arguments of the kind, see the description"},
@@ -240,6 +254,11 @@ async def _reconcile(args: dict, session: Session) -> ToolOutcome:
     except ValidationError as exc:
         return ToolOutcome({"error": "invalid_spec", "message": str(exc)})
     pack = pack_for(draft, ToolStore())          # a bad tool name is refused before Revit is asked
+    # The pick check of POST /spec/reconcile, so the model learns of a bad binding before it proposes.
+    refused = mention_errors(draft, pack, session.picks_for(current_scope()))
+    if refused:
+        return ToolOutcome({"error": "invalid_spec", "message": "; ".join(e.message for e in refused),
+                            "errors": [e.model_dump() for e in refused]})
     given = args.get("snapshot")
     snapshot = parse_snapshot(given) if given is not None else await snapshot_now(await get_revit_client())
     return ToolOutcome(reconcile(draft, snapshot, pack).model_dump(mode="json"))
@@ -273,7 +292,11 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
             return _refused(exc.payload["error"], exc.payload["message"])
     store = ToolStore()
     session.spec = spec.model_dump(mode="json")
-    errors = [e.model_dump() for e in validate_spec(spec, pack_for(spec, store))]
+    pack = pack_for(spec, store)
+    # A parameter bound to a pick (mention:<kind>#<id>) must be one verified in this session,
+    # bound as that pick is: unknown_mention otherwise (backend.mention_check).
+    picks = session.picks_for(current_scope())
+    errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
     event = {"spec": session.spec, "card": spec.card(), "errors": errors, "reconcile": None}
     try:
         report = reconcile(spec, await snapshot_now(await get_revit_client()), pack_for(spec, store)).model_dump(mode="json")

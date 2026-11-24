@@ -17,6 +17,21 @@ the page reported an execution (first frame of that turn), ``event: error``
 for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
+The designer's picks: a message may carry ``mentions`` (``[{kind, id, label?}]``,
+at most 20; ``@level``, ``@type``, ``@link`` as ``GET /api/v1/bridge/mentions``
+listed them). Before the model is called the host checks them against the open
+model with the package's ``resolve_mentions`` and sends ``event: mentions``
+``{resolved, not_found, invalid, unresolved, warnings?}`` as the turn's first
+frame (see ``check_mentions``). The verified ones are appended to the
+designer's message as the package's ``mention_block`` (the "Designer's
+selections" the system prompt's rule speaks of) and kept with the session under
+the device scope of the request: a spec may bind them in this turn or any later
+one on that device, and nothing else (``backend.mention_check``); a pick a later
+turn finds gone leaves the session. A pick that is not found or not valid is not
+sent; with no Revit to ask, or no answer within ``MENTION_CHECK_TIMEOUT`` seconds,
+every pick is ``unresolved``, no block is added and the turn runs as without
+picks. A message without picks sends no such event.
+
 What the host did is visible in three more events (they add to the stream and
 change nothing else in it):
 
@@ -45,14 +60,12 @@ Within one session the system prompt is the one its first turn was sent with
 (``Session.system_prompt``) and the tool definitions are a constant: the
 prefix a provider caches stays byte for byte the same from call to call.
 
-The system prompt with the bridge is the package's host instructions (this
-host's protocol) and one paragraph of this host's own, ``HOST_PARAGRAPH``: the
-model here never writes or proposes code, uses saved tools only and, when none
-fits, says so and points to the workbench. The package's text still speaks of
-``execute_code`` and the snippet contract (a variant without code comes with a
-later release); the paragraph after it is what this host holds the model to.
-Skills are no longer part of the prompt (the Skills page still lists and edits
-them), and there is no ``get_guidance``.
+The system prompt with the bridge is the package's host instructions for a host
+whose model writes no code, with the rule for the designer's selections
+(``host_instructions(code=False, mentions=True)``), and one line of this host's
+own, ``WORKBENCH_LINE``: when no saved tool fits, point to the workbench. Skills
+are not part of the prompt (the Skills page still lists and edits them), and
+there is no ``get_guidance``.
 
 A tool result stays in the session up to ``TOOL_RESULT_KEEP`` characters after
 the turn that produced it (head plus a one-line note).
@@ -76,11 +89,14 @@ from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from revit_bridge import host_instructions
+from revit_bridge.mentions import MAX_MENTIONS, mention_block, resolve_mentions
+from revit_bridge.snapshot import RevitQueryExecutor
+from revit_bridge.snapshot.query import RevitQueryError
 
-from backend.api.bridge import set_device_context
+from backend.api.bridge import current_scope, get_revit_client, set_device_context
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
@@ -116,19 +132,19 @@ EXECUTION_ELISION_NOTE = ("[execution result elided after {kept} characters; the
 # The user message that carries an execution result back to the model (spec 10.8).
 EXECUTION_PREFIX = "Execution result from the host (the designer did not write this):"
 
-# This host's own paragraph after the package's host instructions (which still describe
-# execute_code and the snippet contract): the model here never writes code. The link is
-# the workbench page's path as a relative Markdown link, which the chat renders as a link.
-HOST_PARAGRAPH = (
-    "## In this host: saved tools only, no code\n"
-    "This host runs only saved tools (capability packs). Here you never write, show or propose C# "
-    "code: there is no execute_code and no get_guidance, and propose_spec refuses an execute_code "
-    "spec. Everything above about writing code, the snippet contract and execute_code does not "
-    "apply here. Pick a tool from list_tools, fill its parameters (missing_params, get_tool_choices, "
-    "reconcile) and propose a run_tool spec. When no saved tool fits the request, write no code: "
-    "tell the designer that no tool here does this, describe in one sentence the tool they would "
-    f"need, and point them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - "
-    "a new tool is tried and saved there, then it is in list_tools."
+# The package's text for a host whose model writes no code (no execute_code, snippet
+# contract or blocked_code; "Write code" is on its never-list), with the rule for the
+# "Designer's selections" block: a session's prompt is fixed at its first turn and picks
+# may come on any later one, so the rule is always in it.
+INSTRUCTIONS = {"code": False, "mentions": True}
+
+# This host's one line after the package's text, the last of its Notes: where a tool that
+# does not exist yet is made. The link is the workbench page's path as a relative Markdown
+# link, which the chat renders as a link.
+WORKBENCH_LINE = (
+    "- When no tool fits, describe in one sentence the tool the designer would need and point "
+    f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
+    "tried and saved there, then it is in list_tools."
 )
 
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
@@ -190,11 +206,28 @@ def tool_error_text(result) -> str | None:
     return text[:TOOL_ERROR_TEXT]
 
 
+class ChatMention(BaseModel):
+    """A model item the designer picked in the message (``@level``, ``@type``, ``@link``), as
+    ``GET /api/v1/bridge/mentions`` listed it. Only ``kind`` and ``id`` are checked and used:
+    the model gets the item as the package reads it from Revit now, never the page's
+    ``label``."""
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(max_length=32, description="level, type or link")
+    id: StrictInt = Field(description="the item's element id")
+    label: str | None = Field(default=None, max_length=500, description="what the page showed; not sent to the model")
+
+
 class ChatRequest(BaseModel):
     message: str | None = Field(default=None, max_length=8000)
     execution: dict | None = None      # an ExecutionResult the page got from /run or /execute
     session_id: str | None = None
     bridge: bool = True
+    mentions: list[ChatMention] | None = Field(
+        default=None, max_length=MAX_MENTIONS,
+        description="The designer's picks in this message (with message and the bridge only), checked "
+                    "against the open model before the model is called: the event mentions reports "
+                    "each, and the verified ones reach the model as the package's selections block.")
 
 
 # -- per-IP rate limit (protects a shared server-side key) ---------------------
@@ -205,11 +238,11 @@ def rate_limit(request: Request) -> None:
 
 
 def build_system_prompt(bridge: bool = True) -> str:
-    """The package's host instructions and ``HOST_PARAGRAPH``; the base prompt without the
-    bridge. No skills, no lessons: the model here writes no code."""
+    """The package's host instructions without code and with the selections rule, then
+    ``WORKBENCH_LINE``; the base prompt without the bridge. No skills, no lessons."""
     if not bridge:
         return BASE_PROMPT
-    return host_instructions().strip() + "\n\n" + HOST_PARAGRAPH
+    return host_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
 
 
 def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
@@ -234,6 +267,58 @@ def execution_message(execution: dict, keep: int = EXECUTION_KEEP) -> str:
     return f"{EXECUTION_PREFIX}\n{text}"
 
 
+# The selections block goes to the model in English: the system prompt is the package's English
+# text, and its rule names the block by its English title ("Designer's selections").
+MENTION_BLOCK_LANGUAGE = "en"
+
+
+def unresolved(wanted: list[dict], reason: str) -> dict:
+    """The ``mentions`` event when the model could not be asked: every pick, with why."""
+    return {"resolved": [], "not_found": [], "invalid": [],
+            "unresolved": [{"kind": m["kind"], "id": m["id"], "reason": reason} for m in wanted]}
+
+
+# Seconds the picks of one message may take to check; past that the turn runs without them.
+MENTION_CHECK_TIMEOUT = 15.0
+
+
+async def check_mentions(mentions: list[ChatMention]) -> dict:
+    """The designer's picks against the open model (the package's ``resolve_mentions``), as the
+    ``mentions`` event carries them: ``{resolved, not_found, invalid, unresolved, warnings?}``.
+    ``resolved``: the package's items; ``not_found``: no such item now, or a link that cannot be
+    read (``{kind, id, reason}``, the package's reason); ``invalid``: not a kind and element id
+    the package takes; ``unresolved``: the model could not be asked - no add-in
+    (``revit_unreachable``), no answer within ``MENTION_CHECK_TIMEOUT`` seconds (``timeout``),
+    an add-in that could not say (``revit_error``: never read as "not found"), or a failure
+    here (``resolve_failed``)."""
+    wanted = [{"kind": m.kind, "id": m.id} for m in mentions]
+
+    async def resolve() -> dict:
+        return await resolve_mentions(RevitQueryExecutor(await get_revit_client()), wanted)
+
+    try:
+        found = await asyncio.wait_for(resolve(), MENTION_CHECK_TIMEOUT)
+    except TimeoutError:                          # before OSError: TimeoutError is one
+        return unresolved(wanted, "timeout")
+    except ApiError as exc:                       # 503: no add-in (or no device) to ask
+        return unresolved(wanted, str(exc.payload.get("error") or "revit_unreachable"))
+    except OSError:                               # the connection failed while asking
+        return unresolved(wanted, "revit_unreachable")
+    except RevitQueryError as exc:
+        _log.warning("picks not checked: the add-in could not say (%s)", exc)
+        return unresolved(wanted, "revit_error")
+    except Exception:  # noqa: BLE001 - the turn still runs, without the picks
+        _log.error("checking picks failed", exc_info=True)
+        return unresolved(wanted, "resolve_failed")
+    report = {"resolved": found["resolved"],
+              "not_found": [e for e in found["not_found"] if e.get("reason") != "invalid"],
+              "invalid": [e for e in found["not_found"] if e.get("reason") == "invalid"],
+              "unresolved": []}
+    if found.get("warnings"):
+        report["warnings"] = list(found["warnings"])
+    return report
+
+
 def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
     """The tool message as the session stores it: a snapshot or an element listing can
     run to hundreds of KB, and every later turn would carry it again. The turn that
@@ -254,6 +339,10 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_args", "message is empty")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
+    if req.mentions and req.execution is not None:
+        raise ApiError(422, "invalid_args", "mentions go with a message, not with an execution report")
+    if req.mentions and not req.bridge:
+        raise ApiError(422, "invalid_args", "mentions have no meaning without the bridge")
     if req.execution is not None:
         size = len(json.dumps(req.execution, ensure_ascii=False))
         if size > MAX_EXECUTION_CHARS:
@@ -278,6 +367,20 @@ async def chat(req: ChatRequest, request: Request,
     session = get_session_store().get_or_create(req.session_id)
     turn = session.next_turn()
     text = req.message if req.message is not None else execution_message(req.execution)
+    picks = None
+    if req.mentions:
+        # Checked before the model is called, in the model of the device this request drives.
+        # The verified picks stay with the session under that device's scope (a spec may bind
+        # them in this turn or a later one), the ones found gone leave it; this turn's verified
+        # picks - all of this scope - go to the model as the package's block after the
+        # designer's words. Nothing else of the picks reaches it.
+        scope = current_scope()
+        picks = await check_mentions(req.mentions)
+        session.remember_picks(scope, picks["resolved"])
+        session.forget_picks(scope, picks["not_found"])
+        block = mention_block(picks["resolved"], MENTION_BLOCK_LANGUAGE)
+        if block:
+            text = f"{text}\n\n{block}"
     session.add({"role": "user", "content": text})
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
@@ -306,6 +409,8 @@ async def chat(req: ChatRequest, request: Request,
     async def generate() -> AsyncGenerator[str, None]:
         if req.execution is not None:
             yield format_sse_event("execution", req.execution)
+        if picks is not None:
+            yield format_sse_event("mentions", picks)
         yield stage("start")
         try:
             for round_no in range(MAX_TOOL_ROUNDS + 1):

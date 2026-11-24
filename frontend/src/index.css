@@ -496,6 +496,63 @@ select {
   min-height: 56px;
 }
 
+/* The mention input fills the row; its picker opens upwards, over the conversation. */
+.chat-input-row .mention-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-input-row .mention-popup {
+  top: auto;
+  bottom: 100%;
+  margin-top: 0;
+  margin-bottom: 6px;
+}
+
+/* Why the message in the box was not sent (it stays there). */
+.chat-notice {
+  margin: 0;
+  padding: 0 12px 12px;
+  color: var(--danger);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* The picks of a sent message, with what the host found for each. */
+.chat-mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chat-mention {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.chat-mention-note {
+  margin-left: 6px;
+  opacity: 0.8;
+}
+
+.chat-mention.is-not_found,
+.chat-mention.is-invalid {
+  text-decoration: line-through;
+  box-shadow: inset 0 -2px var(--danger);
+}
+
+.chat-mention.is-not_found .chat-mention-note,
+.chat-mention.is-invalid .chat-mention-note,
+.chat-mention.is-unresolved .chat-mention-note {
+  text-decoration: none;
+  font-style: italic;
+}
+
 .chat-buttons {
   display: flex;
   flex-direction: column;

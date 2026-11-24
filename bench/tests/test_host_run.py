@@ -160,3 +160,40 @@ def test_the_error_body_of_a_refused_chat_is_kept(host, local_env):  # noqa: F81
     assert task["error"].startswith("HTTP 400: No model configured")
     assert task["usage"]["calls"] is None and not task["correct"]
     assert model.requests == []
+
+
+def test_a_level_picked_by_name_reaches_the_model_and_its_spec_runs(host):
+    """The pick is looked up on the host (GET /mentions), checked by the host when the task's
+    message goes out, the model binds it as the package says, and with --execute the
+    confirmation carries the session, so the host accepts the binding and the pack runs."""
+    client, model, revit = host
+    spec = wall_spec()
+    for binding in spec["parameters"]:
+        if binding["name"] == "level_name":
+            binding.update(value="L2", unit=None, source="tool", evidence="mention:level#2")
+    model.turns += [tool_turn(("propose_spec", {"spec": spec}), usage=FULL),
+                    text_turn("The card is below.", usage=FULL),
+                    text_turn("One wall was created on L2.", usage=FULL)]
+    picked = {"id": "picked", "kind": "tool", "message": "A wall on the picked level, (0,0) to (5000,0).",
+              "mentions": [{"kind": "level", "pick": {"name": "L2"}}],
+              "expect": {"tool": "create_wall", "params": {"level_name": "L2", "height": 3000}, "max_turns": 3}}
+    result = run_bench(client, BASE, "picked", [picked], execute=True)
+    task = result["runs"][0]["tasks"][0]
+    assert task["error"] is None and task["correct"], task["error"]
+    assert task["mentions"] == [{"kind": "level", "id": 2}]
+    assert task["execution"]["success"] is True
+    # The model saw the package's block after the task's message, and accepted the binding.
+    first_user = model.requests[0]["messages"][-1]["content"]
+    assert first_user.startswith(picked["message"] + "\n\nDesigner's selections") and 'level "L2" (id 2' in first_user
+    assert model.tool_results("propose_spec")[0]["accepted"] is True
+
+
+def test_a_level_the_model_does_not_have_skips_the_task(host):
+    client, model, revit = host
+    missing = {"id": "missing", "kind": "tool", "message": "A wall on F9.",
+               "mentions": [{"kind": "level", "pick": {"name": "F9"}}],
+               "expect": {"tool": "create_wall", "max_turns": 3}}
+    result = run_bench(client, BASE, "missing", [missing])
+    task = result["runs"][0]["tasks"][0]
+    assert task["skipped"] == "pick not found (level F9)" and task["correct"] is None
+    assert model.requests == []

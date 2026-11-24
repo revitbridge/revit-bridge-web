@@ -4,7 +4,7 @@ import type { FetchCandidates, Mention, MentionCandidates, MentionItem } from '.
 import { MentionController } from './controller'
 import { handleKeyDown, handlePaste, type KeyDownLike, type TextareaLike } from './dom'
 import MentionInput, { MentionSuggestions } from './MentionInput'
-import { applyNativeEdit, matchingKinds, mentionLabel, mentionSpans, normalizeSelection, removeMentionAt, replaceRange, serialize } from './model'
+import { applyNativeEdit, matchingKinds, mentionLabel, mentionSpans, menuAt, normalizeSelection, removeMentionAt, replaceRange, serialize } from './model'
 
 const level: Mention = { kind: 'level', id: 10, name: 'Level 1' }
 const sameName: Mention = { ...level, id: 11 }
@@ -444,6 +444,15 @@ describe('MentionInput rendering', () => {
     expect(html).toContain('Some model items are unavailable.')
     expect(fetch).not.toHaveBeenCalled()
   })
+  it('says items are unavailable only when an unavailable one is in the text', () => {
+    const gone: Mention = { kind: 'level', id: 99, name: 'Gone' }
+    const props = { onChange: vi.fn(), onSubmit: vi.fn(), fetchCandidates: vi.fn() }
+    const here = renderToStaticMarkup(<MentionInput value={mentionLabel(gone)} mentions={[gone]} invalid={[gone]} {...props} />)
+    expect(here).toContain('Some model items are unavailable.')
+    const elsewhere = renderToStaticMarkup(<MentionInput value={mentionLabel(level)} mentions={[level]} invalid={[gone]} {...props} />)
+    expect(elsewhere).not.toContain('Some model items are unavailable.')
+    expect(elsewhere).not.toContain('is-invalid')
+  })
   it('renders the placeholder for empty input and has no popup', () => {
     const html = renderToStaticMarkup(<MentionInput value="" mentions={[]} placeholder="Ask Revit"
       onChange={vi.fn()} onSubmit={vi.fn()} fetchCandidates={vi.fn()} />)
@@ -758,5 +767,45 @@ describe('DOM adapter: IME and paste', () => {
     expect(fetch).toHaveBeenLastCalledWith('level', { q: 'F2' })
     expect(keyDown(controller, 'Enter')).toHaveBeenCalled()
     expect(controller.getSnapshot().mentions).toEqual([f2])
+  })
+})
+
+describe('which @ opens the picker (planner ruling: not inside an ASCII word)', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('an @ right after an ASCII letter or digit opens nothing, so Enter sends', () => {
+    const { controller, onSubmit } = setup()
+    for (const text of ['bob@le', 'mail bob@le', 'room3@le', 'x@level:F', 'B2@link:']) {
+      input(controller, text)
+      expect(controller.getSnapshot().menu, text).toBeNull()
+    }
+    input(controller, 'mail bob@le')
+    expect(controller.key('Enter')).toBe(true)
+    expect(onSubmit).toHaveBeenCalledWith('mail bob@le', [])
+  })
+  it('after a space, punctuation, the start of a line or any non-ASCII character it opens', () => {
+    const { controller } = setup()
+    for (const text of ['@le', 'x @le', '(@le', '"@le', '_@le', 'x\n@le', '看@le', '在标高@le', 'é@le']) {
+      input(controller, text)
+      expect(controller.getSnapshot().menu, JSON.stringify(text)).toMatchObject({ mode: 'kinds', query: 'le' })
+    }
+  })
+  it('Chinese without spaces reaches the items too', async () => {
+    const fetch = vi.fn(async () => result('level', [item('level', 22, 'F2')]))
+    const { controller } = setup(fetch)
+    input(controller, '在@level:F')
+    expect(controller.getSnapshot().menu).toMatchObject({ mode: 'items', kind: 'level', query: 'F' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(fetch).toHaveBeenCalledWith('level', { q: 'F' })
+    expect(controller.key('Enter')).toBe(true)
+    expect(controller.getSnapshot().text).toBe('在@level:F2')
+    expect(controller.getSnapshot().mentions).toEqual([{ kind: 'level', id: 22, name: 'F2' }])
+  })
+  it('the rule is about the character before the @, wherever the caret is', () => {
+    expect(menuAt('bob@le', [], 6, null)).toBeNull()
+    expect(menuAt('看@le', [], 4, null)).toMatchObject({ mode: 'kinds', start: 1 })
+    expect(menuAt('(@le', [], 4, null)).toMatchObject({ mode: 'kinds', start: 1 })
+    expect(menuAt('@le', [], 3, null)).toMatchObject({ mode: 'kinds', start: 0 })
   })
 })

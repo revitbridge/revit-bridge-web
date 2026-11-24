@@ -170,7 +170,20 @@ its connection.
    card), so it runs saved tools only. When no saved tool fits, it says so, describes the tool you
    would need in one sentence and links the workbench (`/capabilities/workbench`), where a person
    tries code and saves it as a tool - code is written in the coding frameworks (Claude Code and
-   others, with the `revit-bridge` plugin's skills). The *Compare with no bridge* switch sends the same sentence a second time with
+   others, with the `revit-bridge` plugin's skills). **Type `@` to pick from the open model:**
+   `@level`, `@type` (a category first, then its types) or `@link` (a link that is not loaded is
+   listed but cannot be picked); keep typing to narrow the list, arrows and Enter to choose, Esc to
+   close. A picked item is one tag - Backspace removes it whole. An `@` right after a letter or a
+   digit (an e-mail address) opens nothing; after a space, punctuation or a Chinese character it
+   does. The host checks the picks against the model before the model is called and gives the model
+   the ones it found, with their names as Revit has them, so it does not ask for them again; under
+   the sent message each pick says what happened to it (checked, not found, not loaded, or not
+   checked when Revit was not connected), and one found gone is struck through when it is in the
+   box again. Each item goes once, at most 20 different items per message: with more the message
+   stays in the box and the page says why. When Revit is not connected the list says so and Enter
+   still sends; a list that does not come within 10 seconds gives up the same way. *Confirm* reads
+   the picks of the card again: one deleted or renamed in Revit since is refused, and the model
+   proposes again. The *Compare with no bridge* switch sends the same sentence a second time with
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
    Above each reply of the bridge transcript is its tool activity: one row per tool call the model
    made (name, arguments, status, time, result size in characters; open a row for the full
@@ -222,13 +235,15 @@ its connection.
    count the provider did not report shows as `-`, and so does every total and difference it is
    part of. Read-only; on a cloud host it asks for the admin password (as `/api/logs` does).
 
-The system prompt is the package's `host_instructions()` (this host's protocol) and one paragraph
-of this host's own: here the model never writes or proposes code, has no `get_guidance`, uses saved
-tools only and, when none fits, says so and links the workbench - about 4.3 KB, with seven tool
-definitions of about 3.4 KB (6 KB and eight tools, 11.2 KB in all, while skills and `get_guidance`
-were part of it). The package's text still describes `execute_code` and the snippet contract; the
-host's paragraph after it is what holds here, until a package release brings a variant without
-code. The task page's "without the bridge" comparison sends the same message with `bridge: false`
+The system prompt is the package's host instructions for a host whose model writes no code
+(`host_instructions(code=False, mentions=True)`: no `execute_code`, snippet contract or
+`get_guidance`; saved tools only; the rule for the designer's `@` selections) and one line of this
+host's own: when no tool fits, link the workbench - about 3.7 KB, with seven tool definitions of
+about 4 KB (`query` names the kinds `links` and `type_categories` and `args.link_id`, in the
+package's MCP tool's words). Before: 4.3 KB with the package's full text and a host paragraph that
+overrode its code parts, and 3.4 KB of tools; 6 KB and eight tools, 11.2 KB in all, while skills
+and `get_guidance` were part of it.
+The task page's "without the bridge" comparison sends the same message with `bridge: false`
 (one plain prompt, no tools). A session keeps the system prompt of its first turn, so every call
 starts with the same system message and tool definitions and a provider's prompt cache can serve
 them.
@@ -370,6 +385,30 @@ is the package's `success: false` without consuming the token), and a refusal by
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
 
+The chat's `@` picker: `GET /mentions?kind=level|type|link&category=&q=&limit=` is the package's
+`mention_candidates` reply as it is - `{kind, items: [{kind, id, name, label, detail, category?,
+family?, disabled?, reason?}], total, truncated, warnings?}`; `type` without `category` lists the
+categories (items of kind `category` whose `id` is the OST_* name), `q` keeps what contains it,
+`limit` is 1-200 (default 50). A kind or category the package refuses is 422 (`unknown_kind`,
+`invalid_args`), Revit reporting an error 200 with the package's `error` (as on `/query`), no Revit
+503 `revit_unreachable`; the device rules are those of every read route. A spec may bind the
+designer's picks by name with evidence `mention:<kind>#<id>` (the package's rule); before such a
+spec is accepted, reconciled (the model's `reconcile` too) or confirmed the host checks every
+binding whose evidence starts with `mention` against the picks the package verified in that chat
+session for the device the request drives: the evidence exactly `mention:<level|type|link>#<id>`
+(lower case, no spaces), the kind the parameter takes as its pack declares it (`levels`: a level;
+`floor_types`, `family_types[:OST_*]`: a type, of that category when both name one; a link only
+where the pack names neither), the value (the name the package's block shows: a level's or a
+type's name, a link's label or else its name) and the source (`tool` for a pack parameter whose
+value comes from the model, else `designer`); any other is `unknown_mention` naming the parameter.
+So `POST /spec/reconcile` and `POST /spec/confirm` take the chat's `session_id` (the
+`X-Session-Id` of `/api/chat`); a binding to a pick with no session, another session's or another
+device's is 422 `invalid_spec` with those `errors`. `POST /spec/confirm` also reads the bound picks
+again from the open model before it issues a token (one `resolve_mentions`): a pick gone or
+renamed since is `unknown_mention` too (the session takes the new reading and lets the gone one
+go); no Revit to ask is 503 `revit_unreachable` (503 `revit_error` when the add-in cannot say, 504
+`revit_timeout` after 15 s). A spec without picks needs no Revit to be confirmed.
+
 The workbench's routes: `POST /check` is the package's `check_code` (compile in Revit, never run;
 with the lessons for the errors, as the MCP tool adds them) and `POST /dry-run` its `dry_run_code`
 (run in the open model inside a transaction group that is always rolled back - nothing is kept, so
@@ -444,6 +483,22 @@ the turn starts with `event: execution` and the model reports what the validator
 of `message` / `execution` per request (422 `invalid_args` otherwise); with `bridge: false` there are
 no tools and no execution feedback (tool calls a model sends anyway are dropped, never
 run - as in the last round of a turn, which goes out without tools).
+
+A message may carry the designer's picks: `mentions: [{kind, id, label?}]` (at most 20; `id` an
+integer, no other field; with a message and the bridge only, 422 otherwise). Before the model is
+called the host checks them with the package's `resolve_mentions` and the turn starts with `event:
+mentions` `{resolved, not_found, invalid, unresolved, warnings?}`: `resolved` the package's items,
+`not_found` `{kind, id, reason}` for one that is not in the model now or a link that cannot be read
+(`not_found`, `not_loaded`, ...), `invalid` for a kind and id that are not a model item, `unresolved`
+for every pick when the model could not be asked (`revit_unreachable`, `timeout` after 15 s, or
+`revit_error` when the add-in could not say - never read as "not found"). The verified picks follow
+the designer's words in the model's user message as the package's "Designer's selections" block
+(the system prompt carries its rule from the session's first turn, so the prompt does not change)
+and stay with the session for the device the request drives: a spec may bind them in that turn or
+any later one on that device; a pick a later turn finds gone leaves the session. Picks not found,
+not valid or unresolved are not sent; with no Revit the turn runs as without picks. `label` never
+reaches the model (this page does not send it). A message without picks has no such event and
+goes to the model as typed.
 
 Every turn also streams what the host did: `event: stage` `{role, model, status}` around the
 turn (`start`, then `end` before `done` or `error`), `event: tool` `{id, role, name, args, status,

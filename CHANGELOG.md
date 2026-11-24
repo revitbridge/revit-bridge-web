@@ -18,9 +18,10 @@ protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal o
 finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
 that ran without it does not. See *Added* and *Changed* (deploy modes).
 
-The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
+The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
-`reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
+`reconcile` cannot find now also comes as a question. The chat has one new event, `mentions`,
+sent only for a message that carries picks (see *Added*); the other events are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
@@ -71,6 +72,40 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **The designer's picks: `@level`, `@type`, `@link` in the chat** (revit-bridge 0.9's
+  `mentions`). `GET /api/v1/bridge/mentions?kind=level|type|link&category=&q=&limit=` is the
+  package's `mention_candidates` reply as it is (types by category, the categories first; a link
+  that is not loaded is listed with `disabled: true` and its `reason`); a kind or category the
+  package refuses is 422 (`unknown_kind`, `invalid_args`), Revit reporting an error 200 with its
+  `error`, no Revit 503 `revit_unreachable`; the device rules of `/query`. `POST /api/chat` takes
+  `mentions: [{kind, id, label?}]` (at most 20, an integer id, no other field; with a message and
+  the bridge only): the host checks them with the package's `resolve_mentions` before the model is
+  called and starts the turn with **`event: mentions`** `{resolved, not_found, invalid,
+  unresolved, warnings?}`; the verified picks follow the designer's words as the package's
+  "Designer's selections" block and stay with the session, per device, for its later turns (a
+  pick a later turn finds gone leaves it); picks not found or not valid are not sent; with Revit
+  unreachable, or no answer within 15 s, every pick is `unresolved` with the reason
+  (`revit_unreachable`, `timeout`, ...) and the turn runs without them. A message without picks
+  is unchanged (no event, the text as typed). A spec parameter whose evidence starts with
+  `mention` must bind a pick verified in that session for the same device, as exactly
+  `mention:<level|type|link>#<id>`, of the kind the parameter takes (as its pack declares it), to
+  the name the package's block shows (a level's or a type's name, a link's label or else its
+  name), with the source the package's rule gives (`tool` for a parameter whose value comes from
+  the model, else `designer`): otherwise `unknown_mention`, on the model's `propose_spec` and
+  `reconcile` and on `POST /spec/reconcile` and `POST /spec/confirm`, which take an optional
+  `session_id` for it (422 `invalid_spec` with the `errors`). `/spec/confirm` reads a spec's
+  picks again from the open model before it issues a token: one gone or renamed since is
+  `unknown_mention`; without Revit 503 `revit_unreachable` (503 `revit_error`, 504
+  `revit_timeout`); a spec without picks needs no Revit. In `docs/api-v1.json`: the new path,
+  `ChatMention`, `ChatRequest.mentions`, `session_id` on the two spec requests, and 503 and 504
+  on `/spec/confirm`. The task page's input is the mention input: `@` offers the three kinds, a
+  picked item is one tag, the list comes from the route above (a listing that does not answer
+  within 10 s gives up, and Enter sends), and an `@` right after an ASCII letter or digit opens
+  nothing (`bob@level`) while one after a space, punctuation or a Chinese character does. Each
+  item is sent once (`{kind, id}`, no label), at most 20 per message (more: the message stays in
+  the box with a note). A sent message shows each pick with what the host found, and a pick found
+  gone is struck through when it is in the box again; the confirmation and the reconciliation
+  send the session id.
 - **Models by role: `models.yml`**, the one configuration file of the host (`MODELS_FILE`, default
   `DATA_DIR/models.yml`; `models.example.yml` shows it). Each entry is a `base_url` (https, or http
   to loopback - to any host with `LLM_ALLOW_HTTP=1`), a `model` and `api_key_env` - the *name* of the environment variable holding the
@@ -327,11 +362,24 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Changed
 
-- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,444 bytes of
-  definitions instead of 5,147), and the system prompt is the package's `host_instructions()` and
-  one paragraph of this host's: here the model never writes or proposes code, uses saved tools only
-  and, when none fits, says so and links `[workbench](/capabilities/workbench)` (4,288 bytes instead
-  of 6,007: no skills, no `get_guidance` pointer). `propose_spec` with an `execute_code` spec shows no
+- The token bench (`python -m bench`): a task's mention may pick an item by name, `{kind, pick:
+  {name | first: true, category?}}`, looked up through `GET /api/v1/bridge/mentions` before the
+  task's first message (nothing found, or two items of that name, fails the task before any chat);
+  the picks go with the first message only, each result records the mentions sent, and `--execute`
+  confirms with the chat session. A pick that finds nothing skips the task (`skipped: pick not
+  found (<kind> <name>)`), unscored. `mentioned-level` and `mentioned-link` in `bench/tasks.yml` pick
+  by name (F2) and the first loaded link instead of placeholder ids, no longer `requires:
+  [mentions]`; `mentioned-level` also expects `level_name: F2`. `bench/tests` is in the pytest
+  paths, so `uv run pytest` (and CI) runs it.
+- **The chat writes no code.** The model's tools lose `get_guidance` (seven tools, 3,959 bytes of
+  definitions instead of 5,147; 3,444 before `query` named the kinds `links` and `type_categories`
+  and `args.link_id`, in the words of the package's MCP tool), and the system prompt is the package's text for a host whose model
+  writes no code, `host_instructions(code=False, mentions=True)` (revit-bridge 0.9: no
+  `execute_code`, snippet contract or `blocked_code`, "Write code" on its never-list, and the rule
+  for the designer's `@` selections), and one line of this host's: when no tool fits, link
+  `[workbench](/capabilities/workbench)` - 3,689 bytes instead of 6,007 (no skills, no
+  `get_guidance` pointer). With revit-bridge 0.8 it was the package's full text and a paragraph of
+  this host's that set its code parts aside (4,288 bytes). `propose_spec` with an `execute_code` spec shows no
   card and answers `{accepted: false, errors: [{code: "code_not_offered", ...}], reconcile: null}`.
   The Skills page and `/api/skills` stay; the skills no longer enter the prompt. The task page loses
   the free-code execution, the code branch of the tamper demo and the *Solidify* panel; running a
@@ -382,7 +430,17 @@ the host shares your tools with the package's MCP server (see *Changed*).
   refusals).
 - `docs/api-v1.json` is exported from a cloud host (`DEPLOY_MODE=cloud ADMIN_PASSWORD=...` before
   the export command; CI does the same) and is unchanged: every route is still there.
-- Requires `revit-bridge>=0.8,<0.9` (0.8.2 in `uv.lock`; the image installs it from PyPI). From
+- Requires `revit-bridge>=0.9,<0.10` (0.9.0 in `uv.lock`; the image installs it from PyPI). From
+  0.8.2 to 0.9.0 nothing the host imports changed its name, signature or reply, and no route,
+  pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export and `GET /tools` lists the
+  same eight packs. The package's `host_instructions()` names revit-bridge 0.9 in its first line
+  (the only change in the prompt from the bump itself). A capability pack parameter now takes one
+  string, number or boolean: the package refuses a list or an object for any parameter when it
+  fills a pack (a run, a draft's check or dry run), and null counts as not given. The host builds
+  no such value itself - the workbench sends typed values and the model's options, the task page
+  sends the confirmed spec's values as they are - so only a spec whose value is a list or an
+  object (which the package's render rejects) is affected.
+- Before that, in this cycle: `revit-bridge>=0.8,<0.9` (0.8.2). From
   0.6.1 to 0.8.2 nothing the host imports changed its name, signature or reply, and no route,
   tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export, `GET /tools` lists
   the same eight packs, and the model's tool definitions and `get_guidance` replies are the same

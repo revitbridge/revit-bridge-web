@@ -185,7 +185,7 @@ def test_openapi_lists_the_v1_contract(client):
     paths = set(spec["paths"])
     bridge = {p for p in paths if p.startswith("/api/v1/bridge/")}
     assert bridge == {
-        "/api/v1/bridge/snapshot", "/api/v1/bridge/query",
+        "/api/v1/bridge/snapshot", "/api/v1/bridge/query", "/api/v1/bridge/mentions",
         "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/choices",
         "/api/v1/bridge/tools/{name}/missing-params", "/api/v1/bridge/tools/{name}/run",
         "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import",

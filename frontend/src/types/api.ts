@@ -1,6 +1,6 @@
 /* Shared API types (mirrors docs/api-v1.json). */
 
-import type { StageEvent, ToolEvent, TraceEvent, UsageEvent } from './hostv2'
+import type { Mention, MentionItem, StageEvent, ToolEvent, TraceEvent, UsageEvent } from './hostv2'
 
 export interface RevitHealthResponse {
   revit_connected: boolean
@@ -161,6 +161,40 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
   trace?: TraceEvent[]                  // assistant: the stage / tool / usage events of its turn, in order
+  mentions?: SentMention[]              // user: the model items picked in it, with what the host found
+}
+
+/* A pick in a sent message. status: 'pending' until the turn's mentions event says more;
+   'resolved' (checked against the model: the model got it), 'not_found' and 'invalid'
+   (not sent to the model; reason as the host gave it), 'unresolved' (the model could not
+   be asked, e.g. Revit was not connected; not sent either). */
+export type MentionStatus = 'pending' | 'resolved' | 'not_found' | 'invalid' | 'unresolved'
+export interface SentMention extends Mention {
+  status: MentionStatus
+  reason?: string
+}
+
+/* A pick as POST /api/chat takes it: the kind and the element id (the host also takes a
+   `label`, which this page does not send: the host reads the item from the model). */
+export interface MentionRef {
+  kind: string
+  id: number
+}
+
+/* One pick the host could not use (event: mentions): as the request named it, and why. */
+export interface MentionProblem {
+  kind: string | null
+  id: unknown
+  reason: string
+}
+
+/* event: mentions - the turn's first frame when the message carried picks. */
+export interface MentionReport {
+  resolved: (MentionItem & Record<string, unknown>)[]
+  not_found: MentionProblem[]
+  invalid: MentionProblem[]
+  unresolved: MentionProblem[]
+  warnings?: string[]
 }
 
 /* -- the host loop (POST /api/chat), spec 10.10 ------------------------------------ */
@@ -238,12 +272,14 @@ export interface ExecutionResult {
   message?: string
 }
 
-/* One turn of the host loop: exactly one of message / execution. */
+/* One turn of the host loop: exactly one of message / execution; mentions only with a
+   message and the bridge (at most 20). */
 export interface HostRequest {
   message?: string
   execution?: ExecutionResult
   session_id: string | null
   bridge?: boolean
+  mentions?: MentionRef[]
 }
 
 /* The SSE events of one turn, as chatEvents() yields them. */
@@ -253,6 +289,7 @@ export type HostEvent =
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
       reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
+  | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
   | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
   | { type: 'error'; detail: string }
   | { type: 'done' }

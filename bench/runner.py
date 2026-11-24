@@ -1,12 +1,23 @@
 """Drive a running host over HTTP the way the page does.
 
-By default only ``POST /api/chat`` is called (plus the read-only ``GET /config.json``
-and ``GET /api/usage/runs``): when the model's spec is accepted, a fixed execution
+By default only ``POST /api/chat`` is called (plus the read-only ``GET /config.json``,
+``GET /api/usage/runs`` and, for a task that picks model items by name,
+``GET /api/v1/bridge/mentions``): when the model's spec is accepted, a fixed execution
 result goes back through ``/api/chat`` so the report step is measured too, and
 nothing runs in Revit. With ``execute=True`` an accepted ``run_tool`` spec is
 confirmed (``POST /api/v1/bridge/spec/confirm``) and run
 (``POST /api/v1/bridge/tools/{name}/run``) - that changes the open model - and the
 real result goes back instead.
+
+A task's ``mentions`` are the designer's picks, sent with its first message (the
+session keeps them for its later turns): ``{kind, id}`` as written, or ``{kind,
+pick: {name | first: true, category?}}`` looked up first, as the page's picker
+does, through ``GET /api/v1/bridge/mentions`` - the item of that kind whose name is
+exactly ``name``, or the first one that can be picked (``category``: the OST_*
+category of a type). A pick that finds nothing skips the task (``skipped: pick not
+found (<kind> <name>)``: the open model lacks what the task needs, which says nothing
+about the model); more than one item of that name, or a lookup the host refuses,
+fails it. Either way nothing is sent.
 
 The runner never sends a model setting or key: the host holds its model
 configuration.
@@ -35,6 +46,8 @@ DEFAULT_EXECUTION = {
 }
 ERROR_TEXT = 500                 # characters of a failed request's reason kept in the result
 CONFIRMED_BY = "token-bench"
+MENTIONS_PATH = "/api/v1/bridge/mentions"
+PICK_LIMIT = 200                 # the most the host lists for one pick
 
 
 class HostError(Exception):
@@ -108,15 +121,63 @@ def skipped_result(task: dict, reason: str) -> dict:
             "correct": None, "error": None}
 
 
-def execute_spec(client: httpx.Client, base: str, spec: dict) -> dict:
-    """What the page does after the designer confirms: ``/spec/confirm``, then the pack's
+class PickNotFound(Exception):
+    """A task's pick found nothing in the open model: the task is skipped, not scored."""
+
+
+def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list[dict]:
+    """The task's mentions as the chat takes them, ``{kind, id}``: an id as written, a pick
+    looked up with ``GET /api/v1/bridge/mentions`` (see the module). A pick that finds no
+    item raises PickNotFound; more than one of that name ValueError; a refused request
+    HostError."""
+    picked = []
+    for mention in mentions:
+        kind = mention["kind"]
+        if "pick" not in mention:
+            picked.append({"kind": kind, "id": mention["id"]})
+            continue
+        pick = mention["pick"]
+        named = pick["name"] if "name" in pick else "first"
+        if pick.get("category"):
+            named += f" in {pick['category']}"
+        what = f"@{kind} " + (repr(pick["name"]) if "name" in pick else "first") + (
+            f" in {pick['category']}" if pick.get("category") else "")
+        params = {"kind": kind, "limit": PICK_LIMIT}
+        if pick.get("category"):
+            params["category"] = pick["category"]
+        if "name" in pick:
+            params["q"] = pick["name"]
+        response = client.get(base + MENTIONS_PATH, params=params)
+        check_status(response)
+        reply = response.json()
+        if not isinstance(reply, dict) or reply.get("error"):
+            error = reply.get("error") if isinstance(reply, dict) else "not an object"
+            raise ValueError(f"mention pick {what}: the host answered {error}")
+        items = [item for item in reply.get("items") or []
+                 if isinstance(item, dict) and item.get("kind") == kind and not item.get("disabled")]
+        if "name" in pick:
+            items = [item for item in items if item.get("name") == pick["name"]]
+            if len(items) > 1:
+                raise ValueError(f"mention pick {what}: {len(items)} items have that name")
+        if not items:
+            raise PickNotFound(f"pick not found ({kind} {named})")
+        picked.append({"kind": kind, "id": items[0]["id"]})
+    return picked
+
+
+def execute_spec(client: httpx.Client, base: str, spec: dict, session_id: str | None = None) -> dict:
+    """What the page does after the designer confirms: ``/spec/confirm`` (with the chat
+    session, so a parameter bound to a pick of that session is accepted), then the pack's
     ``/run`` with the token and the spec's values. A refused confirmation raises (the page
     shows the errors and runs nothing); a failed run becomes ``{success: false, error,
     message}`` that goes back to the model, as on the page."""
     action = spec.get("action") or {}
     if action.get("kind") != "run_tool" or not isinstance(action.get("tool"), str) or not action["tool"]:
         raise ValueError("Only a run_tool spec can be executed")
-    response = client.post(base + "/api/v1/bridge/spec/confirm", json={"spec": spec, "confirmed_by": CONFIRMED_BY})
+    body = {"spec": spec, "confirmed_by": CONFIRMED_BY}
+    if session_id:
+        body["session_id"] = session_id
+    response = client.post(base + "/api/v1/bridge/spec/confirm", json=body)
     check_status(response)
     token = response.json()["token"]
     params = {item["name"]: item.get("value") for item in spec.get("parameters", [])
@@ -144,6 +205,7 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
     failure = None
     http_status = None
     execution = None
+    mentions = None
 
     def chat(payload: dict) -> list[dict]:
         nonlocal session_id, requests
@@ -169,16 +231,18 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
         return current
 
     try:
+        mentions = pick_mentions(client, base, task.get("mentions") or [])
         messages = [task["message"], *task.get("answers", [])]
         for message in messages[:task.get("expect", {}).get("max_turns", 3)]:
             turns += 1
             payload = {"message": message, "session_id": session_id, "bridge": True}
-            if task.get("mentions"):
-                payload["mentions"] = task["mentions"]
+            if mentions and turns == 1:            # picked in the task's message; the session keeps them
+                payload["mentions"] = mentions
             current = chat(payload)
             specs.extend(event for event in current if accepted(event))
             if specs:
-                execution = execute_spec(client, base, specs[-1]["spec"]) if execute else copy.deepcopy(fixture)
+                execution = (execute_spec(client, base, specs[-1]["spec"], session_id) if execute
+                             else copy.deepcopy(fixture))
                 feedback_turns += 1
                 chat({"execution": execution, "session_id": session_id})
                 break
@@ -202,6 +266,8 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
         "session_id": session_id, "text": text, "events": events, "tools": tool_events,
     }
+    if task.get("mentions"):
+        result["mentions"] = mentions        # as sent; None when a pick failed
     if execute:
         result["execution"] = execution
     return result
@@ -213,9 +279,14 @@ def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fix
     results = []
     for task in tasks:
         reason = skip_reason(task, skip_requires, include_placeholder_ids)
-        results.append(skipped_result(task, reason) if reason else
-                       run_task(client, base, label, task, fixture if fixture is not None else DEFAULT_EXECUTION,
-                                execute))
+        if reason:
+            results.append(skipped_result(task, reason))
+            continue
+        try:
+            results.append(run_task(client, base, label, task,
+                                    fixture if fixture is not None else DEFAULT_EXECUTION, execute))
+        except PickNotFound as exc:          # raised before any chat: nothing was measured
+            results.append(skipped_result(task, str(exc)))
     totals, by_role = run_totals(results)
     return {"label": label, "tasks": results, "totals": totals, "by_role": by_role}
 

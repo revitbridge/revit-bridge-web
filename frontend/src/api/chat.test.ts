@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
-import { parseSseFrame } from './chat'
+import { describe, expect, it, vi } from 'vitest'
+import type { HostRequest } from '../types/api'
+import { chatEvents, parseSseFrame } from './chat'
 
 const spec = {
   task: 'run create_wall',
@@ -115,5 +116,44 @@ describe('parseSseFrame', () => {
   it('tolerates CRLF line endings', () => {
     expect(parseSseFrame('event: done\r\ndata: [DONE]\r\n')).toEqual({ type: 'done' })
     expect(parseSseFrame('data: "a"\r')).toEqual({ type: 'token', text: 'a' })
+  })
+})
+
+describe('the mentions event and the picks in a request', () => {
+  it('reads the mentions event: the package items as they are, each problem with its reason', () => {
+    const resolved = [{ kind: 'level', id: 312, name: 'F2', label: 'F2', detail: '3000 mm', elevation_mm: 3000 }]
+    const data = { resolved, not_found: [{ kind: 'link', id: 502, reason: 'not_loaded' }],
+      invalid: [{ kind: 'view', id: 5, reason: 'invalid' }], unresolved: [], warnings: ['row 3: no id'] }
+    expect(parseSseFrame(`event: mentions\ndata: ${JSON.stringify(data)}`)).toEqual({ type: 'mentions', ...data })
+    // Lists that are missing or not lists are empty; entries that are not objects are dropped.
+    expect(parseSseFrame('event: mentions\ndata: {"resolved": "x", "unresolved": [1, {"kind": "level", "id": 2, "reason": "revit_unreachable"}]}'))
+      .toEqual({ type: 'mentions', resolved: [], not_found: [], invalid: [],
+                 unresolved: [{ kind: 'level', id: 2, reason: 'revit_unreachable' }] })
+    expect(parseSseFrame('event: mentions\ndata: [1, 2]')).toBeNull()
+  })
+
+  it('sends the picks with the message, and no mentions field without any', async () => {
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)))
+      return new Response('event: done\ndata: [DONE]\n\n', { status: 200, headers: { 'X-Session-Id': 's1' } })
+    }))
+    try {
+      const drain = async (request: HostRequest) => {
+        const seen: unknown[] = []
+        for await (const event of chatEvents(request)) seen.push(event)
+        expect(seen).toEqual([{ type: 'session', id: 's1' }, { type: 'done' }])
+      }
+      await drain({ message: 'on @level:F2', session_id: null, mentions: [{ kind: 'level', id: 312, label: 'F2' }] })
+      await drain({ message: 'plain', session_id: 's1', mentions: [] })
+      await drain({ message: 'plain', session_id: 's1' })
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(bodies).toEqual([
+      { session_id: null, message: 'on @level:F2', mentions: [{ kind: 'level', id: 312, label: 'F2' }] },
+      { session_id: 's1', message: 'plain' },
+      { session_id: 's1', message: 'plain' },
+    ])
   })
 })

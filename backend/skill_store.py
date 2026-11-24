@@ -6,7 +6,7 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.8
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.9
   ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL``, the
   add-in phase skills ``builtin:revit-task-brief/SKILL``,
   ``builtin:revit-addin-dev/SKILL``, ``builtin:revit-addin-test/SKILL`` and
@@ -22,8 +22,8 @@ text, for whoever needs it). Of the wheel's skills only ``PROMPT_SKILLS`` are
 enabled by default: ``revit-core``, the contract every snippet follows. The
 ``revit-bridge`` protocol is written for an MCP host (``check_code``,
 ``confirm_spec``, ``execute_code`` and the verification tools); this host's
-protocol is the package's ``host_instructions()`` plus its own paragraph (see
-``backend.api.chat``). The add-in phase skills are for building a standalone
+protocol is the package's ``host_instructions(code=False, mentions=True)`` plus
+one line of its own (see ``backend.api.chat``). The add-in phase skills are for building a standalone
 add-in, and ``references/`` and ``lessons/`` are material read on demand. A
 file's own ``enabled`` front matter still decides for itself. A mounted
 ``SKILLS_DIR`` is enabled by default throughout: mounting it is the operator's

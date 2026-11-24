@@ -23,6 +23,13 @@ package's user capabilities directory) serves the pack routes, read from disk on
 every call: a pack another process (the package's MCP server) writes there is
 listed on the next request.
 
+The chat's picker: ``GET /mentions`` lists what the designer can pick after
+``@level``, ``@type`` or ``@link`` (the package's ``mention_candidates``).
+``/spec/reconcile`` and ``/spec/confirm`` take the chat's ``session_id`` and
+refuse a parameter bound to a pick the package did not verify in that session for
+the device the request drives (``unknown_mention``, see ``backend.mention_check``);
+``/spec/confirm`` also reads the bound picks again from the open model.
+
 The workbench's routes: ``POST /check`` (``checking.check_code``: compile, never
 run) and ``POST /dry-run`` (``dry_run.dry_run_code``: run and always roll back,
 no token - the package's rule), each taking either ``code`` (a snippet) or
@@ -82,11 +89,12 @@ from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
+from revit_bridge.mentions import mention_candidates, resolve_mentions
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
 from revit_bridge.revit.probe import check_connection
 from revit_bridge.snapshot import RevitQueryExecutor
 from revit_bridge.snapshot.project import ProjectSnapshot, take_snapshot, validate_categories
-from revit_bridge.snapshot.query import run_query
+from revit_bridge.snapshot.query import RevitQueryError, run_query
 from revit_bridge.spec.gate import Gate, confirmation_required
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
@@ -94,8 +102,10 @@ from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 from backend.api import devices as devices_api
 from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
 from backend.config import get_settings
+from backend.mention_check import bound_picks, changed_picks, mention_errors, mention_evidence
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
+from backend.session import get_session_store
 
 _log = logging.getLogger("backend.bridge")
 
@@ -383,14 +393,21 @@ class MissingParamsRequest(BaseModel):
     language: str = "zh"
 
 
+SESSION_ID_DOC = ("The chat session the spec comes from (the X-Session-Id of /api/chat): a parameter "
+                  "bound to a pick (evidence mention:<kind>#<id>) must be one the designer made and the "
+                  "package verified in that session. Without it no such binding is accepted.")
+
+
 class ReconcileRequest(BaseModel):
     spec: dict
     snapshot: dict | None = None
+    session_id: str | None = Field(default=None, max_length=64, description=SESSION_ID_DOC)
 
 
 class ConfirmRequest(BaseModel):
     spec: dict
     confirmed_by: str = "designer"
+    session_id: str | None = Field(default=None, max_length=64, description=SESSION_ID_DOC)
 
 
 class RunToolRequest(BaseModel):
@@ -555,6 +572,38 @@ async def query_model(req: QueryRequest):
     if answer.get("error") == "unknown_kind":
         raise ApiError(400, **answer)
     if answer.get("error") == "invalid_args":
+        raise ApiError(422, **answer)
+    return answer
+
+
+@router.get("/mentions", responses=responses(403, 422, 500, 503))
+async def mention_items(
+    kind: str = Query(..., max_length=32, description="level, type or link"),
+    category: str | None = Query(None, max_length=200,
+                                 description="type only: an OST_* category; without it the categories are listed"),
+    q: str | None = Query(None, max_length=500, description="keep the items whose name, label, family or "
+                                                            "category contains this (case-insensitive)"),
+    limit: int | None = Query(None, description="at most this many items (1-200, default 50)"),
+):
+    """What the designer can pick after ``@level``, ``@type`` or ``@link``: the package's
+    ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
+    category?, family?, disabled?, reason?}], total, truncated, warnings?}``. ``type`` without
+    ``category`` lists the categories (items of kind ``category`` whose ``id`` is the OST_*
+    name); a link that is not loaded is listed with ``disabled: true`` and its ``reason``. A
+    kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
+    reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
+    is 503 ``revit_unreachable``. The same device rules as every route here."""
+    try:
+        client = await get_revit_client()
+        answer = await mention_candidates(RevitQueryExecutor(client), kind, category, q, limit)
+    except ApiError as exc:
+        exc.payload.setdefault("kind", kind)
+        raise
+    except OSError as exc:
+        raise revit_unreachable(exc, kind=kind) from None
+    except Exception as exc:  # noqa: BLE001 - a bug in the listing, never a bad request
+        raise ApiError(500, "query_failed", f"{type(exc).__name__}: {exc}", kind=kind) from None
+    if answer.get("error") in ("unknown_kind", "invalid_args"):
         raise ApiError(422, **answer)
     return answer
 
@@ -785,11 +834,71 @@ async def run_tool(name: str, req: RunToolRequest):
 
 # -- specs ---------------------------------------------------------------------
 
+def picks_session(session_id: str | None):
+    """The chat session ``session_id``; None without one, or for one that is not (or no longer) there."""
+    return get_session_store().get(session_id) if session_id else None
+
+
+def session_picks(session_id: str | None) -> dict[str, dict]:
+    """The picks verified in the chat session ``session_id`` for the device this request drives:
+    none without a session, or for one that is not (or no longer) there."""
+    session = picks_session(session_id)
+    return session.picks_for(current_scope()) if session is not None else {}
+
+
+# Seconds /spec/confirm waits for the open model to read a spec's picks again.
+PICK_RECHECK_TIMEOUT = 15.0
+
+
+async def recheck_picks(spec: TaskSpec, session_id: str | None) -> list:
+    """The spec's picks read again from the open model before a token is issued (one
+    ``resolve_mentions`` call): ``unknown_mention`` for one that is gone or reads under another
+    name now. The session takes the new readings and loses the picks found gone. No pick bound:
+    nothing is asked. No Revit: 503 ``revit_unreachable``; an add-in that could not say: 503
+    ``revit_error``; no answer within ``PICK_RECHECK_TIMEOUT`` seconds: 504 ``revit_timeout``."""
+    session = picks_session(session_id)
+    scope = current_scope()
+    bound = bound_picks(spec, session.picks_for(scope)) if session is not None else []
+    if not bound:
+        return []
+    wanted = list({(item["kind"], item["id"]): {"kind": item["kind"], "id": item["id"]}
+                   for _, item in bound}.values())
+
+    async def resolve() -> dict:
+        return await resolve_mentions(RevitQueryExecutor(await get_revit_client()), wanted)
+
+    try:
+        found = await asyncio.wait_for(resolve(), PICK_RECHECK_TIMEOUT)
+    except TimeoutError:                       # before OSError: TimeoutError is one
+        raise ApiError(504, "revit_timeout",
+                       f"Revit did not read the picks again within {PICK_RECHECK_TIMEOUT:g}s") from None
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    except RevitQueryError as exc:
+        raise ApiError(503, "revit_error", f"The picks could not be read again: {exc}") from None
+    session.remember_picks(scope, found["resolved"])
+    session.forget_picks(scope, found["not_found"])
+    fresh = {mention_evidence(item.get("kind"), item.get("id")): item for item in found["resolved"]}
+    return changed_picks(bound, fresh)
+
+
+def refuse_unknown_mentions(spec: TaskSpec, pack, session_id: str | None) -> None:
+    """422 ``invalid_spec`` with the ``unknown_mention`` errors (``backend.mention_check``)."""
+    refused = mention_errors(spec, pack, session_picks(session_id))
+    if refused:
+        raise ApiError(422, "invalid_spec", "; ".join(e.message for e in refused),
+                       errors=[e.model_dump() for e in refused])
+
+
 @router.post("/spec/reconcile", responses=responses(403, 422, 500, 503))
 async def reconcile_spec(req: ReconcileRequest):
-    """``reconcile``: the draft TaskSpec against the snapshot (given, or taken now)."""
+    """``reconcile``: the draft TaskSpec against the snapshot (given, or taken now). A
+    parameter bound to a pick (evidence ``mention:<kind>#<id>``) that is not one verified in
+    the chat session ``session_id`` for this device, or not bound as that pick is, is 422
+    ``invalid_spec`` with ``errors`` of code ``unknown_mention``, before Revit is asked."""
     draft = parse_spec(req.spec)
     pack = pack_for(draft, ToolStore())          # a bad tool name is refused before Revit is asked
+    refuse_unknown_mentions(draft, pack, req.session_id)
     snapshot = parse_snapshot(req.snapshot)
     if snapshot is None:
         snapshot = await snapshot_now(await get_revit_client())
@@ -802,18 +911,29 @@ def confirm_rate_limit(request: Request) -> None:
         raise ApiError(429, "rate_limited", "Too many confirmations from this address; try again in a minute")
 
 
-@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)], responses=responses(403, 422, 429))
+@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)],
+             responses=responses(403, 422, 429, 503, 504))
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
-    Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}``.
-    The token belongs to the browser session and never enters the model context."""
+    Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -
+    a parameter bound to a pick that is not one verified in the chat session ``session_id``
+    for this device (or not bound as that pick is) among them, code ``unknown_mention``. A
+    spec that binds picks has them read again from the open model first (``recheck_picks``):
+    one gone or renamed since is ``unknown_mention`` too; no Revit to ask is 503
+    ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
+    needs no Revit here. The token belongs to the browser session and never enters the model
+    context."""
     try:
         spec = TaskSpec.model_validate(req.spec)
     except ValidationError as exc:
         raise ApiError(422, "invalid_spec", errors=[{"code": "invalid_spec", "param": None, "message": str(exc)}]) from None
-    errors = validate_spec(spec, pack_for(spec, ToolStore()))
+    pack = pack_for(spec, ToolStore())
+    errors = validate_spec(spec, pack) + mention_errors(spec, pack, session_picks(req.session_id))
     if errors:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])
+    changed = await recheck_picks(spec, req.session_id)
+    if changed:
+        raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in changed])
     # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
     conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
                                    channel=CONFIRM_CHANNEL, scope=current_scope())
