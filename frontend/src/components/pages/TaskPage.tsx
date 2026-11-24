@@ -8,7 +8,7 @@ import { useStore } from 'zustand'
 import { chatEvents } from '../../api/chat'
 import { flowApi } from '../task/api'
 import ChatPanel from '../task/ChatPanel'
-import ExecutionPanel from '../task/ExecutionPanel'
+import ExecutionPanel, { PreviousAttemptPanel } from '../task/ExecutionPanel'
 import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
 import { TokenPanel } from '../hostv2/trace'
 import SnapshotPanel from '../task/SnapshotPanel'
@@ -76,6 +76,8 @@ export default function TaskPage({ events }: { events?: EventSource }) {
           </div>
         )}
       </section>
+
+      {state.previous && <PreviousAttemptPanel previous={state.previous} />}
 
       {state.proposal && (
         <SpecCard proposal={state.proposal} canConfirm={canConfirm(state)} confirming={state.confirming}

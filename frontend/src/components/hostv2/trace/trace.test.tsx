@@ -214,12 +214,12 @@ describe('TokenPanel', () => {
     const html = renderToStaticMarkup(<TokenPanel turn={[usage({ input: null })]} session={[usage(), usage({ input: null })]} />)
     expect(html).toMatch(/^<details class="hostv2-tokens"><summary>/)
     expect(html).not.toMatch(/<details[^>]+open/)
-    expect(html).toContain('This turn: unknown in / 20 out (1 calls)')
-    expect(html).toContain('Session: unknown in / 40 out (2 calls)')
+    expect(html).toContain('This turn: - in / 20 out (1 calls)')
+    expect(html).toContain('Session: - in / 40 out (2 calls)')
     expect(html).toContain('aria-label="This turn"')
     expect(html).toContain('aria-label="This session"')
-    expect(html).toContain('<td data-label="Input">unknown</td>')
-    expect(html).toContain('<td data-label="Hit rate">unknown</td>')
+    expect(html).toContain('<td data-label="Input">-</td>')
+    expect(html).toContain('<td data-label="Hit rate">-</td>')
     expect(html).not.toContain('scope="col">Role')
   })
 
@@ -233,7 +233,7 @@ describe('TokenPanel', () => {
     expect(html).toContain('scope="row">Total')
     expect(html).not.toContain('scope="row">supervisor')
     for (const text of ['25.0%', '30.0%', '28.3%']) expect(html).toContain(text)
-    expect(html).toContain('<td data-label="Cache write">unknown</td>')
+    expect(html).toContain('<td data-label="Cache write">-</td>')
   })
 
   it('one row per role that ran plus the total, even when one role made every call of the turn', () => {
@@ -252,13 +252,13 @@ describe('TokenPanel', () => {
     expect(renderToStaticMarkup(<TokenPanel turn={[usage()]} session={[usage()]} />)).not.toContain('scope="col">Role')
   })
 
-  it('shows unknown, not NaN, when a usage event lacks a field', () => {
+  it('shows - (unknown), not NaN or 0, when a usage event lacks a field', () => {
     const partial = { ...usage() } as Partial<UsageEvent>
     delete partial.input
     const html = renderToStaticMarkup(<TokenPanel title="Tokens without the bridge" turn={[partial as UsageEvent]} session={[usage(), partial as UsageEvent]} />)
     expect(html).toContain('<strong>Tokens without the bridge</strong>')
-    expect(html).toContain('This turn: unknown in / 20 out (1 calls)')
-    expect(html).toContain('<td data-label="Input">unknown</td>')
+    expect(html).toContain('This turn: - in / 20 out (1 calls)')
+    expect(html).toContain('<td data-label="Input">-</td>')
     expect(html).not.toMatch(/NaN|Infinity/)
   })
 

@@ -3,8 +3,9 @@ import { sumUsage, type UsageTotal } from './events'
 import './trace.css'
 
 const roles: Role[] = ['analyst', 'planner', 'supervisor']
-const format = (value: number | null) => value === null ? 'unknown' : value.toLocaleString('en-US')
-const rate = (value: number | null) => value === null ? 'unknown' : `${(value * 100).toFixed(1)}%`
+// A count the provider did not report is '-', as on the Token page - never 0.
+const format = (value: number | null) => value === null ? '-' : value.toLocaleString('en-US')
+const rate = (value: number | null) => value === null ? '-' : `${(value * 100).toFixed(1)}%`
 
 function UsageRow({ total, role, showRole }: { total: UsageTotal; role: string; showRole: boolean }) {
   return (
