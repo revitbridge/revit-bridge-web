@@ -6,6 +6,8 @@
 #                                     so, looked up with GET /api/v1/bridge/mentions before sending
 #                                   {kind, pick: {first: true}}: the first item that can be picked
 #                                   a type pick also names its category: pick: {category: OST_Walls, ...}
+#                                 a pick that finds nothing in the open model skips the task
+#                                 ("pick not found (<kind> <name>)"), it is not scored
 #   answers: [text]               optional: sent in turn when the model asks
 #   expect: {tool, params, max_turns}   params compared by value, numbers as numbers;
 #                                 lengths are written in millimetres, units are not compared
@@ -54,11 +56,13 @@
   message: "Move the currently selected elements 1000 mm in X, zero in Y and Z."
   requires: [basic-tools]
   expect: {tool: move_elements, params: {}, max_turns: 3}
+# Skipped (pick not found) when the open model has no level named F2.
 - id: mentioned-level
   kind: tool
   message: "Create a 3000 mm high Basic Wall from (0,0) to (6000,0) on the selected level."
   mentions: [{kind: level, pick: {name: F2}}]
   expect: {tool: create_wall, params: {level_name: F2, height: 3000}, max_turns: 3}
+# Skipped (pick not found) when the open model has no loaded link.
 - id: mentioned-link
   kind: query
   message: "List the levels in the selected linked model without changing it."

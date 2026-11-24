@@ -769,16 +769,30 @@ def test_picks_are_looked_up_and_sent_with_the_first_message_only():
     assert "mentions" not in host.requests[2][0]                        # the execution report
 
 
-@pytest.mark.parametrize("pick, candidates, why", [
-    ({"kind": "level", "pick": {"name": "F9"}}, {"level": LEVELS}, "nothing of that kind to pick"),
-    ({"kind": "link", "pick": {"name": "MEP.rvt : 1"}}, {"link": LINKS}, "nothing of that kind to pick"),
-    ({"kind": "link", "pick": {"first": True}}, {"link": LINKS[:1]}, "nothing of that kind to pick"),
-    ({"kind": "level", "pick": {"name": "F2"}}, {"level": LEVELS[1:2] * 2}, "2 items have that name"),
+@pytest.mark.parametrize("pick, candidates, reason", [
+    ({"kind": "level", "pick": {"name": "F9"}}, {"level": LEVELS}, "pick not found (level F9)"),
+    ({"kind": "link", "pick": {"name": "MEP.rvt : 1"}}, {"link": LINKS}, "pick not found (link MEP.rvt : 1)"),
+    ({"kind": "link", "pick": {"first": True}}, {"link": LINKS[:1]}, "pick not found (link first)"),
+    ({"kind": "type", "pick": {"name": "Thick", "category": "OST_Walls"}}, {"type": TYPES},
+     "pick not found (type Thick in OST_Walls)"),
 ])
-def test_a_pick_that_finds_nothing_or_too_much_fails_the_task_before_any_chat(pick, candidates, why):
-    host = FakeHost([], candidates=candidates)
-    result = host.run([task(mentions=[pick])])["tasks"][0]
-    assert result["correct"] is False and why in result["error"] and result["error"].startswith("ValueError")
+def test_a_pick_that_finds_nothing_skips_the_task_unscored(pick, candidates, reason):
+    host = FakeHost([response(("", "No tool"), ("usage", usage()))], candidates=candidates)
+    run = host.run([task("picked", mentions=[pick]), task("plain", kind="none", expect={})])
+    picked, plain = run["tasks"]
+    assert picked == {"id": "picked", "kind": "tool", "requires": [], "skipped": reason, "correct": None,
+                      "error": None}
+    assert plain["correct"] and len(host.requests) == 1                 # only the next task chatted
+    summary = summarize([run])
+    assert summary["tasks"][0]["skipped"] == reason and summary["tasks"][0]["runs"] == 0
+    assert summary["scored"]["median"] == 1 and summary["correct"]["median"] == 1
+
+
+def test_a_pick_with_two_items_of_that_name_fails_the_task_before_any_chat():
+    host = FakeHost([], candidates={"level": LEVELS[1:2] * 2})
+    result = host.run([task(mentions=[{"kind": "level", "pick": {"name": "F2"}}])])["tasks"][0]
+    assert result["correct"] is False and result["error"].startswith("ValueError")
+    assert "2 items have that name" in result["error"]
     assert result["mentions"] is None and host.requests == [] and result["turns"] == 0
 
 

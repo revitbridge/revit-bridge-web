@@ -186,3 +186,14 @@ def test_a_level_picked_by_name_reaches_the_model_and_its_spec_runs(host):
     first_user = model.requests[0]["messages"][-1]["content"]
     assert first_user.startswith(picked["message"] + "\n\nDesigner's selections") and 'level "L2" (id 2' in first_user
     assert model.tool_results("propose_spec")[0]["accepted"] is True
+
+
+def test_a_level_the_model_does_not_have_skips_the_task(host):
+    client, model, revit = host
+    missing = {"id": "missing", "kind": "tool", "message": "A wall on F9.",
+               "mentions": [{"kind": "level", "pick": {"name": "F9"}}],
+               "expect": {"tool": "create_wall", "max_turns": 3}}
+    result = run_bench(client, BASE, "missing", [missing])
+    task = result["runs"][0]["tasks"][0]
+    assert task["skipped"] == "pick not found (level F9)" and task["correct"] is None
+    assert model.requests == []

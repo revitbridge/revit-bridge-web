@@ -54,8 +54,9 @@ notes:
   The host's CHAT_RATE_LIMIT (default 30 per minute per address) counts the bench's
   requests too; raise it on the host for fast models or long task sets.
   Labels must be new on the host (GET /api/usage/runs): each label is one run.
-  A task that picks model items by name (mentions: [{kind, pick: {name}}]) needs the
-  open model to have them: the picks are looked up before the task's first message.
+  A task that picks model items by name (mentions: [{kind, pick: {name}}]) looks them up
+  before its first message; when the open model has none, the task is skipped
+  ("pick not found"), not scored.
 """
 
 

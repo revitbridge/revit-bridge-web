@@ -14,8 +14,10 @@ session keeps them for its later turns): ``{kind, id}`` as written, or ``{kind,
 pick: {name | first: true, category?}}`` looked up first, as the page's picker
 does, through ``GET /api/v1/bridge/mentions`` - the item of that kind whose name is
 exactly ``name``, or the first one that can be picked (``category``: the OST_*
-category of a type). A pick that finds nothing, or more than one item of that
-name, fails the task before anything is sent.
+category of a type). A pick that finds nothing skips the task (``skipped: pick not
+found (<kind> <name>)``: the open model lacks what the task needs, which says nothing
+about the model); more than one item of that name, or a lookup the host refuses,
+fails it. Either way nothing is sent.
 
 The runner never sends a model setting or key: the host holds its model
 configuration.
@@ -119,10 +121,15 @@ def skipped_result(task: dict, reason: str) -> dict:
             "correct": None, "error": None}
 
 
+class PickNotFound(Exception):
+    """A task's pick found nothing in the open model: the task is skipped, not scored."""
+
+
 def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list[dict]:
     """The task's mentions as the chat takes them, ``{kind, id}``: an id as written, a pick
     looked up with ``GET /api/v1/bridge/mentions`` (see the module). A pick that finds no
-    item, or more than one of that name, raises ValueError; a refused request HostError."""
+    item raises PickNotFound; more than one of that name ValueError; a refused request
+    HostError."""
     picked = []
     for mention in mentions:
         kind = mention["kind"]
@@ -130,6 +137,9 @@ def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list
             picked.append({"kind": kind, "id": mention["id"]})
             continue
         pick = mention["pick"]
+        named = pick["name"] if "name" in pick else "first"
+        if pick.get("category"):
+            named += f" in {pick['category']}"
         what = f"@{kind} " + (repr(pick["name"]) if "name" in pick else "first") + (
             f" in {pick['category']}" if pick.get("category") else "")
         params = {"kind": kind, "limit": PICK_LIMIT}
@@ -150,7 +160,7 @@ def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list
             if len(items) > 1:
                 raise ValueError(f"mention pick {what}: {len(items)} items have that name")
         if not items:
-            raise ValueError(f"mention pick {what}: nothing of that kind to pick in the open model")
+            raise PickNotFound(f"pick not found ({kind} {named})")
         picked.append({"kind": kind, "id": items[0]["id"]})
     return picked
 
@@ -269,9 +279,14 @@ def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fix
     results = []
     for task in tasks:
         reason = skip_reason(task, skip_requires, include_placeholder_ids)
-        results.append(skipped_result(task, reason) if reason else
-                       run_task(client, base, label, task, fixture if fixture is not None else DEFAULT_EXECUTION,
-                                execute))
+        if reason:
+            results.append(skipped_result(task, reason))
+            continue
+        try:
+            results.append(run_task(client, base, label, task,
+                                    fixture if fixture is not None else DEFAULT_EXECUTION, execute))
+        except PickNotFound as exc:          # raised before any chat: nothing was measured
+            results.append(skipped_result(task, str(exc)))
     totals, by_role = run_totals(results)
     return {"label": label, "tasks": results, "totals": totals, "by_role": by_role}
 
