@@ -15,21 +15,35 @@ interface Props {
   onConfirm: () => void
 }
 
-/* Every parameter with its value, source and evidence; a conflicting one is marked. */
-export function SpecTable({ spec, conflicts = [] }: { spec: TaskSpec; conflicts?: Array<Record<string, unknown>> }) {
+/* Every parameter with its value, source and evidence; a conflicting one is marked. defaults:
+   parameters the spec leaves out whose default the tool fills when it runs (the workbench's
+   cleared optional values), as rows of their own; they are not part of the spec. */
+export function SpecTable({ spec, conflicts = [], defaults = [] }: {
+  spec: TaskSpec
+  conflicts?: Array<Record<string, unknown>>
+  defaults?: Array<{ name: string; value: unknown; unit?: string | null }>
+}) {
   return (
     <table className="spec-table">
       <thead>
         <tr><th>Parameter</th><th>Value</th><th>Source</th><th>Evidence</th></tr>
       </thead>
       <tbody>
-        {spec.parameters.length === 0 && <tr><td colSpan={4} className="muted">no parameters</td></tr>}
+        {spec.parameters.length === 0 && defaults.length === 0 && <tr><td colSpan={4} className="muted">no parameters</td></tr>}
         {spec.parameters.map(p => (
           <tr key={p.name} className={conflicts.some(c => c.param === p.name) ? 'has-conflict' : undefined}>
             <td className="mono">{p.name}</td>
             <td className="mono">{showValue(p.value)}{p.unit ? ` ${p.unit}` : ''}</td>
             <td><span className={`source-pill source-${p.source}`}>{p.source}</span></td>
             <td className="evidence">{p.evidence}</td>
+          </tr>
+        ))}
+        {defaults.map(d => (
+          <tr key={`default-${d.name}`}>
+            <td className="mono">{d.name}</td>
+            <td className="mono">default {JSON.stringify(d.value)}{d.unit ? ` ${d.unit}` : ''} will be used</td>
+            <td><span className="source-pill source-default">default</span></td>
+            <td className="evidence">not in the spec: the tool fills it</td>
           </tr>
         ))}
       </tbody>

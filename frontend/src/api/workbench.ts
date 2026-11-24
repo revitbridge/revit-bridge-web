@@ -1,12 +1,12 @@
 /* The workbench's HTTP client: every call the workbench makes goes through this one module.
 
-   `workbenchApi` satisfies `WorkbenchApi`, the interface the workbench component takes (its
-   text is copied below from the component's specification until the component's own types are
-   merged; the names must stay as they are). Each method is a thin call of a v1 route:
+   `workbenchApi` satisfies `WorkbenchApi`, the interface the workbench component takes
+   (types/hostv2.ts, re-exported here). Each method is a thin call of a v1 route:
 
    check      POST /check     the package's check_code reply as it is
    dryRun     POST /dry-run   the package's dry_run_code reply as it is (no token)
    choices    POST /choices   {choices_from}: the package's get_tool_choices for one parameter
+   lookup     GET  /tools/{name}             {name, dropped}: what a save over it loses; null on 404
    save       POST /solidify  the draft as a v1 pack (parameters with source, choices_from, unit)
    list       GET  /tools     {name, description, builtin, origin, directory?} (read from disk)
    load       GET  /tools/{name}             the pack as a draft
@@ -14,12 +14,18 @@
    exportYaml GET  /tools/{name}/export      the pack file as stored (text)
    importYaml POST /tools/import[?overwrite=true]  a pack file (text)
 
-   A draft with parameters is a pack template: its code reads them as {name} placeholders, the
-   way a saved pack does. check and dryRun send it as {pack, values} (draftPack below) and the
-   server has the package fill the template - with `values` for a dry run, and for a compile check
-   with sample values (each parameter's default, else 0, "" or false), since compiling needs
-   values but not the designer's. Nothing here escapes or substitutes anything. A draft without
-   parameters goes as {code}.
+   A draft is a pack template: its code reads its parameters as {name} placeholders, the way a
+   saved pack does. check and dryRun always send it as {pack, values} (draftPack below), also
+   without parameters, and the server has the package fill the template - with `values` for a
+   dry run, and for a compile check with sample values (each parameter's default, else 0, "" or
+   false), since compiling needs values but not the designer's. So a leftover {x} (a C#
+   $"{x}" with no parameter x) is refused there (422 render_failed) as it would be when the saved
+   tool runs. Nothing here escapes or substitutes anything.
+
+   Saving an opened tool keeps what the save route can carry and the workbench does not edit:
+   source_query, and each parameter's source, choices_from and type spelling while the designer
+   leaves its source as shown. What the route cannot carry is listed by lookup (droppedOnSave)
+   so the workbench can name it before a replace.
 
    Errors are BridgeApiError (components/shared/http.ts): the server's {error, message?, ...}
    kept, the message "<status>: <error>: <message>". */
@@ -30,39 +36,11 @@ import { BridgeApiError, del, get, post, request } from '../components/shared/ht
 import type {
   PackParameter, SolidifyRequest, SolidifyResponse, ToolDetail, ToolInfo, ToolParam,
 } from '../types/api'
+import type { ExistingTool, ToolDraft, ToolParamDraft, WorkbenchApi, WorkbenchTool } from '../types/hostv2'
 
-/* -- the workbench component's interface (copied; do not rename) --------------------------- */
+export type { ExistingTool, ToolDraft, ToolParamDraft, WorkbenchApi, WorkbenchTool }
 
-export interface ToolParamDraft {
-  name: string; type: 'string' | 'double' | 'int' | 'bool'
-  description: string
-  source: 'designer' | 'levels' | 'family_types' | 'elements'
-  category?: string            // OST_* , when source is family_types or elements
-  unit?: 'mm' | 'm' | 'feet'
-  required: boolean; default?: unknown
-}
-export interface ToolDraft {
-  name: string; description: string; code: string
-  parameters: ToolParamDraft[]; validator?: string
-}
-export interface WorkbenchApi {
-  check(code: string, parameters: ToolParamDraft[]): Promise<unknown>
-  dryRun(code: string, parameters: ToolParamDraft[], values: Record<string, unknown>): Promise<unknown>
-  choices(param: ToolParamDraft): Promise<{ label: string; value: unknown }[]>
-  save(draft: ToolDraft): Promise<{ name: string }>
-  list(): Promise<{ name: string; description: string; builtin: boolean; origin?: string }[]>
-  load(name: string): Promise<ToolDraft>
-  remove(name: string): Promise<void>
-  exportYaml(name: string): Promise<string>
-  importYaml(text: string): Promise<{ name: string }>
-}
-
-/* -- what this client adds ------------------------------------------------------------------- */
-
-/* A list item: the interface's fields plus the directory the file is in (a local host only). */
-export interface WorkbenchTool { name: string; description: string; builtin: boolean; origin: string; directory?: string }
-
-/* POST /tools/import's answer. */
+/* POST /tools/import's answer (the interface's WorkbenchImport and what else the route says). */
 export interface ImportResult { status: string; name: string; version: string; replaced: boolean; revit_synced: boolean }
 
 const B = '/api/v1/bridge'
@@ -75,7 +53,19 @@ const TYPE_OF: Record<string, ToolParamDraft['type']> = {
 
 const empty = (value: unknown) => value === undefined || value === null || value === ''
 
-/* A draft parameter as a v1 pack parameter (the shape POST /solidify validates). */
+/* The source and choices_from of the opened tool's parameter, when the designer left its source
+   (and category) as the workbench showed it - so floor_types, answer and default survive a save
+   although the workbench shows them as family types of OST_Floors, levels or designer. */
+function keptSource(p: ToolParamDraft): { source: string; choices_from?: string } | null {
+  const loaded = p.loaded
+  if (!loaded || typeof loaded.source !== 'string') return null
+  const shown = draftParameter(loaded as unknown as ToolParam)
+  if (shown.source !== p.source || (shown.category ?? '') !== (p.category ?? '')) return null
+  return typeof loaded.choices_from === 'string' ? { source: loaded.source, choices_from: loaded.choices_from } : { source: loaded.source }
+}
+
+/* A draft parameter as a v1 pack parameter (the shape POST /solidify validates). A default of
+   null is kept: it is a default (the package fills null when no value is given). */
 export function packParameter(p: ToolParamDraft): PackParameter {
   const out: PackParameter = { name: p.name, type: p.type, description: p.description, source: 'designer', required: p.required }
   if (p.source === 'levels') {
@@ -85,13 +75,24 @@ export function packParameter(p: ToolParamDraft): PackParameter {
     out.source = `tool:${p.source}`
     out.choices_from = `${p.source}:${p.category ?? ''}`
   }
+  const kept = keptSource(p)
+  if (kept) {
+    out.source = kept.source
+    if (kept.choices_from === undefined) delete out.choices_from
+    else out.choices_from = kept.choices_from
+  }
+  // The type as the pack spells it (integer, number...) while the designer keeps its meaning.
+  const loadedType = p.loaded?.type
+  if (typeof loadedType === 'string' && TYPE_OF[loadedType.toLowerCase()] === p.type) out.type = loadedType
   if (p.unit) out.unit = p.unit
-  if (!empty(p.default)) out.default = p.default
+  if (p.default !== undefined && p.default !== '') out.default = p.default
+  if (out.source === 'default' && !('default' in out)) out.source = 'designer'   // the default was removed
   return out
 }
 
-/* A stored pack parameter as a draft parameter. floor_types (the one source a draft cannot name)
-   reads as the floor family types. */
+/* A stored pack parameter as a draft parameter, the stored one kept in `loaded`. floor_types
+   (the one source a draft cannot name) reads as the floor family types; answer and default read
+   as the designer's value (packParameter puts them back). */
 export function draftParameter(p: ToolParam): ToolParamDraft {
   const from = p.choices_from ?? (p.source?.startsWith('tool:') ? p.source.slice(5) : '')
   const [kind, category] = from.split(':', 2)
@@ -104,7 +105,31 @@ export function draftParameter(p: ToolParam): ToolParamDraft {
   else if (kind === 'floor_types') { draft.source = 'family_types'; draft.category = 'OST_Floors' }
   if (p.unit && (UNITS as string[]).includes(p.unit)) draft.unit = p.unit as ToolParamDraft['unit']
   if ('default' in p && p.default !== undefined) draft.default = p.default
+  draft.loaded = structuredClone(p) as unknown as Record<string, unknown>
   return draft
+}
+
+/* What a save over `detail` loses. POST /solidify carries the name, code, description,
+   parameters, source_query and validator; the package then writes the display name from the
+   name, version 1.0.0 and a new created_at, and no preconditions, applies_when, not_for or
+   (0.1) tags. revit_versions, fixtures and the approval are lost too but GET /tools/{name} does
+   not show them: UNSEEN_ON_SAVE names them for the question. */
+export function droppedOnSave(detail: ToolDetail): string[] {
+  const dropped: string[] = []
+  const count = (list: unknown) => Array.isArray(list) ? list.length : 0
+  if (detail.display_name && detail.display_name !== defaultDisplayName(detail.name)) dropped.push(`display name "${detail.display_name}"`)
+  if (detail.version && detail.version !== '1.0.0') dropped.push(`version ${detail.version} (saved again as 1.0.0)`)
+  for (const [key, list] of [['preconditions', detail.preconditions], ['applies_when', detail.applies_when], ['not_for', detail.not_for], ['tags', detail.tags]] as const) {
+    if (count(list)) dropped.push(`${key} (${count(list)})`)
+  }
+  return dropped
+}
+
+export const UNSEEN_ON_SAVE = ['revit_versions', 'fixtures', 'approved_by', 'approved_at']
+
+/* The package's display name for a pack name: name.replace("_", " ").title(). */
+export function defaultDisplayName(name: string): string {
+  return name.replace(/_/g, ' ').toLowerCase().replace(/(^|[^a-z])([a-z])/g, (_, before: string, letter: string) => before + letter.toUpperCase())
 }
 
 /* The draft's validator field (JSON text) as the pack's validator object; empty is none. */
@@ -133,8 +158,13 @@ export function sampleValues(parameters: ToolParamDraft[]): Record<string, unkno
   return Object.fromEntries(parameters.map(p => [p.name, empty(p.default) ? neutral[p.type] : p.default]))
 }
 
-/* The choices_from of a draft parameter whose options come from the model; null for a designer's value. */
+/* The choices_from of a draft parameter whose options come from the model (the opened tool's
+   own while its source is as loaded, so the options are what the saved tool gets); null for a
+   designer's value. */
 export function choicesFromOf(p: ToolParamDraft): string | null {
+  if (p.source === 'designer') return null
+  const kept = keptSource(p)
+  if (kept?.choices_from) return kept.choices_from
   if (p.source === 'levels') return 'levels'
   if (p.source === 'family_types' || p.source === 'elements') return `${p.source}:${p.category ?? ''}`
   return null
@@ -150,22 +180,33 @@ async function getText(path: string): Promise<string> {
 
 export const workbenchApi = {
   check: (code: string, parameters: ToolParamDraft[]): Promise<unknown> =>
-    post<unknown>(`${B}/check`, parameters.length
-      ? { pack: draftPack(code, parameters), values: sampleValues(parameters) }
-      : { code }),
+    post<unknown>(`${B}/check`, { pack: draftPack(code, parameters), values: sampleValues(parameters) }),
 
   dryRun: (code: string, parameters: ToolParamDraft[], values: Record<string, unknown>): Promise<unknown> =>
-    post<unknown>(`${B}/dry-run`, parameters.length ? { pack: draftPack(code, parameters), values } : { code }),
+    post<unknown>(`${B}/dry-run`, { pack: draftPack(code, parameters), values }),
 
   choices: async (param: ToolParamDraft): Promise<{ label: string; value: unknown }[]> => {
     const from = choicesFromOf(param)
     return from ? post<{ label: string; value: unknown }[]>(`${B}/choices`, { choices_from: from }) : []
   },
 
+  /* Asked before a save, which replaces a tool of yours of that name without asking. */
+  lookup: async (name: string): Promise<ExistingTool | null> => {
+    let detail: ToolDetail
+    try {
+      detail = await get<ToolDetail>(`${B}/tools/${enc(name)}`)
+    } catch (e: unknown) {
+      if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') return null
+      throw e
+    }
+    return { name: detail.name, dropped: droppedOnSave(detail), unseen: [...UNSEEN_ON_SAVE] }
+  },
+
   save: async (draft: ToolDraft): Promise<{ name: string }> => {
     const payload: SolidifyRequest = {
       name: draft.name, code: draft.code, description: draft.description,
-      parameters: draft.parameters.map(packParameter), source_query: '', validator: parseValidator(draft.validator),
+      parameters: draft.parameters.map(packParameter), source_query: draft.keep?.source_query ?? '',
+      validator: parseValidator(draft.validator),
     }
     const saved = await post<SolidifyResponse>(`${B}/solidify`, payload)
     return { name: saved.name }
@@ -184,6 +225,7 @@ export const workbenchApi = {
       parameters: (detail.parameters ?? []).map(draftParameter),
     }
     if (detail.validator) draft.validator = JSON.stringify(detail.validator)
+    if (detail.source_query) draft.keep = { source_query: detail.source_query }
     return draft
   },
 

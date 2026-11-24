@@ -188,12 +188,30 @@ its connection.
    delete your own (on a cloud host with the admin password). The built-in packs from the
    `revit_bridge` wheel are read-only everywhere: never edited, hidden or replaced (export one and
    import it under another name to make your own). *Workbench* (`/capabilities/workbench`): where code
-   becomes a tool - for now the list of your own tools (with the directory they are in) with *Export*
-   (the pack file), *Delete* and *Import* (a pack file); the editor (check, dry run, save as tool) is
-   being wired in. *Skills*: the Markdown protocols of the package (`revit-core`, the `revit-bridge`
-   protocol, the add-in phase skills, `revit-journal-analysis`, references and lessons) and your own;
-   list, read, add, upload or import from GitHub (a cloud host asks for the admin password). They are
-   guidance for writing code and no longer enter the chat's prompt.
+   becomes a tool. Paste a snippet written in a coding framework (or write a small change), declare
+   its parameters (`{name}` placeholders in the code, as in a pack), *Check* it (compile errors by
+   line), *Dry run* it against the open model (the values first, real options for levels, types and
+   elements; it shows what would be added, modified and deleted and the return value, and is always
+   rolled back) and *Save as tool* - only after a successful dry run of that same code and those
+   declarations, and it asks before replacing a tool of the same name. A value field left empty
+   for a parameter with a default sends no value: the tool uses its default, and the field and the
+   spec card say "default X will be used". A parameter with a default is never required. Saving an
+   opened tool keeps what the workbench does not show but the save can carry (the source query,
+   each parameter's own source such as floor types); what it cannot carry - preconditions,
+   applies_when, not_for, the display name, the version (saved again as 1.0.0), and revit_versions,
+   fixtures and the approval if the file has them - is named before you replace the tool, and
+   needs its own click. *Run* runs the saved tool through the spec card and the confirmation, as
+   *Packs* does; a draft that differs from the saved tool (code, parameters or validator) must be
+   saved first. The card goes as soon as the draft or a value changes, *Confirm* reads the saved
+   tool again and runs nothing if it changed meanwhile, and Run waits while a run is in progress.
+   Below the editor: your own tools (with the directory they are in) to
+   open, *Export* (the pack file), *Delete* and *Import* (a pack file; it asks before replacing), and
+   the built-in ones, read-only (open to read or copy as yours, export). On a cloud host saving,
+   deleting and importing need the admin password. *Skills*: the Markdown protocols of the package
+   (`revit-core`, the `revit-bridge` protocol, the add-in phase skills, `revit-journal-analysis`,
+   references and lessons) and your own; list, read, add, upload or import from GitHub (a cloud host
+   asks for the admin password). They are guidance for writing code and no longer enter the chat's
+   prompt.
 4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now.

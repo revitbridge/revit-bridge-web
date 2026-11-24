@@ -5,7 +5,7 @@ import { useState } from 'react'
 import type { CapabilitiesView } from '../../route'
 import SkillsView from '../capabilities/SkillsView'
 import ToolLibrary from '../capabilities/ToolLibrary'
-import WorkbenchPlaceholder from '../capabilities/WorkbenchPlaceholder'
+import WorkbenchPage from '../capabilities/WorkbenchPage'
 
 const VIEWS: { id: CapabilitiesView; label: string }[] = [
   { id: 'packs', label: 'Packs' }, { id: 'workbench', label: 'Workbench' }, { id: 'skills', label: 'Skills' },
@@ -25,7 +25,7 @@ export default function CapabilitiesPage({ view: shown, onView }: { view?: Capab
         ))}
       </div>
       {view === 'packs' && <ToolLibrary />}
-      {view === 'workbench' && <WorkbenchPlaceholder />}
+      {view === 'workbench' && <WorkbenchPage />}
       {view === 'skills' && <SkillsView />}
     </div>
   )
