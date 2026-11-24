@@ -205,7 +205,7 @@ def test_a_level_the_model_does_not_have_skips_the_task(host):
     assert model.requests == []
 
 
-# -- the roles (the host's default chat) ----------------------------------------------------
+# -- the roles with the analyst (ROLES_ANALYST=on; the default is planner + supervisor) ----------
 
 ROUTE_TOOL = {"route": "tool", "tool": "create_wall", "facts_needed": [], "note": ""}
 ROUTE_QUERY = {"route": "query", "facts_needed": [], "note": ""}
@@ -215,9 +215,10 @@ REPORT_DONE = {"verdict": "done", "report": "One wall; the validator passed."}
 
 @pytest.fixture
 def roles_host(local_env, revit, monkeypatch):  # noqa: F811 - fixtures imported above
-    """A local host with its default chat, the three roles, on the one LLM_* model; returns
+    """A local host with the three roles (ROLES_ANALYST=on), on the one LLM_* model; returns
     (client, model, revit) with a model that answers each role from its own script."""
     local_env.delenv("LLM_SINGLE_MODEL")
+    local_env.setenv("ROLES_ANALYST", "on")
     local_env.setenv("LLM_BASE_URL", "https://model.example/v1")
     local_env.setenv("LLM_MODEL", "fake-1")
     local_env.setenv("LLM_API_KEY", "fake-key-not-real")

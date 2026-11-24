@@ -12,6 +12,11 @@ export const ROLES = ['analyst', 'planner', 'supervisor'] as const
 export type RoleName = typeof ROLES[number]
 export type RoleModels = Record<RoleName, string | null>
 
+/* How the chat runs a request (components/task/chatMode.ts): auto is the host's default. */
+export const CHAT_MODES = ['auto', 'single', 'roles', 'roles_analyst'] as const
+export type ChatMode = typeof CHAT_MODES[number]
+export type ResolvedMode = Exclude<ChatMode, 'auto'>
+
 export interface RuntimeFeatures {
   mode: DeployMode
   byoModel: boolean
@@ -20,7 +25,9 @@ export interface RuntimeFeatures {
   maxDevices: number
   models: RoleModels
   modelsFile: boolean     // the names come from the host's models file, not LLM_* / this browser
-  roles: boolean          // the chat runs in three roles; false: one model loop (LLM_SINGLE_MODEL=1, or an older host)
+  roles: boolean          // the chat runs in roles by default; false: one model loop (LLM_SINGLE_MODEL=1, or an older host)
+  chatModes: ChatMode[]   // the modes this browser may pick (none on an older host)
+  chatModeDefault: ResolvedMode | null    // what auto runs on this host (null: an older host)
 }
 
 export interface RuntimeConfig {
@@ -34,7 +41,23 @@ const NO_MODELS: RoleModels = { analyst: null, planner: null, supervisor: null }
 const DEFAULTS: RuntimeConfig = {
   apiBase: '',
   wsBase: '',
-  features: { mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20, models: NO_MODELS, modelsFile: false, roles: false },
+  features: {
+    mode: 'cloud', byoModel: true, serverModel: false, admin: false, maxDevices: 20, models: NO_MODELS, modelsFile: false,
+    roles: false, chatModes: [], chatModeDefault: null,
+  },
+}
+
+const isChatMode = (value: unknown): value is ChatMode =>
+  typeof value === 'string' && (CHAT_MODES as readonly string[]).includes(value)
+
+/* features.chatModes as the host wrote it: the known modes, each once, in the host's order. */
+function readChatModes(raw: unknown): ChatMode[] {
+  if (!Array.isArray(raw)) return []
+  return [...new Set(raw.filter(isChatMode))]
+}
+
+function readChatModeDefault(raw: unknown): ResolvedMode | null {
+  return isChatMode(raw) && raw !== 'auto' ? raw : null
 }
 
 /* features.models as the host wrote it: a text name per role, anything else (an older host
@@ -66,6 +89,7 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
       ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
       models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
       roles: features.roles === true,
+      chatModes: readChatModes(features.chatModes), chatModeDefault: readChatModeDefault(features.chatModeDefault),
     },
   }
 }

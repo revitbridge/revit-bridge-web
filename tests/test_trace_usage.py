@@ -49,7 +49,8 @@ def test_a_turn_streams_stage_tool_and_usage_events_in_order(revit, client, mode
     ]
     assert tokens(frames) == "Reading the model. The card is below."
     stages = events(frames, "stage")
-    assert stages == [{"role": "planner", "model": "fake-1", "status": "start"},
+    # The turn's first stage event names the chat mode it runs in (the suite's: single).
+    assert stages == [{"role": "planner", "model": "fake-1", "status": "start", "mode": "single"},
                       {"role": "planner", "model": "fake-1", "status": "end"}]
 
     usage = events(frames, "usage")

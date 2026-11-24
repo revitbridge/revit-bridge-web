@@ -6,7 +6,10 @@
 import { useState } from 'react'
 import { useStore } from 'zustand'
 import { chatEvents } from '../../api/chat'
+import { getConfig } from '../../config'
 import { flowApi } from '../task/api'
+import { currentRequestMode, useChatMode } from '../task/chatMode'
+import ChatModeSelect from '../task/ChatModeSelect'
 import ChatPanel from '../task/ChatPanel'
 import ExecutionPanel, { PreviousAttemptPanel } from '../task/ExecutionPanel'
 import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
@@ -20,8 +23,8 @@ const STEPS = ['Snapshot', 'Brief', 'Spec card', 'Confirm and run', 'Report']
 /* One flow for the tab's lifetime, so switching pages keeps the conversation. */
 let sharedFlow: TaskFlow | null = null
 function flowFor(events?: EventSource): TaskFlow {
-  if (events) return createTaskFlow({ events, api: flowApi })
-  sharedFlow ??= createTaskFlow({ events: chatEvents, api: flowApi })
+  if (events) return createTaskFlow({ events, api: flowApi, mode: currentRequestMode })
+  sharedFlow ??= createTaskFlow({ events: chatEvents, api: flowApi, mode: currentRequestMode })
   return sharedFlow
 }
 
@@ -36,6 +39,8 @@ function stepOf(s: TaskState): number {
 export default function TaskPage({ events }: { events?: EventSource }) {
   const [flow] = useState(() => flowFor(events))
   const state = useStore(flow.store)
+  const chatMode = useChatMode(s => s.mode)
+  const setChatMode = useChatMode(s => s.setMode)
   const busy = state.bridge.streaming || state.baseline.streaming
   const questions = state.proposal?.reconcile?.questions ?? []
 
@@ -63,7 +68,8 @@ export default function TaskPage({ events }: { events?: EventSource }) {
             onSend={(t, picked) => flow.send(t, picked)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
             placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
             hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below. Type @ to pick a level, a type or a link from the open model: the model gets what you picked, checked against the model."
-            showTrace />
+            showTrace
+            controls={<ChatModeSelect features={getConfig().features} mode={chatMode} onChange={setChatMode} disabled={busy} />} />
           {state.compare && (
             <ChatPanel title="Without the bridge (baseline)" transcript={state.baseline}
               hint="The same brief goes here with bridge=false. Nothing it says can be executed." />

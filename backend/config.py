@@ -46,19 +46,24 @@ frontend build works on any address.
                                 supervisor); default DATA_DIR/models.yml. No file
                                 there: LLM_* and the headers as above. Given and
                                 missing, or invalid: no start (backend.models_file)
-    LLM_SINGLE_MODEL            "1": the chat runs as one model loop (the planner's
-                                model, the whole host text, every tool), as before
-                                the roles split; the comparison baseline and the
-                                fallback. Default: three roles - analyst, planner,
-                                supervisor - each with its own text, tools and
-                                model (backend.roles)
+    LLM_SINGLE_MODEL            "1": the chat's default mode is single - one model loop
+                                (the planner's model, the whole host text, every
+                                tool), as before the roles split. Default: the roles
+                                (backend.roles), each with its own text, tools and
+                                model
     ROLES_PLANNER_TOOLS         with the roles: "route" (default) - the planner gets
                                 and may call the tools of the analyst's route only;
                                 "all" - all seven on every route (a prefix that stays
                                 the same for a provider's cache). For measuring both
-    ROLES_ANALYST               with the roles: "on" (default); "off" - every message
-                                goes straight to the planner with route tool, the
-                                supervisor still reports (planner + supervisor)
+    ROLES_ANALYST               "off" (default): the roles are planner + supervisor -
+                                every message goes straight to the planner with route
+                                tool; "on": the analyst routes each message first
+                                (analyst + planner + supervisor)
+
+The chat's mode (``chat_mode_default``, what a request's ``mode: auto`` runs):
+``single`` with LLM_SINGLE_MODEL=1, else ``roles_analyst`` with ROLES_ANALYST=on, else
+``roles``. A request may name another one (``resolve_chat_mode``): a local host honours
+it, a cloud host only for an admin-authenticated request.
     ADMIN_PASSWORD             cloud only, required there: the X-Admin-Token of
                                 pack and skill changes, /api/logs and the device list
     MAX_DEVICES                 cloud only: how many paired add-ins may be
@@ -132,6 +137,14 @@ class ConfigError(RuntimeError):
     """The environment describes a deployment that cannot run; refuse to start."""
 
 
+# The chat's modes (backend.api.chat): the one loop, planner + supervisor, analyst + planner +
+# supervisor; a request's "auto" (or none) is the host's default.
+SINGLE, ROLES, ROLES_ANALYST = "single", "roles", "roles_analyst"
+CHAT_MODES = (SINGLE, ROLES, ROLES_ANALYST)
+AUTO = "auto"
+REQUEST_MODES = (AUTO, *CHAT_MODES)
+
+
 @dataclass(frozen=True)
 class WebSettings:
     mode: str = LOCAL
@@ -152,9 +165,9 @@ class WebSettings:
     # LLM_SINGLE_MODEL=1: the one model loop of the chat instead of the three roles.
     single_model: bool = False
     # With the roles: the planner's tools ("route" or "all", ROLES_PLANNER_TOOLS) and whether
-    # the analyst routes each message (ROLES_ANALYST on / off).
+    # the analyst routes each message by default (ROLES_ANALYST off / on).
     roles_planner_tools: str = "route"
-    roles_analyst: bool = True
+    roles_analyst: bool = False
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
@@ -202,7 +215,7 @@ class WebSettings:
             models_file_explicit=bool(models_file),
             single_model=env_flag("LLM_SINGLE_MODEL", env),
             roles_planner_tools=_choice(env.get("ROLES_PLANNER_TOOLS"), "ROLES_PLANNER_TOOLS", ("route", "all")),
-            roles_analyst=_choice(env.get("ROLES_ANALYST"), "ROLES_ANALYST", ("on", "off")) == "on",
+            roles_analyst=_choice(env.get("ROLES_ANALYST"), "ROLES_ANALYST", ("off", "on")) == "on",
             admin_password=env.get("ADMIN_PASSWORD", "") if cloud else "",
             max_devices=_int(env.get("MAX_DEVICES"), DEFAULT_MAX_DEVICES, "MAX_DEVICES") if cloud else 0,
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
@@ -245,13 +258,35 @@ class WebSettings:
         return hmac.compare_digest(provided.encode(), self.admin_password.encode())
 
     @property
+    def chat_mode_default(self) -> str:
+        """What the chat runs when a request names no mode (or ``auto``): ``single`` with
+        LLM_SINGLE_MODEL=1, else ``roles_analyst`` with ROLES_ANALYST=on, else ``roles``."""
+        if self.single_model:
+            return SINGLE
+        return ROLES_ANALYST if self.roles_analyst else ROLES
+
+    def chat_modes(self, admin: bool) -> list[str]:
+        """The modes a caller may pick (``auto`` first): all four on a local host, and on a cloud
+        host for an admin-authenticated caller; ``auto`` alone for anyone else on a cloud host."""
+        return list(REQUEST_MODES) if admin or not self.cloud else [AUTO]
+
+    def resolve_chat_mode(self, requested: str | None, admin: bool) -> str:
+        """The mode a request runs in: the one it names, when this caller may pick it
+        (``chat_modes``); else - none named, ``auto``, or a visitor's choice on a cloud host,
+        which is ignored - the default."""
+        if requested in CHAT_MODES and requested in self.chat_modes(admin):
+            return requested
+        return self.chat_mode_default
+
+    @property
     def server_model_configured(self) -> bool:
         """The server's model runs without any browser setting. A key without a server
         URL is not that: the key never goes to an endpoint the browser names."""
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
 
-    def config_json(self) -> dict:
-        """What the SPA fetches at startup (``/config.json``).
+    def config_json(self, admin: bool = False) -> dict:
+        """What the SPA fetches at startup (``/config.json``); ``admin``: the request carried
+        the right ``X-Admin-Token`` (``chatModes`` lists every mode then, on a cloud host too).
 
         Served by this backend the SPA is same-origin by construction, so
         ``apiBase`` is always empty here. A split deployment (SPA on a static
@@ -269,8 +304,11 @@ class WebSettings:
                 "serverModel": self.server_model_configured,
                 "admin": bool(self.admin_password),
                 "maxDevices": self.max_devices,
-                # the chat splits each message into roles (false: LLM_SINGLE_MODEL=1)
+                # the chat splits each message into roles by default (false: LLM_SINGLE_MODEL=1)
                 "roles": not self.single_model,
+                # the chat modes this caller may pick, and what auto runs here
+                "chatModes": self.chat_modes(admin),
+                "chatModeDefault": self.chat_mode_default,
                 # 0.1 names the pre-7.3 frontend still reads; they go with the connect page.
                 "slotTokenRequired": False,
                 "maxSlots": self.max_devices,

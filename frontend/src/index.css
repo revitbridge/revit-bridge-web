@@ -559,6 +559,36 @@ select {
   gap: 6px;
 }
 
+/* The chat mode: a compact menu above Send. */
+.chat-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chat-mode-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--mid);
+}
+
+.chat-mode-select {
+  max-width: 190px;
+  padding: 4px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dark);
+  background: var(--panel);
+  border: 1px solid var(--subtle);
+  border-radius: var(--radius-xs);
+}
+
+.chat-mode-select:focus { outline: none; border-color: var(--accent2); }
+.chat-mode-select:disabled { opacity: 0.6; }
+
 .code-editor {
   width: 100%;
   min-height: 260px;

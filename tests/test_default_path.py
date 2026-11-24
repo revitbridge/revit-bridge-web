@@ -6,8 +6,10 @@ and chat modes existed (revit-bridge-web at aa5556c).
 The record (``tests/default_path_golden.json``) holds one SHA-256 per request and per stream of
 four scripted conversations: the one loop with the server's model and with the browser's, the
 roles with the analyst and the roles without it. What differs from run to run - the snapshot's
-clock, durations, the ms of a trace event - is fixed before hashing (``normalize``). A record taken
-again on purpose (the package's texts changed with a new revit-bridge, say):
+clock, durations, the ms of a trace event - is fixed before hashing (``normalize``). The chat modes
+added one field to the streams, ``mode`` on a turn's first ``stage`` event: it is checked and taken
+off before the comparison (``without_mode``). A record taken again on purpose (the package's texts
+changed with a new revit-bridge, say):
 
     REGEN_DEFAULT_PATH_GOLDEN=1 uv run pytest tests/test_default_path.py
 """
@@ -159,10 +161,34 @@ SCENARIOS = {
 }
 
 
+# The mode each scenario's turns run in (the chat modes; the record predates the field): the
+# turn without the bridge runs as single.
+MODES = {
+    "single-server": ["single"] * 4,
+    "single-browser": ["single"] * 4,
+    "roles-analyst-server": ["roles_analyst"] * 4 + ["single"],
+    "roles-server": ["roles"] * 3,
+}
+
+
+def without_mode(stream: str) -> tuple[str, str | None]:
+    """The stream as it was before the chat modes - the ``mode`` field taken off its first
+    ``stage`` event, the only change the modes make to it - and that mode."""
+    blocks = stream.split("\n\n")
+    for index, block in enumerate(blocks):
+        if block.startswith("event: stage\ndata: "):
+            payload = json.loads(block[len("event: stage\ndata: "):])
+            mode = payload.pop("mode", None)
+            blocks[index] = "event: stage\ndata: " + json.dumps(payload, ensure_ascii=False)
+            return "\n\n".join(blocks), mode
+    return stream, None
+
+
 def run_scenario(name: str, env, revit, recorder: Recorder, *, extra: dict | None = None,
-                 env_override: dict | None = None) -> tuple[list[str], list[str]]:
-    """``(request texts, stream texts)`` of one scenario, normalized."""
-    environment, headers, conversation = SCENARIOS[name]
+                 env_override: dict | None = None, headers: dict | None = None) -> tuple[list[str], list[str]]:
+    """``(request texts, stream texts)`` of one scenario, normalized; each stream without the
+    mode of its first stage event, which must be the scenario's (``MODES``)."""
+    environment, scenario_headers, conversation = SCENARIOS[name]
     env.delenv("LLM_SINGLE_MODEL", raising=False)
     for key, value in {**environment, **(env_override or {})}.items():
         if value is None:
@@ -173,9 +199,11 @@ def run_scenario(name: str, env, revit, recorder: Recorder, *, extra: dict | Non
     _reset()
     from backend.main import create_app
     with TestClient(create_app()) as client:
-        streams = conversation(client, recorder, headers, extra or {})
+        streams = conversation(client, recorder, {**scenario_headers, **(headers or {})}, extra or {})
     assert recorder.left() == {}, recorder.left()
-    return [normalize(r) for r in recorder.raw], [normalize(s) for s in streams]
+    stripped = [without_mode(s) for s in streams]
+    assert [mode for _, mode in stripped] == MODES[name]
+    return [normalize(r) for r in recorder.raw], [normalize(s) for s, _ in stripped]
 
 
 def hashes(texts: list[str]) -> list[str]:
@@ -216,6 +244,22 @@ def test_a_models_file_entry_without_options_sends_what_llm_sends(name, fields, 
     env.setenv("W8_SRV_KEY", SERVER["LLM_API_KEY"])
     requests, streams = run_scenario(name, env, revit, recorder,
                                      env_override={"LLM_BASE_URL": None, "LLM_MODEL": None, "LLM_API_KEY": None})
+    record = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
+    assert hashes(requests) == record["requests"]
+    assert hashes(streams) == record["streams"]
+
+
+@pytest.mark.parametrize("name, mode", [("single-server", "single"), ("roles-analyst-server", "roles_analyst"),
+                                        ("roles-server", "roles")])
+def test_a_requested_mode_sends_what_its_switch_sends(name, mode, env, revit, recorder):
+    """The mode named in each request (by an admin on this cloud host), with the switches left
+    at the default (planner + supervisor): the requests and streams of that switch."""
+    if REGENERATE:
+        pytest.skip("comparing against the record")
+    from tests.conftest import FIXTURE_ADMIN_PASSWORD
+    requests, streams = run_scenario(name, env, revit, recorder, extra={"mode": mode},
+                                     env_override={"LLM_SINGLE_MODEL": None, "ROLES_ANALYST": None},
+                                     headers={"X-Admin-Token": FIXTURE_ADMIN_PASSWORD})
     record = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
     assert hashes(requests) == record["requests"]
     assert hashes(streams) == record["streams"]

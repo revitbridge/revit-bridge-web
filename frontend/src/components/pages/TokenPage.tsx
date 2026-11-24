@@ -10,7 +10,7 @@ import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
 import type { UsageRun } from '../../types/api'
 import {
-  compareRoles, compareRows, countsOf, formatCount, roleTotals, runTime, usageGate, type CompareRow, type Counts,
+  compareRoles, compareRows, countsOf, formatCount, modeOf, roleTotals, runTime, usageGate, type CompareRow, type Counts,
   type UsageGate,
 } from '../token/runs'
 import { createTokenFlow, type TokenFlow, type TokenState } from '../token/tokenFlow'
@@ -46,13 +46,14 @@ function RunRows({ run, picked, onToggle }: { run: UsageRun; picked: number; onT
           </label>
         </td>
         <td className="mono">{run.run_label}</td>
+        <td className="token-mode">{modeOf(run)}</td>
         <td>{runTime(run)}</td>
         <CountCells counts={countsOf(run)} />
       </tr>
       {roleTotals(run).map(part => (
         <tr key={part.role} className="token-role-row" data-role={part.role}>
           <td />
-          <td colSpan={2}>{part.role} <span className="mono">({part.models.join(', ')})</span></td>
+          <td colSpan={3}>{part.role} <span className="mono">({part.models.join(', ')})</span></td>
           <CountCells counts={part.counts} />
         </tr>
       ))}
@@ -82,7 +83,7 @@ function Comparison({ a, b }: { a: UsageRun; b: UsageRun }) {
   const roles = compareRoles(a, b)
   return (
     <section className="card section token-comparison">
-      <h3 className="heading-display section-title">A: {a.run_label} - B: {b.run_label}</h3>
+      <h3 className="heading-display section-title">A: {a.run_label} ({modeOf(a)}) - B: {b.run_label} ({modeOf(b)})</h3>
       <CompareTable rows={compareRows(countsOf(a), countsOf(b))} a={`A: ${a.run_label}`} b={`B: ${b.run_label}`} />
       {roles.map(role => (
         <div key={role.role} className="token-role-compare" data-role={role.role}>
@@ -134,7 +135,7 @@ export function TokenView({ state, pair, gate, adminToken, onRefresh, onToggle, 
             <table className="evidence-table token-runs">
               <thead>
                 <tr>
-                  <th>Compare</th><th>Run</th><th>Time</th><th>Calls</th><th>Input</th><th>Cache read</th>
+                  <th>Compare</th><th>Run</th><th>Mode</th><th>Time</th><th>Calls</th><th>Input</th><th>Cache read</th>
                   <th>Cache write</th><th>Output</th><th>Time (ms)</th>
                 </tr>
               </thead>

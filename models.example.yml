@@ -31,9 +31,11 @@
 # refuses the start, and so do YAML aliases (*name).
 #
 # Roles: analyst, planner, supervisor. planner is required; a role left out uses the
-# planner's entry. Several roles may name one entry. The browser's model settings
-# (X-LLM-* headers) replace the planner's entry for its own requests - on the chat api
-# with the defaults; roles on another entry keep theirs.
+# planner's entry. Several roles may name one entry. The analyst runs only in the chat
+# mode that has it (roles_analyst: ROLES_ANALYST=on, or a request's mode); the default
+# mode is planner + supervisor. The browser's model settings (X-LLM-* headers) replace
+# the planner's entry for its own requests - on the chat api with the defaults; roles on
+# another entry keep theirs.
 
 models:
   main:

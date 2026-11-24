@@ -290,9 +290,9 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 |---|---|---|
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
-| `LLM_SINGLE_MODEL` | `0` | `1`: the chat runs as one model loop - the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the three roles (see *The chat's roles*). `/config.json` reports it as `features.roles` (`false` with `1`). |
+| `LLM_SINGLE_MODEL` | `0` | `1`: the chat's default mode is `single` - one model loop, the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the roles (see *The chat's roles* and *Chat modes*). `/config.json` reports it as `features.roles` (`false` with `1`) and in `features.chatModeDefault`. |
 | `ROLES_PLANNER_TOOLS` | `route` | With the roles: `route` - the planner gets, and may call, the tools of the analyst's route only; `all` - all seven on every route, every one runs (the tool definitions then stay the same for a provider's prompt cache). Any other value refuses the start. For measuring both. |
-| `ROLES_ANALYST` | `on` | With the roles: `off` sends every message straight to the planner with route `tool` (all seven tools); the supervisor still reports runs - planner and supervisor only, to measure whether the analyst pays for itself. Any other value refuses the start. |
+| `ROLES_ANALYST` | `off` | `off`: the roles are the planner and the supervisor (default mode `roles`) - every message goes straight to the planner with route `tool` (all seven tools), the supervisor reports runs. `on`: the analyst routes each message first (default mode `roles_analyst`). Any other value refuses the start. **The default was `on` before this release.** |
 | `MODELS_FILE` | `DATA_DIR/models.yml` | The models file: an endpoint, a model and the name of the key's variable per entry, an entry per role (see *Models by role*). No file at the default path: `LLM_*` and the headers, as before. Set it only to read another path; the host then refuses to start when there is no file there, as it does for any file that is not valid. `/config.json` reports each role's model name (`features.models`) and whether the file set them (`features.modelsFile`). |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. In the models file it lets an entry's `base_url` be `http://` to any host (`http://` to loopback is allowed there without it). The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
@@ -312,11 +312,38 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 | `REVIT_BRIDGE_WEB_CONTAINER` | `1` in the image | Set by the Dockerfile: a local host checks `BIND_ADDRESS` instead of `HOST`. Not for `.env`. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1,172.16.0.0/12` in the image, `127.0.0.1` outside it | Proxies whose `X-Forwarded-*` headers are trusted for the client address (per-address rate limits, logs). The image default fits the documented setup: the port published on loopback and a reverse proxy on the Docker host, which reaches the container from the Docker bridge gateway. When `BIND_ADDRESS` is not loopback, set it to the proxy's address - or to `127.0.0.1` with no proxy in front - so a visitor cannot choose their own address. If the compose network is in `192.168.0.0/16` (`docker network inspect revit-bridge-web_default`), list its gateway instead. An explicit value always wins. |
 
+### Chat modes
+
+How the chat runs a request is its mode:
+
+| Mode | Runs |
+|---|---|
+| `single` | one model loop: the planner's model with the whole host text and all seven tools, as before the roles |
+| `roles` | the planner and the supervisor (the analyst is left out: every message goes to the planner with route `tool`) - **the default** |
+| `roles_analyst` | the analyst, the planner and the supervisor |
+| `auto` | the host's default: `single` with `LLM_SINGLE_MODEL=1`, else `roles_analyst` with `ROLES_ANALYST=on`, else `roles` |
+
+`POST /api/chat` takes an optional `mode` (one of the four; anything else is 422; absent or `null`
+is `auto`). A local host honours it; a cloud host only for a request with the right
+`X-Admin-Token` - anyone else's is ignored and the default runs. Without the bridge (`bridge:
+false`) a request runs as `single`. `/config.json` lists the modes the caller may pick
+(`features.chatModes`: all four on a local host and for an admin on a cloud host, `["auto"]` for
+anyone else there) and what `auto` runs (`features.chatModeDefault`). The mode a turn ran in is a
+field of its first `stage` event (`{role, model, status, mode}`) and of every `llm_calls` row;
+`GET /api/usage/runs` reports it per run (`mode`; `mixed` when a run's calls ran in more than
+one). On the task page a *Mode* menu next to the chat input picks it (Auto shows what it runs
+here); the pick is remembered in the browser and sent with every chat request, and the menu is
+not there when the host offers fewer than two modes. The Token page shows each run's mode.
+
+Planner + supervisor is the default (one model call less per message than with the analyst); turn
+the analyst on with a strong model only. `single` is cheapest, but on modelling tasks a model may
+stop at a proposal in text ("reply yes to confirm") without calling `propose_spec`.
+
 ### The chat's roles
 
-By default the chat splits each request into three roles, each with its own instructions (the
-package's role texts, `host_instructions(role=..., code=False)`), its own tools and its own model
-(see *Models by role*):
+With the roles the chat splits each request into up to three roles, each with its own instructions
+(the package's role texts, `host_instructions(role=..., code=False)`), its own tools and its own
+model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 
 | Role | Does | Sees | Tools |
 |---|---|---|---|
@@ -371,12 +398,12 @@ reach the model through `list_tools`, whose answer grew by 15.7 KB. Real models 
 script: measure with the token bench (`python -m bench`; it records which way the host ran). A
 tool task the designer never runs pays the analyst calls without the report's saving.
 
-`LLM_SINGLE_MODEL=1` runs the chat as one model loop instead (the planner's model, the whole host
-text, all seven tools), request for request and event for event as before the split - the
-comparison baseline and the fallback. Without the bridge (`bridge: false`) there are no roles. Two
-more switches exist to measure variants of the roles: `ROLES_PLANNER_TOOLS=all` gives the planner
-all seven tools on every route, and `ROLES_ANALYST=off` leaves the analyst out (planner and
-supervisor). The interaction log (`/api/logs`) names each role that ran in a turn and its model.
+Mode `single` (`LLM_SINGLE_MODEL=1` as the default) runs the chat as one model loop instead (the
+planner's model, the whole host text, all seven tools), request for request and event for event as
+before the split - the comparison baseline and the fallback; its first `stage` event carries the
+`mode` field. Without the bridge (`bridge: false`) there are no roles. `ROLES_PLANNER_TOOLS=all`
+gives the planner all seven tools on every route (to measure it). The interaction log
+(`/api/logs`) names each role that ran in a turn and its model.
 
 ### Models by role (`models.yml`)
 
@@ -628,13 +655,14 @@ reaches the model (this page does not send it). A message without picks has no s
 goes to the model as typed.
 
 Every turn also streams what the host did: `event: stage` `{role, model, status}` around each
-role's part of the turn (`start`, then `end`; the last `end` before `done` or `error`), `event: tool`
+role's part of the turn (`start`, then `end`; the last `end` before `done` or `error`; the turn's
+first one also has `mode`, the chat mode it runs in - see *Chat modes*), `event: tool`
 `{id, role, name, args, status, ms?, size?, preview?, error?}` twice per tool call (`running`, then
 `ok` or `error` with the same `id`) and `event: usage` `{role, model, round, input, output,
 cache_read, cache_write, ms}` after each model call. `role` is `analyst`, `planner` or `supervisor`
-(always `planner` with `LLM_SINGLE_MODEL=1` or `bridge: false`), `model` the model the call went to,
+(always `planner` in mode `single` or with `bridge: false`), `model` the model the call went to,
 and `round` counts the model calls of the turn across its roles. A message's turn is the analyst's
-stage, then the planner's when the route is `query` or `tool`; an execution report's is the
+stage (mode `roles_analyst`), then the planner's when the route is `query` or `tool`; an execution report's is the
 supervisor's, then the planner's when it sends the task back - its new card comes as `event: spec`
 in that same reply. The analyst's and the supervisor's answers are JSON for the host: the page gets
 only the text the host makes of them (the note, the report and question). `args` is what the model sent,
@@ -651,9 +679,11 @@ always sends `prompt_tokens_details.cached_tokens` (new-api sends 0 when the ups
 nothing) shows a cache read of 0, not unknown - the host cannot tell the two apart. Each call is also
 stored in the `llm_calls` table (no text, no address, no key) with the optional `X-Run-Label`
 header (1-64 of `A-Z a-z 0-9 _ . -`, 422 otherwise). `GET /api/usage?session_id=<id>` returns
-those rows for one session, `GET /api/usage/runs` one line per run label with each sum `null` as
-soon as one call lacks that count, and under `by_role` the same sums per role and model of the run;
-like `/api/logs`, they need no password on a local host and `X-Admin-Token` on a cloud one.
+those rows for one session (each with the chat `mode` it ran in), `GET /api/usage/runs` one line
+per run label with each sum `null` as soon as one call lacks that count, the run's `mode` (`mixed`
+for more than one, `null` for calls recorded before modes), and under `by_role` the same sums per
+role and model of the run; like `/api/logs`, they need no password on a local host and
+`X-Admin-Token` on a cloud one.
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps

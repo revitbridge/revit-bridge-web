@@ -37,7 +37,8 @@ change nothing else in it):
 
 - ``event: stage`` ``{role, model, status}``: ``start`` before a role's first model
   call (after the ``execution`` echo and the ``mentions`` report), ``end`` after its
-  last one (before ``error`` or ``done``); one pair per role segment of the turn.
+  last one (before ``error`` or ``done``); one pair per role segment of the turn. The
+  turn's first one also has ``mode``, the chat mode the turn runs in.
 - ``event: tool`` ``{id, role, name, args, status, ms?, size?, preview?, error?}``:
   ``running`` when a tool call starts, then ``ok`` or ``error`` with the same
   ``id`` when it ends (``error`` when the handler raised - ``error`` is then the
@@ -51,8 +52,17 @@ change nothing else in it):
   a number the provider did not report is ``null``. The same row goes to the
   ``llm_calls`` table with the request's ``X-Run-Label``.
 
-Three roles (the default; ``backend.roles`` has the table, the hand-offs and the
-parsing). A message with the bridge goes to the **analyst** first: no tools, one JSON
+The chat's mode (``mode`` in the body; absent or ``auto``: the host's default,
+``WebSettings.chat_mode_default`` - ``roles``, ``single`` with ``LLM_SINGLE_MODEL=1``,
+``roles_analyst`` with ``ROLES_ANALYST=on``): ``single`` is the one loop below,
+``roles`` the planner and the supervisor, ``roles_analyst`` the analyst too. A local
+host honours a request's mode; a cloud host only with the right ``X-Admin-Token``
+(else the default runs); without the bridge the request runs as ``single``. The mode
+run is a field of the turn's first ``stage`` event (``{role, model, status, mode}``)
+and of every ``llm_calls`` row.
+
+The roles (``backend.roles`` has the table, the hand-offs and the parsing). In mode
+``roles_analyst`` a message with the bridge goes to the **analyst** first: no tools, one JSON
 routing ``{route, tool?, facts_needed, note}`` from the tool list, the digest of the
 open model (the package's ``snapshot_digest``, taken by the host and kept with the
 session until the page reports an execution), the open task and the message. Route
@@ -63,9 +73,11 @@ goes to the **supervisor** (``query`` only): the confirmed spec, the result's su
 and the validator's checks in, one JSON verdict ``{verdict, report, fix?, question?}``
 out; the host streams ``report`` (and ``question``), holds the verdict to the
 package's (``roles.enforce``) and, on ``retry``, runs the planner again with ``fix``
-(at most ``roles.MAX_RETRIES`` times per task). A role's output that is not its JSON
-gets one repair call, then the host's fallback. ``LLM_SINGLE_MODEL=1`` instead runs the
-one loop of the planner as before the split, request for request and frame for frame.
+(at most ``roles.MAX_RETRIES`` times per task). In mode ``roles`` a message goes straight
+to the planner with route ``tool``. A role's output that is not its JSON gets one repair
+call, then the host's fallback. Mode ``single`` instead runs the one loop of the planner as
+before the split, request for request and frame for frame (the first ``stage`` event has
+the ``mode`` field).
 
 Each role's model is ``backend.models_file.resolve(role, headers)``: ``LLM_*`` and the
 ``X-LLM-*`` headers as before, or, with a models file, the role's entry there (the
@@ -112,6 +124,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -128,7 +141,7 @@ from backend.api.errors import ApiError
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
 )
-from backend.config import get_settings
+from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
 from backend.llm import (
     SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, stream_completion,
     tool_message,
@@ -259,6 +272,13 @@ class ChatRequest(BaseModel):
         description="The designer's picks in this message (with message and the bridge only), checked "
                     "against the open model before the model is called: the event mentions reports "
                     "each, and the verified ones reach the model as the package's selections block.")
+    mode: Literal["auto", "single", "roles", "roles_analyst"] | None = Field(
+        default=None,
+        description="How the chat runs this request: single (one model loop), roles (planner + supervisor), "
+                    "roles_analyst (analyst + planner + supervisor), or auto (absent or null too): the host's "
+                    "default, /config.json features.chatModeDefault. A local host honours it; a cloud host "
+                    "only with the right X-Admin-Token, else it runs the default. Without the bridge the "
+                    "request runs as single. The mode run is on the turn's first stage event.")
 
 
 # -- per-IP rate limit (protects a shared server-side key) ---------------------
@@ -419,16 +439,19 @@ class LoopResult:
 
 
 class Turn:
-    """One ``/api/chat`` request: the session, its turn number, the run label, and the model
-    calls made so far (``round`` numbers them across the roles of the turn, from 1). Every
-    ``stage``, ``tool`` and ``usage`` event and every ``llm_calls`` row names the role and the
-    model of the call."""
+    """One ``/api/chat`` request: the session, its turn number, the run label, the chat mode it
+    runs in, and the model calls made so far (``round`` numbers them across the roles of the
+    turn, from 1). Every ``stage``, ``tool`` and ``usage`` event and every ``llm_calls`` row
+    names the role and the model of the call; the turn's first ``stage`` event and every row
+    name the mode too."""
 
-    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool):
+    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool, mode: str = MODE_SINGLE):
         self.session = session
         self.turn = turn
         self.run_label = run_label
         self.bridge = bridge
+        self.mode = mode
+        self.mode_sent = False
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
@@ -439,7 +462,12 @@ class Turn:
         if status == "start":
             self.ran.pop(role, None)
             self.ran[role] = model
-        return format_sse_event("stage", {"role": role, "model": model, "status": status})
+        payload = {"role": role, "model": model, "status": status}
+        if not self.mode_sent:
+            # The turn's first event with run metadata carries the mode it runs in.
+            payload["mode"] = self.mode
+            self.mode_sent = True
+        return format_sse_event("stage", payload)
 
     def models_ran(self) -> str | None:
         """The interaction log's model of a turn with the roles: each role that ran and its
@@ -460,7 +488,7 @@ class Turn:
         counts = stats.usage.as_dict()
         await asyncio.to_thread(self.calls_log.record_call, session_id=self.session.session_id, turn=self.turn,
                                 round=round_no, role=role, model=model, usage=counts, ms=ms,
-                                run_label=self.run_label)
+                                run_label=self.run_label, mode=self.mode)
         return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
 
     async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
@@ -602,12 +630,12 @@ class Turn:
 
 
 async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str) -> AsyncGenerator[str, None]:
-    """A message with the roles: the analyst routes it (``scope``: the device the request drives,
-    whose digest it reads); chat and none end with its note, query and tool go on to the planner,
-    the routing after the message. With ``ROLES_ANALYST=off`` the message goes straight to the
-    planner with route tool."""
+    """A message with the roles: in mode ``roles_analyst`` the analyst routes it (``scope``: the
+    device the request drives, whose digest it reads); chat and none end with its note, query and
+    tool go on to the planner, the routing after the message. In mode ``roles`` the message goes
+    straight to the planner with route tool."""
     session = run.session
-    if get_settings().roles_analyst:
+    if run.mode == MODE_ROLES_ANALYST:
         analyst = targets[roles.ANALYST]
         yield run.stage(roles.ANALYST, analyst.model, "start")
         packs = await asyncio.to_thread(list_packs)
@@ -738,15 +766,18 @@ async def chat(req: ChatRequest, request: Request,
     llm = target.llm
     if not llm.configured:
         raise no_model(target, ROLE)
-    # The roles with the bridge, unless LLM_SINGLE_MODEL=1; without the bridge the one loop.
+    # The mode: the request's when this caller may pick it (a cloud host: an admin), else the
+    # host's default; without the bridge the one loop.
     settings = get_settings()
-    with_roles = req.bridge and not settings.single_model
+    admin = settings.admin_token_ok(request.headers.get("x-admin-token"))
+    mode = settings.resolve_chat_mode(req.mode, admin) if req.bridge else MODE_SINGLE
+    with_roles = mode != MODE_SINGLE
     targets = {ROLE: target}
     if with_roles:
-        # The role that opens this turn: the analyst (a message; none with ROLES_ANALYST=off) or
-        # the supervisor (a report); the planner may follow either.
+        # The role that opens this turn: the analyst (a message, in mode roles_analyst) or the
+        # supervisor (a report); the planner may follow either.
         first = (roles.SUPERVISOR if req.execution is not None
-                 else roles.ANALYST if settings.roles_analyst else None)
+                 else roles.ANALYST if mode == MODE_ROLES_ANALYST else None)
         if first is not None:
             try:
                 targets[first] = await resolve_model(first, request.headers)
@@ -774,7 +805,7 @@ async def chat(req: ChatRequest, request: Request,
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
-    run = Turn(session, turn, run_label, req.bridge)
+    run = Turn(session, turn, run_label, req.bridge, mode)
 
     if with_roles:
         scope = current_scope()                   # the device this request drives

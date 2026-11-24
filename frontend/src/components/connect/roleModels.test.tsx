@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadRuntimeConfig } from '../../config'
 import ConnectPage from '../pages/ConnectPage'
-import { MODELS_FROM_ENV, MODELS_FROM_FILE, ROLES_OFF, ROLES_ON, roleRows } from './models'
+import { MODELS_FROM_ENV, MODELS_FROM_FILE, ROLES_NO_ANALYST, ROLES_OFF, ROLES_ON, roleRows } from './models'
 import RoleModels from './RoleModels'
 
 const html = (text: string) => text.replace(/'/g, '&#x27;')
@@ -68,6 +68,20 @@ describe('the roles and their models', () => {
     const off = renderToStaticMarkup(<RoleModels models={models} modelsFile roles={false} />)
     expect(off).toContain(html(ROLES_OFF))
     expect(off).not.toContain('Only the planner runs in this version')
+  })
+
+  it('says what runs by default: planner + supervisor, the analyst too, or one loop', async () => {
+    const models = { analyst: 'small-model', planner: 'main-model', supervisor: 'small-model' }
+    const shown = (chatModeDefault: string | null, roles = true) =>
+      renderToStaticMarkup(<RoleModels models={models} modelsFile roles={roles} chatModeDefault={chatModeDefault} />)
+    expect(shown('roles')).toContain(html(ROLES_NO_ANALYST))
+    expect(shown('roles')).not.toContain(html(ROLES_ON))
+    expect(shown('roles_analyst')).toContain(html(ROLES_ON))
+    expect(shown('single', false)).toContain(html(ROLES_OFF))
+    expect(shown(null)).toContain(html(ROLES_ON))           // a host from before the modes: roles meant the analyst too
+    await host({ mode: 'local', admin: false, maxDevices: 0, models, modelsFile: true, roles: true,
+      chatModes: ['auto', 'single', 'roles', 'roles_analyst'], chatModeDefault: 'roles' })
+    expect(renderToStaticMarkup(<ConnectPage deps={pairingDeps} />)).toContain(html(ROLES_NO_ANALYST))
   })
 
   it('the Connect page shows them on a local and on a cloud host, from /config.json', async () => {

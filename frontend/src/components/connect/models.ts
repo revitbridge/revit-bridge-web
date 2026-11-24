@@ -16,6 +16,18 @@ export const ROLES_ON = "Each message goes to the analyst first; the planner run
   "requests (and the model of every role that shares the planner's entry)."
 export const ROLES_OFF = "This host runs the chat as one model loop (LLM_SINGLE_MODEL=1): the planner's model does " +
   "everything, and the analyst and supervisor rows are not used. Model settings filled in below replace it for your own requests."
+/* The default since the chat modes: planner + supervisor (ROLES_ANALYST=off). */
+export const ROLES_NO_ANALYST = "Each message goes to the planner, and the supervisor reports each execution; the analyst " +
+  "runs only in the mode Analyst + planner + supervisor (ROLES_ANALYST=on on the host, or the task page's Mode menu " +
+  "where the host offers it). Model settings filled in below replace the planner's model for your own requests (and " +
+  "the model of every role that shares the planner's entry)."
+
+/* The line under the table: what runs by default (features.roles, features.chatModeDefault; a host
+   from before the modes says only roles, which then meant the analyst too). */
+export function rolesLine(roles: boolean, chatModeDefault: string | null | undefined): string {
+  if (!roles || chatModeDefault === 'single') return ROLES_OFF
+  return chatModeDefault === 'roles' ? ROLES_NO_ANALYST : ROLES_ON
+}
 
 export interface RoleRow {
   role: RoleName

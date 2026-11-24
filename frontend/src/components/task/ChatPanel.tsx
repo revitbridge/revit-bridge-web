@@ -9,7 +9,7 @@
    with what the host found for each (the turn's `mentions` event); a pick the host
    found gone or not valid is marked when it is in the input again. */
 
-import { Fragment, useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Question, SentMention } from '../../types/api'
 import type { FetchCandidates, Mention } from '../../types/hostv2'
 import { MentionInput } from '../hostv2/mention'
@@ -31,6 +31,7 @@ interface Props {
   hint?: string
   showTrace?: boolean                    // the tool activity above each reply (the bridge side)
   fetchCandidates?: FetchCandidates      // the picker's candidates (default: GET /api/v1/bridge/mentions)
+  controls?: ReactNode                   // drawn next to the input, above Send (the chat mode)
 }
 
 function SentMentions({ mentions }: { mentions: SentMention[] }) {
@@ -46,7 +47,7 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
 }
 
 export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
-  showTrace, fetchCandidates = fetchFromHost }: Props) {
+  showTrace, fetchCandidates = fetchFromHost, controls }: Props) {
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
@@ -126,6 +127,7 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
             onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
+            {controls}
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
             {onReset && <button className="btn-ghost" onClick={onReset} disabled={transcript.streaming}>New session</button>}
           </div>

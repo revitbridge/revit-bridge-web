@@ -70,7 +70,8 @@ def test_chat_streams_tokens_keeps_history_and_never_stores_the_key(client, env,
     # (this stand-in for the model reports no usage, so every count is null).
     assert drop_trace_frames(resp.text) == 'data: "Hel"\n\ndata: "lo "\n\ndata: "designer"\n\nevent: done\ndata: [DONE]\n\n'
     frames = resp.text.split("\n\n")
-    assert frames[0] == 'event: stage\ndata: {"role": "planner", "model": "gpt-x", "status": "start"}'
+    # The turn's first stage event also names the chat mode it runs in (the suite's: single).
+    assert frames[0] == 'event: stage\ndata: {"role": "planner", "model": "gpt-x", "status": "start", "mode": "single"}'
     assert frames[4].startswith('event: usage\ndata: {"role": "planner", "model": "gpt-x", "round": 1, '
                                 '"input": null, "output": null, "cache_read": null, "cache_write": null, "ms": ')
     assert frames[5] == 'event: stage\ndata: {"role": "planner", "model": "gpt-x", "status": "end"}'

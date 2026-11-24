@@ -1,12 +1,20 @@
 /* Models by role, read-only: the model name each role runs on (features.models), where
    the names come from - the host's models file, or the environment and this browser - and
-   whether the chat runs in roles (features.roles) or as one loop. The host publishes names
-   only: no address, no key, no path of its file system. */
+   what the chat runs by default (features.roles, features.chatModeDefault): planner +
+   supervisor, the analyst too, or one loop. The host publishes names only: no address, no
+   key, no path of its file system. */
 
 import type { RoleModels as Models } from '../../config'
-import { MODELS_FROM_ENV, MODELS_FROM_FILE, ROLES_OFF, ROLES_ON, roleRows } from './models'
+import { MODELS_FROM_ENV, MODELS_FROM_FILE, roleRows, rolesLine } from './models'
 
-export default function RoleModels({ models, modelsFile, roles }: { models: Models; modelsFile: boolean; roles: boolean }) {
+interface Props {
+  models: Models
+  modelsFile: boolean
+  roles: boolean
+  chatModeDefault?: string | null
+}
+
+export default function RoleModels({ models, modelsFile, roles, chatModeDefault }: Props) {
   return (
     <section className="card section">
       <h3 className="heading-display section-title">Models by role</h3>
@@ -24,7 +32,7 @@ export default function RoleModels({ models, modelsFile, roles }: { models: Mode
           </tbody>
         </table>
       </div>
-      <p className="section-copy small">{roles ? ROLES_ON : ROLES_OFF}</p>
+      <p className="section-copy small">{rolesLine(roles, chatModeDefault)}</p>
     </section>
   )
 }

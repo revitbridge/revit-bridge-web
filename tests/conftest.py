@@ -91,8 +91,11 @@ def local_env(env):
 
 @pytest.fixture
 def roles_env(env):
-    """The host's default chat, the three roles (no LLM_SINGLE_MODEL); returns monkeypatch."""
+    """The three roles: no LLM_SINGLE_MODEL and ROLES_ANALYST=on (mode roles_analyst, what
+    tests/test_roles.py describes; the host's default is planner + supervisor, mode roles);
+    returns monkeypatch."""
     env.delenv("LLM_SINGLE_MODEL", raising=False)
+    env.setenv("ROLES_ANALYST", "on")
     _reset()
     return env
 

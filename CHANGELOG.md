@@ -27,6 +27,13 @@ Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Sec
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
 
+**The chat's default is now planner + supervisor: the analyst is off** (`ROLES_ANALYST` defaults
+to `off`; it was `on`). Set `ROLES_ANALYST=on` to keep the analyst, or pick the mode per request
+(see *Added*, chat modes). A `.env` copied from an older `.env.example` still says
+`ROLES_ANALYST=on` and keeps the analyst. The first `stage` event of a turn has one new field,
+`mode`; `/config.json` has `features.chatModes` and `features.chatModeDefault`; `/api/chat` takes an
+optional `mode`; `/api/usage` rows and `/api/usage/runs` lines have `mode`.
+
 **The chat now runs in three roles** - analyst, planner, supervisor - each with its own
 instructions, tools and model (see *Added*). The events keep their shapes; `role` now also takes
 `analyst` and `supervisor`, a turn has one `stage` pair per role, and a reported run may come back
@@ -79,6 +86,22 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **Chat modes** (README, *Chat modes*): `single` (one model loop), `roles` (planner +
+  supervisor), `roles_analyst` (analyst + planner + supervisor) and `auto`, the host's default -
+  `single` with `LLM_SINGLE_MODEL=1`, else `roles_analyst` with `ROLES_ANALYST=on`, else `roles`.
+  `POST /api/chat` takes an optional `mode` (one of the four, anything else 422; absent or `null`
+  is `auto`); a local host honours it, a cloud host only for a request with the right
+  `X-Admin-Token` (anyone else's is ignored: the default runs); without the bridge a request runs
+  as `single`. `/config.json` gains `features.chatModes` (what the caller may pick: all four on a
+  local host and for an admin on a cloud host, `["auto"]` otherwise) and `features.chatModeDefault`
+  (what `auto` runs, never `auto`). The turn's first `stage` event gains `mode`, the mode it ran in;
+  every `llm_calls` row records it (an older table gains the column, its rows `null`), `GET
+  /api/usage` rows show it and `GET /api/usage/runs` reports it per run (`mixed` for more than one).
+  The task page has a *Mode* menu next to the chat input (Auto, Single model, Planner + supervisor,
+  Analyst + planner + supervisor; Auto names what it runs on the host), remembered in the browser
+  (`localStorage`) and sent with every chat request; it is not shown when the host offers fewer
+  than two modes. The Token page has a *Mode* column. In `docs/api-v1.json`: the chat request's
+  `mode`, `CallRow.mode` and `RunTotal.mode`.
 - **Provider options in the models file** (README, *Models by role*): an entry may set `api`
   (`chat`, the default, or `responses` - `<base_url>/responses`, OpenAI's Responses API, for models
   that take tools only there), `max_tokens_param` (`max_tokens` or `max_completion_tokens`, chat api
@@ -449,6 +472,10 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Changed
 
+- **`ROLES_ANALYST` defaults to `off`**: the chat's default mode is planner + supervisor (it was
+  analyst + planner + supervisor): without the analyst the chat makes one model call less per
+  message. Turn it on with a strong model only (`ROLES_ANALYST=on`, or mode `roles_analyst`).
+  `.env.example` says `off`.
 - A model call's read timeout is 300 seconds (it was 120): a thinking model may be silent for
   minutes before its first token. A models file entry's `timeout_s` sets its own; one above 300 also
   lengthens the whole call's limit (600 s) by as much.

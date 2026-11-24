@@ -102,7 +102,8 @@ def test_route_chat_is_the_analysts_note_and_nothing_else(client, model):
     frames = sse(resp.text)
     assert names(frames) == ["stage", "usage", "stage", "token", "done"]
     assert tokens(frames) == "Hello - ask me for a wall."
-    assert events(frames, "stage") == [{"role": "analyst", "model": "fake-1", "status": "start"},
+    # The turn's first stage event names the chat mode it runs in.
+    assert events(frames, "stage") == [{"role": "analyst", "model": "fake-1", "status": "start", "mode": "roles_analyst"},
                                        {"role": "analyst", "model": "fake-1", "status": "end"}]
     assert events(frames, "usage")[0]["role"] == "analyst" and events(frames, "usage")[0]["round"] == 1
     assert model.roles == ["analyst"]
@@ -663,6 +664,8 @@ def test_the_switch_and_the_default(make_client, env, model):
     env.delenv("LLM_SINGLE_MODEL")
     client = make_client()
     assert client.get("/config.json").json()["features"]["roles"] is True
+    # The default roles are planner + supervisor: the analyst is ROLES_ANALYST=on (tests/test_chat_modes.py).
+    assert client.get("/config.json").json()["features"]["chatModeDefault"] == "roles"
     env.setenv("LLM_SINGLE_MODEL", "1")
     client = make_client()
     assert client.get("/config.json").json()["features"]["roles"] is False
@@ -682,6 +685,7 @@ def test_without_the_bridge_there_are_no_roles(client, model):
 
 def test_the_rate_limit_counts_turns_not_model_calls(make_client, env, model):
     env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_ANALYST", "on")
     env.setenv("CHAT_RATE_LIMIT", "2")
     client = make_client()
     for _ in range(2):
@@ -708,6 +712,7 @@ def test_picks_are_checked_before_the_analyst_and_reach_both_roles(env, picker, 
 
     from tests.test_mentions import L2
     env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_ANALYST", "on")
     from backend.main import create_app
     with TestClient(create_app()) as client:
         bound = spec_for("create_wall", **{**WALL, "level_name": "L2"})
@@ -984,8 +989,9 @@ def test_the_digest_is_kept_per_device_and_a_failed_read_waits(monkeypatch):
 
 @pytest.fixture(params=["single", "roles"])
 def mode(request, env):
-    if request.param == "roles":
+    if request.param == "roles":                # with the analyst (mode roles_analyst)
         env.delenv("LLM_SINGLE_MODEL")
+        env.setenv("ROLES_ANALYST", "on")
     return request.param
 
 
