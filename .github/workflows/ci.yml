@@ -81,7 +81,11 @@ jobs:
           curl -fsS http://127.0.0.1:7860/health
           curl -fsS http://127.0.0.1:7860/config.json
           # A fresh container lists exactly the packs shipped in the revit-bridge wheel.
-          test "$(curl -fsS http://127.0.0.1:7860/api/v1/bridge/tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 8
+          # (the number is read from the wheel inside the image, not written here)
+          shipped="$(docker exec web python -c "from revit_bridge.paths import builtin_capabilities_dir as d; print(len([p for p in d().glob('*.yaml') if not p.name.startswith('_')]))")"
+          echo "packs shipped in the wheel: $shipped"
+          test "$shipped" -ge 8
+          test "$(curl -fsS http://127.0.0.1:7860/api/v1/bridge/tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq "$shipped"
           curl -fsS http://127.0.0.1:7860/ | grep -q "<title>revit-bridge</title>"
           # The local request guard: a proxied request and another host name are refused.
           test "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 203.0.113.9' http://127.0.0.1:7860/config.json)" = 403
