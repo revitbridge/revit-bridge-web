@@ -17,6 +17,7 @@ from bench.__main__ import load_tasks
 from bench.runner import run_bench
 from tests.conftest import _fresh_usage_option_memory, env, local_env, revit  # noqa: F401 - fixtures
 from tests.fake_model import USAGE_SHAPES, FakeModel, RoleScriptedModel, json_turn, text_turn, tool_turn
+from tests.fake_revit import FakeRevit
 
 BASE = "http://127.0.0.1:7860"
 WALL = {"level_name": "L1", "start_x": 0, "start_y": 0, "end_x": 5000, "end_y": 0, "height": 3000}
@@ -315,3 +316,108 @@ def test_the_one_loop_is_labelled_as_such(host):
     model.turns += [text_turn("No tool here does this; build one on the workbench.", usage=FULL)]
     result = run_bench(client, BASE, "single", [TASKS[2]])
     assert result["chat"] == {"host": "single", "roles_seen": ["planner"]}
+
+
+# -- the tasks of the packs revit-bridge 0.9.1 added ---------------------------------------------
+
+TASKS_FILE = Path(__file__).resolve().parents[1] / "tasks.yml"
+SUPERVISOR_FILE = Path(__file__).resolve().parents[1] / "tasks-supervisor.yml"
+NUMBER_TYPES = {"double", "float", "number", "integer", "int"}
+
+
+def expected_spec(task: dict) -> dict:
+    """The spec a model that read the task right proposes: the expected tool and values."""
+    tool, params = task["expect"]["tool"], task["expect"]["params"]
+    return {"task": task["message"], "action": {"kind": "run_tool", "tool": tool},
+            "parameters": [{"name": k, "value": v, "unit": "mm" if isinstance(v, (int, float)) else None,
+                            "source": "designer", "evidence": task["message"]} for k, v in params.items()]}
+
+
+def test_every_expected_tool_and_value_fits_the_installed_packs(tmp_path):
+    """Each task's expected tool is a pack of the installed package, each expected parameter
+    one of its parameters, with a value of its type (numbers for lengths, text for names)."""
+    from revit_bridge.capabilities import ToolStore
+
+    store = ToolStore(tmp_path / "capabilities")                # no user packs: the wheel's only
+    tasks = load_tasks(TASKS_FILE) + load_tasks(SUPERVISOR_FILE)
+    checked = 0
+    for task in tasks:
+        tool = task.get("expect", {}).get("tool")
+        if tool is None:
+            continue
+        pack = store.load(tool)
+        assert pack is not None, (task["id"], tool)
+        declared = {p["name"]: p for p in pack.parameters}
+        for name, value in task["expect"].get("params", {}).items():
+            assert name in declared, (task["id"], tool, name, sorted(declared))
+            if declared[name]["type"] in NUMBER_TYPES:
+                assert type(value) in (int, float), (task["id"], name, value)
+            else:
+                assert isinstance(value, str), (task["id"], name, value)
+            checked += 1
+    assert checked >= 15
+
+
+PACK_CODE = ("Level.Create(", "Grid.Create(", "ElementTransformUtils.MoveElements(")
+
+
+def counting(handler):
+    """The fake add-in's count probe answers 1 + the runs of PACK_CODE so far (the suite's
+    model_handler answers 1 before any run and 2 after): in a sequence each run moves it by one."""
+    runs = [0]
+
+    def answer(request: dict) -> dict:
+        code = str(request.get("params", {}).get("code", ""))
+        if request.get("method") == "send_code_to_revit":
+            if "GetElementCount" in code and "Enum.Parse(typeof(BuiltInCategory)" in code:
+                return FakeRevit.code_result(request.get("id"), 1 + runs[0])
+            if any(marker in code for marker in PACK_CODE):
+                runs[0] += 1
+        return handler(request)
+    return answer
+
+
+def test_the_new_pack_tasks_run_in_the_fake_addin(host):
+    """new-level, new-grid and move-selection as written: the model proposes what the task
+    expects, the host accepts the spec against the real packs, --execute confirms and runs each
+    in the fake add-in (its count probe moves by one per run, for the count_delta validators of
+    create_level and create_grid; move_elements has none), and each scores correct."""
+    client, model, revit = host
+    revit.handler = counting(revit.handler)
+    tasks = [t for t in load_tasks(TASKS_FILE) if t["id"] in ("new-level", "new-grid", "move-selection")]
+    assert [t["expect"]["tool"] for t in tasks] == ["create_level", "create_grid", "move_elements"]
+    for task in tasks:
+        model.turns += [tool_turn(("propose_spec", {"spec": expected_spec(task)}), usage=FULL),
+                        text_turn("The card is below.", usage=FULL),
+                        text_turn("Done.", usage=FULL)]
+    result = run_bench(client, BASE, "new-packs", tasks, execute=True)
+    by_id = {task["id"]: task for task in result["runs"][0]["tasks"]}
+    for task_id in ("new-level", "new-grid", "move-selection"):
+        assert by_id[task_id]["skipped"] is None and by_id[task_id]["error"] is None, by_id[task_id]
+        assert by_id[task_id]["correct"], (task_id, by_id[task_id]["param_checks"])
+        assert by_id[task_id]["execution"]["success"] is True and by_id[task_id]["execution"]["evidence_id"]
+    assert by_id["new-level"]["execution"]["validation"]["validator"] == "count_delta"
+    assert by_id["new-grid"]["execution"]["validation"]["validator"] == "count_delta"
+    assert by_id["move-selection"]["execution"]["validation"] is None
+    assert model.tool_results("propose_spec") and all(v["accepted"] for v in model.tool_results("propose_spec"))
+    sent = [str(r.get("params", {}).get("code", "")) for r in revit.requests]
+    for marker in PACK_CODE:
+        assert len([code for code in sent if marker in code]) == 1, marker
+
+
+def test_the_refused_fixture_has_the_run_route_s_shape(env):  # noqa: F811 - fixture imported above
+    """tasks-supervisor.yml feeds a refused run back without running anything: its execution has
+    the keys and the fixed values of what the run route answers for one (tests/test_refused.py:
+    the add-in's own reply for a pack that threw its refusal, through the package)."""
+    from backend.main import create_app
+    from tests.test_refused import REFUSED_KEYS, refusing_addin, run_refused
+
+    with FakeRevit(refusing_addin()) as fake:
+        env.setenv("REVIT_BRIDGE_PORT", str(fake.port))
+        with TestClient(create_app()) as client:
+            out, _ = run_refused(client)
+    fixture = next(t for t in load_tasks(SUPERVISOR_FILE) if t["id"] == "wall-refused")["execution"]
+    assert list(fixture) == list(out) and set(out) == REFUSED_KEYS          # the same keys, in its order
+    for key in ("success", "result", "validation", "preconditions_failed", "refused"):
+        assert fixture[key] == out[key], key
+    assert isinstance(fixture["error"], str) and not fixture["error"].startswith("REFUSED")

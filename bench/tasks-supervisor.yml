@@ -33,12 +33,15 @@
     max_turns: 3
   # revit-bridge 0.9.1's shape of a pack that refused the input in Revit (an
   # InvalidOperationException whose message starts "REFUSED: "): refused true, error the text
-  # after the marker, no hint, a ledger line; the add-in rolled back, nothing was kept.
+  # after the marker, no hint, a ledger line; the add-in rolled back, nothing was kept. The keys
+  # are those of the run route's answer for such a run (tests: bench/tests/test_host_run.py).
   execution:
     success: false
     tool: create_wall
     result: null
     error: "The wall would cut through the stair on F2; choose another start point."
-    refused: true
+    validation: null
     evidence_id: ev_benchmark_fixture_refused
     warnings: ["Synthetic benchmark feedback. No model operation was performed."]
+    preconditions_failed: []
+    refused: true

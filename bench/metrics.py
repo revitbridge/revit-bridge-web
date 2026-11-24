@@ -11,8 +11,10 @@ USAGE_FIELDS = (*TOKEN_FIELDS, "ms")
 ROLE_FIELDS = ("calls", *USAGE_FIELDS)
 # The per-task numbers a repeat summary reports.
 TASK_FIELDS = ("calls", *USAGE_FIELDS, "tool_calls", "elapsed_ms")
-# Read-only packs: proposing one of them answers a query task correctly (planning ruling).
-READ_ONLY_PACKS = ("query_levels", "query_model_stats")
+# Read-only packs: proposing one of them answers a query task correctly (planning ruling). These
+# are the built-in packs of revit-bridge 0.9.1 that only read the model (their count_delta
+# validator expects no change).
+READ_ONLY_PACKS = ("query_levels", "query_model_stats", "count_by_level", "list_types", "elements_in_link")
 READ_TOOLS = ("query", "get_project_snapshot")
 # compare: input tokens may grow by this factor before a correct task counts as worse.
 INPUT_TOLERANCE = 1.05
