@@ -62,10 +62,17 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
   refuses `execute_code` with `code_not_offered`; no `get_guidance`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
-  (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
+  (`parse_usage`: the provider shapes; a count not reported is `None`, never 0), the provider
+  options a models file entry sets (`api: responses` -> `stream_responses`, not streamed, the same
+  items out; `max_tokens_param`, `reasoning_effort`, `timeout_s`) and `ProviderMemory` (a tool
+  call's provider keys - Gemini's `extra_content` - and a responses reply's output items, per
+  session, back to the same endpoint and model only); an empty reply at the output limit is an
+  `LLMError` naming it. Without a models file the requests and streams are byte for byte the
+  record in `tests/default_path_golden.json` (`tests/test_default_path.py`);
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
-  pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported); `backend/mention_check.py` the `unknown_mention` check of a spec's
+  pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
+  the `provider_memory`); `backend/mention_check.py` the `unknown_mention` check of a spec's
   `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.

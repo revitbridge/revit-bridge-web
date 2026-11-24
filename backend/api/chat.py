@@ -69,9 +69,14 @@ one loop of the planner as before the split, request for request and frame for f
 
 Each role's model is ``backend.models_file.resolve(role, headers)``: ``LLM_*`` and the
 ``X-LLM-*`` headers as before, or, with a models file, the role's entry there (the
-headers replace the planner's entry, and every role that shares it). Events and
-``llm_calls`` carry the role and the model the call actually went to; ``round`` counts
-the model calls of the turn across its roles.
+headers replace the planner's entry, and every role that shares it) with the entry's
+provider options (the responses api, the output limit's name, the reasoning effort, the
+read timeout: ``backend.llm``). What a provider returns with a tool call to have it back
+(a thought signature, encrypted reasoning) is kept with the session
+(``Session.provider_memory``). A reply that used up its output limit on thinking, with
+no text and no tool call, ends the turn with ``event: error`` naming the limit. Events
+and ``llm_calls`` carry the role and the model the call actually went to; ``round``
+counts the model calls of the turn across its roles.
 
 Within one session each prompt is the one its first turn was sent with
 (``Session.system_prompt``, ``Session.role_prompt``) and the tool definitions of a
@@ -478,7 +483,8 @@ class Turn:
             stats = CallStats()
             started = time.monotonic()
             try:
-                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats, **target.options):
+                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats,
+                                                    memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
                         parts.append(item)
                         if stream:

@@ -24,8 +24,9 @@ environment variable. Its path is ``MODELS_FILE``, by default ``models.yml`` in
   has ``base_url`` (``https://``, or ``http://`` to a loopback address - to any host with
   ``LLM_ALLOW_HTTP=1``; no user name, password, query or fragment), ``model``, ``api_key_env`` (the NAME of the environment
   variable that holds the key: capital letters, digits and ``_``) and optionally
-  ``max_tokens`` and ``temperature``. Any other field is refused - ``api_key``, ``key``,
-  ``token``, ``extra_headers`` included: keys never go in this file. Roles are exactly
+  ``max_tokens``, ``temperature`` and the provider options below. Any other field is
+  refused - ``api_key``, ``key``, ``token``, ``extra_headers`` included: keys never go in
+  this file. Roles are exactly
   ``analyst``, ``planner`` (required) and ``supervisor``; a role left out uses the
   planner's entry; several roles may name one entry (that is "one model for all").
   YAML aliases and a key given twice in one mapping are refused.
@@ -45,8 +46,19 @@ environment variable. Its path is ``MODELS_FILE``, by default ``models.yml`` in
   the same parser (``backend.llm.endpoint``) and must be https, or http to loopback -
   or http to any host with ``LLM_ALLOW_HTTP=1``, the switch that lets the browser's
   endpoint use http, with the same meaning.
-- An entry's ``max_tokens`` / ``temperature`` go with its endpoint and model: a request
-  whose headers replace either gets ``stream_completion``'s defaults, as without the file.
+- Provider options of an entry (``backend.llm``), each sent only when set:
+
+  - ``api``: ``chat`` (default, ``<base_url>/chat/completions``) or ``responses``
+    (``<base_url>/responses``, OpenAI's Responses api: models that take tools only there);
+  - ``max_tokens_param``: ``max_tokens`` (default) or ``max_completion_tokens`` - chat api
+    only (the responses api sends ``max_output_tokens``);
+  - ``reasoning_effort``: ``low``, ``medium``, ``high`` or ``xhigh``;
+  - ``timeout_s``: seconds a read may wait, 10 to 900 (default ``backend.llm.DEFAULT_TIMEOUT``,
+    300).
+
+- An entry's ``max_tokens`` / ``temperature`` and provider options go with its endpoint and
+  model: a request whose headers replace either gets ``stream_completion``'s defaults - the
+  chat api, as without the file.
 
 ``/config.json`` shows the model NAME of each role (``config_features``): no URL, no
 key, no variable name.
@@ -65,18 +77,23 @@ import httpx
 import yaml
 
 from backend.config import ConfigError, WebSettings, get_settings
-from backend.llm import LLMError, LLMSettings, endpoint, is_loopback_host, resolve_llm
+from backend.llm import (
+    APIS, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings, endpoint,
+    is_loopback_host, resolve_llm,
+)
 
 _log = logging.getLogger("backend.models")
 
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
 REQUIRED_FIELDS = ("base_url", "model", "api_key_env")
-OPTIONAL_FIELDS = ("max_tokens", "temperature")
+OPTIONAL_FIELDS = ("max_tokens", "temperature", "api", "max_tokens_param", "reasoning_effort", "timeout_s")
+ENTRY_FIELDS = ", ".join(REQUIRED_FIELDS + OPTIONAL_FIELDS)
 MAX_FILE_BYTES = 64 * 1024
 MAX_MODEL_NAME = 200                       # what llm_calls keeps of a model name
 MAX_TOKENS_LIMIT = 2 ** 31 - 1
 TEMPERATURE_RANGE = (0.0, 2.0)             # the OpenAI-compatible range
+TIMEOUT_RANGE = (10, 900)                  # timeout_s, seconds
 _ENTRY_NAME = re.compile(r"[A-Za-z0-9_.-]{1,32}")
 _ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,127}")
 # A field name of the file is shown in a message only when it cannot be a key: no digit,
@@ -104,6 +121,10 @@ class ModelEntry:
     max_tokens: int | None = None
     temperature: float | None = None
     label: str = ""
+    api: str | None = None
+    max_tokens_param: str | None = None
+    reasoning_effort: str | None = None
+    timeout_s: int | None = None
 
     def api_key(self) -> str:
         """The key, read now: the variable may be set or changed while the host runs."""
@@ -132,11 +153,15 @@ class ModelsFile:
 class ModelTarget:
     """Where one model call of a role goes: ``llm`` (base URL, model, key) for
     ``stream_completion``, the models file's entry (None without the file) and the
-    entry's completion options, when they apply."""
+    entry's completion and provider options, when they apply."""
     llm: LLMSettings
     entry: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
+    api: str | None = None
+    max_tokens_param: str | None = None
+    reasoning_effort: str | None = None
+    timeout_s: int | None = None
 
     @property
     def base_url(self) -> str:
@@ -153,9 +178,15 @@ class ModelTarget:
     @property
     def options(self) -> dict:
         """The keyword arguments for ``stream_completion`` beyond its defaults: only what
-        the entry sets (nothing without the file, so the request is the same as before)."""
+        the entry sets (nothing without the file, so the request is the same as before);
+        ``timeout_s`` goes as ``timeout``."""
         return {name: value for name, value in (("max_tokens", self.max_tokens),
-                                                ("temperature", self.temperature)) if value is not None}
+                                                ("temperature", self.temperature),
+                                                ("api", self.api),
+                                                ("max_tokens_param", self.max_tokens_param),
+                                                ("reasoning_effort", self.reasoning_effort),
+                                                ("timeout", None if self.timeout_s is None else float(self.timeout_s)))
+                if value is not None}
 
 
 # -- reading the file ----------------------------------------------------------------------
@@ -275,6 +306,23 @@ def _temperature(field: str, value, problems: list[str]) -> float | None:
     return None
 
 
+def _one_of(field: str, value, choices: tuple[str, ...], problems: list[str]) -> str | None:
+    """One of ``choices`` exactly (text, as written). The value itself is never shown: only the
+    choices."""
+    if isinstance(value, str) and value in choices:
+        return value
+    problems.append(f"{field}: must be one of {', '.join(choices)}")
+    return None
+
+
+def _timeout_s(field: str, value, problems: list[str]) -> int | None:
+    low, high = TIMEOUT_RANGE
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+        return value
+    problems.append(f"{field}: must be a whole number of seconds from {low} to {high}")
+    return None
+
+
 def _entry(name: str, position: int, raw, problems: list[str],
            allow_http: bool = False) -> ModelEntry | None:
     label = entry_label(name, position)
@@ -293,8 +341,7 @@ def _entry(name: str, position: int, raw, problems: list[str],
             problems.append(f"{where}: not allowed - keys never go in this file: put the key in an "
                             f"environment variable and name that variable in api_key_env")
         else:
-            problems.append(f"{prefix}: {_shown(key)} is not a field of an entry "
-                            f"(base_url, model, api_key_env, max_tokens, temperature)")
+            problems.append(f"{prefix}: {_shown(key)} is not a field of an entry ({ENTRY_FIELDS})")
     for key in REQUIRED_FIELDS:
         if key not in raw:
             problems.append(f"{prefix}.{key}: missing")
@@ -305,10 +352,20 @@ def _entry(name: str, position: int, raw, problems: list[str],
     max_tokens = _max_tokens(f"{prefix}.max_tokens", raw["max_tokens"], problems) if "max_tokens" in raw else None
     temperature = (_temperature(f"{prefix}.temperature", raw["temperature"], problems)
                    if "temperature" in raw else None)
+    api = _one_of(f"{prefix}.api", raw["api"], APIS, problems) if "api" in raw else None
+    tokens_param = (_one_of(f"{prefix}.max_tokens_param", raw["max_tokens_param"], MAX_TOKENS_PARAMS, problems)
+                    if "max_tokens_param" in raw else None)
+    if tokens_param is not None and api == RESPONSES_API:
+        problems.append(f"{prefix}.max_tokens_param: chat api only (the responses api sends max_output_tokens); "
+                        f"leave it out with api: responses")
+    effort = (_one_of(f"{prefix}.reasoning_effort", raw["reasoning_effort"], REASONING_EFFORTS, problems)
+              if "reasoning_effort" in raw else None)
+    timeout_s = _timeout_s(f"{prefix}.timeout_s", raw["timeout_s"], problems) if "timeout_s" in raw else None
     if len(problems) > before:
         return None
     return ModelEntry(name=name, base_url=base_url, model=model, api_key_env=key_env,
-                      max_tokens=max_tokens, temperature=temperature, label=label)
+                      max_tokens=max_tokens, temperature=temperature, label=label,
+                      api=api, max_tokens_param=tokens_param, reasoning_effort=effort, timeout_s=timeout_s)
 
 
 def parse_models(data, path: Path, *, allow_http: bool = False) -> ModelsFile:
@@ -464,9 +521,12 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
                                    llm_api_key=entry.api_key())
     llm = await resolve_llm(overrides, defaults)
     own = llm.base_url == entry.base_url and llm.model == entry.model
-    return ModelTarget(llm=llm, entry=entry.name,
-                       max_tokens=entry.max_tokens if own else None,
-                       temperature=entry.temperature if own else None)
+    if not own:
+        # The browser's endpoint or model: the chat api with stream_completion's defaults.
+        return ModelTarget(llm=llm, entry=entry.name)
+    return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens, temperature=entry.temperature,
+                       api=entry.api, max_tokens_param=entry.max_tokens_param,
+                       reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s)
 
 
 def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:

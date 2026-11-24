@@ -15,6 +15,9 @@ per device scope (``picks_for``: a spec may bind only those, see
 token: the token lives in the browser's memory and the gate's ``pending/``
 directory is the server-side record. Model settings travel with every
 request as headers (see ``backend.llm``), so nothing secret is held here.
+What a provider returned with a tool call that must go back with it (a
+thought signature, encrypted reasoning) is kept per session in memory only
+(``provider_memory``), never written anywhere.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from dataclasses import dataclass, field
 
 from typing import TYPE_CHECKING
 
+from backend.llm import ProviderMemory
 from backend.mention_check import mention_evidence
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
@@ -70,6 +74,10 @@ class Session:
     digest_failures: dict[str, tuple[float, str]] = field(default_factory=dict)
     pending_verdict: dict | None = None
     confirmed_spec: dict | None = None
+    # What a provider returned with a tool call that goes back with it in the next requests
+    # (Gemini's thought signature, the responses api's reasoning items): by call, for the
+    # endpoint and model that returned it, in memory only (backend.llm.ProviderMemory).
+    provider_memory: ProviderMemory = field(default_factory=ProviderMemory, repr=False)
 
     def role_prompt(self, role: str, build) -> str:
         """The session's system prompt of ``role``: built by ``build(role)`` on first use, then

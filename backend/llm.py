@@ -23,6 +23,28 @@ report, never 0; merged field by field). An endpoint that refuses the option
 with a 4xx naming it is asked again once without it; when that is accepted the
 endpoint and model are remembered for the life of the process.
 
+Provider options (a models file entry sets them, ``backend.models_file``; without
+one every call is the chat api with the defaults, byte for byte as before):
+
+- ``max_tokens_param``: the name the output limit goes under on the chat api,
+  ``max_tokens`` (default) or ``max_completion_tokens`` (OpenAI's newer models).
+- ``reasoning_effort``: sent only when set (``reasoning_effort`` on the chat api,
+  ``reasoning.effort`` on the responses api).
+- ``api="responses"``: the call goes to ``<base_url>/responses`` (OpenAI's Responses
+  api), not streamed: the reply's text is handed on as one piece once the call is
+  done, then its tool calls - the same items ``stream_completion`` yields for a chat
+  call, so the browser's SSE stream does not change (``stream_responses``).
+- Some providers return something with a tool call that must go back with it in
+  the following requests: on the chat api any key of a tool call beyond ``index``,
+  ``id``, ``type`` and ``function`` (Gemini's ``extra_content`` with its thought
+  signature), on the responses api the reply's output items (its reasoning, with
+  the encrypted content, and its function calls). ``ProviderMemory`` holds them by
+  tool call, in memory with the chat session, for the endpoint and model that sent
+  them only; nothing of it is written to disk or logged.
+- A reply that ran out of its output limit before it wrote anything or called a
+  tool (finish_reason ``length`` / status ``incomplete``, max_output_tokens) is an
+  ``LLMError`` naming the limit, not an empty reply (``output_limit_error``).
+
 Ported from the streaming half of the former ``pipeline/llm_client.py``,
 rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
 """
@@ -48,10 +70,19 @@ HEADER_BASE_URL = "x-llm-base-url"
 HEADER_MODEL = "x-llm-model"
 HEADER_KEY = "x-llm-key"
 
-DEFAULT_TIMEOUT = 120.0
+# Seconds one read may wait (a models file entry's timeout_s replaces it for that entry):
+# a thinking model may be silent for minutes before its first token, and a responses call
+# sends nothing until it is done.
+DEFAULT_TIMEOUT = 300.0
 # One completion from request to last byte. 4096 tokens at a slow 7 tokens a second
-# take under 10 minutes; DEFAULT_TIMEOUT still bounds every single read.
+# take under 10 minutes; the read timeout still bounds every single read. A read timeout
+# above DEFAULT_TIMEOUT (timeout_s up to 900) extends it by as much (call_deadline).
 MODEL_CALL_DEADLINE = 600.0
+
+CHAT_API, RESPONSES_API = "chat", "responses"
+APIS = (CHAT_API, RESPONSES_API)
+MAX_TOKENS_PARAMS = ("max_tokens", "max_completion_tokens")
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 
 
 class LLMError(Exception):
@@ -130,6 +161,11 @@ _HOST_LABEL = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?")
 def completions_url(base_url: str) -> str:
     """The address one completion is POSTed to."""
     return f"{base_url}/chat/completions"
+
+
+def responses_url(base_url: str) -> str:
+    """The address one call of the responses api is POSTed to."""
+    return f"{base_url}/responses"
 
 
 def _valid_host(host: str) -> bool:
@@ -298,15 +334,97 @@ async def resolve_llm(headers: Mapping[str, str], settings: WebSettings) -> LLMS
 
 @dataclass
 class ToolCall:
-    """One function call the model asked for; ``arguments`` is the raw JSON text."""
+    """One function call the model asked for; ``arguments`` is the raw JSON text. ``extra``:
+    the keys the provider sent on the call beyond ``index``, ``id``, ``type`` and ``function``
+    (chat api; Gemini's ``extra_content``), to go back with the call (``ProviderMemory``) -
+    never part of the session's message, never logged."""
     id: str
     name: str
     arguments: str
+    extra: dict = field(default_factory=dict, repr=False, compare=False)
 
     def as_message_part(self) -> dict:
         """The entry of an assistant message's ``tool_calls`` list."""
         return {"id": self.id, "type": "function",
                 "function": {"name": self.name, "arguments": self.arguments}}
+
+
+# The keys of a streamed tool call every OpenAI-compatible provider sends; anything else on
+# the call is the provider's own and goes back with it.
+_TOOL_CALL_KEYS = frozenset({"index", "id", "type", "function"})
+MEMORY_CALLS = 256               # tool calls a ProviderMemory keeps (oldest forgotten first)
+
+
+class ProviderMemory:
+    """What a provider returned with a tool call that must go back with that call in the
+    following requests, kept by call for the endpoint and model that returned it:
+
+    - chat api: the call's own extra keys (``ToolCall.extra``, e.g. Gemini's
+      ``extra_content``), put back on that call's entry of the assistant message when the
+      next request goes to the same completions URL and model;
+    - responses api: the reply's whole output list (reasoning items with their encrypted
+      content, function calls, a message), sent instead of the assistant message whose tool
+      calls it produced (stateless: ``store`` is false).
+
+    A call is known by its id, name and arguments, so a provider that numbers its calls the
+    same way in every reply cannot get another call's data back. One per chat session
+    (``Session.provider_memory``), in memory only, at most ``MEMORY_CALLS`` calls; it never
+    goes to disk, a log or another endpoint."""
+
+    def __init__(self, limit: int = MEMORY_CALLS):
+        self._limit = limit
+        self._items: dict[tuple[str, str, str, str], object] = {}
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:                    # never the values
+        return f"ProviderMemory({len(self._items)} calls)"
+
+    @staticmethod
+    def _key(origin: str, call_id: str, name: str, arguments: str) -> tuple[str, str, str, str]:
+        return (origin, call_id, name, arguments)
+
+    def remember(self, origin: str, call: ToolCall, value: object) -> None:
+        key = self._key(origin, call.id, call.name, call.arguments)
+        self._items.pop(key, None)
+        self._items[key] = value
+        while len(self._items) > self._limit:
+            del self._items[next(iter(self._items))]
+
+    def recall(self, origin: str, part: dict) -> object | None:
+        """What was kept for the tool call ``part`` (an entry of a message's ``tool_calls``)."""
+        if not self._items or not isinstance(part, dict):
+            return None
+        function = part.get("function") if isinstance(part.get("function"), dict) else {}
+        key = self._key(origin, str(part.get("id", "")), str(function.get("name", "")),
+                        str(function.get("arguments", "")))
+        return self._items.get(key)
+
+
+def _origin(url: str, model: str) -> str:
+    """Whose data a ``ProviderMemory`` entry is: the URL the call went to and the model."""
+    return f"{url}\n{model}"
+
+
+def with_call_extras(messages: list[dict], memory: ProviderMemory | None, origin: str) -> list[dict]:
+    """``messages`` with each tool call's extra keys put back (chat api), for calls this endpoint
+    and model returned; the same list when there is nothing to add."""
+    if memory is None or not len(memory):
+        return messages
+    out: list[dict] | None = None
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict) or message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        parts = message["tool_calls"]
+        extras = [memory.recall(origin, part) for part in parts]
+        if not any(extras):
+            continue
+        if out is None:
+            out = list(messages)
+        out[index] = {**message, "tool_calls": [
+            {**part, **extra} if isinstance(extra, dict) and extra else part for part, extra in zip(parts, extras)]}
+    return messages if out is None else out
 
 
 def assistant_message(content: str, tool_calls: list[ToolCall] | None = None) -> dict:
@@ -323,14 +441,28 @@ def tool_message(call: ToolCall, result) -> dict:
     return {"role": "tool", "tool_call_id": call.id, "content": content}
 
 
-async def _before(deadline: float, awaitable):
-    """``await awaitable``, but no later than ``deadline`` (event loop time)."""
+async def _before(deadline: float, awaitable, limit: float = MODEL_CALL_DEADLINE):
+    """``await awaitable``, but no later than ``deadline`` (event loop time); ``limit`` is the
+    number of seconds the deadline was set to, for the message."""
     try:
         async with asyncio.timeout_at(deadline):
             return await awaitable
     except TimeoutError:
-        raise LLMError(f"Model endpoint did not finish within {MODEL_CALL_DEADLINE:g}s",
-                       status=502) from None
+        raise LLMError(f"Model endpoint did not finish within {limit:g}s", status=502) from None
+
+
+def call_deadline(timeout: float) -> float:
+    """Seconds one model call may take in all: ``MODEL_CALL_DEADLINE``, longer by as much as the
+    read timeout is above ``DEFAULT_TIMEOUT`` (timeout_s up to 900: a responses call is one long
+    read, and it must be able to use all of it)."""
+    return MODEL_CALL_DEADLINE + max(0.0, timeout - DEFAULT_TIMEOUT)
+
+
+def output_limit_error(param: str, limit: int) -> LLMError:
+    """A reply that used up its output limit before it wrote a word or called a tool."""
+    return LLMError(f"The model used up its output limit ({param} {limit}) before it wrote a reply or "
+                    f"called a tool - most likely on thinking. Raise max_tokens for this model in the "
+                    f"models file, or lower its reasoning_effort.", status=502)
 
 
 # -- token usage -----------------------------------------------------------------
@@ -498,7 +630,7 @@ def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
         index = int(fragment.get("index", len(calls)))
     except (TypeError, ValueError):
         index = len(calls)
-    call = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
+    call = calls.setdefault(index, {"id": "", "name": "", "arguments": "", "extra": {}})
     if fragment.get("id"):
         call["id"] = str(fragment["id"])
     function = fragment.get("function") or {}
@@ -506,6 +638,19 @@ def _merge_tool_call(calls: dict[int, dict], fragment: dict) -> None:
         call["name"] += str(function["name"])
     if function.get("arguments"):
         call["arguments"] += str(function["arguments"])
+    for key, value in fragment.items():
+        # The provider's own keys (Gemini: extra_content with the thought signature); a later
+        # fragment's value replaces an earlier one, an empty one erases nothing.
+        if key not in _TOOL_CALL_KEYS and isinstance(key, str) and value is not None:
+            call["extra"][key] = value
+
+
+def _not_configured() -> LLMError:
+    return LLMError(
+        "No model configured: fill in Model settings in the browser "
+        "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
+        status=400,
+    )
 
 
 async def stream_completion(
@@ -513,10 +658,14 @@ async def stream_completion(
     messages: list[dict],
     *,
     tools: list[dict] | None = None,
-    temperature: float = 0.3,
+    temperature: float | None = None,
     max_tokens: int = 4096,
     timeout: float = DEFAULT_TIMEOUT,
     stats: CallStats | None = None,
+    api: str = CHAT_API,
+    max_tokens_param: str = "max_tokens",
+    reasoning_effort: str | None = None,
+    memory: ProviderMemory | None = None,
 ) -> AsyncIterator[str | list[ToolCall]]:
     """Stream one chat completion: content deltas as they arrive (``str``) and,
     when the model called tools, one ``list[ToolCall]`` at the end, assembled
@@ -531,17 +680,29 @@ async def stream_completion(
     (``stats.retried``), and only when that retry is accepted is the endpoint and
     model remembered and not asked again while the process runs.
 
-    Raises ``LLMError`` when the endpoint answers with an error status; the
-    message carries the status and a short body excerpt, never the request.
+    ``temperature`` is 0.3 when not given. ``max_tokens`` goes out under
+    ``max_tokens_param``; ``reasoning_effort`` only when given. ``memory``: the session's
+    ``ProviderMemory`` - the extra keys of a tool call this endpoint and model returned go
+    back on that call, and the extra keys of this reply's calls are kept there. ``api``
+    ``"responses"`` hands the call to ``stream_responses`` (which takes no
+    ``max_tokens_param`` and sends a temperature only when one is given).
+
+    A reply that ends for its output limit (finish_reason ``length``) with no text and no
+    tool call raises ``output_limit_error``. Raises ``LLMError`` when the endpoint answers
+    with an error status; the message carries the status and a short body excerpt, never
+    the request.
     """
+    if api == RESPONSES_API:
+        async for item in stream_responses(llm, messages, tools=tools, temperature=temperature,
+                                           max_tokens=max_tokens, timeout=timeout, stats=stats,
+                                           reasoning_effort=reasoning_effort, memory=memory):
+            yield item
+        return
     if not llm.configured:
-        raise LLMError(
-            "No model configured: fill in Model settings in the browser "
-            "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.",
-            status=400,
-        )
+        raise _not_configured()
     stats = stats if stats is not None else CallStats()
     url = completions_url(llm.base_url)
+    origin = _origin(url, llm.model)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
         "Content-Type": "application/json",
@@ -550,20 +711,25 @@ async def stream_completion(
     }
     payload: dict = {
         "model": llm.model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
+        "messages": with_call_extras(messages, memory, origin),
+        "temperature": 0.3 if temperature is None else temperature,
+        max_tokens_param: max_tokens,
         "stream": True,
     }
+    if reasoning_effort is not None:
+        payload["reasoning_effort"] = reasoning_effort
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     ask_usage = not _refuses_usage_option(url, llm.model)
-    calls: dict[int, dict] = {}          # index -> {id, name, arguments}
+    calls: dict[int, dict] = {}          # index -> {id, name, arguments, extra}
+    finish: str | None = None
+    wrote = False
     client_timeout = httpx.Timeout(timeout, connect=15.0)
     # httpx's timeouts are per read: an endpoint that sends a byte now and then would
     # hold the call forever. Every wait below also stops at this deadline.
-    deadline = asyncio.get_running_loop().time() + MODEL_CALL_DEADLINE
+    limit = call_deadline(timeout)
+    deadline = asyncio.get_running_loop().time() + limit
     try:
         # Redirects are never followed: a checked public endpoint must not be able to send
         # the request (and the key) on to an address nobody checked.
@@ -572,12 +738,12 @@ async def stream_completion(
                 body_json = {**payload, "stream_options": USAGE_OPTION} if ask_usage else payload
                 async with contextlib.AsyncExitStack() as stack:
                     resp = await _before(deadline, stack.enter_async_context(
-                        client.stream("POST", url, headers=headers, json=body_json)))
+                        client.stream("POST", url, headers=headers, json=body_json)), limit)
                     if 300 <= resp.status_code < 400:
                         raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed",
                                        status=502)
                     if resp.status_code >= 400:
-                        body = (await _before(deadline, resp.aread())).decode("utf-8", "replace")
+                        body = (await _before(deadline, resp.aread(), limit)).decode("utf-8", "replace")
                         if ask_usage and _names_usage_option(resp.status_code, body):
                             # Perhaps the provider does not take the option: once more without
                             # it. Remembered only if that attempt is accepted (below).
@@ -598,7 +764,7 @@ async def stream_completion(
                     lines = resp.aiter_lines()
                     while True:
                         try:
-                            line = await _before(deadline, anext(lines))
+                            line = await _before(deadline, anext(lines), limit)
                         except StopAsyncIteration:
                             break
                         if not line.startswith("data: "):
@@ -620,9 +786,13 @@ async def stream_completion(
                         choices = chunk.get("choices") or []
                         if not choices:
                             continue
-                        delta = choices[0].get("delta") or {}
+                        choice = choices[0] if isinstance(choices[0], dict) else {}
+                        if choice.get("finish_reason"):
+                            finish = str(choice["finish_reason"])
+                        delta = choice.get("delta") or {}
                         token = delta.get("content")
                         if token:
+                            wrote = True
                             yield token
                         for fragment in delta.get("tool_calls") or []:
                             _merge_tool_call(calls, fragment)
@@ -635,10 +805,195 @@ async def stream_completion(
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)
         raise LLMError(f"Model endpoint unreachable: {type(exc).__name__}", status=502) from None
-    assembled = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["arguments"])
+    assembled = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["arguments"], extra=c["extra"])
                  for i, c in sorted(calls.items()) if c["name"]]
+    if finish == "length" and not wrote and not assembled:
+        raise output_limit_error(max_tokens_param, max_tokens)
+    if memory is not None:
+        for call in assembled:
+            if call.extra:
+                memory.remember(origin, call, dict(call.extra))
     if assembled:
         yield assembled
+
+
+# -- the responses api -------------------------------------------------------------
+
+def _text_of(content) -> str:
+    """A message's content as text: a string as it is, a list of parts their ``text`` joined."""
+    if isinstance(content, list):
+        return "".join(p["text"] for p in content if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return content if isinstance(content, str) else ""
+
+
+def responses_tools(tools: list[dict]) -> list[dict]:
+    """Chat api function definitions in the responses api's flat form, not strict (the chat
+    api's default: the schemas here are not written for strict mode)."""
+    out = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) and tool.get("type") == "function" else None
+        if not isinstance(function, dict):
+            continue
+        out.append({"type": "function", "name": function.get("name"),
+                    "description": function.get("description", ""),
+                    "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+                    "strict": False})
+    return out
+
+
+def responses_input(messages: list[dict], memory: ProviderMemory | None = None, origin: str = "") -> list[dict]:
+    """The conversation as input items: system, developer and user messages as they are; an
+    assistant turn whose tool calls this endpoint and model made is replaced by that reply's
+    output items as they came (``ProviderMemory``: reasoning with its encrypted content,
+    function calls, a message), any other assistant turn is its text and a ``function_call``
+    per tool call; a tool result is a ``function_call_output``."""
+    items: list[dict] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role in ("system", "developer", "user"):
+            items.append({"role": role, "content": _text_of(message.get("content"))})
+        elif role == "assistant":
+            parts = [p for p in message.get("tool_calls") or [] if isinstance(p, dict)]
+            stored = memory.recall(origin, parts[0]) if memory is not None and parts else None
+            if isinstance(stored, list) and all(memory.recall(origin, p) is stored for p in parts[1:]):
+                items.extend(stored)
+                continue
+            text = _text_of(message.get("content"))
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for part in parts:
+                function = part.get("function") if isinstance(part.get("function"), dict) else {}
+                items.append({"type": "function_call", "call_id": part.get("id"), "name": function.get("name"),
+                              "arguments": function.get("arguments") or ""})
+        elif role == "tool":
+            content = message.get("content")
+            items.append({"type": "function_call_output", "call_id": message.get("tool_call_id"),
+                          "output": content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)})
+    return items
+
+
+def parse_responses_usage(raw) -> Usage:
+    """The responses api's ``usage``: ``input_tokens`` is the whole prompt, its
+    ``input_tokens_details.cached_tokens`` the part read from the cache and
+    ``input_tokens_details.cache_write_tokens`` the part written to it (when the provider
+    reports one); ``output_tokens`` the output, reasoning included (billed as output)."""
+    if not isinstance(raw, dict):
+        return Usage()
+    details = _sub(raw, "input_tokens_details")
+    return Usage(input=_count(raw.get("input_tokens")), output=_count(raw.get("output_tokens")),
+                 cache_read=_count(details.get("cached_tokens")), cache_write=_count(details.get("cache_write_tokens")))
+
+
+def _replayable(output: list) -> bool:
+    """A reply's output can go back as it came only when every reasoning item in it carries its
+    encrypted content: with ``store`` false the provider keeps nothing to look an id up in."""
+    return all(isinstance(item, dict) for item in output) and all(
+        isinstance(item.get("encrypted_content"), str) and item["encrypted_content"]
+        for item in output if item.get("type") == "reasoning")
+
+
+def _reply_parts(output: list) -> tuple[str, list[ToolCall]]:
+    """The text of a reply's message items and its function calls."""
+    items = [item for item in output if isinstance(item, dict)]
+    text = "".join(part["text"] for item in items if item.get("type") == "message"
+                   for part in item.get("content") or []
+                   if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str))
+    calls = [ToolCall(id=str(item.get("call_id") or f"call_{i}"), name=item["name"],
+                      arguments=item["arguments"] if isinstance(item.get("arguments"), str) else "")
+             for i, item in enumerate(items)
+             if item.get("type") == "function_call" and isinstance(item.get("name"), str) and item["name"]]
+    return text, calls
+
+
+async def stream_responses(
+    llm: LLMSettings,
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    temperature: float | None = None,
+    max_tokens: int = 4096,
+    timeout: float = DEFAULT_TIMEOUT,
+    stats: CallStats | None = None,
+    reasoning_effort: str | None = None,
+    memory: ProviderMemory | None = None,
+) -> AsyncIterator[str | list[ToolCall]]:
+    """One call of the responses api (``<base_url>/responses``), yielding what
+    ``stream_completion`` yields: the reply's text (one ``str``) and its tool calls (one
+    ``list[ToolCall]``).
+
+    Not streamed: the call is made whole (``timeout`` bounds the one long read) and its
+    result handed on through the same items, so the page's SSE stream is the same as for a
+    chat call. Stateless (``store`` false): with ``reasoning_effort`` set the request asks
+    for ``reasoning.encrypted_content``, and a reply with tool calls is kept in ``memory``
+    so the next request sends its output items back as they came (``responses_input``).
+    ``max_tokens`` goes out as ``max_output_tokens``; ``temperature`` only when given (some
+    reasoning models refuse it); tools in the flat form, ``strict`` false. Usage:
+    ``parse_responses_usage`` (``stats.asked_usage`` stays false: there is no option to ask
+    with). ``LLMError`` as ``stream_completion`` raises it; a reply ``incomplete`` for
+    ``max_output_tokens`` with no text and no tool call is ``output_limit_error``; a reply
+    ``failed`` names its error code."""
+    if not llm.configured:
+        raise _not_configured()
+    stats = stats if stats is not None else CallStats()
+    url = responses_url(llm.base_url)
+    origin = _origin(url, llm.model)
+    headers = {
+        "Authorization": f"Bearer {llm.api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Title": "revit-bridge-web",
+    }
+    payload: dict = {"model": llm.model, "input": responses_input(messages, memory, origin), "store": False}
+    if reasoning_effort is not None:
+        payload["reasoning"] = {"effort": reasoning_effort}
+        payload["include"] = ["reasoning.encrypted_content"]
+    if tools:
+        payload["tools"] = responses_tools(tools)
+        payload["tool_choice"] = "auto"
+    payload["max_output_tokens"] = max_tokens
+    if temperature is not None:
+        payload["temperature"] = temperature
+    limit = call_deadline(timeout)
+    deadline = asyncio.get_running_loop().time() + limit
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=15.0), follow_redirects=False) as client:
+            resp = await _before(deadline, client.post(url, headers=headers, json=payload), limit)
+    except httpx.InvalidURL:
+        raise LLMError("Model endpoint URL is not a valid URL", status=400) from None
+    except httpx.HTTPError as exc:
+        _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)
+        raise LLMError(f"Model endpoint unreachable: {type(exc).__name__}", status=502) from None
+    if 300 <= resp.status_code < 400:
+        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed", status=502)
+    if resp.status_code >= 400:
+        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {resp.text[:300]}", status=502)
+    stats.accepted = True
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    if not isinstance(data, dict):
+        raise LLMError("Model endpoint answered with something that is not a responses api object", status=502)
+    stats.usage = parse_responses_usage(data.get("usage"))
+    if data.get("status") == "failed":
+        error = data.get("error") if isinstance(data.get("error"), dict) else {}
+        code = str(error.get("code") or "unknown")[:100]
+        raise LLMError(f"Model endpoint reported the response failed ({code})", status=502)
+    output = data.get("output") if isinstance(data.get("output"), list) else []
+    text, calls = _reply_parts(output)
+    incomplete = data.get("incomplete_details") if isinstance(data.get("incomplete_details"), dict) else {}
+    if (data.get("status") == "incomplete" and incomplete.get("reason") == "max_output_tokens"
+            and not text and not calls):
+        raise output_limit_error("max_output_tokens", max_tokens)
+    if memory is not None and calls and _replayable(output):
+        for call in calls:
+            memory.remember(origin, call, output)
+    if text:
+        yield text
+    if calls:
+        yield calls
 
 
 # -- SSE frames --------------------------------------------------------------------

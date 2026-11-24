@@ -10,15 +10,30 @@
 #
 # An entry: base_url (https://, or http:// to 127.0.0.1 / localhost; http:// to any
 # other host only with LLM_ALLOW_HTTP=1, as for the browser's endpoint), model,
-# api_key_env, and optionally max_tokens (a whole number) and temperature (0 to 2).
+# api_key_env, and optionally:
+#
+#   max_tokens         the output limit (a whole number; default 4096). A thinking model
+#                      spends it on thinking too: give it room (16384 and more)
+#   temperature        0 to 2 (default 0.3 on the chat api; not sent on the responses
+#                      api unless set here - some reasoning models refuse it)
+#   api                chat (default: <base_url>/chat/completions) or responses
+#                      (<base_url>/responses, OpenAI's Responses API - for models that
+#                      take tools only there)
+#   max_tokens_param   max_tokens (default) or max_completion_tokens (OpenAI's newer
+#                      models on the chat api); chat api only
+#   reasoning_effort   low, medium, high or xhigh; sent only when set. With
+#                      api: responses set it for a reasoning model: its reasoning is then
+#                      carried (encrypted) from one call of a turn to the next
+#   timeout_s          seconds one read may wait, 10 to 900 (default 300); a slow thinking
+#                      model, or a long responses call, may need more
+#
 # Nothing else is accepted: api_key, key, token, extra_headers or any other field
 # refuses the start, and so do YAML aliases (*name).
 #
 # Roles: analyst, planner, supervisor. planner is required; a role left out uses the
-# planner's entry. Several roles may name one entry. In this release only the
-# planner runs (the chat); the analyst and supervisor are read for the roles split.
-# The browser's model settings (X-LLM-* headers) replace the planner's entry for its
-# own requests; roles on another entry keep theirs.
+# planner's entry. Several roles may name one entry. The browser's model settings
+# (X-LLM-* headers) replace the planner's entry for its own requests - on the chat api
+# with the defaults; roles on another entry keep theirs.
 
 models:
   main:
@@ -52,3 +67,34 @@ roles:
 #   analyst: cheap
 #   planner: strong
 #   supervisor: cheap
+#
+# OpenAI on the Responses API for the planner (the model's name as OpenAI lists it):
+#
+# models:
+#   openai:
+#     base_url: https://api.openai.com/v1
+#     model: your-openai-model
+#     api_key_env: OPENAI_API_KEY
+#     api: responses
+#     reasoning_effort: low
+#     max_tokens: 16384
+#   other: { base_url: https://api.example.com/v1, model: some-model, api_key_env: EXAMPLE_API_KEY }
+# roles:
+#   planner: openai
+#   analyst: other
+#   supervisor: other
+#
+# (An OpenAI model on the chat api that refuses max_tokens: max_tokens_param: max_completion_tokens.)
+#
+# Gemini through its OpenAI-compatible endpoint (the thought signature Gemini returns with
+# a tool call goes back with it by itself; thinking needs a larger output limit and time):
+#
+# models:
+#   gemini:
+#     base_url: https://generativelanguage.googleapis.com/v1beta/openai
+#     model: your-gemini-model
+#     api_key_env: GEMINI_API_KEY
+#     max_tokens: 16384
+#     timeout_s: 600
+# roles:
+#   planner: gemini

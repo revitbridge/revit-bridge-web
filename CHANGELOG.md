@@ -79,6 +79,24 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
+- **Provider options in the models file** (README, *Models by role*): an entry may set `api`
+  (`chat`, the default, or `responses` - `<base_url>/responses`, OpenAI's Responses API, for models
+  that take tools only there), `max_tokens_param` (`max_tokens` or `max_completion_tokens`, chat api
+  only), `reasoning_effort` (`low`, `medium`, `high`, `xhigh`) and `timeout_s` (10 to 900); each is
+  sent only when set, and unknown fields are still refused. A responses call is made whole, not
+  streamed, and its text and tool calls go to the page through the same events as a chat call;
+  it is stateless (`store: false`) and, with `reasoning_effort` set, asks for the encrypted
+  reasoning and sends it back with the function calls in the following calls. Its usage maps
+  `input_tokens` to input, `input_tokens_details.cached_tokens` to cache read (`cache_write_tokens`
+  to cache write when reported) and `output_tokens`, reasoning included, to output. The browser's
+  `X-LLM-*` settings still call the chat api with the defaults. On the chat api the provider's own
+  keys on a tool call - Gemini's `extra_content` with the thought signature Gemini 3 and later
+  require - now go back unchanged on that call in the following requests to the same endpoint and
+  model (kept in memory with the chat session; never on disk or in a log). A reply that ends at
+  its output limit before it wrote anything or called a tool (a thinking model that spent the limit
+  thinking) is now an `error` event naming the limit (`max_tokens 4096`) instead of an empty reply.
+  Without a models file, and for an entry without these fields, every request and every stream is
+  byte for byte what it was (a test compares them with a record taken before the change).
 - **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*), the default. A
   message goes to the **analyst** (the package's `host_instructions(role="analyst", code=False)`
   and one host line linking the workbench; no tools): it sees the message with its selections
@@ -431,6 +449,9 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Changed
 
+- A model call's read timeout is 300 seconds (it was 120): a thinking model may be silent for
+  minutes before its first token. A models file entry's `timeout_s` sets its own; one above 300 also
+  lengthens the whole call's limit (600 s) by as much.
 - The token bench (`python -m bench`): a task's mention may pick an item by name, `{kind, pick:
   {name | first: true, category?}}`, looked up through `GET /api/v1/bridge/mentions` before the
   task's first message (nothing found, or two items of that name, fails the task before any chat);

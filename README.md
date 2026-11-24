@@ -404,16 +404,36 @@ roles:
   as it does without `LLM_API_KEY`.
 - **An entry** is `base_url` (`https://`, or `http://` to `127.0.0.1` / `localhost` - to any host
   only with `LLM_ALLOW_HTTP=1`; no user name, password or query), `model`, `api_key_env`, and optionally `max_tokens` and `temperature`
-  (0 to 2). Nothing else: `api_key`, `key`, `token`, `extra_headers` or any other field refuses
+  (0 to 2) and the provider options below. Nothing else: `api_key`, `key`, `token`, `extra_headers` or any other field refuses
   the start, as do YAML aliases and a key given twice. The message names the file, the field and
   the problem, never a value from the file.
+- **Provider options** of an entry, each sent only when set (an entry without them sends exactly
+  what it sent before):
+
+  | Field | Values | Default | What it does |
+  |---|---|---|---|
+  | `api` | `chat`, `responses` | `chat` | `responses` calls `<base_url>/responses` (OpenAI's Responses API) instead of `<base_url>/chat/completions` - for models that take tools only there. The call is not streamed: its text reaches the page in one piece when the model is done; the page's events are the same. Stateless (`store: false`); with `reasoning_effort` set the request asks for the encrypted reasoning, and the host sends it back with the function calls in the following calls (kept in memory with the chat session, never on disk or in a log). `max_tokens` goes as `max_output_tokens`; `temperature` only when the entry sets it; the tools in the flat form, `strict: false`. Usage: `input_tokens` is the input, `input_tokens_details.cached_tokens` the cache read (and `cache_write_tokens` the cache write when reported), `output_tokens` the output, reasoning included. |
+  | `max_tokens_param` | `max_tokens`, `max_completion_tokens` | `max_tokens` | The name the output limit goes under on the chat api (OpenAI's newer models refuse `max_tokens`). Chat api only. |
+  | `reasoning_effort` | `low`, `medium`, `high`, `xhigh` | not sent | `reasoning_effort` on the chat api, `reasoning.effort` on the responses api. |
+  | `timeout_s` | 10 to 900 | 300 | Seconds one read of a model call may wait (a thinking model may be silent for minutes; a responses call is one long read). A value above 300 also lengthens the whole call's limit (600 s) by as much. |
+
+  Tool calls on the chat api come back with their provider's own keys - Gemini's `extra_content`
+  with its thought signature, which Gemini 3 and later require on the next request - and the host
+  sends them back unchanged on that call in the following requests to the same endpoint and model
+  (held with the chat session in memory, never logged). A reply that ends at its output limit
+  (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote anything or
+  called a tool - a thinking model that spent the limit thinking - is an `error` event that names the
+  limit (`max_tokens 4096`), not an empty reply: raise the entry's `max_tokens`. Without a models file
+  every request is the chat api with `max_tokens` 4096, `temperature` 0.3 and a 300 s read timeout
+  (it was 120 s).
 - **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
   the planner's entry.
 - **The browser's model settings** (`X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key`) keep their
   meaning: they replace the planner's entry for that browser's requests, field by field as they
   replace `LLM_*` without the file (a base URL of the browser's own needs its own key, and must be
   https on a public address unless `LLM_ALLOW_HTTP=1`). A role on another entry is not affected.
-  An entry's `max_tokens` / `temperature` apply only while its own endpoint and model are used.
+  An entry's `max_tokens` / `temperature` and provider options apply only while its own endpoint and
+  model are used: a browser's endpoint or model is called on the chat api with the defaults.
 - **Base URLs** in the file are the operator's settings, treated like `LLM_BASE_URL` (which the host
   never checks against private addresses); only a browser-supplied URL is. `http://` to another
   machine (a local model elsewhere on the network) needs `LLM_ALLOW_HTTP=1`, the same switch with the
@@ -439,6 +459,31 @@ roles:
   analyst: cheap
   planner: strong
   supervisor: cheap
+```
+
+OpenAI on the Responses API for the planner (the model's name as OpenAI lists it; the key in
+`OPENAI_API_KEY`):
+
+```yaml
+models:
+  openai: { base_url: https://api.openai.com/v1, model: your-openai-model, api_key_env: OPENAI_API_KEY,
+            api: responses, reasoning_effort: low, max_tokens: 16384 }
+  other:  { base_url: https://api.example.com/v1, model: some-model, api_key_env: EXAMPLE_API_KEY }
+roles:
+  planner: openai
+  analyst: other
+  supervisor: other
+```
+
+Gemini through its OpenAI-compatible endpoint (thinking needs a larger output limit and time; its
+thought signatures go back by themselves):
+
+```yaml
+models:
+  gemini: { base_url: https://generativelanguage.googleapis.com/v1beta/openai, model: your-gemini-model,
+            api_key_env: GEMINI_API_KEY, max_tokens: 16384, timeout_s: 600 }
+roles:
+  planner: gemini
 ```
 
 With Docker the default path is in the `./data` volume, so placing the file there is enough. To keep
