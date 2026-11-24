@@ -46,6 +46,12 @@ frontend build works on any address.
                                 supervisor); default DATA_DIR/models.yml. No file
                                 there: LLM_* and the headers as above. Given and
                                 missing, or invalid: no start (backend.models_file)
+    LLM_SINGLE_MODEL            "1": the chat runs as one model loop (the planner's
+                                model, the whole host text, every tool), as before
+                                the roles split; the comparison baseline and the
+                                fallback. Default: three roles - analyst, planner,
+                                supervisor - each with its own text, tools and
+                                model (backend.roles)
     ADMIN_PASSWORD              cloud only, required there: the X-Admin-Token of
                                 pack and skill changes, /api/logs and the device list
     MAX_DEVICES                 cloud only: how many paired add-ins may be
@@ -136,6 +142,8 @@ class WebSettings:
     # file MODELS_FILE names must exist; at the default path it is optional.
     models_file: Path = Path("data") / MODELS_FILE_NAME
     models_file_explicit: bool = False
+    # LLM_SINGLE_MODEL=1: the one model loop of the chat instead of the three roles.
+    single_model: bool = False
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
@@ -181,6 +189,7 @@ class WebSettings:
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
             models_file=Path(models_file) if models_file else data_dir / MODELS_FILE_NAME,
             models_file_explicit=bool(models_file),
+            single_model=env_flag("LLM_SINGLE_MODEL", env),
             admin_password=env.get("ADMIN_PASSWORD", "") if cloud else "",
             max_devices=_int(env.get("MAX_DEVICES"), DEFAULT_MAX_DEVICES, "MAX_DEVICES") if cloud else 0,
             chat_rate_limit=_int(env.get("CHAT_RATE_LIMIT"), DEFAULT_CHAT_RATE_LIMIT, "CHAT_RATE_LIMIT"),
@@ -247,6 +256,8 @@ class WebSettings:
                 "serverModel": self.server_model_configured,
                 "admin": bool(self.admin_password),
                 "maxDevices": self.max_devices,
+                # the chat splits each message into roles (false: LLM_SINGLE_MODEL=1)
+                "roles": not self.single_model,
                 # 0.1 names the pre-7.3 frontend still reads; they go with the connect page.
                 "slotTokenRequired": False,
                 "maxSlots": self.max_devices,

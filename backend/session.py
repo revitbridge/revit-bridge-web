@@ -23,7 +23,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from typing import TYPE_CHECKING
+
 from backend.mention_check import mention_evidence
+
+if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
+    from backend.roles import RoleTask
 
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
@@ -52,6 +57,25 @@ class Session:
     # (device scope, the evidence a spec gives for them, "mention:<kind>#<id>"); the latest
     # reading of each. An id means something only in the model it was read from.
     picks: dict[tuple[str, str], dict] = field(default_factory=dict)
+    # The roles (backend.roles): each role's system prompt of the session's first turn that
+    # used it; the task the next message may continue (route, tool, how often it was sent
+    # back, the last message the designer got); the analyst's digest of the open model and
+    # whether an execution was reported since it was read; the supervisor's last verdict
+    # until the planner has seen it; the spec the page confirmed last (/spec/confirm with
+    # this session), which the supervisor reads instead of the last proposed one.
+    role_prompts: dict[str, str] = field(default_factory=dict)
+    role_task: RoleTask | None = None
+    digest: str | None = None
+    digest_stale: bool = False
+    pending_verdict: dict | None = None
+    confirmed_spec: dict | None = None
+
+    def role_prompt(self, role: str, build) -> str:
+        """The session's system prompt of ``role``: built by ``build(role)`` on first use, then
+        the same text for the rest of the session."""
+        if role not in self.role_prompts:
+            self.role_prompts[role] = build(role)
+        return self.role_prompts[role]
 
     def remember_picks(self, scope: str, items: list[dict]) -> None:
         """Keep verified picks of the device ``scope`` for this turn and every later one; a pick

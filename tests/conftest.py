@@ -41,7 +41,9 @@ def env(tmp_path, monkeypatch):
 
     The host is a cloud one (DEPLOY_MODE=cloud with FIXTURE_ADMIN_PASSWORD): the
     suite written before deploy modes describes that host. Tests of a local host
-    use ``local_env``."""
+    use ``local_env``. Its chat is the one model loop (LLM_SINGLE_MODEL=1): the suite
+    written before the roles describes that loop, and passing unchanged is what shows
+    the switch keeps it. Tests of the roles use ``roles_env``."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     # The package's own data root (user packs, usage.json, evidence) must not
     # be the developer's real one.
@@ -55,10 +57,12 @@ def env(tmp_path, monkeypatch):
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
                 "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT",
-                "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER", "MODELS_FILE"):
+                "DEPLOY_MODE", "HOST", "PORT", "BIND_ADDRESS", "REVIT_BRIDGE_WEB_CONTAINER", "MODELS_FILE",
+                "LLM_SINGLE_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DEPLOY_MODE", "cloud")
     monkeypatch.setenv("ADMIN_PASSWORD", FIXTURE_ADMIN_PASSWORD)
+    monkeypatch.setenv("LLM_SINGLE_MODEL", "1")
     _reset()
     yield monkeypatch
     _reset()
@@ -69,6 +73,14 @@ def local_env(env):
     """A local host (DEPLOY_MODE=local, no ADMIN_PASSWORD); returns monkeypatch."""
     env.setenv("DEPLOY_MODE", "local")
     env.delenv("ADMIN_PASSWORD", raising=False)
+    _reset()
+    return env
+
+
+@pytest.fixture
+def roles_env(env):
+    """The host's default chat, the three roles (no LLM_SINGLE_MODEL); returns monkeypatch."""
+    env.delenv("LLM_SINGLE_MODEL", raising=False)
     _reset()
     return env
 
