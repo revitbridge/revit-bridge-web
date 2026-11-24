@@ -18,7 +18,7 @@ protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal o
 finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
 that ran without it does not. See *Added* and *Changed* (deploy modes).
 
-The host needs `revit-bridge>=0.8,<0.9` (`uv sync`, or rebuild the image). The system
+The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image). The system
 prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. Event names and shapes are unchanged.
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
@@ -382,7 +382,17 @@ the host shares your tools with the package's MCP server (see *Changed*).
   refusals).
 - `docs/api-v1.json` is exported from a cloud host (`DEPLOY_MODE=cloud ADMIN_PASSWORD=...` before
   the export command; CI does the same) and is unchanged: every route is still there.
-- Requires `revit-bridge>=0.8,<0.9` (0.8.2 in `uv.lock`; the image installs it from PyPI). From
+- Requires `revit-bridge>=0.9,<0.10` (0.9.0 in `uv.lock`; the image installs it from PyPI). From
+  0.8.2 to 0.9.0 nothing the host imports changed its name, signature or reply, and no route,
+  pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export and `GET /tools` lists the
+  same eight packs. The package's `host_instructions()` names revit-bridge 0.9 in its first line
+  (the only change in the prompt from the bump itself). A capability pack parameter now takes one
+  string, number or boolean: the package refuses a list or an object for any parameter when it
+  fills a pack (a run, a draft's check or dry run), and null counts as not given. The host builds
+  no such value itself - the workbench sends typed values and the model's options, the task page
+  sends the confirmed spec's values as they are - so only a spec whose value is a list or an
+  object (which the package's render rejects) is affected.
+- Before that, in this cycle: `revit-bridge>=0.8,<0.9` (0.8.2). From
   0.6.1 to 0.8.2 nothing the host imports changed its name, signature or reply, and no route,
   tool, pack, TaskSpec or gate changed: `docs/api-v1.json` is the same export, `GET /tools` lists
   the same eight packs, and the model's tool definitions and `get_guidance` replies are the same

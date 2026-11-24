@@ -6,7 +6,7 @@ Two directories feed the store:
   one ``<id>.md`` per skill;
 - a read-only built-in directory, scanned recursively and exposed with ids
   ``builtin:<relative/path>``: by default the plugin skills shipped inside
-  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.8
+  the ``revit-bridge`` wheel (``revit_bridge.skills_dir()``: in 0.9
   ``builtin:revit-bridge/SKILL``, ``builtin:revit-core/SKILL``, the
   add-in phase skills ``builtin:revit-task-brief/SKILL``,
   ``builtin:revit-addin-dev/SKILL``, ``builtin:revit-addin-test/SKILL`` and

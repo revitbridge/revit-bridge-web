@@ -107,7 +107,7 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 
 ## Dependency on the package
 
-`pyproject.toml` requires `revit-bridge>=0.8,<0.9` from PyPI; `uv.lock` pins the exact
+`pyproject.toml` requires `revit-bridge>=0.9,<0.10` from PyPI; `uv.lock` pins the exact
 release. When the host needs something newer, bump the constraint and `uv lock`.
 
 ## Commits
