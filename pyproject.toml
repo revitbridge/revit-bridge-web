@@ -37,4 +37,4 @@ packages = ["backend"]
 package = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "bench/tests"]

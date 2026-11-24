@@ -47,13 +47,15 @@ EXECUTE_WARNING = (
 EPILOG = """\
 examples:
   python -m bench run --base-url http://127.0.0.1:7860 --label baseline --repeat 3 \\
-      --skip-requires basic-tools --skip-requires mentions
+      --skip-requires basic-tools
   python -m bench compare bench-results/baseline.json bench-results/roles.json
 
 notes:
   The host's CHAT_RATE_LIMIT (default 30 per minute per address) counts the bench's
   requests too; raise it on the host for fast models or long task sets.
   Labels must be new on the host (GET /api/usage/runs): each label is one run.
+  A task that picks model items by name (mentions: [{kind, pick: {name}}]) needs the
+  open model to have them: the picks are looked up before the task's first message.
 """
 
 
@@ -77,11 +79,12 @@ def load_tasks(path: Path) -> list[dict]:
         if not isinstance(answers, list) or any(not isinstance(answer, str) or not answer.strip() for answer in answers):
             raise ValueError(f"{task_id}: answers must be a list of nonempty strings")
         mentions = task.get("mentions", [])
-        if not isinstance(mentions, list) or any(
-            not isinstance(item, dict) or item.get("kind") not in ("level", "type", "link")
-            or type(item.get("id")) is not int for item in mentions
-        ):
-            raise ValueError(f"{task_id}: invalid mentions")
+        if not isinstance(mentions, list) or len(mentions) > 20:
+            raise ValueError(f"{task_id}: mentions must be a list of at most 20")
+        for item in mentions:
+            problem = mention_problem(item)
+            if problem:
+                raise ValueError(f"{task_id}: invalid mentions: {problem}")
         requires = task.get("requires", [])
         if not isinstance(requires, list) or any(
             not isinstance(name, str) or not REQUIRE.fullmatch(name) for name in requires
@@ -99,6 +102,34 @@ def load_tasks(path: Path) -> list[dict]:
             if not isinstance(expect.get("tool"), str) or not expect["tool"]:
                 raise ValueError(f"{task_id}: expect.tool must name a tool")
     return tasks
+
+
+OST_CATEGORY = re.compile(r"OST_[A-Za-z0-9_]+")
+
+
+def mention_problem(item: object) -> str | None:
+    """What is wrong with one task mention, or None: ``{kind, id}`` (an integer id) or
+    ``{kind, pick: {name | first: true, category?}}`` (category: the OST_* name, for a type
+    only and needed there)."""
+    if not isinstance(item, dict) or item.get("kind") not in ("level", "type", "link"):
+        return "kind is level, type or link"
+    if "pick" not in item:
+        return None if type(item.get("id")) is int else "an id is an integer"
+    pick = item["pick"]
+    if set(item) != {"kind", "pick"} or not isinstance(pick, dict) or not set(pick) <= {"name", "first", "category"}:
+        return "a pick is {kind, pick: {name | first: true, category?}}"
+    if ("name" in pick) == ("first" in pick):
+        return "a pick has a name or first: true"
+    if "name" in pick and (not isinstance(pick["name"], str) or not pick["name"].strip()):
+        return "a pick's name is nonempty text"
+    if "first" in pick and pick["first"] is not True:
+        return "first is true"
+    if item["kind"] == "type":
+        if not isinstance(pick.get("category"), str) or not OST_CATEGORY.fullmatch(pick["category"]):
+            return "a type pick needs category, an OST_* name"
+    elif "category" in pick:
+        return "only a type pick takes a category"
+    return None
 
 
 def check_base_url(base: str, allow_remote: bool) -> str:

@@ -53,15 +53,28 @@ class FakeHost:
     """``/api/chat`` answers the scripted replies in order; ``/api/usage/runs`` answers
     ``runs`` (a list of rows, or an int status); confirm and run answer as configured."""
 
-    def __init__(self, replies, runs=None, run_reply=None):
+    def __init__(self, replies, runs=None, run_reply=None, candidates=None):
         self.replies = list(replies)
         self.requests = []
         self.other = []
         self.sessions = 0
         self.runs = runs if runs is not None else []
         self.run_reply = run_reply or httpx.Response(200, json={"success": True, "evidence_id": "ev-1"})
+        self.candidates = candidates or {}         # kind -> items, or an httpx.Response
+        self.lookups = []
 
     def handle(self, request):
+        if request.url.path == "/api/v1/bridge/mentions":
+            assert request.method == "GET"
+            params = dict(request.url.params)
+            self.lookups.append(params)
+            answer = self.candidates.get(params["kind"], [])
+            if isinstance(answer, httpx.Response):
+                return answer
+            needle = params.get("q", "").casefold()
+            items = [item for item in answer if needle in str(item.get("name", "")).casefold()]
+            return httpx.Response(200, json={"kind": params["kind"], "items": items, "total": len(items),
+                                             "truncated": False})
         if request.url.path == "/api/usage/runs":
             self.other.append(request)
             if isinstance(self.runs, int):
@@ -305,20 +318,32 @@ def test_without_the_flags_the_marked_tasks_run():
     assert len(host.requests) == 2
 
 
-def test_example_tasks_mark_unreleased_tools_and_placeholder_ids():
+def test_example_tasks_mark_unreleased_tools_and_pick_their_mentions():
     tasks = load_tasks(Path(__file__).parents[1] / "tasks.yml")
     assert len(tasks) == 12
     marked = {item["id"]: item.get("requires") for item in tasks if item.get("requires")}
-    assert marked == {"new-level": ["basic-tools"], "new-grid": ["basic-tools"], "move-selection": ["basic-tools"],
-                      "mentioned-level": ["mentions"], "mentioned-link": ["mentions"]}
-    assert {item["id"] for item in tasks if item.get("placeholder_ids")} == {"mentioned-level", "mentioned-link"}
-    assert {item["id"] for item in tasks if item.get("mentions")} == {"mentioned-level", "mentioned-link"}
+    assert marked == {"new-level": ["basic-tools"], "new-grid": ["basic-tools"], "move-selection": ["basic-tools"]}
+    assert {item["id"] for item in tasks if item.get("placeholder_ids")} == set()
+    mentions = {item["id"]: item["mentions"] for item in tasks if item.get("mentions")}
+    assert mentions == {"mentioned-level": [{"kind": "level", "pick": {"name": "F2"}}],
+                        "mentioned-link": [{"kind": "link", "pick": {"first": True}}]}
 
 
 def test_task_file_validation(tmp_path):
     path = tmp_path / "tasks.yml"
     for data in ([], [task(), task()], [task(kind="invalid")], [task(expect={"max_turns": 0})],
                  [task(answers="answer")], [task(mentions=[{"kind": "level", "id": True}])],
+                 [task(mentions={"kind": "level", "id": 1})], [task(mentions=[{"kind": "view", "id": 1}])],
+                 [task(mentions=[{"kind": "level", "id": 1}] * 21)],
+                 [task(mentions=[{"kind": "level", "pick": {}}])],
+                 [task(mentions=[{"kind": "level", "pick": {"name": "F2", "first": True}}])],
+                 [task(mentions=[{"kind": "level", "pick": {"name": " "}}])],
+                 [task(mentions=[{"kind": "level", "pick": {"first": False}}])],
+                 [task(mentions=[{"kind": "level", "pick": {"name": "F2", "level": 1}}])],
+                 [task(mentions=[{"kind": "level", "id": 1, "pick": {"name": "F2"}}])],
+                 [task(mentions=[{"kind": "level", "pick": {"name": "F2", "category": "OST_Walls"}}])],
+                 [task(mentions=[{"kind": "type", "pick": {"name": "Generic - 200mm"}}])],
+                 [task(mentions=[{"kind": "type", "pick": {"name": "Generic", "category": "Walls"}}])],
                  [task(requires="basic-tools")], [task(requires=["Basic Tools"])],
                  [task(placeholder_ids="yes")]):
         path.write_text(json.dumps(data), encoding="utf-8")
@@ -713,3 +738,74 @@ def test_cli_prints_before_saving_and_falls_back_when_out_is_unwritable(cli_host
     assert out.out.index("Task") < out.out.index("Saved: ")
     assert "disk full" in out.err
     assert (tmp_path / "tmp" / "revit-bridge-bench-fb.json").is_file()
+
+
+# -- picks: mentions looked up by name ---------------------------------------------------
+
+LEVELS = [{"kind": "level", "id": 311, "name": "F1", "label": "F1", "detail": "0 mm"},
+          {"kind": "level", "id": 312, "name": "F2", "label": "F2", "detail": "3000 mm"},
+          {"kind": "level", "id": 313, "name": "F2 mezzanine", "label": "F2 mezzanine", "detail": "4500 mm"}]
+LINKS = [{"kind": "link", "id": 502, "name": "MEP.rvt : 1", "label": "MEP.rvt", "detail": "not loaded",
+          "disabled": True, "reason": "not_loaded"},
+         {"kind": "link", "id": 501, "name": "Structure.rvt : 1", "label": "Structure.rvt", "detail": "Structure"}]
+TYPES = [{"kind": "type", "id": 401, "name": "Generic - 200mm", "label": "Basic Wall: Generic - 200mm",
+          "detail": "Walls", "category": "OST_Walls", "family": "Basic Wall"}]
+
+
+def test_picks_are_looked_up_and_sent_with_the_first_message_only():
+    host = FakeHost([response(("", "Which height?")), response(("spec", spec())), response(("", "Done"))],
+                    candidates={"level": LEVELS, "link": LINKS, "type": TYPES})
+    picks = [{"kind": "level", "pick": {"name": "F2"}}, {"kind": "link", "pick": {"first": True}},
+             {"kind": "type", "pick": {"name": "Generic - 200mm", "category": "OST_Walls"}},
+             {"kind": "level", "id": 77}]
+    result = host.run([task(kind="ask", answers=["3000"], mentions=picks)])["tasks"][0]
+    sent = [{"kind": "level", "id": 312}, {"kind": "link", "id": 501}, {"kind": "type", "id": 401},
+            {"kind": "level", "id": 77}]
+    assert result["error"] is None and result["mentions"] == sent
+    assert host.lookups == [{"kind": "level", "limit": "200", "q": "F2"}, {"kind": "link", "limit": "200"},
+                            {"kind": "type", "limit": "200", "category": "OST_Walls", "q": "Generic - 200mm"}]
+    assert host.requests[0][0]["mentions"] == sent                      # exactly F2, not the mezzanine
+    assert "mentions" not in host.requests[1][0]                        # the answer: the session keeps them
+    assert "mentions" not in host.requests[2][0]                        # the execution report
+
+
+@pytest.mark.parametrize("pick, candidates, why", [
+    ({"kind": "level", "pick": {"name": "F9"}}, {"level": LEVELS}, "nothing of that kind to pick"),
+    ({"kind": "link", "pick": {"name": "MEP.rvt : 1"}}, {"link": LINKS}, "nothing of that kind to pick"),
+    ({"kind": "link", "pick": {"first": True}}, {"link": LINKS[:1]}, "nothing of that kind to pick"),
+    ({"kind": "level", "pick": {"name": "F2"}}, {"level": LEVELS[1:2] * 2}, "2 items have that name"),
+])
+def test_a_pick_that_finds_nothing_or_too_much_fails_the_task_before_any_chat(pick, candidates, why):
+    host = FakeHost([], candidates=candidates)
+    result = host.run([task(mentions=[pick])])["tasks"][0]
+    assert result["correct"] is False and why in result["error"] and result["error"].startswith("ValueError")
+    assert result["mentions"] is None and host.requests == [] and result["turns"] == 0
+
+
+def test_a_pick_the_host_refuses_keeps_its_reason():
+    host = FakeHost([], candidates={"level": httpx.Response(503, json={"error": "revit_unreachable",
+                                                                       "message": "connection refused"})})
+    result = host.run([task(mentions=[{"kind": "level", "pick": {"name": "F2"}}])])["tasks"][0]
+    assert result["http_status"] == 503 and result["error"] == "HTTP 503: revit_unreachable - connection refused"
+    assert host.requests == []
+    answered = FakeHost([], candidates={"level": httpx.Response(200, json={"error": "revit_error", "kind": "level"})})
+    failed = answered.run([task(mentions=[{"kind": "level", "pick": {"first": True}}])])["tasks"][0]
+    assert "the host answered revit_error" in failed["error"]
+
+
+def test_literal_ids_need_no_lookup_and_a_task_without_mentions_sends_none():
+    host = FakeHost([response(("", "ok")), response(("", "ok"))])
+    run = host.run([task("ids", kind="none", expect={}, mentions=[{"kind": "level", "id": 101}]),
+                    task("plain", kind="none", expect={})])
+    assert host.lookups == []
+    assert host.requests[0][0]["mentions"] == [{"kind": "level", "id": 101}]
+    assert "mentions" not in host.requests[1][0]
+    assert run["tasks"][0]["mentions"] == [{"kind": "level", "id": 101}] and "mentions" not in run["tasks"][1]
+
+
+def test_execute_confirms_with_the_chat_session():
+    host = FakeHost([response(("spec", spec())), response(("", "Reported"))])
+    host.run([task()], execute=True)
+    confirm = host.other[0]
+    assert json.loads(confirm.content) == {"spec": spec()["spec"], "confirmed_by": "token-bench",
+                                           "session_id": "session-1"}
