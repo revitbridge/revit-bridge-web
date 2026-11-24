@@ -13,7 +13,7 @@ from revit_bridge.spec.models import TaskSpec
 
 from backend.api import chat as chat_module
 from backend.mention_check import UNKNOWN_MENTION, mention_errors
-from backend.session import MAX_MENTIONS as SESSION_PICKS, get_session_store
+from backend.session import MAX_SESSION_PICKS, get_session_store
 from tests.fake_model import text_turn, tool_turn
 from tests.fake_revit import FakeRevit, model_handler
 from tests.test_api_v1 import B, WALL, spec_for
@@ -218,7 +218,8 @@ def test_verified_picks_reach_the_model_as_the_package_block(picker, client, mod
     assert sent[-1] == {"role": "user", "content": f"Put a wall on @level:L2 with @type:Generic - 200mm\n\n{block}"}
     assert "the page's own label" not in str(model.requests)
     session = get_session_store().get(resp.headers["X-Session-Id"])
-    assert session.mentions == {"mention:level#2": L2, "mention:type#401": GENERIC}
+    assert session.picks_for("local") == {"mention:level#2": L2, "mention:type#401": GENERIC}
+    assert session.picks_for("dev_other") == {}
 
 
 def test_picks_not_found_or_not_valid_are_not_sent(picker, client, model):
@@ -244,7 +245,7 @@ def test_no_pick_verified_adds_no_block(picker, client, model):
     resp = chat(client, "level ninety-nine", [pick("level", 99)])
     assert events(sse(resp.text), "mentions")[0]["resolved"] == []
     assert model.requests[0]["messages"][-1] == {"role": "user", "content": "level ninety-nine"}
-    assert get_session_store().get(resp.headers["X-Session-Id"]).mentions == {}
+    assert get_session_store().get(resp.headers["X-Session-Id"]).picks == {}
 
 
 def test_without_revit_the_turn_runs_and_every_pick_is_unresolved(client, model):
@@ -289,7 +290,7 @@ def test_a_session_keeps_its_picks_for_later_turns(picker, client, model):
     assert model.requests[1]["messages"][2:] == [{"role": "assistant", "content": "Which length?"},
                                                  {"role": "user", "content": "5000 long"}]
     assert len({r["messages"][0]["content"] for r in model.requests}) == 1
-    assert get_session_store().get(sid).mentions == {"mention:level#2": L2}
+    assert get_session_store().get(sid).picks_for("local") == {"mention:level#2": L2}
 
 
 def test_a_pick_verified_again_takes_its_new_reading(picker, client, model):
@@ -297,15 +298,16 @@ def test_a_pick_verified_again_takes_its_new_reading(picker, client, model):
     sid = chat(client, "@level:L2", [pick("level", 2)]).headers["X-Session-Id"]
     picker["levels"][1]["Name"] = "Level 2 (renamed)"
     chat(client, "@level:Level 2 (renamed)", [pick("level", 2)], session_id=sid)
-    assert get_session_store().get(sid).mentions["mention:level#2"]["name"] == "Level 2 (renamed)"
+    assert get_session_store().get(sid).picks_for("local")["mention:level#2"]["name"] == "Level 2 (renamed)"
 
 
 def test_a_session_keeps_a_bounded_number_of_picks():
     from backend.session import Session
     session = Session(session_id="s")
-    session.remember_mentions([{"kind": "level", "id": i, "name": f"L{i}"} for i in range(1, SESSION_PICKS + 6)])
-    assert len(session.mentions) == SESSION_PICKS and "mention:level#1" not in session.mentions
-    assert list(session.mentions)[-1] == f"mention:level#{SESSION_PICKS + 5}"
+    session.remember_picks("local", [{"kind": "level", "id": i, "name": f"L{i}"} for i in range(1, MAX_SESSION_PICKS + 6)])
+    picks = session.picks_for("local")
+    assert len(picks) == MAX_SESSION_PICKS and "mention:level#1" not in picks
+    assert list(picks)[-1] == f"mention:level#{MAX_SESSION_PICKS + 5}"
 
 
 def test_twenty_picks_are_taken_and_twenty_one_refused(picker, client, model):
@@ -357,7 +359,8 @@ def test_a_real_pick_is_accepted(picker, client, model):
 @pytest.mark.parametrize("spec, why", [
     (wall_spec(evidence="mention:level#1"), "is not a pick"),       # L1 exists, but was not picked
     (wall_spec(evidence="mention:level#99"), "is not a pick"),
-    (wall_spec(evidence="mention:level#02"), "is not a pick"),      # the evidence string, exactly
+    (wall_spec(evidence="mention:level#02"), "is not mention:<kind>#<id> exactly"),   # the canonical form only
+    (wall_spec(evidence="Mention:level#2"), "is not mention:<kind>#<id> exactly"),
     (wall_spec(evidence="mention:type#2"), "is not a pick"),
     (wall_spec(level="L1"), "must be exactly that"),               # the pick is L2
     (wall_spec(source="answer"), "has source tool"),               # validate_spec takes answer here
@@ -428,16 +431,162 @@ def test_the_spec_routes_take_the_session_id_in_the_contract(client):
         assert "session_id" in schemas[name]["properties"] and "session_id" not in schemas[name].get("required", [])
 
 
+# -- second round: stale and foreign picks, the confirm-time reading, timeouts, kinds ---------
+
+def test_a_pick_a_later_turn_finds_gone_leaves_the_session(picker, client, model):
+    sid = session_with_pick(client, model)
+    picker["levels"] = [dict(LEVEL_ROWS[0])]                            # L2 deleted in Revit
+    model.turns += [tool_turn(("propose_spec", {"spec": wall_spec()})), text_turn("done")]
+    frames = sse(chat(client, "again @level:L2", [pick("level", 2)], session_id=sid).text)
+    assert events(frames, "mentions")[0]["not_found"] == [{"kind": "level", "id": 2, "reason": "not_found"}]
+    assert get_session_store().get(sid).picks == {}
+    verdict = model.tool_results("propose_spec")[0]
+    assert verdict["accepted"] is False and "is not a pick" in verdict["errors"][0]["message"]
+
+
+def test_a_pick_of_another_device_does_not_count(picker, client, model):
+    """Picks are kept per device scope: one read from another device's model binds nothing here."""
+    sid = session_with_pick(client, model)
+    session = get_session_store().get(sid)
+    session.picks = {("dev_elsewhere", evidence): item for (_, evidence), item in session.picks.items()}
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 422 and resp.json()["errors"][0]["code"] == UNKNOWN_MENTION
+    _, verdict = propose(client, model, wall_spec(), session_id=sid)
+    assert verdict["accepted"] is False and [e["code"] for e in verdict["errors"]] == [UNKNOWN_MENTION]
+
+
+def test_a_request_driving_a_device_does_not_see_the_local_picks(picker, client, model, device):
+    headers, device_id, _ = device
+    sid = session_with_pick(client, model)                              # picked on the local add-in
+    assert get_session_store().get(sid).picks_for("local")
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid}, headers=headers)
+    assert resp.status_code == 422 and resp.json()["errors"][0]["code"] == UNKNOWN_MENTION
+    assert get_session_store().get(sid).picks_for(device_id) == {}
+
+
+def test_confirm_reads_the_picks_again_gone(picker, client, model):
+    sid = session_with_pick(client, model)
+    picker["levels"] = [dict(LEVEL_ROWS[0])]                            # L2 deleted after the pick
+    picker["calls"].clear()
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 422, resp.text
+    error = resp.json()["errors"][0]
+    assert (error["code"], error["param"]) == (UNKNOWN_MENTION, "level_name")
+    assert "no longer in the open model" in error["message"]
+    assert picker["calls"] == [{"kind": "levels", "ids": [2]}]           # one read, by id
+    assert get_session_store().get(sid).picks == {}                     # and the session lets it go
+
+
+def test_confirm_reads_the_picks_again_renamed(picker, client, model):
+    sid = session_with_pick(client, model)
+    picker["levels"][1]["Name"] = "L2 (renamed)"
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 422 and "is now 'L2 (renamed)'" in resp.json()["errors"][0]["message"]
+    # The session takes the new reading: the old name is refused, a spec bound to the new one is confirmed.
+    assert get_session_store().get(sid).picks_for("local")["mention:level#2"]["name"] == "L2 (renamed)"
+    assert client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid}).status_code == 422
+    renamed = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(level="L2 (renamed)"), "session_id": sid})
+    assert renamed.status_code == 200, renamed.text
+
+
+def test_confirm_without_revit_to_read_the_picks_is_503(picker, client, model, monkeypatch):
+    from backend.api import bridge
+    from backend.api.errors import revit_unreachable
+    sid = session_with_pick(client, model)
+
+    async def no_addin():
+        raise revit_unreachable(ConnectionRefusedError("refused"), endpoint="127.0.0.1:1")
+
+    monkeypatch.setattr(bridge, "get_revit_client", no_addin)
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 503 and resp.json()["error"] == "revit_unreachable"
+    # A spec that binds no pick does not need Revit to be confirmed.
+    plain = client.post(f"{B}/spec/confirm", json={"spec": spec_for("create_wall", **WALL), "session_id": sid})
+    assert plain.status_code == 200, plain.text
+
+
+def test_confirm_that_cannot_read_the_picks_in_time_or_at_all(picker, client, model, monkeypatch):
+    import asyncio
+
+    from revit_bridge.snapshot.query import RevitQueryError
+
+    from backend.api import bridge
+    sid = session_with_pick(client, model)
+
+    async def slow(executor, wanted):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(bridge, "PICK_RECHECK_TIMEOUT", 0.05)
+    monkeypatch.setattr(bridge, "resolve_mentions", slow)
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 504 and resp.json()["error"] == "revit_timeout"
+
+    async def cannot_say(executor, wanted):
+        raise RevitQueryError("the add-in's capabilities could not be read (timeout)")
+
+    monkeypatch.setattr(bridge, "resolve_mentions", cannot_say)
+    resp = client.post(f"{B}/spec/confirm", json={"spec": wall_spec(), "session_id": sid})
+    assert resp.status_code == 503 and resp.json()["error"] == "revit_error"
+    assert get_session_store().get(sid).picks_for("local") == {"mention:level#2": L2}   # nothing dropped
+
+
+def test_the_check_of_a_message_s_picks_times_out_and_the_turn_runs(picker, client, model, monkeypatch):
+    import asyncio
+
+    async def slow(executor, wanted):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(chat_module, "MENTION_CHECK_TIMEOUT", 0.05)
+    monkeypatch.setattr(chat_module, "resolve_mentions", slow)
+    model.turns.append(text_turn("I could not check them."))
+    frames = sse(chat(client, "@level:L2 and @type:x", [pick("level", 2), pick("type", 401)]).text)
+    assert frames[0] == ("mentions", {"resolved": [], "not_found": [], "invalid": [], "unresolved": [
+        {"kind": "level", "id": 2, "reason": "timeout"}, {"kind": "type", "id": 401, "reason": "timeout"}]})
+    assert tokens(frames) == "I could not check them." and frames[-1] == ("done", None)
+    assert model.requests[0]["messages"][-1] == {"role": "user", "content": "@level:L2 and @type:x"}
+
+
+def test_a_pick_of_the_wrong_kind_is_unknown_mention(picker, client, model):
+    spec = wall_spec(level="Generic - 200mm", evidence="mention:type#401")
+    _, verdict = propose(client, model, spec, [pick("level", 2), pick("type", 401)])
+    assert verdict["accepted"] is False
+    assert [(e["code"], e["param"]) for e in verdict["errors"]] == [(UNKNOWN_MENTION, "level_name")]
+    assert "takes a level" in verdict["errors"][0]["message"]
+
+
+def test_the_model_s_reconcile_runs_the_pick_check(picker, client, model):
+    model.turns += [tool_turn(("reconcile", {"spec": wall_spec(evidence="mention:level#1")})),
+                    tool_turn(("reconcile", {"spec": wall_spec()})), text_turn("done")]
+    chat(client, "a wall on @level:L2", [pick("level", 2)])
+    forged, real = model.tool_results("reconcile")
+    assert forged["error"] == "invalid_spec" and "level_name" in forged["message"]
+    assert [(e["code"], e["param"]) for e in forged["errors"]] == [(UNKNOWN_MENTION, "level_name")]
+    assert real["ready"] is True and "error" not in real
+
+
+def test_confirm_documents_its_revit_errors(client):
+    responses = client.get("/openapi.json").json()["paths"][f"{B}/spec/confirm"]["post"]["responses"]
+    assert {"422", "429", "503", "504"} <= set(responses)
+
+
 # -- the rule itself ------------------------------------------------------------------------
 
 PACK = SimpleNamespace(parameters=[
     {"name": "level_name", "type": "string", "source": "tool:levels", "choices_from": "levels"},
     {"name": "wall_type", "type": "string", "source": "tool:family_types"},
+    {"name": "walls", "type": "string", "source": "tool:family_types", "choices_from": "family_types:OST_Walls"},
+    {"name": "floor_type", "type": "string", "source": "tool:floor_types", "choices_from": "floor_types"},
+    {"name": "host", "type": "int", "source": "tool:elements", "choices_from": "elements:OST_Walls"},
     {"name": "label", "type": "string", "source": "designer"},
     {"name": "height", "type": "double", "source": "default", "default": 3000},
 ])
 LINK = {"kind": "link", "id": 501, "name": "Structure.rvt : 1", "label": "Structure.rvt"}
-PICKS = {"mention:level#2": L2, "mention:type#401": GENERIC, "mention:link#501": LINK}
+UNLABELLED = {"kind": "link", "id": 503, "name": "Arch.rvt : 1", "label": ""}
+COLUMN = {"kind": "type", "id": 451, "name": "300 x 450mm", "label": "Concrete: 300 x 450mm",
+          "detail": "Structural Columns", "category": "OST_StructuralColumns", "family": "Concrete"}
+NO_CATEGORY = {"kind": "type", "id": 460, "name": "Thin", "label": "Thin", "detail": "Walls"}
+PICKS = {"mention:level#2": L2, "mention:type#401": GENERIC, "mention:link#501": LINK,
+         "mention:link#503": UNLABELLED, "mention:type#451": COLUMN, "mention:type#460": NO_CATEGORY}
 
 
 def bound(name: str, value, source: str, evidence: str) -> TaskSpec:
@@ -458,19 +607,54 @@ def bound(name: str, value, source: str, evidence: str) -> TaskSpec:
     ("height", "L2", "designer", "mention:level#2", True),
     ("not_in_pack", "L2", "designer", "mention:level#2", True),
     ("not_in_pack", "L2", "tool", "mention:level#2", False),
-    ("label", 501, "designer", "mention:link#501", True),          # a link binds its id
-    ("label", "501", "designer", "mention:link#501", True),
-    ("label", "Structure.rvt", "designer", "mention:link#501", False),
+    # a link binds its name as the package's block shows it: the label, else the name
+    ("label", "Structure.rvt", "designer", "mention:link#501", True),
+    ("label", "Structure.rvt : 1", "designer", "mention:link#501", False),
+    ("label", 501, "designer", "mention:link#501", False),
+    ("label", "501", "designer", "mention:link#501", False),
     ("label", True, "designer", "mention:link#501", False),
-    ("label", 501.5, "designer", "mention:link#501", False),
+    ("label", "Arch.rvt : 1", "designer", "mention:link#503", True),
+    # the kind fits the parameter as the pack declares it
+    ("level_name", "Generic - 200mm", "tool", "mention:type#401", False),     # levels: a level
+    ("level_name", "Structure.rvt", "tool", "mention:link#501", False),
+    ("wall_type", "L2", "tool", "mention:level#2", False),                    # tool:family_types: a type
+    ("wall_type", "Structure.rvt", "tool", "mention:link#501", False),
+    ("floor_type", "L2", "tool", "mention:level#2", False),                   # floor_types: a type
+    ("floor_type", "Generic - 200mm", "tool", "mention:type#401", True),      # (no category to compare)
+    ("walls", "Generic - 200mm", "tool", "mention:type#401", True),           # family_types:OST_Walls
+    ("walls", "300 x 450mm", "tool", "mention:type#451", False),              # a column type
+    ("walls", "Thin", "tool", "mention:type#460", True),                      # no category known: not refused
+    ("host", "L2", "tool", "mention:level#2", True),                          # elements: the pack says nothing
+    ("host", "Structure.rvt", "tool", "mention:link#501", True),
+    # evidence that looks like a pick must be one exactly
     ("label", "L2", "designer", "mention: level#2", False),
     ("label", "L2", "designer", "mention:level#2 ", False),
+    ("label", "L2", "designer", " mention:level#2", False),
+    ("label", "L2", "designer", "Mention:level#2", False),
+    ("label", "L2", "designer", "mention:Level#2", False),
+    ("label", "L2", "designer", "mention:level#02", False),
+    ("label", "L2", "designer", "mention:level#0", False),
+    ("label", "L2", "designer", "mention:view#2", False),
+    ("label", "L2", "designer", "mention:level", False),
+    ("label", "L2", "designer", "MENTIONED by the designer", False),
     ("label", "L2", "designer", "q_label", True),                  # not a pick: not looked at
+    ("label", "L2", "designer", "the designer mentioned L2", True),
 ])
 def test_the_rule(name, value, source, evidence, ok):
     errors = mention_errors(bound(name, value, source, evidence), PACK, PICKS)
     assert (errors == []) is ok, errors
     assert all(e.code == UNKNOWN_MENTION and e.param == name for e in errors)
+
+
+def test_the_rule_says_what_is_wrong():
+    def why(*args):
+        return mention_errors(bound(*args), PACK, PICKS)[0].message
+    assert "not mention:<kind>#<id> exactly" in why("label", "L2", "designer", "Mention:level#2")
+    assert "not a pick the designer made" in why("label", "L2", "designer", "mention:level#7")
+    assert "takes a level" in why("level_name", "Generic - 200mm", "tool", "mention:type#401")
+    assert "takes a type of OST_Walls" in why("walls", "300 x 450mm", "tool", "mention:type#451")
+    assert "'Structure.rvt'" in why("label", 501, "designer", "mention:link#501")
+    assert "has source tool" in why("level_name", "L2", "answer", "mention:level#2")
 
 
 def test_the_rule_without_a_pack_or_picks():

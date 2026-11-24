@@ -1877,7 +1877,7 @@
           "bridge"
         ],
         "summary": "Reconcile Spec",
-        "description": "``reconcile``: the draft TaskSpec against the snapshot (given, or taken now). A\nparameter bound to a pick (evidence ``mention:<kind>#<id>``) that is not one verified in\nthe chat session ``session_id``, or not bound as that pick is, is 422 ``invalid_spec``\nwith ``errors`` of code ``unknown_mention``, before Revit is asked.",
+        "description": "``reconcile``: the draft TaskSpec against the snapshot (given, or taken now). A\nparameter bound to a pick (evidence ``mention:<kind>#<id>``) that is not one verified in\nthe chat session ``session_id`` for this device, or not bound as that pick is, is 422\n``invalid_spec`` with ``errors`` of code ``unknown_mention``, before Revit is asked.",
         "operationId": "reconcile_spec_api_v1_bridge_spec_reconcile_post",
         "requestBody": {
           "content": {
@@ -1947,7 +1947,7 @@
           "bridge"
         ],
         "summary": "Confirm Spec",
-        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\n(or not bound as that pick is) among them, code ``unknown_mention``.\nThe token belongs to the browser session and never enters the model context.",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone or renamed since is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here. The token belongs to the browser session and never enters the model\ncontext.",
         "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
         "requestBody": {
           "content": {
@@ -1990,6 +1990,26 @@
           },
           "429": {
             "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Revit did not answer in time (revit_timeout)",
             "content": {
               "application/json": {
                 "schema": {

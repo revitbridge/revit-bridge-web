@@ -9,8 +9,9 @@ snapshot the model took, the last ``spec`` it proposed and the most recent
 first turn was sent with (per ``bridge`` value), so every later call of the
 session starts with the same bytes and a provider's prefix cache keeps
 matching, and counts its turns (``llm_calls`` and the trace events number
-them), and keeps the designer's picks the package verified in any of its turns
-(``mentions``: a spec may bind only those, see ``backend.mention_check``). It never holds a confirmation
+them), and keeps the designer's picks the package verified in any of its turns,
+per device scope (``picks_for``: a spec may bind only those, see
+``backend.mention_check``). It never holds a confirmation
 token: the token lives in the browser's memory and the gate's ``pending/``
 directory is the server-side record. Model settings travel with every
 request as headers (see ``backend.llm``), so nothing secret is held here.
@@ -31,7 +32,7 @@ MAX_HISTORY = 60
 # take even when a page is reloaded in a loop; a demo host has a handful at a time.
 MAX_SESSIONS = 300
 # Verified picks a session keeps (at most 20 come with one message).
-MAX_MENTIONS = 200
+MAX_SESSION_PICKS = 200
 
 
 @dataclass
@@ -48,18 +49,29 @@ class Session:
     system_prompts: dict[bool, str] = field(default_factory=dict)
     turns: int = 0
     # The designer's picks the package verified in this session (resolve_mentions items), by
-    # the evidence a spec gives for them, "mention:<kind>#<id>"; the latest reading of each.
-    mentions: dict[str, dict] = field(default_factory=dict)
+    # (device scope, the evidence a spec gives for them, "mention:<kind>#<id>"); the latest
+    # reading of each. An id means something only in the model it was read from.
+    picks: dict[tuple[str, str], dict] = field(default_factory=dict)
 
-    def remember_mentions(self, items: list[dict]) -> None:
-        """Keep verified picks for this turn and every later one; a pick verified again takes
-        its new reading (a renamed level), and past ``MAX_MENTIONS`` the oldest goes."""
+    def remember_picks(self, scope: str, items: list[dict]) -> None:
+        """Keep verified picks of the device ``scope`` for this turn and every later one; a pick
+        verified again takes its new reading (a renamed level), and past ``MAX_SESSION_PICKS``
+        the oldest goes."""
         for item in items:
-            key = mention_evidence(item.get("kind"), item.get("id"))
-            self.mentions.pop(key, None)
-            self.mentions[key] = item
-        while len(self.mentions) > MAX_MENTIONS:
-            del self.mentions[next(iter(self.mentions))]
+            key = (scope, mention_evidence(item.get("kind"), item.get("id")))
+            self.picks.pop(key, None)
+            self.picks[key] = item
+        while len(self.picks) > MAX_SESSION_PICKS:
+            del self.picks[next(iter(self.picks))]
+
+    def forget_picks(self, scope: str, entries: list[dict]) -> None:
+        """Drop the picks of ``scope`` a later check found gone (``{kind, id}`` entries)."""
+        for entry in entries:
+            self.picks.pop((scope, mention_evidence(entry.get("kind"), entry.get("id"))), None)
+
+    def picks_for(self, scope: str) -> dict[str, dict]:
+        """The verified picks of the device ``scope``, by evidence string."""
+        return {evidence: item for (owner, evidence), item in self.picks.items() if owner == scope}
 
     def system_prompt(self, bridge: bool, build) -> str:
         """The session's system prompt for ``bridge``: built by ``build(bridge)`` on first

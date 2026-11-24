@@ -24,11 +24,13 @@ model with the package's ``resolve_mentions`` and sends ``event: mentions``
 ``{resolved, not_found, invalid, unresolved, warnings?}`` as the turn's first
 frame (see ``check_mentions``). The verified ones are appended to the
 designer's message as the package's ``mention_block`` (the "Designer's
-selections" the system prompt's rule speaks of) and kept with the session: a
-spec may bind them in this turn or any later one, and nothing else
-(``backend.mention_check``). A pick that is not found or not valid is not sent;
-with no Revit to ask every pick is ``unresolved``, no block is added and the
-turn runs as without picks. A message without picks sends no such event.
+selections" the system prompt's rule speaks of) and kept with the session under
+the device scope of the request: a spec may bind them in this turn or any later
+one on that device, and nothing else (``backend.mention_check``); a pick a later
+turn finds gone leaves the session. A pick that is not found or not valid is not
+sent; with no Revit to ask, or no answer within ``MENTION_CHECK_TIMEOUT`` seconds,
+every pick is ``unresolved``, no block is added and the turn runs as without
+picks. A message without picks sends no such event.
 
 What the host did is visible in three more events (they add to the stream and
 change nothing else in it):
@@ -94,7 +96,7 @@ from revit_bridge.mentions import MAX_MENTIONS, mention_block, resolve_mentions
 from revit_bridge.snapshot import RevitQueryExecutor
 from revit_bridge.snapshot.query import RevitQueryError
 
-from backend.api.bridge import get_revit_client, set_device_context
+from backend.api.bridge import current_scope, get_revit_client, set_device_context
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
@@ -276,17 +278,28 @@ def unresolved(wanted: list[dict], reason: str) -> dict:
             "unresolved": [{"kind": m["kind"], "id": m["id"], "reason": reason} for m in wanted]}
 
 
+# Seconds the picks of one message may take to check; past that the turn runs without them.
+MENTION_CHECK_TIMEOUT = 15.0
+
+
 async def check_mentions(mentions: list[ChatMention]) -> dict:
     """The designer's picks against the open model (the package's ``resolve_mentions``), as the
     ``mentions`` event carries them: ``{resolved, not_found, invalid, unresolved, warnings?}``.
     ``resolved``: the package's items; ``not_found``: no such item now, or a link that cannot be
     read (``{kind, id, reason}``, the package's reason); ``invalid``: not a kind and element id
     the package takes; ``unresolved``: the model could not be asked - no add-in
-    (``revit_unreachable``), an add-in that could not say (``revit_error``: never read as "not
-    found"), or a failure here (``resolve_failed``)."""
+    (``revit_unreachable``), no answer within ``MENTION_CHECK_TIMEOUT`` seconds (``timeout``),
+    an add-in that could not say (``revit_error``: never read as "not found"), or a failure
+    here (``resolve_failed``)."""
     wanted = [{"kind": m.kind, "id": m.id} for m in mentions]
+
+    async def resolve() -> dict:
+        return await resolve_mentions(RevitQueryExecutor(await get_revit_client()), wanted)
+
     try:
-        found = await resolve_mentions(RevitQueryExecutor(await get_revit_client()), wanted)
+        found = await asyncio.wait_for(resolve(), MENTION_CHECK_TIMEOUT)
+    except TimeoutError:                          # before OSError: TimeoutError is one
+        return unresolved(wanted, "timeout")
     except ApiError as exc:                       # 503: no add-in (or no device) to ask
         return unresolved(wanted, str(exc.payload.get("error") or "revit_unreachable"))
     except OSError:                               # the connection failed while asking
@@ -356,11 +369,15 @@ async def chat(req: ChatRequest, request: Request,
     text = req.message if req.message is not None else execution_message(req.execution)
     picks = None
     if req.mentions:
-        # Checked before the model is called. The verified picks stay with the session (a spec
-        # may bind them in this turn or a later one); this turn's go to the model as the
-        # package's block after the designer's words. Nothing else of the picks reaches it.
+        # Checked before the model is called, in the model of the device this request drives.
+        # The verified picks stay with the session under that device's scope (a spec may bind
+        # them in this turn or a later one), the ones found gone leave it; this turn's verified
+        # picks - all of this scope - go to the model as the package's block after the
+        # designer's words. Nothing else of the picks reaches it.
+        scope = current_scope()
         picks = await check_mentions(req.mentions)
-        session.remember_mentions(picks["resolved"])
+        session.remember_picks(scope, picks["resolved"])
+        session.forget_picks(scope, picks["not_found"])
         block = mention_block(picks["resolved"], MENTION_BLOCK_LANGUAGE)
         if block:
             text = f"{text}\n\n{block}"
