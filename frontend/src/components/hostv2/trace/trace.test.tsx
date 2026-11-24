@@ -178,6 +178,25 @@ describe('TraceTimeline', () => {
     expect(html).not.toContain('<img')
   })
 
+  it('groups a turn of the three roles by role, each header with its role and model', () => {
+    const html = renderToStaticMarkup(<TraceTimeline events={[
+      { type: 'stage', role: 'analyst', model: 'small-model', status: 'start' },
+      usage({ role: 'analyst', model: 'small-model' }),
+      { type: 'stage', role: 'analyst', model: 'small-model', status: 'end' },
+      { type: 'stage', role: 'planner', model: 'large-model', status: 'start' },
+      tool({ id: '1.2.1' }), tool({ id: '1.2.1', status: 'ok' }),
+      { type: 'stage', role: 'planner', model: 'large-model', status: 'end' },
+      { type: 'stage', role: 'supervisor', model: 'small-model', status: 'start' },
+      tool({ id: '2.1.1', role: 'supervisor' }), tool({ id: '2.1.1', role: 'supervisor', status: 'ok' }),
+      { type: 'stage', role: 'supervisor', model: 'small-model', status: 'end' },
+    ]} />)
+    const headers = [...html.matchAll(/<h3 class="hostv2-trace-stage"><span>(\w+)<\/span><span class="hostv2-trace-model">([\w-]+)<\/span>/g)]
+      .map(m => [m[1], m[2]])
+    expect(headers).toEqual([['analyst', 'small-model'], ['planner', 'large-model'], ['supervisor', 'small-model']])
+    const groups = html.split('<div class="hostv2-trace-group">').slice(1)
+    expect(groups.map(g => (g.match(/<li /g) ?? []).length)).toEqual([0, 1, 1])
+  })
+
   it('labels stage groups with the role, model and current state', () => {
     const html = renderToStaticMarkup(<TraceTimeline events={[
       { type: 'stage', role: 'analyst', model: 'small-model', status: 'start' },
@@ -215,6 +234,22 @@ describe('TokenPanel', () => {
     expect(html).not.toContain('scope="row">supervisor')
     for (const text of ['25.0%', '30.0%', '28.3%']) expect(html).toContain(text)
     expect(html).toContain('<td data-label="Cache write">unknown</td>')
+  })
+
+  it('one row per role that ran plus the total, even when one role made every call of the turn', () => {
+    const analystOnly = [usage({ role: 'analyst', input: 300, cache_read: null })]
+    const html = renderToStaticMarkup(<TokenPanel turn={analystOnly} session={[
+      ...analystOnly, usage(), usage({ role: 'supervisor', input: 50, output: null }),
+    ]} />)
+    expect(html.match(/scope="col">Role/g)).toHaveLength(2)            // both columns
+    const turn = html.split('aria-label="This session"')[0]
+    expect(turn).toContain('scope="row">analyst')
+    expect(turn).not.toContain('scope="row">planner')
+    const session = html.split('aria-label="This session"')[1]
+    for (const role of ['analyst', 'planner', 'supervisor', 'Total']) expect(session).toContain(`scope="row">${role}`)
+    expect(session).not.toMatch(/data-label="Output">0</)                // unknown, never 0
+    // The one loop (planner only) keeps the plain total.
+    expect(renderToStaticMarkup(<TokenPanel turn={[usage()]} session={[usage()]} />)).not.toContain('scope="col">Role')
   })
 
   it('shows unknown, not NaN, when a usage event lacks a field', () => {

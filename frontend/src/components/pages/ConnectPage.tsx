@@ -160,8 +160,8 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
 
 /* Each role's model as the host announces it (/config.json features.models). */
 function HostModels() {
-  const { models, modelsFile } = getConfig().features
-  return <RoleModels models={models} modelsFile={modelsFile} />
+  const { models, modelsFile, roles } = getConfig().features
+  return <RoleModels models={models} modelsFile={modelsFile} roles={roles} />
 }
 
 /* Bring your own model: the same on both kinds of host. */

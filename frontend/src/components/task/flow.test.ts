@@ -214,6 +214,40 @@ describe('the task flow', () => {
     ])
   })
 
+  it("a report the supervisor sends back: its text and the planner's new card replace the execution", async () => {
+    const failed: ExecutionResult = { success: false, error: "Level 'L9' not found", tool: 'create_structural_column', evidence_id: 'ev_1' }
+    const retried: TaskSpec = { ...spec, parameters: spec.parameters.map(p => p.name === 'level_name' ? { ...p, value: 'L2' } : p) }
+    const host = scriptedHost(
+      [{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }],
+      [{ type: 'execution', execution: failed },
+        { type: 'stage', role: 'supervisor', model: 'small', status: 'start' },
+        { type: 'usage', role: 'supervisor', model: 'small', round: 1, input: 900, output: 40, cache_read: null, cache_write: null, ms: 5 },
+        { type: 'stage', role: 'supervisor', model: 'small', status: 'end' },
+        { type: 'token', text: 'No level L9.\n\n' },
+        { type: 'stage', role: 'planner', model: 'large', status: 'start' },
+        { type: 'spec', spec: retried, card: 'c2', errors: [], reconcile: ready },
+        { type: 'token', text: 'New card below.' },
+        { type: 'stage', role: 'planner', model: 'large', status: 'end' },
+        { type: 'done' }],
+    )
+    const api = fakeApi({ runTool: vi.fn().mockResolvedValue(failed) })
+    const flow = createTaskFlow({ events: host.events, api })
+    await flow.send('brief')
+    await flow.confirm()
+    await flow.run()
+    const s = flow.store.getState()
+    expect(host.requests[1]).toEqual({ execution: failed, session_id: 's1' })
+    expect(s.proposal?.spec).toEqual(retried)                // the new card, ready to confirm
+    expect(s.proposal?.card).toBe('c2')
+    expect(s.confirmation).toBeNull()
+    expect(s.execution).toBeNull()
+    expect(s.reported).toBe(false)
+    expect(canConfirm(s)).toBe(true)
+    const reply = s.bridge.messages.at(-1)
+    expect(reply?.content).toBe('No level L9.\n\nNew card below.')
+    expect(reply?.trace?.filter(e => e.type === 'stage').map(e => e.role)).toEqual(['supervisor', 'supervisor', 'planner', 'planner'])
+  })
+
   it('tamper demo: an edited value under the same token is refused and nothing is reported', async () => {
     const refusal: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'mismatch', message: 'projection hash differs' }
     const host = scriptedHost([{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])

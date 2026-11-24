@@ -23,7 +23,8 @@ function UsageRow({ total, role, showRole }: { total: UsageTotal; role: string; 
 function UsageColumn({ title, events }: { title: string; events: UsageEvent[] }) {
   const total = sumUsage(events)
   const present = roles.filter(role => events.some(event => event.role === role))
-  const showRole = present.length > 1
+  // One row per role whenever the roles ran (one loop: the planner alone, the total only).
+  const showRole = present.some(role => role !== 'planner')
   return (
     <section className="hostv2-token-column" aria-label={title}>
       <h3>{title}</h3>

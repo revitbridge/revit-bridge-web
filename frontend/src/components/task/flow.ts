@@ -331,7 +331,9 @@ export function createTaskFlow(deps: FlowDeps) {
     }
   }
 
-  /* The execution result goes back to the model for its report. */
+  /* The execution result goes back to the model for its report. With the roles the supervisor
+     reports; when it sends the task back, the planner proposes again in the same reply and the
+     new card replaces this execution (onSpec), to be confirmed and run like the first. */
   async function report() {
     const s = getState()
     if (!s.execution || !s.bridge.sessionId || s.bridge.streaming || s.reported) return
@@ -339,7 +341,7 @@ export function createTaskFlow(deps: FlowDeps) {
     const label = s.execution.evidence_id ? `evidence ${s.execution.evidence_id}` : s.execution.error ?? 'result'
     push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
     controller = new AbortController()
-    await consume('bridge', { execution: s.execution, session_id: s.bridge.sessionId })
+    await consume('bridge', { execution: s.execution, session_id: s.bridge.sessionId }, onSpec)
   }
 
   async function run() {
