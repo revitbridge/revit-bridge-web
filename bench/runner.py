@@ -56,6 +56,10 @@ CONFIRMED_BY = "token-bench"
 # Reports per task in the default mode: the first, and one per time the host's supervisor
 # sends the task back (the host does that at most twice).
 MAX_FEEDBACK_TURNS = 3
+# How a run fed execution results back (``feedback_policy`` in the results; ``compare`` flags two
+# runs that differ). Results written before it was recorded reported once per task.
+FEEDBACK_FOLLOWS = f"follows send-backs (at most {MAX_FEEDBACK_TURNS} reports per task)"
+FEEDBACK_ONCE = "one report per task"
 MENTIONS_PATH = "/api/v1/bridge/mentions"
 PICK_LIMIT = 200                 # the most the host lists for one pick
 
@@ -404,6 +408,7 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
         "skip_requires": sorted(set(skip_requires)), "include_placeholder_ids": include_placeholder_ids,
         "host": {"features": features},
         "chat": chat_mode(features, runs),
+        "feedback_policy": FEEDBACK_ONCE if execute else FEEDBACK_FOLLOWS,
         "runs": runs, "summary": summarize(runs),
     }
 

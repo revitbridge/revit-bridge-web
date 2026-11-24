@@ -13,7 +13,7 @@ from bench.__main__ import load_tasks, main
 from bench.metrics import (
     accepted, compare_exit_code, compare_runs, equal_value, stat, sum_usage, summarize,
 )
-from bench.runner import DEFAULT_EXECUTION, run_bench, run_once
+from bench.runner import DEFAULT_EXECUTION, FEEDBACK_FOLLOWS, run_bench, run_once
 from bench.sse import iter_events, parse_frame
 
 BASE = "http://127.0.0.1:7860"
@@ -623,6 +623,29 @@ def test_compare_cli_exit_codes_and_table(tmp_path, capsys, old, new, code):
     assert "Cache read" in out
     if code == 3:
         assert "uncomparable: input tokens unknown (after)" in out and "100 -> ?" in out
+
+
+def test_compare_flags_runs_that_fed_results_back_differently(tmp_path, capsys):
+    old, new = results(summary_task()), {**results(summary_task()), "feedback_policy": FEEDBACK_FOLLOWS}
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path, value in zip(paths, (old, new)):
+        path.write_text(json.dumps(value), encoding="utf-8")
+    assert main(["compare", *map(str, paths)]) == 3
+    out = capsys.readouterr().out
+    assert "NOTE: the runs fed execution results back differently: before one report per task" in out
+    # The same policy: nothing to note.
+    paths[0].write_text(json.dumps(new), encoding="utf-8")
+    assert main(["compare", *map(str, paths)]) == 0
+    assert "NOTE" not in capsys.readouterr().out
+
+
+def test_a_run_records_its_feedback_policy():
+    host = FakeHost([response(("spec", spec())), response(("", "Reported"))])
+    with host.client() as client:
+        assert run_bench(client, BASE, "p", [task()])["feedback_policy"] == FEEDBACK_FOLLOWS
+    host = FakeHost([response(("spec", spec())), response(("", "Reported"))])
+    with host.client() as client:
+        assert run_bench(client, BASE, "q", [task()], execute=True)["feedback_policy"] == "one report per task"
 
 
 def test_compare_exit_code_prefers_regression_over_uncomparable():

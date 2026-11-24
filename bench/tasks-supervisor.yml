@@ -31,12 +31,14 @@
     tool: create_wall
     params: {level_name: F2, height: 3000}
     max_turns: 3
-  # revit-bridge 0.9.1 and later mark a refused execution (nothing ran); 0.9.0 does not.
+  # revit-bridge 0.9.1's shape of a pack that refused the input in Revit (an
+  # InvalidOperationException whose message starts "REFUSED: "): refused true, error the text
+  # after the marker, no hint, a ledger line; the add-in rolled back, nothing was kept.
   execution:
     success: false
     tool: create_wall
-    error: preconditions_failed
+    result: null
+    error: "The wall would cut through the stair on F2; choose another start point."
     refused: true
-    preconditions_failed: ["the active document is read-only"]
     evidence_id: ev_benchmark_fixture_refused
     warnings: ["Synthetic benchmark feedback. No model operation was performed."]

@@ -14,7 +14,8 @@ setting and no key, and records which (chat). Every request carries X-Run-Label
 compare: task by task, before against after. Exit 1 when a task got worse (fewer
 repeats correct, or as often correct and median input tokens up more than 5%), 3
 when nothing got worse but something could not be compared (an unknown token
-count, a task skipped after), 0 otherwise.
+count, a task skipped after, or runs that fed execution results back differently -
+a NOTE says so), 0 otherwise.
 
 Unknown is never 0: a count the provider did not report is null, and so is every
 sum, difference, median, minimum and maximum that contains it.
@@ -33,7 +34,7 @@ import httpx
 import yaml
 
 from .metrics import TOKEN_FIELDS, compare_exit_code, compare_runs
-from .runner import run_bench, run_labels
+from .runner import FEEDBACK_ONCE, run_bench, run_labels
 
 LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 REQUIRE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -335,12 +336,26 @@ def command_run(args: argparse.Namespace) -> int:
     return int(any(not task["correct"] for task in scored))
 
 
+def feedback_policy(result: dict) -> str:
+    """How a results file fed execution results back; one written before the bench recorded it
+    reported once per task."""
+    policy = result.get("feedback_policy")
+    return policy if isinstance(policy, str) and policy else FEEDBACK_ONCE
+
+
 def command_compare(args: argparse.Namespace) -> int:
     before = load_result(result_path(args.before, args.out))
     after = load_result(result_path(args.after, args.out))
     rows = compare_runs(before, after)
     print_comparison(rows)
-    return compare_exit_code(rows)
+    code = compare_exit_code(rows)
+    policies = feedback_policy(before), feedback_policy(after)
+    if policies[0] != policies[1]:
+        # A task whose report was sent back is measured over more reports in one of the two runs.
+        print(f"NOTE: the runs fed execution results back differently: before {policies[0]}, after "
+              f"{policies[1]}; a task the host sent back is not comparable on its report step.")
+        code = code or 3
+    return code
 
 
 def build_parser() -> argparse.ArgumentParser:
