@@ -26,21 +26,27 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 ## Layout
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving, the `revit-bridge-web` console entry (`[project.scripts]`).
-- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, packs, specs, confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in a temporary store, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
+- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, `mentions` (the chat's `@` picker: the package's `mention_candidates`), packs, specs (`/spec/reconcile` and `/spec/confirm` take the chat's `session_id` for the pick check), confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in a temporary store, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`, and
-  what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); the system prompt
+  what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); a message's
+  `mentions` (the designer's picks) are checked with the package's `resolve_mentions` before the
+  model call (`event: mentions` first; the verified ones as the package's `mention_block` after the
+  designer's words, kept on the session); the system prompt
   is the package's `host_instructions(code=False, mentions=True)` plus one host line,
   `WORKBENCH_LINE` (the workbench link) - no skills;
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
   refuses `execute_code` with `code_not_offered`; no `get_guidance`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
-  `backend/session.py` (history, the session's fixed system prompt, the turn counter).
+  `backend/session.py` (history, the session's fixed system prompt, the turn counter, the verified
+  picks); `backend/mention_check.py` the `unknown_mention` check of a spec's `mention:` evidence
+  against the session's picks (model's `propose_spec` and the HTTP spec routes).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
-- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card).
+- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
+- `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`).
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
 
 ## Hard constraints
@@ -86,6 +92,11 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
   never changed, hidden or replaced (409 `builtin_read_only`).
 - The model in the chat writes no code: no `get_guidance`, no skills in the prompt, `propose_spec`
   refuses `execute_code`. Code is tried and saved as a tool by a person on the workbench.
+- The designer's picks (`@level`, `@type`, `@link`): what to offer, whether a pick exists and the
+  text the model gets all come from the package (`revit_bridge.mentions`). The host only keeps the
+  verified items on the session and compares a spec's `mention:` evidence strings and values with
+  them (`backend/mention_check.py`: an item's `name`, a link's `id`); the page sends only `{kind,
+  id, label}`, and the label never reaches the model.
 - Every tool name from a request or from the model goes through `require_tool_name` (ASCII
   letters, digits and `_`, at most 100 characters, no Windows device name) before any `ToolStore`
   call. A draft pack is filled only by the package (`ToolStore.render` in a store of temporary
