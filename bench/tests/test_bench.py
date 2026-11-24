@@ -345,7 +345,8 @@ def test_task_file_validation(tmp_path):
                  [task(mentions=[{"kind": "type", "pick": {"name": "Generic - 200mm"}}])],
                  [task(mentions=[{"kind": "type", "pick": {"name": "Generic", "category": "Walls"}}])],
                  [task(requires="basic-tools")], [task(requires=["Basic Tools"])],
-                 [task(placeholder_ids="yes")]):
+                 [task(placeholder_ids="yes")], [task(execution="failed")], [task(execution={"error": "x"})],
+                 [task(execution={"success": "no"})]):
         path.write_text(json.dumps(data), encoding="utf-8")
         with pytest.raises(ValueError):
             load_tasks(path)
@@ -520,6 +521,33 @@ def test_execute_reports_a_failed_run_in_the_result_shape():
     result = host.run([task()], execute=True)["tasks"][0]
     assert host.requests[1][0]["execution"] == {"success": False, "error": "revit_unreachable", "message": "no Revit"}
     assert result["error"] is None
+
+
+def test_a_report_answered_with_a_new_card_is_reported_again_at_most_three_times():
+    """The default mode: a new accepted spec in the report's reply (the host's supervisor sent
+    the task back) gets the fixed result again, as a designer confirming it would send it."""
+    sent_back = response(("usage", usage("supervisor")), ("spec", spec()), ("usage", usage()))
+    host = FakeHost([response(("spec", spec()), ("usage", usage())), sent_back, sent_back,
+                     response(("usage", usage("supervisor")), ("", "Asked."))])
+    result = host.run([task()], {"success": False, "error": "x"})["tasks"][0]
+    assert result["feedback_turns"] == 3 and result["requests"] == 4 and result["correct"]
+    assert [r[0].get("execution") for r in host.requests[1:]] == [{"success": False, "error": "x"}] * 3
+    # A host that keeps sending it back is reported to three times, no more.
+    host = FakeHost([response(("spec", spec()))] + [sent_back] * 3)
+    result = host.run([task()])["tasks"][0]
+    assert result["feedback_turns"] == 3 and len(host.requests) == 4 and result["error"] is None
+    # A task's own execution goes back instead of the run's fixture.
+    host = FakeHost([response(("spec", spec())), response(("", "Reported"))])
+    host.run([task(execution={"success": False, "error": "validation_failed"})], {"success": True})
+    assert host.requests[1][0]["execution"] == {"success": False, "error": "validation_failed"}
+
+
+def test_execute_reports_once_even_when_a_new_card_comes_back():
+    sent_back = response(("usage", usage("supervisor")), ("spec", spec()))
+    host = FakeHost([response(("spec", spec())), sent_back])
+    result = host.run([task(execution={"success": False})], execute=True)["tasks"][0]
+    assert result["feedback_turns"] == 1 and len(host.requests) == 2
+    assert host.requests[1][0]["execution"] == {"success": True, "evidence_id": "ev-1"}     # the real result
 
 
 def test_the_default_mode_never_confirms_or_runs():
