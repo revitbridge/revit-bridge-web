@@ -6,6 +6,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Saved workflows can now be composed, validated and exchanged as YAML in the Workflows tab.
+Chat retrieves them by summary and description. Each step receives a host-built card with
+evidence for saved values, designer inputs and earlier results. Workflow cards use the existing
+confirmation, automatic execution and ledger paths.
+
 The host uses revit-bridge 0.11.0. Designers can observe a normal Revit selection
 from the composer or answer a planner selection question. Built-in UI-only packs
 run directly and share the reader budget. The tool drawer includes native view

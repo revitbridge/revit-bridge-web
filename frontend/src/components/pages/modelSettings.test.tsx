@@ -68,7 +68,7 @@ it('preserves legacy keys while the local host is unconfigured and suppresses th
 it('opens the ledger under Evidence in the navigation and at its own address', async () => {
   const page = await mount('/')
   const tabs = [...page.node.querySelectorAll<HTMLButtonElement>('.tab-bar button')]
-  expect(tabs.map(b => b.textContent)).toEqual(['Chat', 'Tools', 'Evidence', 'Settings'])
+  expect(tabs.map(b => b.textContent)).toEqual(['Chat', 'Tools', 'Workflows', 'Evidence', 'Settings'])
   await act(async () => tabs.find(b => b.textContent === 'Evidence')!.click())
   expect(window.location.pathname).toBe('/evidence')
   expect(page.node.querySelector('main h3')?.textContent).toBe('Evidence')
@@ -126,7 +126,7 @@ it('shows Chinese navigation, connection status and model settings', async () =>
   const language = vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN'])
   try {
     const page = await mount('/settings')
-    expect(page.node.querySelector('.tab-bar')?.textContent).toBe('对话工具证据设置')
+    expect(page.node.querySelector('.tab-bar')?.textContent).toBe('对话工具工作流证据设置')
     expect(page.node.querySelector('.runtime-chips')?.textContent).toContain('已连接')
     expect(page.node.textContent).toContain('当前使用的模型')
     await page.unmount()

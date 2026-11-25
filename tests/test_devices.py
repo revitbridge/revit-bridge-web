@@ -432,6 +432,8 @@ def test_the_contract_lists_the_device_store_503(client):
     }
     assert with_503 - before == {
         (f"{B}/tools/draft", "post"),
+        (f"{B}/workflows/{{name}}", "put"), (f"{B}/workflows/{{name}}", "delete"),
+        (f"{B}/workflows/import", "post"),
         (f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"), (f"{B}/devices/{{device_id}}", "delete"),
         (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
         (f"{B}/tools/import", "post"), (f"{B}/check", "post"), (f"{B}/dry-run", "post"), (f"{B}/choices", "post"),

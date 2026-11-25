@@ -214,14 +214,37 @@ class AutoRun:
                     break
                 if earlier.status == "done" and earlier.evidence_id:
                     results[earlier.evidence_id] = earlier.recorded_result
+        workflow = plan.workflow if plan and plan.current and plan.scope == scope else None
+        if workflow:
+            if not plan.proposed or not same_json(event["spec"]["parameters"], plan.proposed["parameters"]):
+                return "unverified_evidence", None
+            try:
+                workflow.fresh()
+            except ApiError:
+                return "unverified_evidence", None
         for binding in spec.parameters:
             parameter = declared.get(binding.name, {})
+            if binding.evidence.startswith("workflow:"):
+                if not workflow or not workflow.fixed_matches(plan, name, binding):
+                    return "unverified_evidence", None
+                continue
             if binding.evidence.startswith("result:"):
                 if binding.source in (Source.designer, Source.answer) or not _result_supports(results, binding, parameter):
                     return "unverified_evidence", None
                 continue
             if "default" in parameter and same_json(binding.value, parameter["default"]):
                 continue
+            if workflow:
+                source = workflow.step(plan.current.id)["params"].get(binding.name)
+                if isinstance(source, dict) and (key := source.get("input")):
+                    # Compare the saved input's verified answer using its question name.
+                    item = binding.model_copy(update={"name": key})
+                    mapped = list(answers)
+                    if key in workflow.labels and workflow.evidence[key] == ("answer", binding.evidence):
+                        mapped.append({"answers": [{"id": key, "label": workflow.labels[key],
+                                                   "value": workflow.inputs[key]}]})
+                    if _supported(item, session, words, mapped, parameter.get("type"), parameter.get("unit")):
+                        continue
             if _supported(binding, session, words, answers, parameter.get("type"), parameter.get("unit")):
                 continue
             return "unverified_evidence", None

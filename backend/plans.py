@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from backend.workflow_run import WorkflowRun
 
 
 def same_json(left, right):
@@ -53,6 +57,7 @@ class Plan:
     running: bool = False
     closed: bool = False
     auto_receipt_pending: bool = False
+    workflow: WorkflowRun | None = None
 
     @staticmethod
     def fingerprint(token: str):
@@ -93,7 +98,8 @@ class Plan:
         return next((step for step in self.steps if step.status not in ("done", "skipped")), None)
 
     def event(self):
-        return {"plan_id": self.id, "steps": [s.event() for s in self.steps]}
+        return {"plan_id": self.id, "steps": [s.event() for s in self.steps],
+                **({"workflow": self.workflow.name} if self.workflow else {})}
 
     def context(self):
         return {"plan_id": self.id, "original_request": self.original_request,

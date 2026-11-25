@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { bridgeApi } from '../../api/bridge'
+import { workflowApi } from '../../api/workflows'
 import type { ToolInfo } from '../../types/api'
 import ChatPanel from './ChatPanel'
 
@@ -22,6 +23,7 @@ beforeEach(() => {
   document.body.append(container)
   root = createRoot(container)
   vi.spyOn(bridgeApi, 'hostFunctions').mockResolvedValue([])
+  vi.spyOn(workflowApi, 'list').mockResolvedValue([])
   vi.spyOn(bridgeApi, 'revitHealth').mockResolvedValue({ revit_connected: false } as Awaited<ReturnType<typeof bridgeApi.revitHealth>>)
 })
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); send.mockClear() })
@@ -45,6 +47,16 @@ it('lists native host functions alongside the packs', async () => {
     parameters: [{ name: 'name', type: 'string', required: true }] }])
   await show([])
   expect(container.querySelector('dialog')?.textContent).toContain('Host functionsopen_view')
+})
+it('lists workflows separately and puts a named invocation in the composer', async () => {
+  vi.mocked(workflowApi.list).mockResolvedValue([{ kind: 'workflow', schema_version: 1, name: 'wall_window',
+    display_name: 'Wall with window', summary: 'Build and glaze', description: 'Glaze the new wall.',
+    steps: [], inputs: [], version: '1.0.0' }])
+  await show([wall])
+  expect(container.querySelector('dialog section h3')?.textContent).toBe('Workflows')
+  await click('Use in chat')
+  expect(container.querySelector('textarea')?.value).toBe('Run wall_window')
+  expect(send).not.toHaveBeenCalled()
 })
 it('searches offline and puts the example into the real composer without sending', async () => {
   vi.spyOn(bridgeApi, 'getTool').mockResolvedValue({ ...wall, source_query: 'Build a wall on L1', applies_when: [],

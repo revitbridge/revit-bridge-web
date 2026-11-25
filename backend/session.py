@@ -35,6 +35,7 @@ from revit_bridge.spec.gate import GateError
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
     from backend.roles import RoleTask, Routing
+    from backend.workflow_run import WorkflowRun
 
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
@@ -81,6 +82,7 @@ class Session:
     form_stop_reply: str | None = None
     confirmed_spec: dict | None = None
     plan: Plan | None = None
+    pending_workflow: WorkflowRun | None = None
     request_text: str = ""
     clarification: str | None = None
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)

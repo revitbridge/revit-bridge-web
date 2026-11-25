@@ -119,20 +119,22 @@ describe('the task flow', () => {
     expect(flow.store.getState().bridge.messages.filter(m => m.form).map(m => m.answered)).toEqual(['replaced', 'invalid'])
   })
 
-  it('keeps the plan on the first reply and starts the next card in its own reply after confirmation', async () => {
+  it.each([false, true])('keeps the plan and starts the next card in its own reply (workflow %s)', async workflow => {
     const steps = [
       { id: 'wall', title: 'Build a wall', status: 'pending' as const },
       { id: 'window', title: 'Place a window', status: 'pending' as const },
     ]
     const snapshot = (a: 'pending' | 'proposed' | 'done', b: 'pending' | 'proposed' | 'done'): HostEvent =>
-      ({ type: 'plan', plan_id: 'p', steps: [{ ...steps[0], status: a, ...(a === 'done' ? { evidence_id: success.evidence_id } : {}) },
+      ({ type: 'plan', plan_id: 'p', ...(workflow ? { workflow: 'wall_window' } : {}),
+        steps: [{ ...steps[0], status: a, ...(a === 'done' ? { evidence_id: success.evidence_id } : {}) },
         { ...steps[1], status: b }] })
     const stage = (role: 'planner' | 'supervisor', status: 'start' | 'end'): HostEvent => ({ type: 'stage', role, status, model: 'm' })
     const readyCard = { ...specEvent, reconcile: ready }
     const api = fakeApi()
     const host = scriptedHost([{ type: 'session', id: 's' }, snapshot('pending', 'pending'), snapshot('proposed', 'pending'), readyCard],
       [stage('supervisor', 'start'), { type: 'token', text: 'Wall built.' }, stage('supervisor', 'end'), snapshot('done', 'pending'),
-        stage('planner', 'start'), snapshot('done', 'proposed'), readyCard, { type: 'token', text: 'Place the window.' }])
+        ...(workflow ? [] : [stage('planner', 'start')]), snapshot('done', 'proposed'), readyCard,
+        { type: 'token', text: 'Place the window.' }])
     const flow = createTaskFlow({ events: host.events, api })
     await flow.send('Build a wall and place a window.')
     expect(api.calls).toEqual([])

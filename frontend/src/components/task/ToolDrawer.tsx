@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
+import { workflowApi, type Workflow } from '../../api/workflows'
 import { useSessionStore } from '../../store'
 import type { HostFunction, RevitHealthResponse, ToolDetail, ToolInfo } from '../../types/api'
 import { browserLanguage } from '../../utils/language'
@@ -47,12 +48,16 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
   const [tools, setTools] = useState<ToolInfo[] | null>(null)
   const [error, setError] = useState(false)
   const [functions, setFunctions] = useState<HostFunction[]>([])
+  const [workflows, setWorkflows] = useState<Workflow[]>([])
+  const [workflowError, setWorkflowError] = useState(false)
   const [functionError, setFunctionError] = useState(false)
   const [query, setQuery] = useState('')
   const [health, setHealth] = useState<RevitHealthResponse | null>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     let active = true
+    workflowApi.list().then(list => { if (active) { setWorkflows(list); setWorkflowError(false) } })
+      .catch(() => { if (active) { setWorkflows([]); setWorkflowError(true) } })
     bridgeApi.hostFunctions().then(list => { if (active) { setFunctions(list); setFunctionError(false) } })
       .catch(() => { if (active) setFunctionError(true) })
     bridgeApi.listTools().then(list => { if (active) { setTools(list); setError(false) } })
@@ -73,8 +78,10 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
     .join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const grouped = tools?.length && tools.every(t => typeof t.read_only === 'boolean' && t.builtin)
   const visibleFunctions = functions.filter(f => (f.name + ' ' + f.description).toLowerCase().includes(query.trim().toLowerCase()))
-  const total = (tools?.length ?? 0) + functions.length
-  const shownCount = shown.length + visibleFunctions.length
+  const visibleWorkflows = workflows.filter(w => [w.name, w.display_name, w.summary, w.description].join(' ')
+    .toLowerCase().includes(query.trim().toLowerCase()))
+  const total = (tools?.length ?? 0) + functions.length + workflows.length
+  const shownCount = shown.length + visibleFunctions.length + visibleWorkflows.length
   const groups = grouped ? ['read', 'ui', 'write'].map(group => ({
     label: group === 'read' ? (zh ? '只读' : 'Read only') : group === 'ui' ? (zh ? '仅界面' : 'View and selection') : (zh ? '会修改模型' : 'Changes the model'),
     items: shown.filter(t => (t.ui_only ? 'ui' : t.read_only ? 'read' : 'write') === group),
@@ -93,6 +100,12 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
       <p role="status">{error ? (zh ? '无法刷新清单' : 'Could not refresh the catalog') : tools === null ? (zh ? '加载中' : 'Loading')
         : total === 0 ? (zh ? '暂无工具' : 'No tools available') : shownCount === 0 ? (zh ? '无匹配工具' : 'No matching tools') : shownCount + ' / ' + total}</p>
       {functionError && <p role="status">{zh ? '无法加载宿主函数。' : 'Host functions could not be loaded.'}</p>}
+      {workflowError && <p role="status">{zh ? '无法加载工作流。' : 'Workflows could not be loaded.'}</p>}
+      {visibleWorkflows.length > 0 && <section><h3>{zh ? '工作流' : 'Workflows'}</h3>
+        {visibleWorkflows.map(w => <details key={w.name}><summary>{w.display_name} <small>{w.name}</small></summary>
+          <p>{w.summary}</p><p>{w.description}</p>
+          <button onClick={() => choose((zh ? '运行 ' : 'Run ') + w.name)}>{zh ? '在对话中使用' : 'Use in chat'}</button>
+        </details>)}</section>}
       {visibleFunctions.length > 0 && <section><h3>{zh ? '宿主函数' : 'Host functions'}</h3>
         {visibleFunctions.map(f => <details key={f.name}><summary>{f.name}</summary><p>{f.description}</p>
           <p>{f.class === 'ui_only' ? (zh ? '仅界面' : 'View only') : (zh ? '只读' : 'Read only')}</p>

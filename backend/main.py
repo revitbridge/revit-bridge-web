@@ -26,6 +26,7 @@ from revit_bridge.capabilities import ToolStore
 
 from backend.api import bridge, chat, errors, logs, skills, usage
 from backend.api.settings import router as model_settings_router
+from backend.api.workflows import router as workflows_router
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
 from backend.localguard import LocalModeGuard, host_names_for
 from backend.llm import BROWSER_KEYS_DISABLED, HEADER_KEY
@@ -95,6 +96,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     app.include_router(logs.router)
     app.include_router(usage.router)
     app.include_router(bridge.router)
+    app.include_router(workflows_router)
     # The relay, pairing and the device list only on a cloud host; a local host
     # answers their paths 404 cloud_mode_only.
     app.include_router(bridge.relay_router if settings.cloud else bridge.cloud_only_router)

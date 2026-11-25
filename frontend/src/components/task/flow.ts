@@ -250,7 +250,7 @@ export function createTaskFlow(deps: FlowDeps) {
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
         if (evt.type === 'plan') {
           sawPlan = true
-          const plan = { plan_id: evt.plan_id, steps: evt.steps }
+          const plan = { plan_id: evt.plan_id, steps: evt.steps, ...(evt.workflow ? { workflow: evt.workflow } : {}) }
           const current = getState().proposal?.planStep
           if (side === 'bridge' && current?.planId === plan.plan_id) {
             const step = plan.steps.find(s => s.id === current.stepId)
@@ -263,12 +263,14 @@ export function createTaskFlow(deps: FlowDeps) {
           patch(side, t => updatePlan(t, plan, receipt))
           continue
         }
-        if (isTraceEvent(evt)) {
-          if (startNextReply && evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start') {
+        if (startNextReply && ((evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start')
+          || (evt.type === 'spec' && getState()[side].messages.findLast(m => m.plan)?.plan?.workflow))) {
             push(side, { role: 'assistant', content: '', continuesTurn: true })
             reply = ''
             sawSpec = sawForm = sawPlan = sawImage = startNextReply = false
-          }
+            supervisor = false
+        }
+        if (isTraceEvent(evt)) {
           if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
           update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
           continue

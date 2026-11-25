@@ -1,0 +1,23 @@
+.workflow-editor { border: 0; padding: 0; min-width: 0; }
+.workflow-editor label { display: grid; gap: .25rem; }
+.workflow-actions, .workflow-step-heading, .workflow-meta, .workflow-param { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.workflow-actions { margin-block: .9rem; }
+.workflow-actions label:has([type=checkbox]) { display: flex; align-items: center; gap: .4rem; }
+.workflow-meta label { flex: 1 1 12rem; }
+.workflow-meta label:last-child { flex-basis: 100%; }
+.workflow-columns { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(0, 2fr); gap: 1.4rem; margin-block: 1.2rem; }
+.workflow-packs, .workflow-steps ol { list-style: none; margin: .65rem 0; padding: 0; }
+.workflow-packs { max-height: 62vh; overflow: auto; }
+.workflow-packs li { display: flex; justify-content: space-between; align-items: center; padding-block: .45rem; gap: .5rem; }
+.workflow-packs small { display: block; overflow-wrap: anywhere; }
+.workflow-editor [draggable=true] { cursor: grab; }
+.workflow-steps { min-height: 8rem; }
+.workflow-steps ol > li { border: 1px solid var(--border, #bbb); border-radius: .5rem; padding: .8rem; margin-bottom: .7rem; }
+.workflow-step-heading { align-items: center; margin-bottom: .7rem; }
+.workflow-step-heading strong { margin-right: auto; }
+.workflow-param { border: 0; padding: .3rem 0 .5rem; margin: .6rem 0 0; }
+.workflow-editor input, .workflow-editor textarea, .workflow-editor select { max-width: 100%; }
+@media (max-width: 700px) {
+  .workflow-columns { grid-template-columns: minmax(0, 1fr); }
+  .workflow-packs { max-height: 12rem; }
+}

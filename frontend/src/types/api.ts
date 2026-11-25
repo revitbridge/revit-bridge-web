@@ -173,6 +173,7 @@ export interface PlanStep {
 }
 export interface TaskPlan {
   plan_id: string
+  workflow?: string
   steps: PlanStep[]
 }
 

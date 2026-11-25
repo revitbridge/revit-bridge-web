@@ -112,7 +112,8 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (!isRecord(parsed) || typeof parsed.plan_id !== 'string' || !parsed.plan_id || !Array.isArray(parsed.steps)
       || !parsed.steps.length || !parsed.steps.every(isPlanStep)
       || new Set(parsed.steps.map(step => step.id)).size !== parsed.steps.length) return null
-    return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps }
+    return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps,
+      ...(typeof parsed.workflow === 'string' ? { workflow: parsed.workflow } : {}) }
   }
   if (event === 'mentions') return mentionsEvent(parsed)
   if (event === 'ask_selection' && isRecord(parsed) && typeof parsed.ask_id === 'string' && isRecord(parsed.selection)) {
