@@ -200,7 +200,7 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/snapshot", "/api/v1/bridge/query", "/api/v1/bridge/mentions",
         "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/choices",
         "/api/v1/bridge/tools/{name}/missing-params", "/api/v1/bridge/tools/{name}/run",
-        "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import",
+        "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import", "/api/v1/bridge/tools/draft",
         "/api/v1/bridge/spec/reconcile", "/api/v1/bridge/spec/confirm",
         "/api/v1/bridge/check", "/api/v1/bridge/dry-run", "/api/v1/bridge/choices",
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
