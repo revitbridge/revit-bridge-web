@@ -17,7 +17,8 @@ const usableFields = new Set(['schema_version', 'version', 'name', 'code_templat
 
 function object(text: string): Pack {
   const parsed = JSON.parse(text)
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected a JSON object.')
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error(browserLanguage() === 'zh' ? '请输入 JSON 对象。' : 'Expected a JSON object.')
   return parsed
 }
 
@@ -58,7 +59,7 @@ function Editor() {
       }
       const pack = { ...object(meta), code_template: code, parameters: JSON.parse(params) } as Pack
       const inputs = object(values)
-      if (!Array.isArray(pack.parameters)) throw new Error('Parameters must be a JSON array.')
+      if (!Array.isArray(pack.parameters)) throw new Error(zh ? '参数必须为 JSON 数组。' : 'Parameters must be a JSON array.')
       if (kind === 'check') {
         setStage('draft')
         const unsupported = Object.keys(pack).filter(k => !usableFields.has(k))
