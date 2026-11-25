@@ -263,7 +263,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
         assert hashes(written_back) == old["requests"] and hashes(streams) == old["streams"]
 
 
-ENTRY ="models:\n  only: {base_url: https://srv.example/v1, model: srv-model, api_key_env: W8_SRV_KEY%s}\n" \
+ENTRY = "models:\n  only: {base_url: https://srv.example/v1, model: srv-model, api_key_env: W8_SRV_KEY%s}\n" \
         "roles: {planner: only}\n"
 
 
@@ -299,6 +299,16 @@ def test_a_requested_mode_sends_what_its_switch_sends(name, mode, env, revit, re
     record = recorded(name)
     assert hashes(requests) == record["requests"]
     assert hashes(streams) == record["streams"]
+
+
+@pytest.mark.parametrize("value, section", [("16384", None), ("4096", AA5556C_SECTION)])
+def test_llm_max_tokens_is_the_only_value_it_changes(value, section, env, revit, recorder):
+    """LLM_MAX_TOKENS=16384 sends what the default sends; 4096 sends exactly what aa5556c sent."""
+    if REGENERATE:
+        pytest.skip("comparing against the record")
+    requests, streams = run_scenario("single-server", env, revit, recorder, env_override={"LLM_MAX_TOKENS": value})
+    record = recorded("single-server", section)
+    assert hashes(requests) == record["requests"] and hashes(streams) == record["streams"]
 
 
 def test_a_run_is_stable(env, revit, recorder):

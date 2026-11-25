@@ -88,9 +88,11 @@ read timeout: ``backend.llm``). What a provider returns with a tool call to have
 (``Session.provider_memory``). A reply that used up its output limit on thinking, with
 no text and no tool call, ends the turn - for every role, with no repair call and no
 fallback - with ``event: error`` whose detail is ``Turn.limit_notice``: the role and its
-model, the limit as it was sent, what of the task is still there (a card proposed in this
-turn, the reported run) and how to raise it (``max_tokens`` in the models file entry;
-the default is ``backend.llm.DEFAULT_MAX_TOKENS``). Events
+model, the limit as it was sent, what of the task is still there (the last card this turn
+sent, the reported run - and, for the supervisor, that the planner has not been told of
+the run) and how to raise it (``limit_advice``: an entry's ``max_tokens``, or the host's
+default - ``LLM_MAX_TOKENS``, else ``backend.llm.DEFAULT_MAX_TOKENS`` - which is all a
+browser-chosen model gets). Events
 and ``llm_calls`` carry the role and the model the call actually went to; ``round``
 counts the model calls of the turn across its roles.
 
@@ -443,6 +445,28 @@ class LoopResult:
     text: str = ""
 
 
+def limit_advice(target: ModelTarget) -> str:
+    """How the output limit of ``target``'s calls can be raised - what is true for where the call
+    went: an entry's own ``max_tokens``; an entry without one, or no models file, takes the host's
+    default (``LLM_MAX_TOKENS``, else ``backend.llm.DEFAULT_MAX_TOKENS``); a model the browser's
+    settings chose gets no entry option, only the host's default."""
+    settings = get_settings()
+    default = settings.llm_max_tokens or llm_client.DEFAULT_MAX_TOKENS
+    if target.browser_model:
+        return (f"This model was chosen by the browser's model settings, so the host's default output limit "
+                f"({default}) applies to it, and only the host can raise it: with LLM_MAX_TOKENS, or with "
+                f"max_tokens in an entry of the host's models file for this model, used without the browser's "
+                f"model settings.")
+    if target.entry is not None and target.entry_max_tokens:
+        return "To raise it, set a larger max_tokens in this model's entry in the host's models file."
+    if target.entry is not None:
+        return (f"To raise it, set max_tokens in this model's entry in the host's models file (it sets none, so "
+                f"the host's default, {default}, applies), or LLM_MAX_TOKENS on the host for every entry "
+                f"without one.")
+    return (f"To raise it, set LLM_MAX_TOKENS on the host (the default now is {default}), or give this model an "
+            f"entry with max_tokens in the host's models file.")
+
+
 class Turn:
     """One ``/api/chat`` request: the session, its turn number, the run label, the chat mode it
     runs in, and the model calls made so far (``round`` numbers them across the roles of the
@@ -459,43 +483,55 @@ class Turn:
         self.mode = mode
         self.mode_sent = False
         self.execution = execution                      # the run this turn reports, if it reports one
-        self.accepted_spec = False                      # a spec ready to confirm was proposed in this turn
+        # The last spec card this turn sent the page: "ready" (accepted: it can be confirmed),
+        # "not_ready" (errors, or reconcile not ready), None (no spec event in this turn).
+        self.card: str | None = None
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
         self.ran: dict[str, str] = {}                   # role -> model, in the order the roles ran
 
-    def limit_notice(self, role: str, model: str, exc: OutputLimitError) -> str:
+    def limit_notice(self, role: str, target: ModelTarget, exc: OutputLimitError) -> str:
         """The ``error`` event's text when ``role``'s reply used up its output limit: who and which
         model, the limit as it was sent, what of the task is still there (``limit_state``) and how
-        to raise the limit. The turn ends there: no repair call, no fallback."""
-        head = (f"Output limit used up: the {role} ({model}) spent its whole output limit ({exc.param} "
+        the limit can be raised (``limit_advice``). The turn ends there: no repair call, no
+        fallback."""
+        head = (f"Output limit used up: the {role} ({target.model}) spent its whole output limit ({exc.param} "
                 f"{exc.limit}) before it wrote a reply or called a tool - most likely on thinking, which "
                 f"counts toward the limit.")
-        how = (f"To raise it, set max_tokens for this model in its entry in the host's models file "
-               f"(models.yml); without one the host's default, {llm_client.DEFAULT_MAX_TOKENS}, applies.")
-        return f"{head} {self.limit_state(role)} {how}"
+        return f"{head} {self.limit_state(role)} {limit_advice(target)}"
 
     def limit_state(self, role: str) -> str:
-        """What the designer still has after a used-up limit, read from what this turn did: a card
-        proposed in it, or the run it reports, stays; otherwise nothing was proposed."""
-        if self.accepted_spec:
-            return ("The spec card proposed in this turn is kept: it can still be confirmed and run; only "
-                    "the text after it is missing.")
+        """What the designer still has after a used-up limit, read from what this turn did: the last
+        card it sent (ready to confirm or not), the run it reports; the page keeps both as they are."""
+        cards = {"ready": "The spec card proposed in this turn is kept: it can still be confirmed and run; only "
+                          "the text after it is missing.",
+                 "not_ready": "The last spec card proposed in this turn cannot be confirmed as it stands (it has "
+                              "errors, or its reconcile is not ready)."}
+        card = cards.get(self.card or "", "")
         if self.execution is not None:
             evidence = self.execution.get("evidence_id")
             where = f" (evidence {evidence})" if isinstance(evidence, str) and evidence else ""
-            done = f"The run you reported is not affected: its result stays as the page received it{where}."
+            run = f"The run you reported and its result{where} stay as the page received them."
             if role == roles.SUPERVISOR:
-                return f"{done} Only the supervisor's report on it is missing, and nothing was sent back to the planner."
+                # execution_roles: the confirmed spec is used up, no verdict is pending and the run
+                # is not in the planner's history - nothing of it reaches the planner.
+                return (f"{run} The supervisor's report on it is missing, and the planner has not been told "
+                        f"of this run: say what it did in your next message.")
             if roles.SUPERVISOR in self.ran:
-                return f"{done} The supervisor's report is above; the planner proposed no new card."
-            return f"{done} Only the report on it is missing."
+                # The supervisor sent the task back (its report is above) and the planner ran again.
+                new = {"ready": "the planner's new card is kept: it can still be confirmed and run.",
+                       "not_ready": "the planner proposed a new card, but it cannot be confirmed as it stands (it "
+                                    "has errors, or its reconcile is not ready)."}
+                return f"{run} The supervisor's report is above; {new.get(self.card or '', 'the planner proposed no new card.')}"
+            return f"{run} Only the report on it is missing.{' ' + card if card else ''}"
+        if card:
+            return card
         earlier = " Cards and results from earlier turns stay as they were." if self.session.spec else ""
         if role == roles.ANALYST:
             return (f"Your message was not passed on to the planner and nothing was proposed; send it again "
                     f"once the limit is raised.{earlier}")
-        return f"No spec ready to confirm was proposed in this turn.{earlier}"
+        return f"No spec card was proposed in this turn.{earlier}"
 
     def stage(self, role: str, model: str, status: str) -> str:
         self.open = (role, model) if status == "start" else None
@@ -564,7 +600,7 @@ class Turn:
                     yield await self.usage(role, llm.model, this_round, stats, started)
                 if isinstance(exc, OutputLimitError):
                     # The turn ends with the designer's notice: no repair call, no fallback.
-                    raise LLMError(self.limit_notice(role, llm.model, exc), status=exc.status) from None
+                    raise LLMError(self.limit_notice(role, target, exc), status=exc.status) from None
                 raise
             yield await self.usage(role, llm.model, this_round, stats, started)
             content = "".join(parts)
@@ -619,8 +655,10 @@ class Turn:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
                 if outcome.spec_event is not None:
-                    if isinstance(outcome.result, dict) and outcome.result.get("accepted") is True:
-                        self.accepted_spec = True
+                    # The page shows this card instead of any earlier one: the turn's card is the last.
+                    # A refusal that sends no card (no spec event) leaves it as it was.
+                    accepted = isinstance(outcome.result, dict) and outcome.result.get("accepted") is True
+                    self.card = "ready" if accepted else "not_ready"
                     yield format_sse_event("spec", outcome.spec_event)
                 # The session keeps at most the head; this turn sees all of it.
                 if keep is not None:

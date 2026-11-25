@@ -255,10 +255,11 @@ proposal that is ready for confirmation - the host's tool events show a `reconci
 extra turn's tokens are counted (`confirm_turns`). Nothing runs in Revit unless `--execute` is given.
 `--mode auto|single|roles|roles_analyst` (default `auto`, the host's default) goes as the chat mode
 with every request; the results record it and the modes the host ran (a cloud host runs its
-default: the bench sends no admin token). Its HTTP read timeout (`--timeout`) is 960 seconds by
-default, so a long non-streamed model call the host is still waiting for (a responses call, up to
-`timeout_s` 900) is not counted as a failure. Example: `python -m bench run --label nightly --repeat 3
---confirm once`.
+default: the bench sends no admin token). Its HTTP read timeout (`--timeout`) is 1260 seconds by
+default - longer than the host's longest model call, 1200 s (600 s, plus the part of a `timeout_s`
+above 300) - so a long non-streamed call the host is still waiting for is not counted as a failure;
+connecting to a host that does not answer fails after 15 s. Example: `python -m bench run --label
+nightly --repeat 3 --confirm once`.
 
 The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
 `roles_analyst` - each with its own prompt (see *Chat modes* and *The chat's roles* under
@@ -306,6 +307,7 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 |---|---|---|
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
+| `LLM_MAX_TOKENS` | unset (16384) | The output limit (`max_tokens`, or `max_output_tokens` on the responses api) of every model call whose models file entry sets none: the server's model, a model the browser's settings chose, every call without a models file. A whole number from 256 to 65536; anything else refuses the start (the message names the variable, not the value). Lower it for a model whose output cap is below 16384; raise it for a thinking model that uses the limit up (see *Models by role*). Unset, the requests are as without it. |
 | `LLM_SINGLE_MODEL` | `0` | `1`: the chat's default mode is `single` - one model loop, the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the roles (see *The chat's roles* and *Chat modes*). `/config.json` reports it as `features.roles` (`false` with `1`) and in `features.chatModeDefault`. |
 | `ROLES_PLANNER_TOOLS` | `route` | With the roles: `route` - the planner gets, and may call, the tools of the analyst's route only; `all` - all seven on every route, every one runs (the tool definitions then stay the same for a provider's prompt cache). Any other value refuses the start. For measuring both. |
 | `ROLES_ANALYST` | `off` | `off`: the roles are the planner and the supervisor (default mode `roles`) - every message goes straight to the planner with route `tool` (all seven tools), the supervisor reports runs. `on`: the analyst routes each message first (default mode `roles_analyst`). Any other value refuses the start. **The default was `on` before this release.** |
@@ -470,18 +472,26 @@ roles:
   provider that numbers its calls from `call_0` in every reply, the same tool asked the same twice
   - go back with nothing rather than with each other's data (the responses api then sends them as
   plain `function_call` items).
-- **The output limit** (`max_tokens`) is 16384 unless an entry sets its own (it was 4096). A thinking
-  model's thinking counts toward it - Gemini's and DeepSeek's do. A reply that ends at its limit
-  (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote anything or
-  called a tool - a thinking model that spent the limit thinking - ends the turn, for the analyst,
-  the planner and the supervisor alike (no repair request, no fallback), with an `error` event the
-  chat shows as its reply: *Output limit used up: the planner (some-model) spent its whole output
-  limit (max_tokens 16384) ...*, then what is still there - a card proposed in that turn is kept and
-  can be confirmed; after a reported run, the run and its result stand and only the report on it is
-  missing (the supervisor's limit sends nothing back to the planner); otherwise nothing was
-  proposed - and how to raise it: `max_tokens` in the model's entry here. There is no environment
-  variable for it. Without a models file every request is the chat api with `max_tokens` 16384,
-  `temperature` 0.3 and a 300 s read timeout (it was 120 s).
+- **The output limit** (`max_tokens`) is an entry's own, else the host's default: `LLM_MAX_TOKENS`
+  when set (256 to 65536), else 16384 (it was 4096). The default also applies to every call on a
+  model the browser's settings chose (no entry option does) and to every call without a models
+  file; a model whose output cap is below 16384 needs an entry `max_tokens` or `LLM_MAX_TOKENS`. A
+  thinking model's thinking counts toward the limit - Gemini's and DeepSeek's do. A reply that ends
+  at its limit (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote
+  anything or called a tool - a thinking model that spent the limit thinking - ends the turn, for
+  the analyst, the planner and the supervisor alike (no repair request, no fallback), with an
+  `error` event the chat shows as its reply: *Output limit used up: the planner (some-model) spent
+  its whole output limit (max_tokens 16384) ...*, then what is still there and how to raise it.
+  What is still there: the last card the turn proposed - kept and confirmable when it was ready,
+  otherwise not confirmable as it stands - or, when the turn reported a run, the run and its result
+  (evidence id) as the page received them. When the supervisor is the one that ran out, its report
+  is missing and the planner has not been told of the run: say what it did in your next message
+  (nothing else carries it over). How to raise it: a larger `max_tokens` in the model's entry; for
+  an entry without one, or without a models file, that or `LLM_MAX_TOKENS`; for a model the
+  browser's settings chose, only the host can - with `LLM_MAX_TOKENS`, or with an entry for that
+  model used without the browser's model settings. Without a models file (and `LLM_MAX_TOKENS`
+  unset) every request is the chat api with `max_tokens` 16384, `temperature` 0.3 and a 300 s read
+  timeout (it was 120 s).
 - **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
   the planner's entry.
 - **The browser's model settings** (`X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key`) keep their

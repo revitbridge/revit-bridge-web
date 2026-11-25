@@ -535,14 +535,14 @@ describe("the designer's picks", () => {
 describe('the notice of a used-up output limit', () => {
   const planner = 'Output limit used up: the planner (main-model) spent its whole output limit (max_tokens 16384) before ' +
     'it wrote a reply or called a tool - most likely on thinking, which counts toward the limit. The spec card proposed ' +
-    'in this turn is kept: it can still be confirmed and run; only the text after it is missing. To raise it, set ' +
-    "max_tokens for this model in its entry in the host's models file (models.yml); without one the host's default, " +
-    '16384, applies.'
+    'in this turn is kept: it can still be confirmed and run; only the text after it is missing. To raise it, set a ' +
+    "larger max_tokens in this model's entry in the host's models file."
   const supervisor = 'Output limit used up: the supervisor (small-model) spent its whole output limit (max_tokens ' +
     '16384) before it wrote a reply or called a tool - most likely on thinking, which counts toward the limit. The run ' +
-    "you reported is not affected: its result stays as the page received it (evidence ev_9). Only the supervisor's " +
-    'report on it is missing, and nothing was sent back to the planner. To raise it, set max_tokens for this model ' +
-    "in its entry in the host's models file (models.yml); without one the host's default, 16384, applies."
+    "you reported and its result (evidence ev_9) stay as the page received them. The supervisor's report on it is " +
+    'missing, and the planner has not been told of this run: say what it did in your next message. To raise it, set ' +
+    "max_tokens in this model's entry in the host's models file (it sets none, so the host's default, 16384, " +
+    'applies), or LLM_MAX_TOKENS on the host for every entry without one.'
   const readySpec: HostEvent = { ...specEvent, reconcile: ready } as HostEvent
   const stageOf = (role: 'planner' | 'supervisor', status: 'start' | 'end'): HostEvent =>
     ({ type: 'stage', role, model: role === 'planner' ? 'main-model' : 'small-model', status })

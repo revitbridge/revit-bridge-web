@@ -970,8 +970,10 @@ def test_cli_mode_and_confirm(cli_host, tmp_path, capsys):
     assert 'a ready proposal confirmed with "yes" in 1 of 1 runs' in out
     args = cli.build_parser().parse_args(["run", "--label", "x"])
     assert (args.mode, args.confirm) == ("auto", "never")
-    # the read timeout outlasts a long non-streamed model call on the host (timeout_s up to 900)
-    assert args.timeout == 960.0 and cli_host["options"][0]["timeout"] == 960.0
+    # the read timeout outlasts the host's longest model call (1200 s); connecting fails fast
+    timeout = cli_host["options"][0]["timeout"]
+    assert args.timeout == 1260.0 and isinstance(timeout, httpx.Timeout)
+    assert (timeout.read, timeout.connect) == (1260.0, 15.0)
     for wrong in (["--mode", "fast"], ["--confirm", "always"]):
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args(["run", "--label", "x", *wrong])

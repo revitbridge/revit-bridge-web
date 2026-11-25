@@ -138,11 +138,15 @@ the host shares your tools with the package's MCP server (see *Changed*).
   its output limit before it wrote anything or called a tool (a thinking model that spent the limit
   thinking) now ends the turn - for the analyst, the planner and the supervisor alike, with no
   repair request and no fallback - with an `error` event the chat shows as its reply: *Output limit
-  used up*, the role and its model, the limit as sent (`max_tokens 16384`), what is still there (a
-  card proposed in that turn is kept; after a reported run the run and its result stand and only
-  the report is missing; otherwise nothing was proposed) and how to raise it (`max_tokens` in the
-  model's models file entry; there is no environment variable for it). Before, such a reply was an
-  empty message. Without a models file, and for an entry without these fields, every request and
+  used up*, the role and its model, the limit as sent (`max_tokens 16384`), what is still there (the
+  last card the turn proposed - kept and confirmable when it was ready, otherwise not confirmable as
+  it stands; after a reported run, the run and its result as the page received them; when the
+  supervisor ran out, its report is missing and the planner has not been told of the run, so the
+  designer says what it did in the next message - nothing else carries it over; otherwise nothing
+  was proposed) and how to raise it (a larger `max_tokens` in the model's entry; `LLM_MAX_TOKENS`
+  for an entry without one and without a models file; for a model the browser's settings chose,
+  only the host can - `LLM_MAX_TOKENS`, or an entry used without those settings). Before, such a
+  reply was an empty message. Without a models file, and for an entry without these fields, every request and
   every stream is byte for byte what it was, except the output limit (see *Changed*): a test
   compares them with a record taken before the change, with the limit forced back to 4096 and
   with the new one.
@@ -508,9 +512,14 @@ the host shares your tools with the package's MCP server (see *Changed*).
   models file entry sets none, and in every request without a models file (`max_output_tokens` on
   the responses api). A thinking model's thinking counts toward it, and the old default was used up
   by thinking. This is the one change to the default request body; an entry's `max_tokens` still
-  sets its own. There is no environment variable for it.
-- The token bench's HTTP read timeout (`--timeout`) defaults to 960 seconds (it was 120), so a long
-  non-streamed model call the host is waiting for is not counted as a failure.
+  sets its own. The new optional **`LLM_MAX_TOKENS`** (256 to 65536; any other value refuses the
+  start) replaces the default for every call whose entry sets none - browser-chosen models and
+  calls without a models file included; a model whose output cap is below 16384 needs it (or an
+  entry `max_tokens`). Unset, the requests are as described here.
+- The token bench's HTTP read timeout (`--timeout`) defaults to 1260 seconds (it was 120) - longer
+  than the host's longest model call, 1200 s - so a long non-streamed model call the host is
+  waiting for is not counted as a failure; connecting to a host that does not answer fails after
+  15 s.
 - A model call's read timeout is 300 seconds (it was 120): a thinking model may be silent for
   minutes before its first token. A models file entry's `timeout_s` sets its own; one above 300 also
   lengthens the whole call's limit (600 s) by as much.

@@ -48,6 +48,10 @@ DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range
                           *(f"lpt{i}" for i in range(1, 10))})
 DEFAULT_BASE_URL = "http://127.0.0.1:7860"
 DEFAULT_OUT = Path("bench-results")
+# The read timeout outlasts the host's longest model call: 600 s, plus up to 600 more for a
+# timeout_s of 900 (backend.llm.call_deadline) - 1200 s. Connecting gets CONNECT_TIMEOUT.
+DEFAULT_TIMEOUT = 1260.0
+CONNECT_TIMEOUT = 15.0
 EXECUTE_WARNING = (
     "WARNING: --execute confirms every accepted spec and RUNS it in the Revit model the host is\n"
     "connected to. Elements are created, changed or deleted, once per task and repeat.\n"
@@ -344,8 +348,10 @@ def command_run(args: argparse.Namespace) -> int:
         raise ValueError(f"{destination} exists; choose another --label or --out")
     if args.execute:
         print(EXECUTE_WARNING, file=sys.stderr)
-    # trust_env=False: no proxy from the environment between the bench and its host.
-    with httpx.Client(timeout=args.timeout, follow_redirects=False, trust_env=False) as client:
+    # trust_env=False: no proxy from the environment between the bench and its host. A host that
+    # cannot be reached fails within CONNECT_TIMEOUT; a long wait for the model does not.
+    timeout = httpx.Timeout(args.timeout, connect=CONNECT_TIMEOUT)
+    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         result = run_bench(client, base, args.label, tasks, fixture, repeat=args.repeat, skip_requires=skip,
                            include_placeholder_ids=args.include_placeholder_ids, execute=args.execute,
                            mode=args.mode, confirm=args.confirm)
@@ -436,9 +442,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "score the task on what follows - the unattended mode; never (default): as before")
     run.add_argument("--out", type=Path, default=DEFAULT_OUT,
                      help="directory of <label>.json (default: ./bench-results)")
-    run.add_argument("--timeout", type=float, default=960.0,
-                     help="HTTP read timeout in seconds (default 960: a long non-streamed model call on the host "
-                          "is not a failure)")
+    run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                     help=f"HTTP read timeout in seconds (default {DEFAULT_TIMEOUT:g}: longer than the host's "
+                          f"longest model call, 1200 s, so a long non-streamed call is not a failure); "
+                          f"connecting to the host times out after {CONNECT_TIMEOUT:g} s")
     run.add_argument("--allow-remote", action="store_true",
                      help="allow a --base-url that is not this machine")
     compare = sub.add_parser("compare", help="compare two results files task by task")

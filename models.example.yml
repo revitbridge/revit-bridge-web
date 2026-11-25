@@ -12,11 +12,12 @@
 # other host only with LLM_ALLOW_HTTP=1, as for the browser's endpoint), model,
 # api_key_env, and optionally:
 #
-#   max_tokens         the output limit (a whole number; default 16384). A thinking model
-#                      spends it on thinking too (Gemini's and DeepSeek's thinking counts
-#                      toward it): give it room. A reply that used it all up on thinking
-#                      ends the turn with a notice in the chat that names the role, the
-#                      model and the limit - raise max_tokens here then
+#   max_tokens         the output limit (a whole number; default: LLM_MAX_TOKENS, else
+#                      16384). A thinking model spends it on thinking too (Gemini's and
+#                      DeepSeek's thinking counts toward it): give it room. A reply that
+#                      used it all up on thinking ends the turn with a notice in the chat
+#                      that names the role, the model and the limit - raise max_tokens
+#                      here then
 #   temperature        0 to 2 (default 0.3 on the chat api; not sent on the responses
 #                      api unless set here - some reasoning models refuse it)
 #   api                chat (default: <base_url>/chat/completions) or responses

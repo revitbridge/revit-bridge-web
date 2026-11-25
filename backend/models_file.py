@@ -78,7 +78,8 @@ import yaml
 
 from backend.config import ConfigError, WebSettings, get_settings
 from backend.llm import (
-    APIS, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings, endpoint,
+    APIS, HEADER_BASE_URL, HEADER_MODEL, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings,
+    endpoint,
     is_loopback_host, resolve_llm,
 )
 
@@ -153,7 +154,11 @@ class ModelsFile:
 class ModelTarget:
     """Where one model call of a role goes: ``llm`` (base URL, model, key) for
     ``stream_completion``, the models file's entry (None without the file) and the
-    entry's completion and provider options, when they apply."""
+    entry's completion and provider options, when they apply. ``max_tokens`` is the entry's,
+    else ``LLM_MAX_TOKENS`` when set (None: ``backend.llm.DEFAULT_MAX_TOKENS``).
+    ``browser_model``: the browser's ``X-LLM-Base-Url`` / ``X-LLM-Model`` chose the endpoint or
+    the model, so no entry option applies (the chat's notice of a used-up limit says how it can
+    be raised then)."""
     llm: LLMSettings
     entry: str | None = None
     max_tokens: int | None = None
@@ -162,6 +167,8 @@ class ModelTarget:
     max_tokens_param: str | None = None
     reasoning_effort: str | None = None
     timeout_s: int | None = None
+    browser_model: bool = False
+    entry_max_tokens: bool = False                 # max_tokens is the entry's own
 
     @property
     def base_url(self) -> str:
@@ -513,8 +520,13 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     settings = get_settings() if settings is None else settings
     if models is _STARTUP:
         models = get_models()
+    # LLM_MAX_TOKENS: the limit of every call whose entry sets none (unset: nothing is passed and
+    # stream_completion's default applies, so the request is the same as before).
+    default_limit = settings.llm_max_tokens
     if models is None:
-        return ModelTarget(llm=await resolve_llm(request_overrides, settings))
+        chose = any((request_overrides.get(name) or "").strip() for name in (HEADER_BASE_URL, HEADER_MODEL))
+        return ModelTarget(llm=await resolve_llm(request_overrides, settings), max_tokens=default_limit,
+                           browser_model=chose)
     entry = models.entry(role)
     overrides = request_overrides if entry.name == models.roles[PLANNER] else {}
     defaults = dataclasses.replace(settings, llm_base_url=entry.base_url, llm_model=entry.model,
@@ -523,10 +535,12 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     own = llm.base_url == entry.base_url and llm.model == entry.model
     if not own:
         # The browser's endpoint or model: the chat api with stream_completion's defaults.
-        return ModelTarget(llm=llm, entry=entry.name)
-    return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens, temperature=entry.temperature,
-                       api=entry.api, max_tokens_param=entry.max_tokens_param,
-                       reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s)
+        return ModelTarget(llm=llm, entry=entry.name, max_tokens=default_limit, browser_model=True)
+    own_limit = entry.max_tokens is not None
+    return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens if own_limit else default_limit,
+                       temperature=entry.temperature, api=entry.api, max_tokens_param=entry.max_tokens_param,
+                       reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s,
+                       entry_max_tokens=own_limit)
 
 
 def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:

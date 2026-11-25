@@ -130,8 +130,11 @@ class Session:
         self.history.append(message)
         if len(self.history) > MAX_HISTORY:
             self.history = trim_at_user_turn(self.history[-MAX_HISTORY:])
-            # The provider's data of a call the history no longer has is never sent again.
-            self.provider_memory.retain(call_keys(self.history))
+            # The provider's data of a call the history no longer has is never sent again - unless
+            # the trim left no user message at all (one turn longer than the history): the history
+            # is empty then, while the request in flight still sends that turn's calls.
+            if self.history:
+                self.provider_memory.retain(call_keys(self.history))
         self.touch()
 
     def add_message(self, role: str, content: str) -> None:

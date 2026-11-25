@@ -73,10 +73,13 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   call's provider keys - Gemini's `extra_content` - and a responses reply's output items, per
   session, back to the same endpoint and model only; a key two different replies share is unusable,
   so is a value over `MEMORY_VALUE_MAX`; at most `MEMORY_CALLS`, trimmed with the history by
-  `Session.add` via `retain`); the default output limit
-  `DEFAULT_MAX_TOKENS` (16384, read at call time); an empty reply at the output limit is an
-  `OutputLimitError`, which `chat.Turn.limit_notice` turns into the turn's `error` detail (role,
-  model, limit, what is still there, how to raise it) - every role, no repair, no fallback. Without
+  `Session.add` via `retain`, skipped when a trim leaves no user message); the default output limit
+  `DEFAULT_MAX_TOKENS` (16384, read at call time), replaced by `LLM_MAX_TOKENS` (`WebSettings.llm_max_tokens`,
+  passed as `ModelTarget.max_tokens` by `models_file.resolve` for every call whose entry sets none);
+  an empty reply at the output limit is an `OutputLimitError`, which `chat.Turn.limit_notice` turns
+  into the turn's `error` detail (role, model, limit, what is still there - `Turn.card`, the reported
+  run, the untold planner after the supervisor's limit - and `limit_advice`, which depends on
+  `ModelTarget.browser_model` / `entry_max_tokens`) - every role, no repair, no fallback. Without
   a models file the requests and streams are byte for byte the record in
   `tests/default_path_golden.json` (`tests/test_default_path.py`: section `max_tokens_16384`, and
   `max_tokens_4096` - taken from aa5556c, never regenerated - with the default forced back to 4096);

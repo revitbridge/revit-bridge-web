@@ -41,6 +41,12 @@ frontend build works on any address.
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
                                 and a loopback or private address, and a models
                                 file entry use http to any host (not only loopback)
+    LLM_MAX_TOKENS              optional, 256 to 65536: the output limit (max_tokens)
+                                of every model call whose models file entry sets
+                                none - the server's model, a browser-set model, and
+                                every call without a models file. Unset: 16384
+                                (backend.llm.DEFAULT_MAX_TOKENS). Anything else
+                                refuses the start
     MODELS_FILE                 the models file: an endpoint, model and key variable
                                 per entry, an entry per role (analyst, planner,
                                 supervisor); default DATA_DIR/models.yml. No file
@@ -158,6 +164,9 @@ class WebSettings:
     llm_model: str = ""
     llm_api_key: str = ""
     llm_allow_http: bool = False
+    # LLM_MAX_TOKENS: the output limit of every call whose models file entry sets no max_tokens
+    # (browser-set models included); None: backend.llm.DEFAULT_MAX_TOKENS.
+    llm_max_tokens: int | None = None
     # The models file (backend.models_file): MODELS_FILE, or DATA_DIR/models.yml. Only a
     # file MODELS_FILE names must exist; at the default path it is optional.
     models_file: Path = Path("data") / MODELS_FILE_NAME
@@ -211,6 +220,7 @@ class WebSettings:
             llm_model=env.get("LLM_MODEL", "").strip(),
             llm_api_key=env.get("LLM_API_KEY", "").strip(),
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
+            llm_max_tokens=_max_tokens(env.get("LLM_MAX_TOKENS")),
             models_file=Path(models_file) if models_file else data_dir / MODELS_FILE_NAME,
             models_file_explicit=bool(models_file),
             single_model=env_flag("LLM_SINGLE_MODEL", env),
@@ -413,6 +423,23 @@ def _choice(raw: str | None, name: str, choices: tuple[str, ...]) -> str:
     if value not in choices:
         raise ConfigError(f"{name} must be {' or '.join(choices)} (default {choices[0]})")
     return value
+
+
+LLM_MAX_TOKENS_RANGE = (256, 65536)
+
+
+def _max_tokens(raw: str | None) -> int | None:
+    """LLM_MAX_TOKENS: unset or empty is None (the host's built-in default); else a whole number in
+    ``LLM_MAX_TOKENS_RANGE``, or the start is refused - naming the variable, never echoing the value
+    (it sits next to keys in .env)."""
+    if raw is None or not raw.strip():
+        return None
+    low, high = LLM_MAX_TOKENS_RANGE
+    text = raw.strip()
+    if text.isascii() and text.isdigit() and low <= int(text) <= high:
+        return int(text)
+    raise ConfigError(f"LLM_MAX_TOKENS must be a whole number from {low} to {high} (the output limit of a model "
+                      f"call whose models file entry sets no max_tokens); unset it for the default")
 
 
 def _int(raw: str | None, default: int, name: str) -> int:
