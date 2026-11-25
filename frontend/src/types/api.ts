@@ -160,7 +160,7 @@ export interface Skill {
 export interface ChatMessage {
   form?: DesignerForm
   supervisorForm?: boolean
-  answered?: 'form' | 'text' | 'replaced' | 'invalid'
+  answered?: 'form' | 'text' | 'replaced' | 'invalid' | 'execution'
   role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
   trace?: TraceEvent[]                  // assistant: the stage / tool / usage events of its turn, in order

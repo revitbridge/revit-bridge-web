@@ -139,7 +139,7 @@ if __name__ == "__main__":
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         for width in (360, 1100):
-            context = browser.new_context(viewport={"width": width, "height": 800})
+            context = browser.new_context(locale="zh-CN", viewport={"width": width, "height": 800})
             check(context.new_page())
             context.close()
             print(f"Inline forms, card replacement, retry and keyboard checks passed at {width}px.")

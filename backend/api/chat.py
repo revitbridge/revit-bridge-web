@@ -128,6 +128,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -193,6 +194,7 @@ WORKBENCH_LINE = (
     "- When no tool fits, describe in one sentence the tool the designer would need and point "
     f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
     "tried and saved there, then it is in list_tools. When choices are known, use ask_designer. "
+    "In the designer's form answers checked by the host, other: true marks the designer's own words. "
     f"{CARD_GUIDANCE}"
 )
 
@@ -307,7 +309,8 @@ def inline_card_instructions(**kwargs) -> str:
         replacements.append(("Show the spec card; wait for an explicit yes.",
                              "Summarize the ready spec and propose it in this reply."))
     if role != roles.ANALYST:
-        replacements.append(("in this host's interface", "on the card in this chat reply"))
+        location = "on the card in this chat" if role == roles.SUPERVISOR else "on the card in this chat reply"
+        replacements.append(("in this host's interface", location))
     for old, new in replacements:
         if old not in text:
             raise RuntimeError(f"Review the 0.9.1 inline-card shim: expected {old!r} in {role or 'single'} prompt")
@@ -813,7 +816,8 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
                                        tools=roles.SUPERVISOR_DEFINITIONS, offered=roles.SUPERVISOR_TOOLS,
                                        max_rounds=roles.SUPERVISOR_TOOL_ROUNDS):
         yield frame
-    verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution), execution, task.retries)
+    verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution, chinese=chinese),
+                            execution, task.retries, chinese=chinese)
     if verdict.forced:
         _log.info("the supervisor's verdict became %s (%s) in session %s", verdict.verdict, verdict.forced,
                   session.session_id)
@@ -845,6 +849,17 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
         yield frame
     task.last = f"{reply}\n\n{out.text}".strip()
+
+
+def has_host_marker(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text)
+    visible = "".join(c for c in normalized if unicodedata.category(c) != "Cf").casefold()
+    return any(marker.casefold() in visible for marker in (roles.FROM_HOST, roles.FORM_MARKER))
+
+
+def quote_marked_json(value: object) -> str:
+    """Keep a marker in designer data inside one quoted JSON value, including lookalikes."""
+    return json.dumps(value, ensure_ascii=True).replace("(", r"\u0028")
 
 
 def prefers_chinese(accept_language: str) -> bool:
@@ -947,13 +962,14 @@ async def chat(req: ChatRequest, request: Request,
                 raise no_model(targets[first], first)
 
     text = req.message if req.message is not None else execution_message(req.execution)
-    if req.message and roles.FROM_HOST in text:
-        # Quote a literal host marker as designer input. Only the server appends a provenance block.
-        quoted = json.dumps(text, ensure_ascii=False)
-        text = "Designer wrote: " + quoted.replace(roles.FROM_HOST, r"\u0028" + roles.FROM_HOST[1:])
+    if req.message and has_host_marker(text):
+        text = "Designer wrote: " + quote_marked_json(text)
     if verified:
         block = {"ask_id": pending["ask_id"], "items": verified}
-        text += f"\n\n{roles.ANSWERS_PREFIX} {json.dumps(block, ensure_ascii=False)}"
+        serialized = json.dumps(block, ensure_ascii=False)
+        if has_host_marker(serialized):
+            serialized = quote_marked_json(block)
+        text += f"\n\n{roles.ANSWERS_PREFIX} {serialized}"
     picks = None
     if req.mentions:
         # Checked before any model is called, in the model of the device this request drives.

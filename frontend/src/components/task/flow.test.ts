@@ -136,7 +136,7 @@ describe('the task flow', () => {
     expect(flow.store.getState().bridge.messages.find(m => m.form)?.answered).toBeUndefined()
     await flow.confirmAndRun()
     const forms = flow.store.getState().bridge.messages.filter(m => m.form)
-    expect(forms.map(m => m.answered)).toEqual(newForm ? ['replaced', undefined] : ['invalid'])
+    expect(forms.map(m => m.answered)).toEqual(newForm ? ['replaced', undefined] : ['execution'])
     await flow.send('Stop', [], { ask_id: 'first', items: [{ id: 'next_step', value: 'stop', label: 'Stop' }] })
     expect(host.requests).toHaveLength(3)
   })

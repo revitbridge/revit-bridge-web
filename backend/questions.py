@@ -1,6 +1,7 @@
 """Designer forms kept in the conversation until the designer's next message."""
 from __future__ import annotations
 
+import json
 from typing import Annotated
 from uuid import uuid4
 
@@ -72,17 +73,32 @@ class DesignerAnswers(BaseModel):
             items = [i for i in self.items if i.id == q["id"]]
             if not q["multiple"] and len(items) != 1:
                 return None
-            if len({i.key for i in items}) != len(items):
-                return None
             offered = {Option.model_validate(o).key: o for o in q["options"]}
-            allow_other = q["allow_other"]
+            has_free_text = False
+            picked = set()
             for item in items:
                 option = offered.get(item.key)
-                if option is not None and option["label"] == item.label:
+                if option is None or option["label"] != item.label:
+                    if not q["allow_other"] or not isinstance(item.value, str) or item.value != item.label:
+                        return None
+                    # An older client sends Other as text, including for a numeric option.
+                    option = option or next((o for o in q["options"] if o["label"] == item.value), None)
+                    if option is None:
+                        try:
+                            scalar = json.loads(item.value)
+                        except ValueError:
+                            scalar = None
+                        if type(scalar) in (int, float, bool):
+                            key = bool if type(scalar) is bool else float
+                            option = offered.get((key, scalar))
+                    if option is None:
+                        if has_free_text:
+                            return None
+                        verified.append({"id": q["id"], "label": item.label, "value": item.value, "other": True})
+                        has_free_text = True
+                        continue
+                key = Option.model_validate(option).key
+                if key not in picked:
+                    picked.add(key)
                     verified.append({"id": q["id"], **option})
-                elif option is None and allow_other and isinstance(item.value, str) and item.value == item.label:
-                    verified.append({"id": q["id"], "label": item.label, "value": item.value, "other": True})
-                    allow_other = False
-                else:
-                    return None
         return verified

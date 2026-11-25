@@ -97,6 +97,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, the run's chat `mode` (`mixed` for more than one), and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
+  Its optional `mention_cache_scope` identifies the live connection for the package's picker cache.
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render (`features.chatModes` / `chatModeDefault` feed `components/task/chatMode.ts` and the task page's `ChatModeSelect`: the pick in `localStorage`, sent as `mode` by `flow.ts`); pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
@@ -185,6 +186,12 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 - `.env`, `.secrets/`, `*.token` never enter the repository.
 
 ## Dependency on the package
+
+Runtime attribute lookup across the host/package boundary:
+
+- `WebSocketRevitClient.mention_cache_scope` returns (device ID, connection identity), or
+  `None` when disconnected. The 0.9.1 package does not read it. The updated picker looks up
+  this exact name to keep cached inventories separate across devices and reconnects.
 
 `pyproject.toml` requires `revit-bridge>=0.9,<0.10` from PyPI; `uv.lock` pins the exact
 release (0.9.1: 22 built-in packs). When the host needs something newer, bump the constraint and

@@ -11,6 +11,11 @@ Task chat now shows proposals and questions inside the reply that produced them.
 `POST /api/chat` accepts optional structured `answers` with the message and session.
 The `questions` SSE event carries the form ID, questions and choices. Submitting a form resumes
 its route. Typing a new request follows ordinary routing. Older cards keep their execution results.
+The host sends the model the `ask_designer` tool, rewrites the inline-card prompts, and updates
+the `propose_spec` description. Answers that do not match the open form return HTTP 422
+(`invalid_answers`). The supervisor's question appears once in the `questions` event, with its
+report in the reply text. Choosing "End this task" closes the task without calling a model.
+Reporting an execution result closes the previous unanswered form.
 
 Upgrading: **a host that other machines reach must set `DEPLOY_MODE=cloud` in its `.env` before it
 is upgraded**, and keep `ADMIN_PASSWORD` (a cloud host now refuses to start without it). That

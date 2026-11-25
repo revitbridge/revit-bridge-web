@@ -201,7 +201,7 @@ export function createTaskFlow(deps: FlowDeps) {
     const previousForm = request.execution && getState()[side].messages.findLast(m => m.form && !m.answered)?.form
     if (previousForm) {
       onAccepted = () => patch(side, t => ({ ...t, messages: t.messages.map(m =>
-        m.form?.ask_id === previousForm.ask_id ? { ...m, answered: 'invalid' } : m) }))
+        m.form?.ask_id === previousForm.ask_id ? { ...m, answered: 'execution' } : m) }))
     }
     patch(side, t => ({ ...t, streaming: true, messages: [...t.messages, { role: 'assistant', content: '' }] }))
     let reply = ''

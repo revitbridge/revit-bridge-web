@@ -154,18 +154,18 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "ask_designer",
         "description": "End this turn with questions in this reply. Use choices grounded in facts "
                        "already read. Ask all outstanding questions together.",
-        "parameters": {"type": "object", "required": ["questions"], "additionalProperties": False,
+        "parameters": {"type": "object", "required": ["questions"],
                        "properties": {"questions": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
-                           "type": "object", "required": ["id", "text", "options"], "additionalProperties": False,
+                           "type": "object", "required": ["id", "text", "options"],
                            "properties": {
                                "id": {"type": "string", "minLength": 1, "maxLength": 100},
                                "text": {"type": "string", "minLength": 1, "maxLength": 500},
                                "allow_other": {"type": "boolean"},
                                "multiple": {"type": "boolean"},
                                "options": {"type": "array", "minItems": 2, "maxItems": 6, "items": {
-                                   "type": "object", "required": ["value", "label"], "additionalProperties": False,
+                                   "type": "object", "required": ["value", "label"],
                                    "properties": {
-                                       "value": {"description": "A string, number or boolean."},
+                                       "value": {"type": "string", "minLength": 1, "maxLength": 500},
                                        "label": {"type": "string", "minLength": 1, "maxLength": 500},
                                    },
                                }},

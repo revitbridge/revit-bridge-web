@@ -338,10 +338,13 @@ def test_ask_shows_the_report_and_the_question(revit, client, model):
         prompt = model.requests_of(role)[0]["messages"][0]["content"]
         if role == "supervisor":
             assert chat_module.CARD_GUIDANCE not in prompt
+            assert "on the card in this chat" in prompt and "on the card in this chat reply" not in prompt
         else:
             assert "确认并执行" in prompt and "卡片在我上一条提交它的回复里" in prompt
         if role == "analyst":
             assert "When a card is pending confirmation" in prompt
+        if role == "planner":
+            assert "other: true marks the designer's own words" in prompt
         assert "wait for an explicit yes" not in prompt and "in this host\'s interface" not in prompt
         assert "confirm in revit" not in prompt.lower() and "revit panel" not in prompt.lower()
 
@@ -566,6 +569,27 @@ def test_supervisor_stop_closes_task_without_model_call(revit, client, model, la
     assert session.role_task is session.pending_verdict is session.pending_form is session.spec is None
     assert client.post("/api/chat", json=body, headers=HEADERS).status_code == 422
     assert len(model.requests) == calls
+
+
+@pytest.mark.parametrize("language, expected", [("zh-TW,en;q=0.5", "需要调整什么？"),
+                                                ("en-US,zh;q=0.5", "What should change?")])
+def test_host_corrected_question_uses_browser_language(revit, client, model, language, expected):
+    sid = wall_turn(client, model)
+    model.script("supervisor", json_turn({"verdict": "done", "report": "All good."}))
+    response = client.post("/api/chat", json={"session_id": sid, "execution": VALIDATION_FAILED},
+                           headers={**HEADERS, "Accept-Language": language})
+    frames = sse(response.text)
+    form, = events(frames, "questions")
+    assert form["questions"][0]["text"] == expected
+    assert expected not in tokens(frames)
+
+
+def test_other_host_generated_chinese_questions():
+    assert roles.fallback_verdict(FAILED, chinese=True).question == "接下来要怎么做？"
+    retry = roles.Verdict("retry", "r", fix="L2")
+    assert roles.enforce(retry, OK, 0, chinese=True).question == "需要调整吗？监督员建议：L2"
+    assert roles.enforce(retry, FAILED, roles.MAX_RETRIES, chinese=True).question == "需要调整什么？上次建议：L2"
+    assert roles.enforce(roles.Verdict("done", "r"), FAILED, 0, chinese=True).question == "接下来要怎么做？"
 
 
 def test_planner_option_named_stop_is_an_ordinary_answer(revit, client, model):
