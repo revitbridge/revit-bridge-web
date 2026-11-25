@@ -483,14 +483,15 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
 
 
 def chat_mode(features: dict | None, runs: list[dict]) -> dict:
-    """How the host runs its chat by default, as it says (``features.chatModeDefault``; on a host
-    before the modes ``features.roles``: ``roles``, ``single``; None for a host that does not
-    say), the modes its turns ran in (``modes_seen``) and the roles the events named."""
+    """How the host runs its chat by default, as it says (``features.chatModeDefault``); a host
+    before the modes says only ``features.roles``: ``false`` is ``single``, ``true`` is None (not
+    reported - there it meant the analyst too unless ROLES_ANALYST=off, which it does not say),
+    and so is a host that says neither. Also the modes its turns ran in (``modes_seen``) and the
+    roles the events named."""
     features = features or {}
     default = features.get("chatModeDefault")
     if default not in CHAT_MODES[1:]:
-        said = features.get("roles")
-        default = "roles" if said is True else "single" if said is False else None
+        default = "single" if features.get("roles") is False else None
     tasks = [task for run in runs for task in run["tasks"]]
     seen = dict.fromkeys(role for task in tasks for role in task.get("by_role", {}))
     modes = dict.fromkeys(m for task in tasks for m in task.get("modes", []))

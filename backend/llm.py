@@ -358,7 +358,34 @@ class ToolCall:
 # The keys of a streamed tool call every OpenAI-compatible provider sends; anything else on
 # the call is the provider's own and goes back with it.
 _TOOL_CALL_KEYS = frozenset({"index", "id", "type", "function"})
-MEMORY_CALLS = 256               # tool calls a ProviderMemory keeps (oldest forgotten first)
+# Tool calls a ProviderMemory keeps (oldest forgotten first): of the order of the messages a
+# session keeps (backend.session.MAX_HISTORY, 60).
+MEMORY_CALLS = 64
+# Bytes of one kept value's JSON at most; a larger one is not kept (its call goes back plain).
+MEMORY_VALUE_MAX = 64 * 1024
+# What a key holds when it cannot be told which reply it belongs to (two different values came
+# for it) or its value was too large: recalled as nothing.
+_UNUSABLE = object()
+
+
+def _json_bytes(value: object) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return MEMORY_VALUE_MAX + 1
+
+
+def call_keys(messages: list[dict]) -> set[tuple[str, str, str]]:
+    """``(id, name, arguments)`` of every tool call in ``messages``' assistant turns."""
+    keys = set()
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            continue
+        for part in message.get("tool_calls") or []:
+            if isinstance(part, dict):
+                function = part.get("function") if isinstance(part.get("function"), dict) else {}
+                keys.add((str(part.get("id", "")), str(function.get("name", "")), str(function.get("arguments", ""))))
+    return keys
 
 
 class ProviderMemory:
@@ -372,13 +399,20 @@ class ProviderMemory:
       content, function calls, a message), sent instead of the assistant message whose tool
       calls it produced (stateless: ``store`` is false).
 
-    A call is known by its id, name and arguments, so a provider that numbers its calls the
-    same way in every reply cannot get another call's data back. One per chat session
-    (``Session.provider_memory``), in memory only, at most ``MEMORY_CALLS`` calls; it never
-    goes to disk, a log or another endpoint."""
+    A call is known by its id, name and arguments. A provider that gives no ids (the host's
+    ``call_<n>``) or numbers its calls from ``call_0`` in every reply can make two calls of
+    the same tool with the same arguments share a key: when a second, different value comes
+    for a key that holds one, the key is marked unusable and neither call gets anything back
+    - it goes back plain (no ``extra_content``; ``function_call`` items without ids instead of
+    the reply's output) rather than with the other reply's data. A value whose JSON is over
+    ``MEMORY_VALUE_MAX`` bytes is not kept either (its call goes back plain). One per chat
+    session (``Session.provider_memory``), in memory only, at most ``MEMORY_CALLS`` calls, and
+    trimmed with the session's history (``retain``); it never goes to disk, a log or another
+    endpoint."""
 
-    def __init__(self, limit: int = MEMORY_CALLS):
+    def __init__(self, limit: int = MEMORY_CALLS, value_max: int = MEMORY_VALUE_MAX):
         self._limit = limit
+        self._value_max = value_max
         self._items: dict[tuple[str, str, str, str], object] = {}
 
     def __len__(self) -> int:
@@ -392,20 +426,34 @@ class ProviderMemory:
         return (origin, call_id, name, arguments)
 
     def remember(self, origin: str, call: ToolCall, value: object) -> None:
+        """Keep ``value`` for ``call``; a key that already holds another value becomes unusable,
+        and so does one whose value is too large."""
         key = self._key(origin, call.id, call.name, call.arguments)
-        self._items.pop(key, None)
+        old = self._items.pop(key, None)
+        if old is not None and (old is _UNUSABLE or old != value):
+            value = _UNUSABLE                     # two replies for one key: which is which cannot be told
+        elif _json_bytes(value) > self._value_max:
+            value = _UNUSABLE
         self._items[key] = value
         while len(self._items) > self._limit:
             del self._items[next(iter(self._items))]
 
     def recall(self, origin: str, part: dict) -> object | None:
-        """What was kept for the tool call ``part`` (an entry of a message's ``tool_calls``)."""
+        """What was kept for the tool call ``part`` (an entry of a message's ``tool_calls``);
+        None for a call with nothing kept, or an unusable key."""
         if not self._items or not isinstance(part, dict):
             return None
         function = part.get("function") if isinstance(part.get("function"), dict) else {}
         key = self._key(origin, str(part.get("id", "")), str(function.get("name", "")),
                         str(function.get("arguments", "")))
-        return self._items.get(key)
+        value = self._items.get(key)
+        return None if value is _UNUSABLE else value
+
+    def retain(self, calls: set[tuple[str, str, str]]) -> None:
+        """Forget every call that is not in ``calls`` (``call_keys`` of the session's history after
+        it was trimmed): what the history no longer has is never sent again."""
+        for key in [key for key in self._items if key[1:] not in calls]:
+            del self._items[key]
 
 
 def _origin(url: str, model: str) -> str:

@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from typing import TYPE_CHECKING
 
-from backend.llm import ProviderMemory
+from backend.llm import ProviderMemory, call_keys
 from backend.mention_check import mention_evidence
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
@@ -76,7 +76,9 @@ class Session:
     confirmed_spec: dict | None = None
     # What a provider returned with a tool call that goes back with it in the next requests
     # (Gemini's thought signature, the responses api's reasoning items): by call, for the
-    # endpoint and model that returned it, in memory only (backend.llm.ProviderMemory).
+    # endpoint and model that returned it, in memory only (backend.llm.ProviderMemory). Bounded
+    # like the history: at most MEMORY_CALLS calls, no value over MEMORY_VALUE_MAX bytes, and
+    # a call the trimmed history no longer has is forgotten with it (add).
     provider_memory: ProviderMemory = field(default_factory=ProviderMemory, repr=False)
 
     def role_prompt(self, role: str, build) -> str:
@@ -128,6 +130,8 @@ class Session:
         self.history.append(message)
         if len(self.history) > MAX_HISTORY:
             self.history = trim_at_user_turn(self.history[-MAX_HISTORY:])
+            # The provider's data of a call the history no longer has is never sent again.
+            self.provider_memory.retain(call_keys(self.history))
         self.touch()
 
     def add_message(self, role: str, content: str) -> None:

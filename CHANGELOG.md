@@ -34,8 +34,9 @@ to `off`; it was `on`). Set `ROLES_ANALYST=on` to keep the analyst, or pick the 
 `mode`; `/config.json` has `features.chatModes` and `features.chatModeDefault`; `/api/chat` takes an
 optional `mode`; `/api/usage` rows and `/api/usage/runs` lines have `mode`.
 
-**The chat now runs in three roles** - analyst, planner, supervisor - each with its own
-instructions, tools and model (see *Added*). The events keep their shapes; `role` now also takes
+**The chat now runs in roles** - planner and supervisor by default, the analyst too in mode
+`roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`) - each with its own instructions,
+tools and model (see *Added*). The events keep their shapes; `role` now also takes
 `analyst` and `supervisor`, a turn has one `stage` pair per role, and a reported run may come back
 with a new `spec` (the supervisor sent the task back). `LLM_SINGLE_MODEL=1` keeps the chat as it was
 (one loop, the planner's model), request for request and event for event.
@@ -89,7 +90,11 @@ the host shares your tools with the package's MCP server (see *Changed*).
 - **Token bench: `--mode` and `--confirm`.** `--mode auto|single|roles|roles_analyst` (default
   `auto`) goes as `mode` with every chat request of the run; the results record it (`chat_mode`)
   with the host's default and the modes its turns ran in (`chat.host`, `chat.modes_seen`, each
-  task's `modes`), and the table header shows it. `--confirm never|once` (default `never`, as
+  task's `modes`), and the table header shows it. `chat.host` is the host's
+  `features.chatModeDefault`; a host from before the modes is `single` when it says `roles: false`
+  and `null` (shown as unknown) when it says `roles: true`, which there meant the analyst too unless
+  switched off - it was recorded as `roles` before. `compare` adds a NOTE when the two runs' hosts
+  ran different modes (`chat.modes_seen`). `--confirm never|once` (default `never`, as
   before): with `once`, a tool or ask task whose turn ends with no accepted spec while the host's
   tool events show a proposal ready for confirmation (its last `reconcile` came back `ready`, no
   `propose_spec` was called) gets one more user message, "yes", and is scored on what follows; the
@@ -126,7 +131,10 @@ the host shares your tools with the package's MCP server (see *Changed*).
   `X-LLM-*` settings still call the chat api with the defaults. On the chat api the provider's own
   keys on a tool call - Gemini's `extra_content` with the thought signature Gemini 3 and later
   require - now go back unchanged on that call in the following requests to the same endpoint and
-  model (kept in memory with the chat session; never on disk or in a log). A reply that ends at
+  model (kept in memory with the chat session; never on disk or in a log; at most 64 calls, none
+  whose data is over 64 KB, and forgotten with the history; two calls that share an id, name and
+  arguments - a provider that numbers its calls from `call_0` in every reply - get nothing back
+  rather than each other's). A reply that ends at
   its output limit before it wrote anything or called a tool (a thinking model that spent the limit
   thinking) now ends the turn - for the analyst, the planner and the supervisor alike, with no
   repair request and no fallback - with an `error` event the chat shows as its reply: *Output limit
@@ -138,7 +146,9 @@ the host shares your tools with the package's MCP server (see *Changed*).
   every stream is byte for byte what it was, except the output limit (see *Changed*): a test
   compares them with a record taken before the change, with the limit forced back to 4096 and
   with the new one.
-- **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*), the default. A
+- **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*). This entry
+  describes mode `roles_analyst` (`ROLES_ANALYST=on`); the default mode is planner + supervisor -
+  no analyst, every message goes to the planner with route `tool` (see *Chat modes* above). A
   message goes to the **analyst** (the package's `host_instructions(role="analyst", code=False)`
   and one host line linking the workbench; no tools): it sees the message with its selections
   block, the package's `snapshot_digest` of the open model (one snapshot per session, read again

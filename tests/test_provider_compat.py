@@ -572,3 +572,129 @@ def test_a_cut_reply_with_text_or_a_call_is_still_a_reply(monkeypatch):
     assert "".join(asyncio.run(run())) == "Half a sen"
     items = asyncio.run(run())
     assert [c.name for c in items[-1]] == ["list_tools"]
+
+
+# -- the provider memory: shared keys, size, the history ----------------------------------------------
+
+def test_a_repeated_call_id_on_the_chat_api_sends_no_signature_for_either_call(revit, env, keys, tmp_path, provider):
+    """A provider that numbers its calls from call_0 in every reply: the same tool with the same
+    arguments twice gives two calls one key. Neither gets a signature back, rather than the other one's."""
+    client = app_client(env, tmp_path, models_text())
+    levels = {"id": "call_0", "name": "query", "arguments": {"kind": "levels"}}
+    provider.chat.script("single",
+                         {"content": "", "tool_calls": [{**levels, "extra": {"extra_content": {"sig": "made-up-A"}}}]},
+                         {"content": "", "tool_calls": [{**levels, "extra": {"extra_content": {"sig": "made-up-B"}}}]},
+                         text_turn("L1 and L2."))
+    resp = client.post("/api/chat", json={"message": "levels?"})
+    assert tokens(sse(resp.text)) == "L1 and L2."
+    second, third = provider.sent[1]["body"], provider.sent[2]["body"]
+
+    def calls(body):
+        return [c for m in body["messages"] if m["role"] == "assistant" for c in m.get("tool_calls", [])]
+
+    assert [c.get("extra_content") for c in calls(second)] == [{"sig": "made-up-A"}]       # one so far: its own
+    assert [c.get("extra_content") for c in calls(third)] == [None, None]                  # now: neither
+    assert "made-up" not in json.dumps(third)
+
+
+def test_a_repeated_call_id_on_the_responses_api_goes_back_plain_and_once(revit, env, keys, tmp_path, provider):
+    client = app_client(env, tmp_path, models_text(main=", api: responses, reasoning_effort: low"))
+    first_reasoning = {**REASONING, "id": "rs_a", "encrypted_content": "made-up-enc-A"}
+    second_reasoning = {**REASONING, "id": "rs_b", "encrypted_content": "made-up-enc-B"}
+
+    def call(fc):
+        return {**call_item("query", {"kind": "levels"}, "call_0"), "id": fc}
+
+    provider.replies += [reply(first_reasoning, call("fc_a")), reply(second_reasoning, call("fc_b")),
+                         reply(message_item("L1 and L2."))]
+    assert client.post("/api/chat", json={"message": "levels?"}).status_code == 200
+    second, third = provider.responses_bodies()[1:]
+    assert second["input"][2:4] == [first_reasoning, call("fc_a")]                        # its own, as it came
+    replayed = third["input"][2:]
+    assert [item.get("type") for item in replayed] == ["function_call", "function_call_output"] * 2
+    assert all("id" not in item and "made-up-enc" not in json.dumps(item) for item in replayed)
+
+
+def test_the_memory_keeps_no_value_too_large_and_no_more_calls_than_the_history():
+    assert llm_module.MEMORY_CALLS == 64 and llm_module.MEMORY_VALUE_MAX == 64 * 1024
+    memory = ProviderMemory(limit=3, value_max=100)
+    small, large = ToolCall("c1", "q", "{}"), ToolCall("c2", "q", "{}")
+    memory.remember("o", small, {"sig": "x"})
+    memory.remember("o", large, {"sig": "x" * 200})
+    assert memory.recall("o", small.as_message_part()) == {"sig": "x"}
+    assert memory.recall("o", large.as_message_part()) is None                  # not kept: goes back plain
+    memory.remember("o", large, {"sig": "y"})                                     # and stays unusable
+    assert memory.recall("o", large.as_message_part()) is None
+    memory.remember("o", small, {"sig": "x"})                                     # the same value again: fine
+    assert memory.recall("o", small.as_message_part()) == {"sig": "x"}
+    for i in range(5):
+        memory.remember("o", ToolCall(f"n{i}", "q", "{}"), {"i": i})
+    assert len(memory) == 3
+
+
+def test_the_memory_forgets_a_call_the_trimmed_history_no_longer_has():
+    from backend.session import MAX_HISTORY, Session
+    session = Session(session_id="s")
+    old, kept = ToolCall("old", "query", "{}"), ToolCall("kept", "query", "{}")
+    session.add({"role": "user", "content": "first"})
+    session.add(llm_module.assistant_message("", [old]))
+    session.provider_memory.remember("o", old, {"sig": "old"})
+    for i in range(MAX_HISTORY - 3):
+        session.add({"role": "user", "content": f"u{i}"})
+    session.add(llm_module.assistant_message("", [kept]))
+    session.provider_memory.remember("o", kept, {"sig": "kept"})
+    assert len(session.history) == MAX_HISTORY and len(session.provider_memory) == 2     # no trim yet
+    session.add({"role": "user", "content": "more"})
+    session.add({"role": "user", "content": "more"})            # the first two messages leave the history
+    assert ("old", "query", "{}") not in llm_module.call_keys(session.history)
+    assert ("kept", "query", "{}") in llm_module.call_keys(session.history)
+    assert session.provider_memory.recall("o", old.as_message_part()) is None
+    assert session.provider_memory.recall("o", kept.as_message_part()) == {"sig": "kept"}
+    assert len(session.provider_memory) == 1
+
+
+# -- the responses api: parallel calls, the JSON roles, timeout_s --------------------------------------
+
+def test_parallel_calls_on_the_responses_api_run_and_go_back_once(revit, env, keys, tmp_path, provider):
+    client = app_client(env, tmp_path, models_text(main=", api: responses, reasoning_effort: low"))
+    levels = call_item("query", {"kind": "levels"}, "call_l")
+    tools = call_item("list_tools", {}, "call_t")
+    provider.replies += [reply(REASONING, levels, tools, usage=USAGE), reply(message_item("Done."))]
+    frames = sse(client.post("/api/chat", json={"message": "levels and tools"}).text)
+    assert [(t["name"], t["status"]) for t in events(frames, "tool")] == [
+        ("query", "running"), ("query", "ok"), ("list_tools", "running"), ("list_tools", "ok")]
+    second = provider.responses_bodies()[1]["input"][2:]
+    assert second[:3] == [REASONING, levels, tools]                     # the reply's output, once
+    assert [(i["type"], i["call_id"]) for i in second[3:]] == [("function_call_output", "call_l"),
+                                                                ("function_call_output", "call_t")]
+    assert tokens(frames) == "Done."
+
+
+def test_the_analyst_and_the_supervisor_on_the_responses_api_get_their_json_through(revit, env, keys, tmp_path,
+                                                                                    provider):
+    env.delenv("LLM_SINGLE_MODEL")
+    client = app_client(env, tmp_path, models_text(small=", api: responses",
+                                                   roles="analyst: small, planner: main, supervisor: small"),
+                        ROLES_ANALYST="on")
+    provider.replies.append(reply(message_item(json.dumps({"route": "tool", "tool": "create_wall",
+                                                           "facts_needed": [], "note": ""})), usage=USAGE_NO_CACHE))
+    provider.chat.script("planner", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})),
+                         text_turn("The card is below."))
+    resp = client.post("/api/chat", json={"message": "a wall on L1"})
+    frames = sse(resp.text)
+    assert len(events(frames, "spec")) == 1 and provider.chat.roles == ["planner", "planner"]
+    assert [u["role"] for u in events(frames, "usage")] == ["analyst", "planner", "planner"]
+    provider.replies.append(reply(message_item(json.dumps({"verdict": "done", "report": "One wall was created."}))))
+    report = sse(client.post("/api/chat", json={"execution": {"success": True, "evidence_id": "ev_1"},
+                                                "session_id": resp.headers["X-Session-Id"]}).text)
+    assert tokens(report) == "One wall was created."
+    analyst_body, supervisor_body = provider.responses_bodies()
+    assert "tools" not in analyst_body and [i["role"] for i in analyst_body["input"]] == ["system", "user"]
+    assert [t["name"] for t in supervisor_body["tools"]] == ["query"]
+
+
+def test_timeout_s_reaches_the_responses_call(env, keys, tmp_path, provider):
+    client = app_client(env, tmp_path, models_text(main=", api: responses, timeout_s: 600"))
+    provider.replies.append(reply(message_item("ok")))
+    assert tokens(sse(client.post("/api/chat", json={"message": "hi"}).text)) == "ok"
+    assert provider.sent[-1]["url"].endswith("/responses") and provider.timeouts[-1] == 600.0

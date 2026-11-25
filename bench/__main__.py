@@ -216,7 +216,7 @@ def print_results(result: dict) -> None:
     summary = result["summary"]
     repeat = result["repeat"]
     chat = result.get("chat") or {}
-    how = MODE_NAMES.get(chat.get("host"), "not reported")
+    how = MODE_NAMES.get(chat.get("host"), "unknown (not reported by the host)")
     seen = ", ".join(chat.get("roles_seen") or []) or "none"
     ran = ", ".join(chat.get("modes_seen") or []) or "not reported"
     print(f"Label {result['label']}  repeats {repeat}  mode {result['mode']}  chat mode {result.get('chat_mode', 'auto')}"
@@ -390,7 +390,19 @@ def command_compare(args: argparse.Namespace) -> int:
     modes = before.get("chat_mode", "auto"), after.get("chat_mode", "auto")
     if modes[0] != modes[1]:
         print(f"NOTE: the runs asked for different chat modes: before {modes[0]}, after {modes[1]}.")
+    ran = modes_seen(before), modes_seen(after)
+    if ran[0] != ran[1]:
+        # What the host actually ran: a cloud host runs its default whatever is asked.
+        print(f"NOTE: the host ran different chat modes: before {', '.join(ran[0]) or 'not reported'}, after "
+              f"{', '.join(ran[1]) or 'not reported'}.")
     return code
+
+
+def modes_seen(result: dict) -> list[str]:
+    """The chat modes a results file's host said its turns ran in; none for a file without them."""
+    chat = result.get("chat") if isinstance(result.get("chat"), dict) else {}
+    seen = chat.get("modes_seen")
+    return [m for m in seen if isinstance(m, str)] if isinstance(seen, list) else []
 
 
 def build_parser() -> argparse.ArgumentParser:

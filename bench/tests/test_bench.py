@@ -988,3 +988,45 @@ def test_compare_notes_a_different_confirm_policy(tmp_path, capsys):
         paths.append(path)
     assert main(["compare", *map(str, paths)]) == 3
     assert "confirmed ready proposals differently" in capsys.readouterr().out
+
+
+def test_compare_notes_the_modes_the_host_ran(tmp_path, capsys):
+    """Two runs whose host ran different chat modes get a NOTE; the exit code is the comparison's."""
+    def started(mode):
+        return ("stage", {"role": "planner", "model": "m", "status": "start", "mode": mode})
+
+    host = FakeHost([response(started("roles"), ("spec", spec()), ("usage", usage())), response(("", "ok")),
+                     response(started("single"), ("spec", spec()), ("usage", usage())), response(("", "ok"))])
+    paths = []
+    for name in ("a", "b"):
+        with host.client() as client:
+            result = run_bench(client, BASE, name, [task()])
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(result), encoding="utf-8")
+        paths.append(path)
+    assert main(["compare", *map(str, paths)]) == 0
+    out = capsys.readouterr().out
+    assert "NOTE: the host ran different chat modes: before roles, after single." in out
+    # the same modes: no NOTE
+    assert main(["compare", str(paths[0]), str(paths[0])]) == 0
+    assert "ran different chat modes" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("features, host", [
+    ({"chatModeDefault": "roles", "roles": True}, "roles"),
+    ({"chatModeDefault": "roles_analyst", "roles": True}, "roles_analyst"),
+    ({"roles": True}, None),                     # before the modes: the analyst was on unless switched off
+    ({"roles": False}, "single"),
+    ({}, None),
+    ({"chatModeDefault": "auto", "roles": True}, None),
+])
+def test_the_hosts_default_is_what_it_says_and_unknown_otherwise(features, host, capsys):
+    from bench.runner import chat_mode
+    assert chat_mode(features, [])["host"] == host
+    if host is None:
+        cli.print_results({"label": "x", "repeat": 1, "mode": "synthetic", "base_url": BASE,
+                           "chat": chat_mode(features, []), "runs": [],
+                           "summary": summarize([{"tasks": [], "totals": {f: None for f in
+                                                  ("calls", "input", "output", "cache_read", "cache_write", "ms")},
+                                                  "by_role": {}}])})
+        assert "host default unknown (not reported by the host)" in capsys.readouterr().out

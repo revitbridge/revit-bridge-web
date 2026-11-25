@@ -71,7 +71,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   options a models file entry sets (`api: responses` -> `stream_responses`, not streamed, the same
   items out; `max_tokens_param`, `reasoning_effort`, `timeout_s`) and `ProviderMemory` (a tool
   call's provider keys - Gemini's `extra_content` - and a responses reply's output items, per
-  session, back to the same endpoint and model only); the default output limit
+  session, back to the same endpoint and model only; a key two different replies share is unusable,
+  so is a value over `MEMORY_VALUE_MAX`; at most `MEMORY_CALLS`, trimmed with the history by
+  `Session.add` via `retain`); the default output limit
   `DEFAULT_MAX_TOKENS` (16384, read at call time); an empty reply at the output limit is an
   `OutputLimitError`, which `chat.Turn.limit_notice` turns into the turn's `error` detail (role,
   model, limit, what is still there, how to raise it) - every role, no repair, no fallback. Without

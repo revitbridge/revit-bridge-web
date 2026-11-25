@@ -985,12 +985,15 @@ def test_the_digest_is_kept_per_device_and_a_failed_read_waits(monkeypatch):
     assert len(reads) == 4
 
 
-# -- the old suite's key cases, in both modes ---------------------------------------------------
+# -- the old suite's key cases, in every mode ---------------------------------------------------
 
-@pytest.fixture(params=["single", "roles"])
+@pytest.fixture(params=["single", "roles_analyst", "roles"])
 def mode(request, env):
-    if request.param == "roles":                # with the analyst (mode roles_analyst)
+    """The chat's modes by their switches: the one loop, the roles with the analyst
+    (ROLES_ANALYST=on) and the default roles, planner + supervisor (ROLES_ANALYST unset)."""
+    if request.param != "single":
         env.delenv("LLM_SINGLE_MODEL")
+    if request.param == "roles_analyst":
         env.setenv("ROLES_ANALYST", "on")
     return request.param
 
@@ -1001,14 +1004,15 @@ def mode_client(mode, make_client):
 
 
 def planner_script(model, mode, *turns) -> str:
-    """The turns of the one loop, or of the planner after an analyst that routes to tool. The
-    role whose requests to read."""
-    if mode == "roles":
+    """The turns of the one loop, or of the planner (after an analyst that routes to tool in mode
+    roles_analyst). The role whose requests to read."""
+    if mode == "single":
+        model.script("single", *turns)
+        return "single"
+    if mode == "roles_analyst":
         model.script("analyst", json_turn({"route": "tool", "facts_needed": [], "note": ""}))
-        model.script("planner", *turns)
-        return "planner"
-    model.script("single", *turns)
-    return "single"
+    model.script("planner", *turns)
+    return "planner"
 
 
 def test_both_modes_a_tool_that_raises_closes_its_row_and_the_stage(mode, mode_client, model, monkeypatch):
@@ -1026,7 +1030,7 @@ def test_both_modes_a_tool_that_raises_closes_its_row_and_the_stage(mode, mode_c
         mode_client.post("/api/chat", json={"message": "x"}, headers=HEADERS)
     frames = sse("".join(chunks))
     tools = events(frames, "tool")
-    first = "1.2.1" if mode == "roles" else "1.1.1"
+    first = "1.2.1" if mode == "roles_analyst" else "1.1.1"      # the analyst made call 1
     assert [(t["id"], t["role"], t["status"]) for t in tools] == [(first, "planner", "running"),
                                                                     (first, "planner", "error")]
     assert tools[1]["error"] == "RuntimeError" and "secret" not in "".join(chunks)

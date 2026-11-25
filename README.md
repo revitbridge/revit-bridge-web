@@ -190,9 +190,10 @@ its connection.
    arguments - the first 2000 characters and the size when they run past 8000 - and the first
    2000 characters of the result; errors in red). A row or stage still open when the turn's
    stream ended (stopped, broken off) shows as *interrupted*. The rows are grouped by role, each
-   group headed by the role and the model it ran on (see *The chat's roles* below): the analyst
-   (no tools), then the planner, or the supervisor after a run. A small-talk or "no tool" reply is
-   the analyst's own, and after a run the supervisor's report is the reply. When the supervisor
+   group headed by the role and the model it ran on (see *The chat's roles* below): the planner, or
+   the supervisor after a run - and, in mode `roles_analyst` only, the analyst (no tools) before the
+   planner, whose small-talk or "no tool" reply is then its own (the default mode is planner +
+   supervisor). After a run the supervisor's report is the reply. When the supervisor
    sends the task back, the planner's new card comes in the same reply, and above it, as *Previous
    attempt*, what the page itself received from the run (succeeded, failed with its error, or the
    validator's checks that did not pass) - the model's report is never the only record. A run the
@@ -366,7 +367,9 @@ model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 | planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | `query` route: `query`, `get_project_snapshot`; `tool` route: those and `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` |
 | supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
-The analyst answers one JSON object; with `chat` or `none` its `note` is the reply (with `none`
+In mode `roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`; the default mode `roles` has no
+analyst and sends every message to the planner with route `tool`) the analyst answers one JSON
+object; with `chat` or `none` its `note` is the reply (with `none`
 the host adds the workbench link when the note lacks it) and nothing else runs. With `query` or
 `tool` the planner runs as the chat did before, with that route's tools only; a call of any other
 tool is answered `tool_not_offered` and never run. Confirmation and execution stay on the page.
@@ -398,7 +401,7 @@ planner's transcript - and each role's prompt and tool definitions stay the same
 `usage` event and one `llm_calls` row with its role and model. `CHAT_RATE_LIMIT` counts requests to
 `/api/chat` (your messages and reported runs), not model calls.
 
-The split costs one more model call per message (the analyst) and one round trip more before the
+With the analyst (mode `roles_analyst`), the split costs one more model call per message and one round trip more before the
 planner starts; it saves where the analyst answers alone (small talk, no tool), on reads (two tool
 definitions instead of seven) and on reports (a short supervisor prompt instead of the whole
 conversation). In the test suite's scripted flows, with the same model answers and revit-bridge
@@ -462,7 +465,11 @@ roles:
   Tool calls on the chat api come back with their provider's own keys - Gemini's `extra_content`
   with its thought signature, which Gemini 3 and later require on the next request - and the host
   sends them back unchanged on that call in the following requests to the same endpoint and model
-  (held with the chat session in memory, never logged).
+  (held with the chat session in memory, never logged; at most 64 calls, none whose data is over
+  64 KB, and forgotten with the history). Two calls that share an id, a name and arguments - a
+  provider that numbers its calls from `call_0` in every reply, the same tool asked the same twice
+  - go back with nothing rather than with each other's data (the responses api then sends them as
+  plain `function_call` items).
 - **The output limit** (`max_tokens`) is 16384 unless an entry sets its own (it was 4096). A thinking
   model's thinking counts toward it - Gemini's and DeepSeek's do. A reply that ends at its limit
   (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote anything or
