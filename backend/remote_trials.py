@@ -13,10 +13,13 @@ MAX_BYTES = 64 * 1024
 TTL_SECONDS = 24 * 3600
 
 
-def ledger_for(device_id):
+def device_root(device_id):
     from revit_bridge.mcp_app import scope_directory
-    root = data_root() if device_id == "local" else scope_directory(device_id)
-    return Ledger(root / "evidence")
+    return data_root() if device_id == "local" else scope_directory(device_id)
+
+
+def ledger_for(device_id):
+    return Ledger(device_root(device_id) / "evidence")
 
 
 def recent_calls(device_id):

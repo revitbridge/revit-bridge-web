@@ -15,6 +15,7 @@ over TCP and its scope is ``"local"``.
 """
 from __future__ import annotations
 
+import json
 import logging
 from contextvars import ContextVar
 
@@ -25,8 +26,10 @@ from starlette.requests import HTTPConnection
 
 from revit_bridge.auth import Device, DeviceError, DeviceStore
 
+from backend import mcp_tokens
 from backend.api.errors import ApiError, device_store_responses, device_store_unavailable, responses
 from backend.config import get_settings
+from backend.private_settings import StoreUnavailable
 from backend.ratelimit import client_key, pair_limiter, redeem_limiter
 from backend.relay import get_relay
 
@@ -57,6 +60,18 @@ def reset_device_store() -> None:
     """Drop the cached store (tests move the data root between cases)."""
     global _store
     _store = None
+
+
+def paired_ids() -> set[str]:
+    """An authoritative snapshot for token pruning. DeviceStore.list treats read errors as an empty list."""
+    try:
+        data = json.loads(get_device_store().path.read_bytes())["devices"]
+        return {key for key, device in data.items()
+                if device["token_hash"] and device["last_seen"] and not device["revoked_at"]}
+    except FileNotFoundError:
+        return set()
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
+        raise OSError("Unreadable pairing data") from None
 
 
 # -- the request's device -----------------------------------------------------------
@@ -264,7 +279,11 @@ def register(router) -> None:
         device = await authorized_device(request, device_id)
         return device_view(device, get_relay().device_status(device_id))
 
-    @router.delete("/devices/{device_id}", responses=device_store_responses(403, 404, 422))
+    revoke_responses = device_store_responses(403, 404, 422)
+    revoke_responses[503]["description"] += (
+        ". If MCP token cleanup fails after revocation, the device is already revoked (token_store_unavailable).")
+
+    @router.delete("/devices/{device_id}", responses=revoke_responses)
     async def revoke_device(device_id: str, request: Request):
         """Revoke the device and close its socket: no more requests, key and token dead."""
         await authorized_device(request, device_id)
@@ -274,4 +293,9 @@ def register(router) -> None:
             raise device_store_unavailable() from None        # not revoked: the socket stays
         closed = await get_relay().disconnect(device_id, code=4003, reason="device revoked")
         _log.info("device %s revoked (socket closed: %s)", device_id, closed)
+        try:
+            await run_in_threadpool(mcp_tokens.revoke_device, device_id)
+        except StoreUnavailable:
+            raise ApiError(503, "token_store_unavailable",
+                           "Device revoked. Its MCP tokens are unusable but could not be removed.") from None
         return {"status": "revoked", "device_id": device_id, "disconnected": closed}

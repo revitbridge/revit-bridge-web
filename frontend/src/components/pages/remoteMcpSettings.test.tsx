@@ -35,6 +35,7 @@ it('shows the bearer only on creation and keeps both configurations safe to copy
     expect(div.textContent).toContain('Enabled')
     expect(div.textContent).toContain('ev_example')
     const input = div.querySelector('input')!
+    expect(input.maxLength).toBe(64)
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'Studio')
       input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -52,6 +53,25 @@ it('shows the bearer only on creation and keeps both configurations safe to copy
     await act(async () => button('Revoke').click())
     expect(exists).toBe(false)
     expect(button('Revoke')).toBeUndefined()
+  } finally {
+    await act(async () => root.unmount())
+    vi.unstubAllGlobals()
+  }
+})
+
+it('shows the disabled cloud endpoint without reporting a pairing or storage failure', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => url === '/config.json'
+    ? Response.json({ features: { mode: 'cloud' } })
+    : Response.json({ error: 'remote_mcp_disabled' }, { status: 404 })))
+  const div = document.createElement('div')
+  const root = createRoot(div)
+  try {
+    await loadRuntimeConfig()
+    await act(async () => root.render(<RemoteMcpSettings />))
+    expect(div.textContent).toContain('Disabled')
+    expect(div.querySelector('[role="alert"], form')).toBeNull()
+    expect(div.textContent).not.toContain('Select a paired device')
   } finally {
     await act(async () => root.unmount())
     vi.unstubAllGlobals()

@@ -3,7 +3,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx2
@@ -15,6 +18,8 @@ from backend.main import create_app
 from backend.relay import get_relay
 from tests.conftest import FIXTURE_ADMIN_PASSWORD
 from tests.test_api_v1 import B, WALL, code_spec, spec_for
+from tests.test_deploy_mode import LOCAL as LOCAL_CLIENT
+from tests.test_model_settings import ADMIN, GROUP, URL as MODELS, assert_private_file
 from tests.test_workbench import CODE, addin, workbench_handler  # noqa: F401 - fake add-in fixture
 
 SETTINGS = "/api/v1/settings/remote-mcp"
@@ -23,6 +28,7 @@ LOCAL = "http://127.0.0.1:7860"
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25",
         "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}
 ACCEPT = {"Accept": "application/json, text/event-stream"}
+TOKEN_FILE = "mcp-tokens.json"
 
 
 @asynccontextmanager
@@ -98,19 +104,29 @@ def test_local_sdk_authoring_and_gate(local_env, addin):
     asyncio.run(scenario())
 
 
-def test_cloud_default_off(env, tmp_path):
+@pytest.mark.parametrize("root_path", ["", "/host"])
+def test_cloud_default_off(env, tmp_path, root_path):
     env.setenv("CORS_ORIGINS", "https://host.example")
     # An installed SPA must not turn the disabled endpoint into an HTML 200.
     dist = tmp_path / "dist"
     dist.mkdir()
     (dist / "index.html").write_text("SPA")
     async def scenario():
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(create_app(frontend_dist=dist)),
-                                      base_url=LOCAL) as http:
+        app = create_app(frontend_dist=dist)
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app, root_path=root_path),
+                                      base_url=LOCAL + root_path) as http:
             for method in ("GET", "POST", "DELETE"):
                 assert (await http.request(method, "/mcp")).status_code == 404
             assert (await http.options("/mcp", headers={"Origin": "https://host.example",
                           "Access-Control-Request-Method": "POST"})).status_code == 404
+            for method, path in [("GET", SETTINGS), ("POST", SETTINGS + "/tokens"),
+                                 ("DELETE", SETTINGS + "/tokens/fake-id")]:
+                assert (await http.request(method, path, json={"label": "disabled"})).status_code == 404
+                assert (await http.options(path, headers={"Origin": "https://host.example",
+                              "Access-Control-Request-Method": method})).status_code == 404
+            assert (await http.post(SETTINGS + "/tokens", content=b"{",
+                                    headers={"Content-Type": "application/json"})).status_code == 404
+            assert not (tmp_path / "web-home").exists()
     asyncio.run(scenario())
 
 
@@ -183,17 +199,221 @@ def test_cloud_device_isolation_and_revocation(env, tmp_path, caplog):
             assert [r["evidence_id"] for r in status.json()["calls"]] == [ea]
             assert [t["id"] for t in status.json()["tokens"]] == [ta["info"]["id"]]
             assert status.json()["tokens"][0]["last_used_at"]
+            path = tmp_path / "web-home" / TOKEN_FILE
+            disk = path.read_text(encoding="utf-8")
+            assert '"salt"' in disk and '"digest"' in disk
+            assert_private_file(path)
             assert (await http.delete(SETTINGS + "/tokens/" + tb["info"]["id"], headers=a)).status_code == 404
             assert (await http.delete(SETTINGS + "/tokens/" + ta["info"]["id"], headers=a)).json() == {"revoked": True}
             assert (await http.post("/mcp", headers=ha)).status_code == 401
             assert (await http.delete(B + "/devices/" + b["X-Device-Id"], headers=b)).status_code == 200
-            assert (await http.post("/mcp", headers=hb)).status_code == 401
             config = await http.get("/config.json")
-            disk = (tmp_path / "web-home" / "secrets.json").read_text()
-            assert '"salt"' in disk and '"digest"' in disk
+            assert not path.exists()
+            assert (await http.post("/mcp", headers=hb)).status_code == 401
             for value in [ta["token"], tb["token"]]:
                 assert value not in status.text + config.text + disk + caplog.text
     asyncio.run(scenario())
+
+
+def test_cloud_fill_stops_at_five_and_admin_can_still_save(env, tmp_path):
+    env.setenv("REMOTE_MCP", "on")
+    env.setenv("CORS_ORIGINS", "https://host.example")
+
+    async def scenario():
+        async with host("https://host.example") as http:
+            visitor, other = await paired(http), await paired(http)
+            other_token = (await issue(http, other))["token"]
+            # Concurrent requests with maximum-width labels must share one cap.
+            attempts = await asyncio.gather(*(http.post(SETTINGS + "/tokens", headers=visitor,
+                        json={"label": "界" * 64}) for _ in range(6)))
+            assert sorted(r.status_code for r in attempts) == [201] * 5 + [409]
+            tokens = (await http.get(SETTINGS, headers=visitor)).json()["tokens"]
+            assert len(tokens) == 5
+            model_file = tmp_path / "web-home" / "secrets.json"
+            assert not model_file.exists()
+            assert (await http.put(MODELS, headers=ADMIN, json=GROUP)).status_code == 200
+            assert set(json.loads(model_file.read_bytes())) == {"shared"}
+            auth = {**ACCEPT, "Authorization": "Bearer " + other_token}
+            assert (await http.post("/mcp", json=INIT, headers=auth)).json()["result"]["serverInfo"]
+            await issue(http, other)
+            assert (await http.delete(SETTINGS + "/tokens/" + tokens[0]["id"], headers=visitor)).is_success
+            await issue(http, visitor)
+    asyncio.run(scenario())
+
+
+def test_token_label_limit(local_env, make_client):
+    with make_client(**LOCAL_CLIENT) as http:
+        assert http.post(SETTINGS + "/tokens", json={"label": "x" * 65}).status_code == 422
+        assert http.post(SETTINGS + "/tokens", json={"label": "x" * 64}).status_code == 201
+
+
+def test_token_creation_rate(local_env, make_client):
+    local_env.setenv("CHAT_RATE_LIMIT", "2")
+    with make_client(**LOCAL_CLIENT) as http:
+        def issue_label(label):
+            return http.post(SETTINGS + "/tokens", json={"label": label}).status_code
+        assert issue_label("first") == issue_label("second") == 201
+        assert issue_label("third") == 429
+
+
+@pytest.mark.parametrize("bad_file", [TOKEN_FILE, "secrets.json"])
+@pytest.mark.parametrize("problem", ["unreadable", "oversize"])
+def test_settings_files_fail_independently(local_env, make_client, tmp_path, bad_file, problem):
+    path = tmp_path / "web-home" / bad_file
+    path.parent.mkdir()
+    if problem == "unreadable":
+        path.mkdir()
+    else:
+        path.write_bytes(b"{}" + b" " * (128 * 1024))
+    with make_client(**LOCAL_CLIENT) as http:
+        model = http.put(MODELS, json=GROUP)
+        token = http.post(SETTINGS + "/tokens", json={"label": "fixture"})
+        if bad_file == TOKEN_FILE:
+            assert (model.status_code, token.status_code) == (200, 503)
+            assert http.get(MODELS).json()["saved"]["shared"]["model"] == GROUP["model"]
+            assert http.delete(MODELS).status_code == 200
+        else:
+            assert (model.status_code, token.status_code) == (503, 201)
+            headers = {**ACCEPT, "Authorization": "Bearer " + token.json()["token"]}
+            assert http.post("/mcp", json=INIT, headers=headers).json()["result"]["serverInfo"]
+            assert http.delete(SETTINGS + "/tokens/" + token.json()["info"]["id"]).status_code == 200
+
+
+def test_out_of_band_unpair_prunes_all_device_tokens(env, tmp_path):
+    from backend.api.devices import get_device_store
+    env.setenv("REMOTE_MCP", "on")
+    env.setenv("CORS_ORIGINS", "https://host.example")
+
+    async def scenario():
+        async with host("https://host.example") as http:
+            a, b = await paired(http), await paired(http)
+            first, second = await issue(http, a), await issue(http, a)
+            survivor = await issue(http, b)
+            store = get_device_store().path
+            data = json.loads(store.read_bytes())
+            del data["devices"][a["X-Device-Id"]]
+            store.write_text(json.dumps(data), encoding="utf-8")
+            auth = {**ACCEPT, "Authorization": "Bearer " + first["token"]}
+            assert (await http.post("/mcp", json=INIT, headers=auth)).status_code == 401
+            records = (tmp_path / "web-home" / TOKEN_FILE).read_text(encoding="utf-8")
+            assert survivor["info"]["id"] in records
+            assert all(t["info"]["id"] not in records for t in (first, second))
+    asyncio.run(scenario())
+
+
+def test_full_token_store_preserves_issued_credentials_and_model_writes(local_env, make_client, tmp_path, monkeypatch):
+    from backend import mcp_tokens
+    with make_client(**LOCAL_CLIENT) as http:
+        token = http.post(SETTINGS + "/tokens", json={"label": "fixture"}).json()["token"]
+        path = tmp_path / "web-home" / TOKEN_FILE
+        before = path.read_bytes()
+        monkeypatch.setattr(mcp_tokens.TOKEN_FILE, "max_bytes", len(before))
+        assert http.post(SETTINGS + "/tokens", json={"label": "second"}).status_code == 503
+        headers = {**ACCEPT, "Authorization": "Bearer " + token}
+        assert http.post("/mcp", json=INIT, headers=headers).json()["result"]["serverInfo"]
+        assert path.read_bytes() == before
+        assert http.put(MODELS, json=GROUP).status_code == 200
+
+
+def test_failure_limit_is_per_presented_id_and_only_for_failures(local_env, make_client):
+    local_env.setenv("REVIT_BRIDGE_WEB_CONTAINER", "1")
+    local_env.setenv("HOST", "0.0.0.0")
+    local_env.setenv("BIND_ADDRESS", "127.0.0.1")
+    with make_client(**{**LOCAL_CLIENT, "client": ("172.17.0.1", 123)}) as http:
+        def initialize(bearer=None):
+            headers = {**ACCEPT, **({"Authorization": "Bearer " + bearer} if bearer else {})}
+            return http.post("/mcp", json=INIT, headers=headers)
+        real = http.post(SETTINGS + "/tokens", json={"label": "fixture"}).json()["token"]
+        bad = real.split(".")[0] + "." + "x" * 43
+        for _ in range(10):
+            assert initialize(bad).status_code == 401
+        assert initialize(bad).status_code == 429
+        assert initialize("rbmcp_" + "0" * 32 + "." + "x" * 43).status_code == 401
+        assert initialize(real).json()["result"]["serverInfo"]
+        assert initialize().json()["result"]["serverInfo"]
+
+
+def test_last_use_writes_at_most_once_per_minute_per_token(local_env, make_client, monkeypatch):
+    from backend import mcp_tokens
+    moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz):
+            return moment
+    monkeypatch.setattr(mcp_tokens, "datetime", Clock)
+    with make_client(**LOCAL_CLIENT) as http:
+        one, two = [http.post(SETTINGS + "/tokens", json={"label": label}).json()["token"]
+                    for label in ("one", "two")]
+        assert http.put(MODELS, json=GROUP).is_success
+        writes = []
+        replace = os.replace
+        def record(src, dest):
+            writes.append(Path(dest).name)
+            return replace(src, dest)
+        monkeypatch.setattr(os, "replace", record)
+        for seconds, bearer, count in [(0, one, 1), (10, two, 2), (49, one, 2), (1, one, 3), (0, two, 3)]:
+            moment += timedelta(seconds=seconds)
+            response = http.post("/mcp", json=INIT, headers={**ACCEPT, "Authorization": "Bearer " + bearer})
+            assert response.json()["result"]["serverInfo"]
+            assert writes == [TOKEN_FILE] * count
+        info = http.get(SETTINGS).json()["tokens"]
+        assert {row["label"]: datetime.fromisoformat(row["last_used_at"]) for row in info} == {
+            "one": moment, "two": moment - timedelta(seconds=50)}
+
+
+@pytest.mark.parametrize("header,error", [
+    ({"Sec-Fetch-Site": "same-site"}, "local_mode_origin"),
+    ({"Origin": "http://localhost:3000"}, "local_mode_origin"),
+    ({"Origin": "null"}, "local_mode_origin"),
+    ({"Host": "rebound.example"}, "local_mode_host"),
+])
+def test_tokenless_loopback_browser_requests_refused(local_env, make_client, header, error):
+    with make_client(**LOCAL_CLIENT) as http:
+        response = http.post("/mcp", json=INIT, headers={**ACCEPT, **header})
+        assert (response.status_code, response.json()["error"]) == (403, error)
+
+
+@pytest.mark.parametrize("cloud", [False, True])
+def test_mcp_solidify_respects_builtin_ownership(env, tmp_path, cloud):
+    from revit_bridge.mcp_app import scope_directory
+    env.setenv("REMOTE_MCP", "on")
+    if cloud:
+        env.setenv("CORS_ORIGINS", "https://host.example")
+    else:
+        env.setenv("DEPLOY_MODE", "local")
+        env.delenv("ADMIN_PASSWORD")
+
+    async def scenario():
+        async with host("https://host.example" if cloud else LOCAL) as http:
+            headers, root = dict(ACCEPT), tmp_path / "data"
+            if cloud:
+                device = await paired(http)
+                headers["Authorization"] = "Bearer " + (await issue(http, device))["token"]
+                root = scope_directory(device["X-Device-Id"])
+            pack = root / "capabilities" / "query_levels.yaml"
+            message = {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+                "name": "solidify_tool", "arguments": {"name": "query_levels", "code": CODE, "description": "Levels"}}}
+            response = await http.post("/mcp", json=message, headers=headers)
+            assert response.status_code == 409
+            assert response.json()["error"]["data"]["error"] == "builtin_read_only"
+            assert not pack.exists()
+            # As with web PUT, an existing user copy in this scope remains editable.
+            pack.parent.mkdir(parents=True, exist_ok=True)
+            pack.write_text("# legacy user pack", encoding="utf-8")
+            saved = await http.post("/mcp", json=message, headers=headers)
+            assert json.loads(saved.json()["result"]["content"][0]["text"])["name"] == "query_levels"
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode,switch,warn", [("cloud", "on", True), ("cloud", "off", False), ("local", "on", False)])
+def test_disk_quota_startup_warning(env, make_client, caplog, mode, switch, warn):
+    env.setenv("REMOTE_MCP", switch)
+    env.setenv("DEPLOY_MODE", mode)
+    if mode == "local":
+        env.delenv("ADMIN_PASSWORD")
+    with make_client():
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("REMOTE_MCP" in w and "per-device disk quotas" in w.lower() and "not enforced" in w for w in warnings) == warn
 
 
 def test_loopback_guard_failure_limit_and_model_store_coexistence(local_env, make_client):

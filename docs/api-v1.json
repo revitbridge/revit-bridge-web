@@ -276,6 +276,9 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Remote MCP is disabled"
           }
         }
       }
@@ -308,6 +311,15 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Remote MCP is disabled"
+          },
+          "409": {
+            "description": "This device already has five active tokens"
+          },
+          "429": {
+            "description": "Token creation rate exceeded for this address"
           },
           "422": {
             "description": "Validation Error",
@@ -355,6 +367,9 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Remote MCP is disabled or token not found"
           },
           "422": {
             "description": "Validation Error",
@@ -3718,7 +3733,7 @@
             }
           },
           "503": {
-            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable). If MCP token cleanup fails after revocation, the device is already revoked (token_store_unavailable).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5261,6 +5276,7 @@
           },
           "label": {
             "type": "string",
+            "maxLength": 64,
             "title": "Label"
           },
           "device_id": {
@@ -5296,7 +5312,7 @@
         "properties": {
           "label": {
             "type": "string",
-            "maxLength": 80,
+            "maxLength": 64,
             "minLength": 1,
             "title": "Label"
           }

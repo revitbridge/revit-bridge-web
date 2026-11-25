@@ -136,6 +136,9 @@ To serve other machines, deploy it as a cloud host.
 
 ## Deploy as a cloud host
 
+Cloud mode disables remote MCP by default. With `REMOTE_MCP=on`, the host stores
+tool packs and evidence for each paired device. Per-device disk quotas are not enforced yet.
+
 A cloud host (`DEPLOY_MODE=cloud`) is one other machines reach: designers pair their Revit with it over
 the WebSocket relay, and the admin password guards changing packs and skills, the logs and the device
 list. It refuses to start without `ADMIN_PASSWORD`.
@@ -390,8 +393,11 @@ loopback use the local URL above and omit `headers`.
 }
 ```
 
-Revoking a token or its pairing cuts off subsequent requests. The private settings
-store keeps the token's salted hash, label, device, creation time and last-use time.
+Each device can have five active tokens with labels up to 64 characters. Token
+creation uses its own per-address `CHAT_RATE_LIMIT` counter. Revoking a pairing
+removes its tokens. The private `mcp-tokens.json` file under `REVIT_BRIDGE_WEB_HOME`
+holds salted hashes and metadata, has its own 128 KiB limit, and records each
+token's last use at most once a minute.
 Local MCP and the web tool library share the package's default data layout under
 `REVIT_BRIDGE_DATA_DIR` or its per-user default. Cloud MCP tools, evidence and
 confirmations use the package's separate directory for each device. Writes require

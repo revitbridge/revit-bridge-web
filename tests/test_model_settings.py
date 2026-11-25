@@ -210,6 +210,10 @@ def test_concurrent_updates_and_permissions(client, tmp_path):
     assert set(json.loads(path.read_bytes())) == set(roles)
     assert {role: info["model"] for role, info in client.get(URL, headers=ADMIN).json()["saved"].items()} == {
         role: role for role in roles}
+    assert_private_file(path)
+
+
+def assert_private_file(path):
     if os.name == "nt":
         import win32api, win32security as sec
         from ntsecuritycon import TOKEN_QUERY
@@ -268,15 +272,15 @@ def test_complete_environment_skips_store_for_runtime_and_public_status(env, mak
 
 
 def test_location_and_checkout_exclusion(env, tmp_path, make_client):
-    from backend import model_settings
+    from backend import private_settings
     env.delenv("REVIT_BRIDGE_WEB_HOME")
     for name in ("APPDATA", "XDG_CONFIG_HOME", "HOME", "USERPROFILE"):
         env.setenv(name, str(tmp_path))
     root = tmp_path / "Library/Application Support" if sys.platform == "darwin" else tmp_path
-    assert model_settings.settings_home() == root / "revit-bridge-web"
-    env.setenv("REVIT_BRIDGE_WEB_HOME", str(model_settings.APP_ROOT / "accidental"))
+    assert private_settings.settings_home() == root / "revit-bridge-web"
+    env.setenv("REVIT_BRIDGE_WEB_HOME", str(private_settings.APP_ROOT / "accidental"))
     assert make_client().put(URL, headers=ADMIN, json=GROUP).status_code == 503
-    assert not (model_settings.APP_ROOT / "accidental").exists()
+    assert not (private_settings.APP_ROOT / "accidental").exists()
 
 
 def test_omitted_key_is_bound_to_saved_address_and_short_keys_are_masked(client):

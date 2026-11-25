@@ -32,7 +32,7 @@ demand. /config.json publishes the browser-facing subset.
     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
                                 server-side values with priority over saved profiles
                                 and eligible guest headers
-    REVIT_BRIDGE_WEB_HOME       directory holding secrets.json (default: per-user config)
+    REVIT_BRIDGE_WEB_HOME       directory holding secrets.json and mcp-tokens.json (default: per-user config)
     ALLOW_BROWSER_KEYS          on/off; default on in cloud mode, off locally
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
                                 and a loopback or private address, and a models

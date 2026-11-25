@@ -6,7 +6,8 @@ from backend import mcp_tokens
 from backend.api import devices
 from backend.api.errors import ApiError, device_store_responses, device_store_unavailable
 from backend.config import get_settings
-from backend.model_settings import StoreUnavailable
+from backend.private_settings import StoreUnavailable
+from backend.ratelimit import client_key, token_create_limiter
 from backend.remote_trials import recent_calls
 
 SETTINGS = "/api/v1/settings/remote-mcp"
@@ -43,7 +44,7 @@ def required_device(device: str | None = Depends(selected_device)) -> str:
 
 class TokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    label: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=mcp_tokens.MAX_LABEL_LENGTH)
 
     @field_validator("label")
     @classmethod
@@ -76,7 +77,7 @@ def unavailable():
     return HTTPException(503, "Remote MCP settings store unavailable")
 
 
-@router.get(SETTINGS)
+@router.get(SETTINGS, responses={404: {"description": "Remote MCP is disabled"}})
 def remote_status(device: str | None = Depends(selected_device)) -> Status:
     """Endpoint status, token metadata and the selected device's recent remote execution evidence."""
     try:
@@ -87,17 +88,28 @@ def remote_status(device: str | None = Depends(selected_device)) -> Status:
         raise unavailable() from None
 
 
-@router.post(SETTINGS + "/tokens", status_code=201)
-def create_token(body: TokenRequest, device: str = Depends(required_device)) -> NewToken:
+@router.post(SETTINGS + "/tokens", status_code=201, responses={
+    404: {"description": "Remote MCP is disabled"},
+    409: {"description": "This device already has five active tokens"},
+    429: {"description": "Token creation rate exceeded for this address"},
+})
+def create_token(body: TokenRequest, request: Request, device: str = Depends(required_device)) -> NewToken:
     """Issue a bearer once. Cloud requires a redeemed X-Device-Id and its X-Device-Key or X-Admin-Token."""
+    settings = get_settings()
+    if not token_create_limiter.allow(client_key(request), settings.chat_rate_limit):
+        raise ApiError(429, "rate_limited", "Too many token requests from this address. Try again in a minute.")
     try:
-        token, info = mcp_tokens.create(device, body.label)
+        token, info = mcp_tokens.create(device, body.label, devices.paired_ids if settings.cloud else None)
         return NewToken(token=token, info=info)
+    except mcp_tokens.TokenLimit:
+        raise ApiError(409, "token_limit", "Revoke one of this device's five tokens to create another.") from None
+    except mcp_tokens.InvalidToken:
+        raise ApiError(403, "invalid_device_key", "An active paired device is required") from None
     except StoreUnavailable:
         raise unavailable() from None
 
 
-@router.delete(SETTINGS + "/tokens/{token_id}")
+@router.delete(SETTINGS + "/tokens/{token_id}", responses={404: {"description": "Remote MCP is disabled or token not found"}})
 def revoke_token(token_id: str, device: str = Depends(required_device)) -> dict[str, bool]:
     """Revoke a bearer by its public management ID for the selected device."""
     try:

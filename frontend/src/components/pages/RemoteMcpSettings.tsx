@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { apiFetch } from '../../api/client'
+import { apiFetch, BridgeApiError } from '../../api/client'
 import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
 import { browserLanguage } from '../../utils/language'
@@ -23,7 +23,17 @@ function Panel() {
     const controller = new AbortController()
     apiFetch<Status>(endpoint, { ...options, signal: controller.signal }).then(result => {
       if (!controller.signal.aborted) { setStatus(result); setFailed(false) }
-    }, () => { if (!controller.signal.aborted) setFailed(true) })
+    }, error => {
+      if (controller.signal.aborted) return
+      if (error instanceof BridgeApiError && error.code === 'remote_mcp_disabled') {
+        setStatus({ enabled: false, device_id: null, tokens: [], calls: [] })
+        setIssued('')
+        setFailed(false)
+      } else {
+        setStatus(undefined)
+        setFailed(true)
+      }
+    })
     return () => controller.abort()
   }, [reload])
   async function change(id?: string) {
@@ -61,17 +71,19 @@ function Panel() {
   <section className="card section"><h3>{zh ? '访问令牌' : 'Access tokens'}</h3>
     {status?.device_id ? <>
       <p>{zh ? '设备' : 'Device'} · {status.device_id}</p>
+      {status.tokens.length >= 5 && <p>{zh ? '已达到五个令牌的上限。撤销一个即可创建新令牌。'
+        : 'This device has five active tokens. Revoke one to create another.'}</p>}
       <form onSubmit={e => { e.preventDefault(); void change() }}>
-        <label>{zh ? '令牌名称' : 'Token label'} <input className="input-field" required maxLength={80} value={label}
+        <label>{zh ? '令牌名称' : 'Token label'} <input className="input-field" required maxLength={64} value={label}
           onChange={e => setLabel(e.target.value)} /></label>{' '}
-        <button className="btn-primary" disabled={busy || !label.trim()}>{zh ? '创建令牌' : 'Create token'}</button>
+        <button className="btn-primary" disabled={busy || !label.trim() || status.tokens.length >= 5}>{zh ? '创建令牌' : 'Create token'}</button>
       </form>
       {issued && <div role="status"><p>{zh ? '现在复制令牌。只显示这一次。' : 'Copy this token now. It is shown once.'}</p>
         <code>{issued}</code>{' '}<button className="btn-ghost" onClick={() => setIssued('')}>{zh ? '隐藏' : 'Dismiss'}</button></div>}
       <ul>{status.tokens.map(t => <li key={t.id}><strong>{t.label}</strong> · {zh ? '创建时间' : 'Created'} {t.created_at}
         {' · '}{zh ? '上次使用' : 'Last used'} {t.last_used_at || (zh ? '从未使用' : 'Never')}{' '}
         <button className="btn-ghost" disabled={busy} onClick={() => void change(t.id)}>{zh ? '撤销' : 'Revoke'}</button></li>)}</ul>
-    </> : cloud && <p>{zh ? '先在“设置 → 连接”中选择已配对的设备。' : 'Select a paired device in Settings → Connection.'}</p>}
+    </> : cloud && status?.enabled && <p>{zh ? '先在“设置 → 连接”中选择已配对的设备。' : 'Select a paired device in Settings → Connection.'}</p>}
   </section>
   <section className="card section"><h3>{zh ? '最近调用' : 'Recent calls'}</h3>
     {status && (status.calls.length ? <ul>{status.calls.map(c => <li key={c.evidence_id}><time>{c.time}</time> · {c.tool}

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Hashable
 
 from backend.log_store import get_client_ip
 
@@ -26,9 +27,9 @@ class RateLimiter:
         self.window = window
         self._clock = clock
         self._lock = threading.Lock()
-        self._hits: dict[str, list[float]] = {}
+        self._hits: dict[Hashable, list[float]] = {}
 
-    def allow(self, key: str, limit: int) -> bool:
+    def allow(self, key: Hashable, limit: int) -> bool:
         """Record one hit for ``key``; False when it already had ``limit`` in the window.
         A limit of 0 or less disables the check."""
         if limit <= 0:
@@ -43,14 +44,14 @@ class RateLimiter:
             self._hits[key] = hits
             return True
 
-    def count(self, key: str) -> int:
+    def count(self, key: Hashable) -> int:
         """Hits ``key`` has in the window now, without adding one."""
         now = self._clock()
         with self._lock:
             self._prune_idle(now)
             return sum(1 for t in self._hits.get(key, []) if now - t < self.window)
 
-    def record(self, key: str) -> None:
+    def record(self, key: Hashable) -> None:
         """Add one hit for ``key`` whatever it already has (counting events, not gating them)."""
         now = self._clock()
         with self._lock:
@@ -62,7 +63,7 @@ class RateLimiter:
         for key in [k for k, hits in self._hits.items() if not hits or hits[-1] <= cutoff]:
             del self._hits[key]
 
-    def keys(self) -> set[str]:
+    def keys(self) -> set[Hashable]:
         with self._lock:
             return set(self._hits)
 
@@ -74,6 +75,7 @@ class RateLimiter:
 chat_limiter = RateLimiter()
 confirm_limiter = RateLimiter()
 pair_limiter = RateLimiter()
+token_create_limiter = RateLimiter()
 redeem_limiter = RateLimiter()
 handshake_failures = RateLimiter()
 
@@ -87,5 +89,6 @@ def reset_all() -> None:
     chat_limiter.reset()
     confirm_limiter.reset()
     pair_limiter.reset()
+    token_create_limiter.reset()
     redeem_limiter.reset()
     handshake_failures.reset()

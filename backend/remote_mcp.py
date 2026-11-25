@@ -3,21 +3,25 @@ from contextlib import asynccontextmanager
 from urllib.parse import urlsplit
 
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.shared.exceptions import MCPError
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import Response
 
+from revit_bridge.capabilities import ToolStore
 from revit_bridge.paths import data_root
 from revit_bridge.revit import RevitClientPool, RevitSettings
 
 from backend import mcp_tokens
-from backend.api.devices import get_device_store
+from backend.api.bridge import builtin_read_only, is_builtin, require_tool_name
+from backend.api.devices import paired_ids
+from backend.api.errors import ApiError
 from backend.config import is_loopback
 from backend.localguard import host_names_for
-from backend.model_settings import StoreUnavailable
+from backend.private_settings import StoreUnavailable
 from backend.ratelimit import RateLimiter, client_key
 from backend.relay import WebSocketRevitClient, get_relay
-from backend.remote_trials import CHANNEL, MAX_BYTES, RemoteTrials, ledger_for, trial_evidence_id
+from backend.remote_trials import CHANNEL, MAX_BYTES, RemoteTrials, device_root, ledger_for, trial_evidence_id
 
 
 def transport_security(settings):
@@ -110,8 +114,8 @@ class RemoteMCP:
 
     @staticmethod
     async def check_paired_device(device_id):
-        devices = await run_in_threadpool(get_device_store().list)
-        if not any(d.device_id == device_id and d.last_seen and not d.revoked_at for d in devices):
+        if device_id not in await run_in_threadpool(paired_ids):
+            await run_in_threadpool(mcp_tokens.revoke_device, device_id)
             raise mcp_tokens.InvalidToken
 
     async def get_client(self, request):
@@ -126,8 +130,15 @@ class RemoteMCP:
             message = await request.json()  # the SDK has already bounded, read and parsed this body
             if message.get("method") == "tools/call":
                 params = message.get("params", {})
-                if params.get("name") == "dry_run_code":
-                    code = (params.get("arguments") or {}).get("code")
+                args = params.get("arguments") or {}
+                if params.get("name") == "solidify_tool":
+                    try:
+                        await run_in_threadpool(check_pack_name, device_id, args.get("name"))
+                    except ApiError as exc:
+                        request.state.mcp_error_status = exc.status
+                        raise MCPError(exc.status, str(exc), exc.payload) from None
+                elif params.get("name") == "dry_run_code":
+                    code = args.get("code")
                     if isinstance(code, str) and len(code.encode("utf-8")) <= MAX_BYTES:
                         request.state.trial_code = code
         client = (WebSocketRevitClient(get_relay(), device_id, RevitSettings.from_env().timeout)
@@ -138,13 +149,14 @@ class RemoteMCP:
         if self.app is None:
             return await Response(status_code=404)(scope, receive, send)
         request = Request(scope)
-        peer = client_key(request)
-        if self.failures.count(peer) >= 10:
-            return await Response(status_code=429, headers={"Retry-After": "60"})(scope, receive, send)
         try:
             device, token_id = await self.authenticate(request)
         except mcp_tokens.InvalidToken:
-            self.failures.allow(peer, 10)
+            scheme, _, value = request.headers.get("authorization", "").partition(" ")
+            match = mcp_tokens.TOKEN_ID.match(value) if scheme.lower() == "bearer" else None
+            key = (client_key(request), match[1] if match else None)
+            if not self.failures.allow(key, 10):
+                return await Response(status_code=429, headers={"Retry-After": "60"})(scope, receive, send)
             return await Response(status_code=401, headers={"WWW-Authenticate": "Bearer"})(scope, receive, send)
         except (StoreUnavailable, OSError):
             return await Response(status_code=503)(scope, receive, send)
@@ -156,6 +168,8 @@ class RemoteMCP:
         bound = {**scope, "state": state, "headers": [(k, v) for k, v in scope["headers"] if k.lower() not in private]}
 
         async def observe(message):
+            if message["type"] == "http.response.start" and "mcp_error_status" in state:
+                message = {**message, "status": state["mcp_error_status"]}
             # build_asgi_app uses the SDK's single JSON response for a tool call.
             if message["type"] == "http.response.body" and "trial_code" in state:
                 eid = trial_evidence_id(message.get("body", b""))
@@ -165,3 +179,9 @@ class RemoteMCP:
             await send(message)
 
         await self.app(bound, receive, observe)
+
+
+def check_pack_name(device_id, name):
+    require_tool_name(name)
+    if is_builtin(ToolStore(device_root(device_id) / "capabilities"), name):
+        raise builtin_read_only(name)
