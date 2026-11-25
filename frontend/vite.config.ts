@@ -24,6 +24,7 @@ export default defineConfig({
     port: DEV_PORT,
     proxy: {
       '/api': { target: devTarget, changeOrigin: true, ws: true, configure: asTargetOrigin },
+      '/mcp': { target: devTarget, changeOrigin: true, configure: asTargetOrigin },
       '/health': { target: devTarget, changeOrigin: true },
       '/config.json': { target: devTarget, changeOrigin: true },
     },

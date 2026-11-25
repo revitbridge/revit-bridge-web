@@ -402,6 +402,9 @@ select {
   border-radius: var(--radius-xs);
 }
 
+.remote-mcp pre { padding: .75rem; overflow: auto; background: var(--bg2); }
+.remote-mcp code, .authoring-page li code { overflow-wrap: anywhere; }
+
 .status-line {
   margin-top: 10px;
   padding: 8px 12px;

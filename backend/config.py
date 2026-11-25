@@ -32,7 +32,7 @@ demand. /config.json publishes the browser-facing subset.
     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
                                 server-side values with priority over saved profiles
                                 and eligible guest headers
-    REVIT_BRIDGE_WEB_HOME       directory holding secrets.json (default: per-user config)
+    REVIT_BRIDGE_WEB_HOME       directory holding secrets.json and mcp-tokens.json (default: per-user config)
     ALLOW_BROWSER_KEYS          on/off; default on in cloud mode, off locally
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
                                 and a loopback or private address, and a models
@@ -178,6 +178,7 @@ class WebSettings:
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
     auto_run: bool = True
+    remote_mcp: bool = True
     auto_run_max_steps: int = 8
     direct_run_limit: int = 10
     auto_run_exclude: tuple[str, ...] = ("delete_elements", "delete_selected", "delete_elements_by_category")
@@ -215,6 +216,7 @@ class WebSettings:
                 raise ConfigError("AUTO_RUN_EXCLUDE contains unknown tools: " + ", ".join(sorted(unknown)))
         settings = cls(
             mode=mode,
+            remote_mcp=_choice(env.get("REMOTE_MCP"), "REMOTE_MCP", ("off", "on") if cloud else ("on", "off")) == "on",
             auto_run=_choice(env.get("AUTO_RUN"), "AUTO_RUN", ("off", "on") if cloud else ("on", "off")) == "on",
             auto_run_max_steps=_int(env.get("AUTO_RUN_MAX_STEPS"), 8, "AUTO_RUN_MAX_STEPS"),
             direct_run_limit=_int(env.get("DIRECT_RUN_LIMIT"), 10, "DIRECT_RUN_LIMIT"),

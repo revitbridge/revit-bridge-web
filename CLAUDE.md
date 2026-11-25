@@ -187,6 +187,14 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 
 ## Dependency on the package
 
+The stateless `/mcp` endpoint enters `build_asgi_app`'s lifespan with the host.
+Its verified device scope comes from a loopback request or a device-bound bearer.
+The package writes the supplied channel (`remote-mcp`) to the ledger's `host` field.
+The ledger's `channel` records how a spec was confirmed. Local web and HTTP MCP
+share pending confirmation files, so the web gate in that configuration uses
+0.11.0's `revit_bridge.mcp_app._DeviceGate` as well. Check the cross-entry-point
+single-use test in `tests/test_remote_mcp.py` when updating the wheel.
+
 Selection watches call `RevitQueryExecutor.watch_selection` only from the browser's
 dedicated bridge endpoint. A planner's `ask_selection` waits for a designer click.
 Native view function descriptors come from `list_host_functions()`. Captures have a

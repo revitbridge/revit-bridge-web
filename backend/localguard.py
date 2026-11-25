@@ -65,7 +65,7 @@ STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Sec-Fetch-Site values that mean another site's page started the request.
 FOREIGN_FETCH_SITES = frozenset({"cross-site", "same-site"})
 # Paths a cross-site navigation may not open: data, not the page shell.
-NOT_THE_PAGE = ("/config.json", "/openapi.json", "/docs", "/redoc", "/health")
+NOT_THE_PAGE = ("/config.json", "/openapi.json", "/docs", "/redoc", "/health", "/mcp")
 # On every local response: no other page may frame the UI.
 FRAME_POLICY = ((b"content-security-policy", b"frame-ancestors 'self'"), (b"x-frame-options", b"SAMEORIGIN"))
 
@@ -176,7 +176,10 @@ class LocalModeGuard:
             return NOT_LOCAL, (f"This host runs in local mode and answers only requests addressed to "
                                f"{', '.join(sorted(self.host_names))}; this one names {host or 'no host'!r}")
         client = scope.get("client")
-        if self.check_peer and not (client and is_loopback(str(client[0]))):
+        # The exact HTTP MCP endpoint authenticates a non-loopback peer with a
+        # bearer token. All other local checks (including Host and Origin) apply.
+        mcp = scope["type"] == "http" and scope.get("path") == "/mcp"
+        if self.check_peer and not mcp and not (client and is_loopback(str(client[0]))):
             return NOT_LOCAL, "This host runs in local mode and answers this machine only"
 
         fetch_site = headers.get(b"sec-fetch-site", b"").decode("latin-1").strip().lower()

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import { llmHeaders, useSessionStore } from '../../store'
-import { post } from '../shared/http'
+import { get, post } from '../shared/http'
 import { readCheck, readDryRun } from '../hostv2/workbench/results'
 import { getErrorMessage } from '../../utils/errors'
 import { browserLanguage } from '../../utils/language'
@@ -11,6 +11,7 @@ import './authoring.css'
 const base = '/api/v1/bridge'
 type Pack = Record<string, unknown>
 interface Draft { pack: Pack; problems: string[] }
+interface Trial { evidence_id: string; time: string; code_sha256: string; rolled_back: boolean }
 type Step = 'draft' | 'check' | 'trial' | 'saved'
 const usableFields = new Set(['schema_version', 'version', 'name', 'code_template', 'parameters', 'description',
   'source_query', 'validator'])
@@ -36,6 +37,16 @@ function Editor() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState('')
   const [catalogError, setCatalogError] = useState('')
+  const [trials, setTrials] = useState<Trial[]>([])
+  const [trialsError, setTrialsError] = useState('')
+  const [refresh, setRefresh] = useState(0)
+  useEffect(() => {
+    let active = true
+    get<{ trials: Trial[] }>(base + '/remote-trials').then(data => {
+      if (active) { setTrials(data.trials); setTrialsError('') }
+    }, err => { if (active) setTrialsError(getErrorMessage(err)) })
+    return () => { active = false }
+  }, [refresh])
   useEffect(() => {
     let current = true
     bridgeApi.listTools().then(items => { if (current) setTools(items) })
@@ -43,6 +54,16 @@ function Editor() {
     return () => { current = false }
   }, [])
   const edited = (set: (text: string) => void, text: string) => { set(text); setStage('draft'); setResult(''); setReplace(false) }
+  async function loadTrial(trial: Trial) {
+    setBusy(true)
+    try {
+      const draft = await get<{ code: string }>(base + '/remote-trials/' + encodeURIComponent(trial.evidence_id))
+      setMeta(JSON.stringify({ schema_version: 1, version: '1.0.0', name: 'trial_' + trial.code_sha256.slice(0, 12),
+        description: '' }, null, 2))
+      setCode(draft.code); setParams('[]'); setValues('{}'); setStage('draft'); setReplace(false)
+      setResult(zh ? '填写工具名称和说明，然后编译检查。' : 'Enter a tool name and description, then run Compile check.')
+    } catch (e) { setTrialsError(getErrorMessage(e)) } finally { setBusy(false) }
+  }
   async function action(kind: Step) {
     if (busy || (kind === 'trial' && stage !== 'check') || (kind === 'saved' && stage !== 'trial')) return
     setBusy(true)
@@ -95,6 +116,14 @@ function Editor() {
     finally { setBusy(false) }
   }
   return <section className="card authoring-page"><h2>{zh ? '工具编写' : 'Tool authoring'}</h2>
+    <section><h3>{zh ? '最近试跑' : 'Recent trials'}</h3>
+      <button type="button" onClick={() => setRefresh(n => n + 1)}>{zh ? '刷新' : 'Refresh'}</button>
+      {trialsError && <p role="alert">{trialsError}</p>}
+      {trials.length ? <ul>{trials.map(t => <li key={t.evidence_id}><time>{t.time}</time> · {zh ? '已回滚' : 'Rolled back'}
+        {' · '}<code>{t.evidence_id}</code> · SHA-256 <code>{t.code_sha256}</code>{' '}
+        <button type="button" disabled={busy} onClick={() => void loadTrial(t)}>{zh ? '转成工具' : 'Turn into a tool'}</button></li>)}</ul>
+        : <p>{zh ? '尚无可加载的远程回滚试跑。' : 'No remote rollback trials available.'}</p>}
+    </section>
     <fieldset disabled={busy}><div className="authoring-columns">
       <div><label>{zh ? '描述工具' : 'Describe the tool'}<textarea value={brief} onChange={e => setBrief(e.target.value)} /></label>
         <label>{zh ? '参考工具' : 'Reference pack'}<select value={based} onChange={e => setBased(e.target.value)}>
