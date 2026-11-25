@@ -20,6 +20,7 @@ request 400 naming the option, as a provider that does not take it would.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
 import httpx
 
@@ -237,18 +238,21 @@ def role_of(body: dict) -> str:
     return next((role for opening, role in ROLE_OPENINGS.items() if system.startswith(opening)), "single")
 
 
+ScriptedReply = dict | Callable[[dict], dict]
+
+
 class RoleScriptedModel(FakeModel):
     """A ``FakeModel`` that answers each role from its own script: ``scripts`` maps
     ``analyst`` / ``planner`` / ``supervisor`` (and ``single``, the one loop) to turns; a
     request takes the next turn of its role's script. ``roles`` lists the role of every
     request, in the order they came."""
 
-    def __init__(self, scripts: dict[str, list[dict]] | None = None, **options):
+    def __init__(self, scripts: dict[str, list[ScriptedReply]] | None = None, **options):
         super().__init__([], **options)
-        self.scripts: dict[str, list[dict]] = {role: list(turns) for role, turns in (scripts or {}).items()}
+        self.scripts = {role: list(turns) for role, turns in (scripts or {}).items()}
         self.roles: list[str] = []
 
-    def script(self, role: str, *turns: dict) -> None:
+    def script(self, role: str, *turns: ScriptedReply) -> None:
         self.scripts.setdefault(role, []).extend(turns)
 
     def left(self) -> dict[str, int]:
@@ -266,6 +270,8 @@ class RoleScriptedModel(FakeModel):
         if not turns:
             return httpx.Response(500, text=f'{{"error": "script of {role} exhausted"}}')
         turn = turns.pop(0)
+        if callable(turn):
+            turn = turn(body)
         asked = bool((body.get("stream_options") or {}).get("include_usage"))
         return httpx.Response(200, text=self._stream(turn, asked), headers={"content-type": "text/event-stream"})
 

@@ -11,7 +11,7 @@ from backend.api.model_tools import CODE_NOT_OFFERED, TOOL_DEFINITIONS, TOOL_NAM
 from backend.session import get_session_store
 from backend.skill_store import get_skill_store
 from tests.fake_model import text_turn, tool_turn
-from tests.test_api_v1 import code_spec, spec_for
+from tests.test_api_v1 import WALL, code_spec, spec_for
 from tests.test_host_loop import HEADERS, events, model, sse, tokens  # noqa: F401 - the model fixture
 
 TOOLS = ["get_project_snapshot", "query", "list_tools", "get_tool_choices", "missing_params", "reconcile",
@@ -100,9 +100,9 @@ def test_an_execute_code_proposal_is_refused_without_a_card(client, model):
 
 
 def test_a_run_tool_proposal_still_shows_its_card(client, model):
-    model.turns += [tool_turn(("propose_spec", {"spec": spec_for("query_levels")})), text_turn("card")]
-    frames = sse(client.post("/api/chat", json={"message": "levels"}, headers=HEADERS).text)
-    assert len(events(frames, "spec")) == 1 and events(frames, "spec")[0]["card"].startswith("Task: run query_levels")
+    model.turns += [tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})), text_turn("card")]
+    frames = sse(client.post("/api/chat", json={"message": "build a wall"}, headers=HEADERS).text)
+    assert len(events(frames, "spec")) == 1 and events(frames, "spec")[0]["card"].startswith("Task: run create_wall")
 
 
 def test_when_no_tool_fits_the_reply_points_to_the_workbench(client, model):

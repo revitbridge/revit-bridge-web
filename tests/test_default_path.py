@@ -231,7 +231,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
     prior = recorded(name, f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}")
     assert hashes([r.replace("/capabilities/authoring", "/capabilities/workbench") for r in requests]) == prior["requests"]
-    assert hashes(streams) == recorded(name, f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}")["streams"]
+    assert hashes(streams) == prior["streams"]
     legacy = recorded(name, AA5556C_SECTION)["streams"]
     for index, stream in enumerate(streams):
         if name.startswith("single-") and index == 2:

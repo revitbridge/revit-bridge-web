@@ -101,7 +101,11 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
     wall =next(t for t in tools if t["name"] == "create_wall")
     # The MCP shape plus where the pack comes from (no directory on a cloud host).
     assert set(wall) == {"name", "description", "version", "parameters", "preconditions", "validator", "used",
-                         "builtin", "origin", "display_name", "applies_when", "not_for", "revit_versions"}
+                         "builtin", "origin", "read_only", "display_name", "applies_when", "not_for", "revit_versions"}
+    assert {t["name"] for t in tools if t["read_only"]} == {
+        "count_by_level", "elements_in_link", "list_types", "query_levels", "query_model_stats",
+        "list_elements", "get_element_geometry", "get_element_parameters",
+    }
     assert all(t["builtin"] is True and t["origin"] == "builtin" for t in tools)
     assert wall["version"] == "1.0.0" and wall["validator"] == "count_delta" and wall["used"] == 0
     assert wall["preconditions"][0] == {"kind": "levels_min", "value": 1}
@@ -114,6 +118,16 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
 
 COUNT_WALLS = {"name": "count_walls", "description": "How many walls", "parameters": [],
                "code": "return new FilteredElementCollector(document).OfCategory(BuiltInCategory.OST_Walls).GetElementCount();"}
+
+
+def test_tool_page_receives_the_wheels_element_picker_and_reader_flag(client):
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / "frontend/src/components/capabilities/moveElementIds.fixture.json"
+    move = client.get(f"{B}/tools/move_elements").json()
+    assert next(p for p in move["parameters"] if p["name"] == "element_ids") == json.loads(fixture.read_text())
+    assert move["read_only"] is False
+    assert client.get(f"{B}/tools/get_element_geometry").json()["read_only"] is True
 
 
 def test_tool_detail_update_and_delete_of_a_user_pack(make_client, env, tmp_path):
