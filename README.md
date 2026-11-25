@@ -349,6 +349,63 @@ uv run pytest                            # backend tests, no Revit needed
 
 ## Configure
 
+### Connect an MCP client
+
+Open **Settings → Remote MCP** for the Streamable HTTP address, connection status,
+device tokens and recent calls. A local host enables `/mcp` by default. A direct
+loopback connection uses the same Host, Origin and forwarding-header checks as the
+web app. The local Docker image uses its loopback-published port. For Codex CLI:
+
+```sh
+codex mcp add revit --url http://127.0.0.1:7860/mcp
+```
+
+On a cloud deployment, set `REMOTE_MCP=on` and configure the public HTTPS origin in
+`CORS_ORIGINS` or the relay's public URL in `PUBLIC_WS_BASE`. Use exact origins,
+including any non-default port. A wildcard CORS entry grants no public MCP host.
+`REMOTE_MCP=off` returns HTTP 404 and is the cloud default.
+
+In **Settings → Connection**, select a redeemed pairing. Its browser key authorizes
+token management for that device. An administrator can also manage a selected
+device's tokens. Create a labeled token in **Remote MCP**, copy it once and set
+`REVIT_MCP_TOKEN` in the client environment. Replace the example host below with
+the address on the Settings page.
+
+```sh
+codex mcp add revit --url https://bridge.example/mcp --bearer-token-env-var REVIT_MCP_TOKEN
+```
+
+For Claude Code, add the following entry to the project's `.mcp.json`. For direct
+loopback use the local URL above and omit `headers`.
+
+```json
+{
+  "mcpServers": {
+    "revit": {
+      "type": "http",
+      "url": "https://bridge.example/mcp",
+      "headers": { "Authorization": "Bearer ${REVIT_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+Revoking a token or its pairing cuts off subsequent requests. The private settings
+store keeps the token's salted hash, label, device, creation time and last-use time.
+Local MCP and the web tool library share the package's default data layout under
+`REVIT_BRIDGE_DATA_DIR` or its per-user default. Cloud MCP tools, evidence and
+confirmations use the package's separate directory for each device. Writes require
+the package's normal spec confirmation, including when the host environment sets
+`REVIT_BRIDGE_ALLOW_UNCONFIRMED`.
+
+After a successful remote `dry_run_code`, open **Tools → Author tools → Recent trials**
+and choose **Turn into a tool**. Add a name and description, compile the draft,
+run it with rollback, then save through the authoring form. Cloud authoring uses its
+existing administrator permission. The running host holds up to 20 drafts per
+device, each up to 64 KiB, for 24 hours. Restarting clears this memory. The package
+ledger retains its usual evidence, including the code hash and up to 200 initial
+source characters. Settings shows only time, tool, outcome and evidence ID.
+
 ### Server model settings
 
 Open **Settings → Models** to save an OpenAI-compatible endpoint, model name and key for all
@@ -372,7 +429,7 @@ groups. Each contains `base_url`, `model`, `key_set` and `key_tail` (last four c
 null for a key shorter than 16 characters). PUT accepts `role` (default `shared`), `base_url`, `model`
 and optional write-only `api_key`. Omitting the key retains the saved credential at the same
 endpoint. DELETE with `?role=planner`, for example, clears that group. DELETE without a role
-clears the store, including a corrupt file. Responses carry masked summaries.
+clears the model profiles. An intact store preserves remote MCP tokens. Responses carry masked summaries.
 Use `X-Admin-Token` for these operations on a cloud host.
 
 Visitors can enter a key in Settings when browser keys are enabled and the host has no configured

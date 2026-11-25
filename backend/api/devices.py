@@ -165,7 +165,7 @@ async def _device_or_404(device_id: str) -> dict:
     return {"device": device}
 
 
-async def _authorized(request: Request, device_id: str) -> Device:
+async def authorized_device(request: Request, device_id: str) -> Device:
     """The device when the request holds its browser key, or the admin password.
 
     The admin token is checked first: with it the device headers are irrelevant
@@ -261,13 +261,13 @@ def register(router) -> None:
     @router.get("/devices/{device_id}", responses=responses(403, 404, 422))
     async def get_device(device_id: str, request: Request):
         """One device: is it online, when was it last seen, how many requests has it served."""
-        device = await _authorized(request, device_id)
+        device = await authorized_device(request, device_id)
         return device_view(device, get_relay().device_status(device_id))
 
     @router.delete("/devices/{device_id}", responses=device_store_responses(403, 404, 422))
     async def revoke_device(device_id: str, request: Request):
         """Revoke the device and close its socket: no more requests, key and token dead."""
-        await _authorized(request, device_id)
+        await authorized_device(request, device_id)
         try:
             await run_in_threadpool(get_device_store().revoke, device_id)
         except OSError:

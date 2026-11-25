@@ -9,6 +9,7 @@ import CapabilitiesPage from './components/pages/CapabilitiesPage'
 import EvidencePage from './components/pages/EvidencePage'
 import TokenPage from './components/pages/TokenPage'
 import ModelSettings from './components/pages/ModelSettings'
+import RemoteMcpSettings from './components/pages/RemoteMcpSettings'
 import { currentPath, showPath, TABS, viewOf, type SettingsView, type View } from './route'
 
 const tabsZh = { Chat: '对话', Tools: '工具', Evidence: '证据', Settings: '设置' }
@@ -40,7 +41,8 @@ export default function App({ path }: { path?: string }) {
   const model = features.models.planner || (features.byoModel && !features.serverModel ? guestModel : '') || (zh ? '未设置' : 'Not set')
   useEffect(() => { showPath(view) }, [view])
   useEffect(() => { cleanBrowserKey() }, [features.serverModel])
-  const sections: Record<SettingsView, string> = { models: zh ? '模型' : 'Models', connection: zh ? '连接' : 'Connection', usage: zh ? '用量' : 'Usage' }
+  const sections: Record<SettingsView, string> = { models: zh ? '模型' : 'Models', connection: zh ? '连接' : 'Connection',
+    'remote-mcp': zh ? '远程 MCP' : 'Remote MCP', usage: zh ? '用量' : 'Usage' }
 
   return <div className="app-shell flex flex-col h-screen">
     <header className="app-header">
@@ -67,6 +69,7 @@ export default function App({ path }: { path?: string }) {
           <button key={s} className={`subtab${s === settings ? ' is-active' : ''}`}
             onClick={() => setView({ ...view, settings: s })}>{sections[s]}</button>)}</div>
         {settings === 'models' && <ModelSettings />}
+        {settings === 'remote-mcp' && <RemoteMcpSettings />}
         {settings === 'connection' && <ConnectPage />}
         {settings === 'usage' && <TokenPage />}
       </>}

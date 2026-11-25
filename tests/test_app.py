@@ -205,6 +205,7 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/check", "/api/v1/bridge/dry-run", "/api/v1/bridge/choices",
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
         "/api/v1/bridge/evidence", "/api/v1/bridge/evidence/{evidence_id}/validate",
+        "/api/v1/bridge/remote-trials", "/api/v1/bridge/remote-trials/{evidence_id}",
         "/api/v1/bridge/trigger-selection",
         "/api/v1/bridge/watch-selection", "/api/v1/bridge/watch-selection/{session_id}/{watch_id}",
         "/api/v1/bridge/host-functions",

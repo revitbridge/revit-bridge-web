@@ -46,6 +46,10 @@ class StoreUnavailable(Exception):
     """Never attach the file contents or the parser's diagnostic."""
 
 
+class StoreCorrupt(StoreUnavailable):
+    pass
+
+
 class Profile(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     base_url: str = Field(min_length=1, max_length=2048)
@@ -116,7 +120,7 @@ def _open_windows_read(path, flags):
     return msvcrt.open_osfhandle(handle.Detach(), os.O_RDONLY | os.O_BINARY)
 
 
-def read_profiles() -> dict[str, Profile]:
+def read_settings() -> dict:
     try:
         path = settings_home() / "secrets.json"
         with open(path, "rb", opener=_open_windows_read if os.name == "nt" else None) as source:
@@ -124,15 +128,28 @@ def read_profiles() -> dict[str, Profile]:
         if len(raw) > MAX_BYTES:
             raise ValueError
         groups = json.loads(raw)
-        if not isinstance(groups, dict) or not groups.keys() <= set(SCOPES):
+        if not isinstance(groups, dict) or not groups.keys() <= {*SCOPES, "remote_mcp_tokens"}:
             raise ValueError
-        profiles = {scope: Profile.model_validate(entry) for scope, entry in groups.items()}
-        _check_public_fields(profiles)
-        return profiles
+        return groups
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
+        raise StoreCorrupt from None
+    except OSError:
         raise StoreUnavailable from None
+
+
+def _profiles(groups: dict) -> dict[str, Profile]:
+    try:
+        profiles = {scope: Profile.model_validate(groups[scope]) for scope in SCOPES if scope in groups}
+        _check_public_fields(profiles)
+        return profiles
+    except ValueError:
+        raise StoreUnavailable from None
+
+
+def read_profiles() -> dict[str, Profile]:
+    return _profiles(read_settings())
 
 
 def _windows_temp(home: Path):
@@ -185,14 +202,16 @@ def _writer(home: Path):
         yield  # close releases either OS lock
 
 
-def _replace(home: Path, profiles: dict[str, Profile]):
-    payload = {k: {"base_url": p.base_url, "model": p.model, "api_key": p.key} for k, p in profiles.items()}
+def _replace(home: Path, payload: dict):
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    if len(raw) > MAX_BYTES:
+        raise StoreUnavailable
     fd, name = _windows_temp(home) if os.name == "nt" else tempfile.mkstemp(dir=home, prefix=".model-")
     try:
         with os.fdopen(fd, "wb") as dest:
             if os.name != "nt":
                 os.fchmod(fd, 0o600)
-            dest.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            dest.write(raw)
             dest.flush()
             os.fsync(dest.fileno())
         os.replace(name, home / "secrets.json")
@@ -200,26 +219,43 @@ def _replace(home: Path, profiles: dict[str, Profile]):
         Path(name).unlink(missing_ok=True)
 
 
-def update_profiles(role: Scope | None, profile: ProfileWrite | None = None) -> dict[str, Profile]:
+@contextmanager
+def edit_settings(*, clear_corrupt=False):
+    """Serialize updates to model profiles and MCP credentials across workers."""
     try:
         home = settings_home()
         home.mkdir(mode=0o777 if os.name == "nt" else 0o700, parents=True, exist_ok=True)
         with _writer(home):
-            if role is None:
-                (home / "secrets.json").unlink(missing_ok=True)
-                return {}
-            profiles = read_profiles()
-            if profile is None:
-                profiles.pop(role, None)
+            try:
+                groups = read_settings()
+            except StoreCorrupt:
+                if not clear_corrupt:
+                    raise
+                groups = {}
+            yield groups
+            if groups:
+                _replace(home, groups)
             else:
-                old = profiles.get(role)
-                # Omitting a key retains it only for the same saved endpoint.
-                key = profile.api_key
-                if key is None and old and old.base_url == profile.base_url:
-                    key = old.api_key
-                profiles[role] = Profile(base_url=profile.base_url, model=profile.model, api_key=key)
-            _check_public_fields(profiles)
-            _replace(home, profiles)
-            return profiles
+                (home / "secrets.json").unlink(missing_ok=True)
     except OSError:
         raise StoreUnavailable from None
+
+
+def update_profiles(role: Scope | None, profile: ProfileWrite | None = None) -> dict[str, Profile]:
+    with edit_settings(clear_corrupt=role is None) as groups:
+        profiles = _profiles(groups) if role is not None else {}
+        if role is None:
+            for scope in SCOPES:
+                groups.pop(scope, None)
+        elif profile is None:
+            profiles.pop(role, None)
+            groups.pop(role, None)
+        else:
+            old = profiles.get(role)
+            # Omitting a key retains it only for the same saved endpoint.
+            key = profile.key if profile.api_key is not None else (
+                old.key if old and old.base_url == profile.base_url else "")
+            groups[role] = {"base_url": profile.base_url, "model": profile.model, "api_key": key}
+            profiles[role] = Profile.model_validate(groups[role])
+            _check_public_fields(profiles)
+        return profiles

@@ -185,7 +185,14 @@ _ledger: Ledger | None = None
 def get_gate() -> Gate:
     global _gate
     if _gate is None:
-        _gate = Gate()
+        settings = get_settings()
+        if settings.remote_mcp and not settings.cloud:
+            # Both entry points redeem files from this directory. Use the pinned
+            # package's HTTP gate on both, including its atomic one-time retirement.
+            from revit_bridge.mcp_app import _DeviceGate
+            _gate = _DeviceGate()
+        else:
+            _gate = Gate()
     return _gate
 
 

@@ -13,6 +13,19 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   document.body.append(box); root = createRoot(box)
   vi.spyOn(bridgeApi, 'listTools').mockResolvedValue([])
+  vi.spyOn(http, 'get').mockResolvedValue({ trials: [] })
+})
+
+it('loads a selected remote rollback into an editable draft that still needs a compile and trial', async () => {
+  vi.mocked(http.get).mockImplementation(async url => url.endsWith('/remote-trials')
+    ? { trials: [{ time: '2026-11-25T00:00:00Z', code_sha256: 'abcd1234', evidence_id: 'ev_test', rolled_back: true }] }
+    : { code: 'return 73;' })
+  await act(async () => root.render(<AuthoringPage />))
+  expect(box.textContent).toContain('abcd1234')
+  await press('Turn into a tool')
+  expect(box.querySelector<HTMLTextAreaElement>('.authoring-code')?.value).toBe('return 73;')
+  expect(button('Dry run and roll back').disabled).toBe(true)
+  expect(button('Save to tools').disabled).toBe(true)
 })
 afterEach(() => { act(() => root.unmount()); box.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const button = (name: string) => [...box.querySelectorAll('button')].find(b => b.textContent === name)!
