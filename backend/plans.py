@@ -98,7 +98,7 @@ class Plan:
                 "steps": [{**s.event(), "tool": s.tool, "result": s.result} for s in self.steps]}
 
     def revise(self, raw):
-        if not isinstance(raw, list) or not 2 <= len(raw) <= 8:
+        if not isinstance(raw, list) or len(raw) > 8:
             raise ValueError("A plan needs 2 to 8 steps.")
         if self.confirmed or self.reporting:
             raise ValueError("Wait for the confirmed step's execution report before revising the plan.")
@@ -131,6 +131,8 @@ class Plan:
         if any(s.status == "done" and s.id not in seen for s in self.steps):
             raise ValueError("A completed step cannot be removed.")
         omitted = [s for s in self.steps if s.id not in seen]
+        if len(steps) + len(omitted) < 2:
+            raise ValueError("A plan needs 2 to 8 steps.")
         if len(steps) + len(omitted) > 8:
             raise ValueError("A plan can retain at most 8 steps, including skipped steps.")
         positions = {s.id: i for i, s in enumerate(self.steps)}
@@ -142,6 +144,7 @@ class Plan:
             raise ValueError("Completed steps must remain in their original positions.")
         previous_current = self.current
         self.steps = steps
+        self.closed = self.current is None
         if self.current is not previous_current:
             self.proposed = None
             if previous_current and previous_current.status == "proposed":

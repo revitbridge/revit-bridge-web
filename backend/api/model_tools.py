@@ -178,7 +178,7 @@ TOOL_DEFINITIONS: list[dict] = [
                        "remain valid throughout the plan. Use created element ids in later specs. Revise unfinished "
                        "steps as requested, omitting unwanted unfinished steps to skip them. Preserve completed steps.",
         "parameters": {"type": "object", "required": ["steps"], "properties": {"steps": {
-            "type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "object", "required": ["id", "title"],
+            "type": "array", "maxItems": 8, "items": {"type": "object", "required": ["id", "title"],
             "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "tool": {"type": "string"}}}}}},
     }},
 ]
