@@ -853,7 +853,9 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
 async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
     validator, evidence, all in the package. An unknown pack is 404 and a missing token
-    400 ``confirmation_required`` before anything else is looked at."""
+    400 ``confirmation_required`` before anything else is looked at. With a claimed plan
+    token, execution failures including ``unknown_tool`` and ``revit_unreachable`` return
+    HTTP 200 with ``success: false`` so the supervisor can handle the step's receipt."""
     return await execute_pack(name, req, ToolStore())
 
 
@@ -1017,7 +1019,7 @@ async def confirm_spec(req: ConfirmRequest):
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
     needs no Revit here. The token belongs to the browser session and never enters the model
     context."""
-    if req.confirmed_by.strip() == "designer:auto-run":
+    if req.confirmed_by.strip().casefold() == "designer:auto-run":
         raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
     return await issue_spec(req, ToolStore())
 

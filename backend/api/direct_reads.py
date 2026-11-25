@@ -29,7 +29,7 @@ async def try_read(spec, session, store, *, step=None):
     pack = readers.load(name)
     if getattr(pack, "read_only", False) is not True:
         return None
-    if step and (step.status != "pending" or (step.tool and step.tool != name)):
+    if step and step.status != "pending":
         return {"error": "invalid_step", "message": "Omit step_id for a supporting read or revise the plan."}
     if session.direct_reads >= MAX_READS:
         return {"error": "read_limit", "message": "Read limit reached for this message. Use the results already returned."}

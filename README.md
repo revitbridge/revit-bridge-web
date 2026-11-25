@@ -13,13 +13,18 @@ Chat starts in **Confirm each step**. With **Run automatically**, verified built
 as soon as their cards are ready. Use **Stop** to let the active operation finish and pause the
 plan. After reconnecting, continue the conversation to review its saved result.
 Local hosts offer this choice by default. Cloud hosts require both an administrator and
-`AUTO_RUN=on`. Set `AUTO_RUN_MAX_STEPS` to limit automatic operations per message (default 8).
-`AUTO_RUN_EXCLUDE` takes a comma-separated list and defaults to the three deletion tools.
+`AUTO_RUN=on`. Set `AUTO_RUN_MAX_STEPS` from 1 to 20 (default 8). Each designer message,
+including a submitted form, starts a fresh budget. `AUTO_RUN_EXCLUDE` adds comma-separated
+tool names to the three permanent exclusions (`delete_elements`, `delete_selected` and
+`delete_elements_by_category`). An unknown tool name prevents startup.
 User packs and local overrides always require a click. A batch copy or type change can affect
 multiple elements in one operation. Include `copy_elements` or `change_type` in the exclusion
 list when those batches need individual review. The usage page identifies automatic runs.
 
 ## Start on your machine
+
+Chat allows up to ten direct reads per designer message. The steps of a manually
+confirmed plan share that budget until the designer sends another message.
 
 By default the host runs in **local mode** (`DEPLOY_MODE=local`): it is reachable from this machine only,
 it talks to the Revit add-in on this machine over TCP (`127.0.0.1:18080`), and there is no pairing, no

@@ -86,7 +86,7 @@ def _model_sourced(pdef: dict | None) -> bool:
     return pdef is not None and (bool(pdef.get("choices_from")) or str(pdef.get("source", "")).startswith("tool:"))
 
 
-def _wanted_kind(pdef: dict | None, explicit_ids: bool) -> tuple[str | None, str | None]:
+def _wanted_kind(pdef: dict | None) -> tuple[str | None, str | None]:
     """``(kind, category)`` of the picks a parameter takes, read from the pack's own words: its
     ``choices_from``, else the part of a ``tool:*`` source after ``tool:``. ``levels`` is a
     level; ``floor_types`` and ``family_types`` (``:OST_*`` names the category) are types;
@@ -108,13 +108,13 @@ def _wanted_kind(pdef: dict | None, explicit_ids: bool) -> tuple[str | None, str
     if source == "family_types" or source.startswith("family_types:"):
         return "type", source.partition(":")[2] or None
     name = pdef.get("name", "")
-    if not explicit_ids and (_id_list(pdef) or (pdef.get("type") in ("int", "integer") and (name == "id" or name.endswith("_id")))):
+    if not source and (_id_list(pdef) or (pdef.get("type") in ("int", "integer") and (name == "id" or name.endswith("_id")))):
         return "element", None
     return None, None
 
 
-def _kind_problem(binding: ParamBinding, pdef: dict | None, item: dict, explicit_ids: bool) -> str | None:
-    kind, category = _wanted_kind(pdef, explicit_ids)
+def _kind_problem(binding: ParamBinding, pdef: dict | None, item: dict) -> str | None:
+    kind, category = _wanted_kind(pdef)
     picked = item.get("kind")
     if kind is None:
         if picked == "element":
@@ -154,7 +154,7 @@ def mention_errors(spec: TaskSpec, pack, picks: Mapping[str, dict]) -> list[Spec
             continue
         pdef = params.get(binding.name)
         items = [picks[key] for key in keys]
-        problems = (_kind_problem(binding, pdef, item, hasattr(pack, "read_only")) for item in items)
+        problems = (_kind_problem(binding, pdef, item) for item in items)
         problem = next((p for p in problems if p), None)
         if problem:
             errors.append(_refused(binding, problem))
@@ -196,7 +196,9 @@ def changed_pick(binding: ParamBinding, selected: dict, now: dict | None) -> Spe
     if now is None:
         return _refused(binding, f"{binding.name}: {key} is no longer in the open model (or cannot be read): pick it again")
     if selected["kind"] == "element":
-        fields = ("category", "family", "name", "document_id")
+        if now.get("document_id") != selected.get("document_id"):
+            return _refused(binding, f"{binding.name}: the document changed. Pick {key} again.")
+        fields = ("category", "family", "name")
         if any(now.get(field) != selected.get(field) for field in fields):
             identity = ", ".join(f"{field}={now.get(field)!r}" for field in fields)
             return _refused(binding, f"{binding.name}: {key} is now {identity}. Pick it again.")

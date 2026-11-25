@@ -879,12 +879,13 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
         task.retries = step.retries
         step.evidence_id = execution.get("evidence_id")
         step.result = roles.step_result(execution)
+        step.recorded_result = execution.get("result")
     supervisor = targets[roles.SUPERVISOR]
     # The spec the page confirmed with this session, once: a report without one (the page did
     # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
     confirmed = session.confirmed_spec is not None
     spec = session.confirmed_spec if confirmed else session.spec
-    if not step:
+    if not step and session.pending_auto_receipt is None:
         session.confirmed_spec = None
     yield run.stage(roles.SUPERVISOR, supervisor.model, "start")
     messages = [{"role": "system", "content": session.role_prompt(roles.SUPERVISOR, build_role_prompt)},
@@ -1064,7 +1065,17 @@ async def chat(req: ChatRequest, request: Request,
     if step and plan.reporting:
         raise ApiError(409, "step_in_progress", "The current execution report is already being reviewed.")
     resume_message = None
-    if step and plan.auto_receipt_pending and plan.receipt is not None and req.message and not req.answers:
+    single_receipt = session.pending_auto_receipt if req.bridge else None
+    if single_receipt:
+        scope, receipt = single_receipt
+        if scope != current_scope():
+            raise ApiError(422, "invalid_step", "The pending execution belongs to another device.")
+        req.execution = receipt
+        req.message = None
+        req.answers = None
+        req.mentions = []
+        req.run = "confirm"
+    elif step and plan.auto_receipt_pending and plan.receipt is not None and req.message and not req.answers:
         # A stopped stream may never have delivered the receipt. A new user turn resumes
         # supervision of the completed operation, with any subsequent card left for review.
         resume_message = req.message
@@ -1100,7 +1111,7 @@ async def chat(req: ChatRequest, request: Request,
                 raise HTTPException(exc.status, str(exc)) from None
             if not targets[first].llm.configured:
                 raise no_model(targets[first], first)
-    elif not with_roles and step and req.execution is not None:
+    elif not with_roles and (step or single_receipt) and req.execution is not None:
         # Single-model mode uses the same target to review this step, then to plan the next.
         targets[roles.SUPERVISOR] = target
 
@@ -1136,6 +1147,8 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_answers", "the form was already answered or replaced")
     if req.bridge and (session.plan is not plan or (step and plan.current is not step)):
         raise ApiError(409, "plan_changed", "The plan changed while checking this request.")
+    if req.bridge and (session.pending_auto_receipt is not single_receipt or session.auto_worker is not None):
+        raise ApiError(409, "turn_in_progress", "The execution changed while checking this request.")
     if req.execution is not None:
         evidence = req.execution.get("evidence_id")
         if isinstance(evidence, str) and evidence in session.reported_evidence:
@@ -1157,6 +1170,7 @@ async def chat(req: ChatRequest, request: Request,
     changed_plan = None
     if req.bridge and req.message:
         session.direct_reads = 0
+        session.read_results.clear()
         session.auto_count = 0
         if not step and pending is None and session.clarification is None:
             session.request_text = req.message
@@ -1189,7 +1203,7 @@ async def chat(req: ChatRequest, request: Request,
         session.auto_assumptions = None
     if req.bridge and req.run == "auto" and settings.auto_run and (admin or not settings.cloud):
         run.auto = AutoRun(session, request, settings, prefers_chinese(request.headers.get("accept-language", "")),
-                           req.message, approved)
+                           None if verified else req.message, approved)
 
     if stop_reply:
         log_model = None
@@ -1213,7 +1227,7 @@ async def chat(req: ChatRequest, request: Request,
                 yield format_sse_event("mentions", picks)
             yield format_sse(stop_reply)
             yield SSE_DONE
-    elif with_roles or (step and req.execution is not None):
+    elif with_roles or ((step or single_receipt) and req.execution is not None):
         log_model = lambda: run.models_ran() or llm.model
         scope = current_scope()                   # the device this request drives
         async def generate() -> AsyncGenerator[str, None]:
@@ -1303,6 +1317,12 @@ async def chat(req: ChatRequest, request: Request,
                 async with aclosing(logged):
                     async for event in logged:
                         yield event
+                        if req.bridge and event == SSE_DONE and session.pending_auto_receipt is not None:
+                            evidence = session.pending_auto_receipt[1].get("evidence_id")
+                            if isinstance(evidence, str):
+                                session.reported_evidence.add(evidence)
+                            session.pending_auto_receipt = None
+                            session.confirmed_spec = None
         finally:
             if step and req.execution is not None:
                 plan.reporting = False

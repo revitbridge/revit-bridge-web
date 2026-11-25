@@ -13,7 +13,7 @@ import { taskApi } from '../task/api'
 import { ExecutionView } from '../task/ExecutionPanel'
 import { tokenPrefix } from '../task/format'
 import { SpecTable } from '../task/SpecCard'
-import { confirmAndRun, describePreconditions, specFromForm } from './directRun'
+import { confirmAndRun, describePreconditions, initialValues, specFromForm } from './directRun'
 import ToolParamEditor from './ToolParamEditor'
 
 const STEPS = ['Select pack', 'Load choices', 'Set parameters', 'Confirm and run']
@@ -68,12 +68,7 @@ export default function ToolLibrary() {
         catch (e: unknown) { setNotice(`Choices from Revit unavailable: ${getErrorMessage(e)}. Fill the values by hand or connect Revit first.`) }
       }
       setChoices(ch)
-      const defaults: Record<string, string> = {}
-      for (const p of all) {
-        if (ch[p.name]?.length) defaults[p.name] = String(ch[p.name][0].value)
-        else if (p.default != null) defaults[p.name] = String(p.default)
-      }
-      setValues(defaults)
+      setValues(initialValues(all, ch))
       setStep(3)
     } catch (e: unknown) {
       setNotice(`Cannot load pack: ${getErrorMessage(e)}`)
