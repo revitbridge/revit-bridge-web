@@ -208,11 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "multi_step_4096"
+PLAN_4096 = "direct_reads_4096"
 
 
 def current_section() -> str:
-    return f"multi_step_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -249,7 +249,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
             assert digest(stream) == legacy[index]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("multi_step_")
+        assert section.startswith("direct_reads_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")

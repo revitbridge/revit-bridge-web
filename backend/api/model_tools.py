@@ -46,11 +46,13 @@ from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 from backend.api.bridge import (
     current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
+from backend.api.direct_reads import try_read
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
 from backend.session import Session
 from backend.questions import DesignerForm
 from backend.plans import Plan
+
 
 PROPOSE_SPEC = "propose_spec"
 
@@ -144,7 +146,8 @@ TOOL_DEFINITIONS: list[dict] = [
                        "shows the spec card in its interface and answers {accepted, errors, "
                        "reconcile}. accepted is true only with no errors and reconcile.ready; "
                        "otherwise fix the spec or ask the designer, then propose again. "
-                       "Ask the designer to click the card in this reply to confirm and run.",
+                       "Ask the designer to click a write card. A declared built-in reader returns its result "
+                       "here. Omit step_id for a supporting read and continue with its result.",
         "parameters": {"type": "object", "properties": {"spec": {"type": "object"},
                        "step_id": {"type": "string", "description": "Required for the first unfinished step in a plan."}},
                        "required": ["spec"]},
@@ -194,6 +197,8 @@ class ToolOutcome:
     spec_event: dict | None = None
     questions_event: dict | None = None
     plan_event: dict | None = None
+    read_tool: str | None = None
+    stop_reply: str | None = None
 
 
 def parse_arguments(raw: str) -> dict | None:
@@ -272,7 +277,11 @@ async def _query(args: dict, session: Session) -> ToolOutcome:
 
 async def _list_tools(args: dict, session: Session) -> ToolOutcome:
     """Read from disk on every call; no directory paths for the model."""
-    return ToolOutcome(list_packs())
+    packs = list_packs()
+    for pack in packs:
+        if pack.get("read_only") and pack["builtin"]:
+            pack["description"] += " Propose this reader to get its result directly in this turn."
+    return ToolOutcome(packs)
 
 
 async def _get_tool_choices(args: dict, session: Session) -> ToolOutcome:
@@ -342,10 +351,6 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     refused before anything else, with no card."""
     plan = session.plan
     step = plan.current if plan else None
-    if step and (args.get("step_id") != step.id or plan.confirmed or plan.reporting):
-        return _refused("invalid_step", f"Propose only the current unconfirmed plan step {step.id}.")
-    if not step and "step_id" in args:
-        return _refused("invalid_step", "There is no unfinished plan step with that id.")
     given = args.get("spec")
     try:
         spec = TaskSpec.model_validate(given)
@@ -360,6 +365,34 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
             require_tool_name(spec.action.tool)
         except ApiError as exc:
             return _refused(exc.payload["error"], exc.payload["message"])
+    if "step_id" in args and (not step or args["step_id"] != step.id):
+        return _refused("invalid_step", "The proposal must identify the current unfinished step.")
+    if step and (plan.confirmed or plan.reporting):
+        return _refused("invalid_step", f"Step {step.id} is awaiting its execution report.")
+    store = ToolStore()
+    if spec.action.tool:
+        read = await try_read(spec, session, store, step=step if "step_id" in args else None)
+        if read is not None:
+            plan_event = None
+            if step and "step_id" in args and "success" in read:
+                from backend.roles import step_result
+                step.status = "done" if read["success"] else "failed"
+                step.result = step_result(read)
+                step.evidence_id = read.get("evidence_id")
+                session.spec = plan.proposed = None
+                plan_event = plan.event()
+                if step.status == "failed":
+                    question = DesignerForm(questions=[{
+                        "id": "next_step", "text": "读取失败，接下来怎么做？" if spec.language == "zh" else "The read failed. How should we proceed?",
+                        "options": [{"value": "revise", "label": "修改" if spec.language == "zh" else "Revise"},
+                                    {"value": "continue", "label": "跳过" if spec.language == "zh" else "Skip"},
+                                    {"value": "stop", "label": "结束" if spec.language == "zh" else "End task"}],
+                    }]).event()
+                    return ToolOutcome(read, read_tool=spec.action.tool, plan_event=plan_event, questions_event=question,
+                                       stop_reply="任务已结束。" if spec.language == "zh" else "This task has ended.")
+            return ToolOutcome(read, read_tool=spec.action.tool if "success" in read else None, plan_event=plan_event)
+    if step and "step_id" not in args:
+        return _refused("invalid_step", f"Propose only the current unconfirmed plan step {step.id}.")
     if step:
         # The existing workflow envelope travels unchanged from the card to /spec/confirm.
         # Even two identical actions in different steps have distinct confirmation identities.
@@ -367,7 +400,6 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
         workflow["name"] = f"{workflow['name']} [plan {plan.id}]".strip()
         workflow["stage"] = f"{workflow['stage']} [step {step.id}; card {uuid4().hex}]".strip()
         spec = TaskSpec.model_validate({**spec.model_dump(), "workflow": workflow})
-    store = ToolStore()
     session.proposed_in_request = True
     normalized = spec.model_dump(mode="json")
     if not step:

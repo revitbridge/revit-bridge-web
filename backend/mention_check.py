@@ -86,7 +86,7 @@ def _model_sourced(pdef: dict | None) -> bool:
     return pdef is not None and (bool(pdef.get("choices_from")) or str(pdef.get("source", "")).startswith("tool:"))
 
 
-def _wanted_kind(pdef: dict | None) -> tuple[str | None, str | None]:
+def _wanted_kind(pdef: dict | None, explicit_ids: bool) -> tuple[str | None, str | None]:
     """``(kind, category)`` of the picks a parameter takes, read from the pack's own words: its
     ``choices_from``, else the part of a ``tool:*`` source after ``tool:``. ``levels`` is a
     level; ``floor_types`` and ``family_types`` (``:OST_*`` names the category) are types;
@@ -99,6 +99,8 @@ def _wanted_kind(pdef: dict | None) -> tuple[str | None, str | None]:
         source = declared[len("tool:"):] if declared.startswith("tool:") else ""
     if source == "elements" or source.startswith("elements:"):
         return "element", source.partition(":")[2] or None
+    if source == "links":
+        return "link", None
     if source == "levels":
         return "level", None
     if source == "floor_types":
@@ -106,13 +108,13 @@ def _wanted_kind(pdef: dict | None) -> tuple[str | None, str | None]:
     if source == "family_types" or source.startswith("family_types:"):
         return "type", source.partition(":")[2] or None
     name = pdef.get("name", "")
-    if _id_list(pdef) or (pdef.get("type") in ("int", "integer") and (name == "id" or name.endswith("_id"))):
+    if not explicit_ids and (_id_list(pdef) or (pdef.get("type") in ("int", "integer") and (name == "id" or name.endswith("_id")))):
         return "element", None
     return None, None
 
 
-def _kind_problem(binding: ParamBinding, pdef: dict | None, item: dict) -> str | None:
-    kind, category = _wanted_kind(pdef)
+def _kind_problem(binding: ParamBinding, pdef: dict | None, item: dict, explicit_ids: bool) -> str | None:
+    kind, category = _wanted_kind(pdef, explicit_ids)
     picked = item.get("kind")
     if kind is None:
         if picked == "element":
@@ -152,7 +154,7 @@ def mention_errors(spec: TaskSpec, pack, picks: Mapping[str, dict]) -> list[Spec
             continue
         pdef = params.get(binding.name)
         items = [picks[key] for key in keys]
-        problems = (_kind_problem(binding, pdef, item) for item in items)
+        problems = (_kind_problem(binding, pdef, item, hasattr(pack, "read_only")) for item in items)
         problem = next((p for p in problems if p), None)
         if problem:
             errors.append(_refused(binding, problem))
@@ -165,6 +167,10 @@ def mention_errors(spec: TaskSpec, pack, picks: Mapping[str, dict]) -> list[Spec
         elif len(keys) != 1:
             errors.append(_refused(binding, f"{binding.name}: multiple element IDs require the element_ids parameter"))
             continue
+        elif pdef and pdef.get("choices_from") == "links" and items[0].get("kind") == "link":
+            if binding.value != str(items[0]["id"]) and (type(binding.value) is not int or binding.value != items[0]["id"]):
+                errors.append(_refused(binding, f"{binding.name}: bind the selected link instance ID"))
+                continue
         elif not _same_value(binding.value, items[0]):
             item = items[0]
             errors.append(_refused(binding, (
@@ -190,11 +196,13 @@ def changed_pick(binding: ParamBinding, selected: dict, now: dict | None) -> Spe
     if now is None:
         return _refused(binding, f"{binding.name}: {key} is no longer in the open model (or cannot be read): pick it again")
     if selected["kind"] == "element":
-        fields = ("category", "family", "name")
+        fields = ("category", "family", "name", "document_id")
         if any(now.get(field) != selected.get(field) for field in fields):
             identity = ", ".join(f"{field}={now.get(field)!r}" for field in fields)
             return _refused(binding, f"{binding.name}: {key} is now {identity}. Pick it again.")
-    elif not _same_value(binding.value, now):
+    elif selected["kind"] == "link" and picked_value(selected) != picked_value(now):
+        return _refused(binding, f"{binding.name}: the selected link was renamed. Pick it again.")
+    elif selected["kind"] != "link" and not _same_value(binding.value, now):
         return _refused(binding, f"{binding.name}: {key} is now {picked_value(now)!r} in the open model, "
                                  f"not {binding.value!r}: propose the spec again")
     return None

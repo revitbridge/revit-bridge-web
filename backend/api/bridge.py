@@ -494,6 +494,8 @@ def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
         "builtin": origin == "builtin",
         "origin": origin,
     }
+    if hasattr(tool, "read_only"):
+        item["read_only"] = tool.read_only
     if directory:
         item["directory"] = str(path.parent if path is not None else store.user_dir)
     return item

@@ -85,6 +85,7 @@ class Session:
     clarification: str | None = None
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
     proposed_in_request: bool = False
+    direct_reads: int = 0
     request_answers: list[dict] = field(default_factory=list)
     reported_evidence: set[str] = field(default_factory=set)
     # What a provider returned with a tool call that goes back with it in the next requests

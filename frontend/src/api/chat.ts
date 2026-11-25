@@ -48,6 +48,9 @@ function traceEvent(event: string, parsed: unknown): HostEvent | null {
     if (ms !== null) tool.ms = ms
     if (size !== null) tool.size = size
     if (typeof parsed.preview === 'string') tool.preview = parsed.preview
+    if (isRecord(parsed.read) && typeof parsed.read.name === 'string' && isRecord(parsed.read.result)) {
+      tool.read = { name: parsed.read.name, result: parsed.read.result }
+    }
     if (typeof parsed.error === 'string') tool.error = parsed.error
     return tool
   }

@@ -3241,6 +3241,19 @@
             "title": "Id",
             "description": "the item's element id"
           },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id",
+            "description": "Document identity recorded by the element picker"
+          },
           "label": {
             "anyOf": [
               {
