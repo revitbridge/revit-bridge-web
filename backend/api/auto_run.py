@@ -22,7 +22,7 @@ def _value_pattern(value):
     return re.compile(r"(?<![a-zA-Z0-9_.+-])" + re.escape(text) + r"(?![a-zA-Z0-9_.])", re.I)
 
 
-def _supported(binding, session, words, answers):
+def _supported(binding, session, words, answers, parameter_type=None):
     keys = evidence_keys(binding.evidence)
     if keys:
         picks = session.picks_for(bridge.current_scope())
@@ -46,7 +46,9 @@ def _supported(binding, session, words, answers):
         if not any(c.start() <= value.start() and value.end() <= c.end() for c in citations):
             continue
         prefix = words[:value.start()]
-        if isinstance(binding.value, (int, float)) and not isinstance(binding.value, bool):
+        if parameter_type in ("double", "number", "float", "int", "integer") or (
+            isinstance(binding.value, (int, float)) and not isinstance(binding.value, bool)
+        ):
             field = re.escape(binding.name).replace("_", "[ _]")
             if re.search(r"(?<!\w)" + field + r"\s*(?:[=:：]|is\b|of\b)?\s*['\"]?$", prefix, re.I):
                 return True
@@ -120,7 +122,7 @@ class AutoRun:
             ):
                 return "unverified_evidence", None
             if binding.source.value in ("designer", "answer") or parameter.get("source") in ("designer", "answer"):
-                if not _supported(binding, session, words, answers):
+                if not _supported(binding, session, words, answers, parameter.get("type")):
                     return "unverified_evidence", None
         return None, None
 

@@ -31,6 +31,7 @@ def test_original_speech_must_prove_the_parameter(words, quote, value):
     from backend.api.auto_run import _supported
     binding = SimpleNamespace(name="start_x", evidence=quote, value=value)
     assert not _supported(binding, None, words, [])
+    assert not _supported(SimpleNamespace(name="start_x", evidence=quote, value=str(value)), None, words, [], "double")
     assert not _supported(binding, None, "", [{"answers": [{"id": "height", "value": value}]}])
 
 
