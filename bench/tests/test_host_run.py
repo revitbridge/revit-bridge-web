@@ -360,6 +360,53 @@ def test_every_expected_tool_and_value_fits_the_installed_packs(tmp_path):
     assert checked >= 15
 
 
+def test_v2_tasks_bind_the_current_model_items_and_account_for_usage(roles_host, monkeypatch):
+    from backend import roles
+    from tests.conftest import builtin_pack_names
+    from tests import test_mentions as picker
+    from tests.fake_revit import SNAPSHOT_RESULT
+
+    client, model, revit = roles_host
+    types = [dict(picker.TYPE_ROWS[0], FamilyTypeId=401, TypeName="OST_Walls-TypeA"),
+             dict(picker.TYPE_ROWS[0], FamilyTypeId=702, FamilyName="Fixed", TypeName="OST_Windows-TypeA",
+                  Category="Windows", BuiltInCategory="OST_Windows")]
+    monkeypatch.setattr(picker, "TYPE_ROWS", types)
+    monkeypatch.setitem(SNAPSHOT_RESULT["CategoryNames"], "OST_Windows", "Windows")
+    wall = {"id": 981, "name": "Basic wall", "category": "OST_Walls", "shown": "Walls", "level": "L1"}
+    revit.handler = picker.picker_handler({"levels": picker.LEVEL_ROWS, "calls": [], "selection": [wall], "elements": [wall]})
+    tasks = [t for t in load_tasks(TASKS_FILE) if t["id"] in {"wall-by-type", "wall-from-selection", "window-along-wall"}]
+    for task in tasks:
+        spec = expected_spec(task)
+        values = {"reference_id": (981, "981"), "wall_id": (981, "981"), "level_name": (1, "L1"),
+                  "type_name": (702, "OST_Windows-TypeA") if task["id"] == "window-along-wall" else (401, "OST_Walls-TypeA")}
+        for name, index in task["expect"]["pick_params"].items():
+            pick = task["mentions"][index]
+            number, value = values[name]
+            spec["parameters"].append({"name": name, "value": value,
+                                       "source": "designer" if name == "reference_id" else "tool",
+                                       "evidence": f"mention:{pick['kind']}#{number}"})
+        model.script("analyst", json_turn(dict(ROUTE_TOOL, tool=spec["action"]["tool"]), usage=SMALL))
+        model.script("planner", tool_turn(("list_tools", {}), usage=FULL),
+                     tool_turn(("propose_spec", {"spec": spec}), usage=FULL), text_turn("Card.", usage=FULL))
+        model.script("supervisor", json_turn(REPORT_DONE, usage=DEEPSEEK))
+
+    result = run_bench(client, BASE, "v2-picks", tasks, mode="roles_analyst")["runs"][0]
+    assert len(result["tasks"]) == 3
+    for task in result["tasks"]:
+        assert task["correct"], (task["id"], task.get("error"), task.get("events"), task.get("skipped"))
+        assert task["feedback_turns"] == 1 and task["usage"]["calls"] == 5
+    inventory = builtin_pack_names()
+    for request in model.requests_of("analyst"):
+        rows = request["messages"][-1]["content"].split("Tools:\n", 1)[1].split("\n\nDigest of the open model:", 1)[0].splitlines()
+        assert [row.removeprefix("- ").split(": ", 1)[0] for row in rows] == sorted(inventory)
+        assert all(row.partition(": ")[2] for row in rows)
+    for catalog in model.tool_results("list_tools"):
+        assert {tool["name"] for tool in catalog} == inventory
+    assert model.requests_of("planner")[0]["tools"] == roles.ROUTE_DEFINITIONS["tool"]
+    assert result["host_usage"]["match"], result["host_usage"]
+    assert [task["actual_params"].get("wall_id") for task in result["tasks"]] == [None, None, "981"]
+
+
 PACK_CODE = ("Level.Create(", "Grid.Create(", "ElementTransformUtils.MoveElements(")
 
 

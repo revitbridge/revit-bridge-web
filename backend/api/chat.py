@@ -18,7 +18,7 @@ for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
 The designer's picks: a message may carry ``mentions`` (``[{kind, id, label?}]``,
-at most 20; ``@level``, ``@type``, ``@link`` as ``GET /api/v1/bridge/mentions``
+at most 20; ``@level``, ``@type``, ``@link``, ``@element`` as ``GET /api/v1/bridge/mentions``
 listed them). Before the model is called the host checks them against the open
 model with the package's ``resolve_mentions`` and sends ``event: mentions``
 ``{resolved, not_found, invalid, unresolved, warnings?}`` as the turn's first
@@ -103,10 +103,9 @@ same from call to call.
 
 The system prompt of the one loop is the package's host instructions for a host
 whose model writes no code, with the rule for the designer's selections
-(``host_instructions(code=False, mentions=True)``), adapted by the pinned 0.9.1
-inline-card shim. The host adds ``WORKBENCH_LINE`` for the workbench, forms and
-card actions. The roles use the same shim on the package's role texts, the
-planner's with ``WORKBENCH_LINE`` and the analyst's with ``roles.ANALYST_WORKBENCH_LINE``.
+(``host_instructions(code=False, mentions=True)``), plus the host's ``WORKBENCH_LINE``.
+The roles use the package's role texts directly. The planner adds ``WORKBENCH_LINE``
+and the analyst adds ``roles.ANALYST_WORKBENCH_LINE``.
 Skills are not part of any prompt (the Skills page still lists and edits them), and
 there is no ``get_guidance``.
 
@@ -146,7 +145,7 @@ from backend import roles
 from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
-    CARD_GUIDANCE, TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
+    TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
 )
 from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
 from backend import llm as llm_client
@@ -191,12 +190,10 @@ INSTRUCTIONS = {"code": False, "mentions": True}
 # does not exist yet is made. The link is the workbench page's path as a relative Markdown
 # link, which the chat renders as a link.
 WORKBENCH_LINE = (
-    "- When no tool fits, describe in one sentence the tool the designer would need and point "
-    f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
-    "tried and saved there, then it is in list_tools. When choices are known, use ask_designer. "
-    "In forms, other: true marks the designer's own words. "
-    f"{CARD_GUIDANCE}"
+    f"- When no tool fits, describe it with exactly this Markdown link: {WORKBENCH_LINK} to try and save it for list_tools. "
+    "In form answers, other: true marks the designer's own words."
 )
+
 
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
 BASE_PROMPT = (
@@ -262,13 +259,13 @@ def tool_error_text(result) -> str | None:
 
 
 class ChatMention(BaseModel):
-    """A model item the designer picked in the message (``@level``, ``@type``, ``@link``), as
+    """A model item the designer picked in the message (``@level``, ``@type``, ``@link``, ``@element``), as
     ``GET /api/v1/bridge/mentions`` listed it. Only ``kind`` and ``id`` are checked and used:
     the model gets the item as the package reads it from Revit now, never the page's
     ``label``."""
     model_config = ConfigDict(extra="forbid")
 
-    kind: str = Field(max_length=32, description="level, type or link")
+    kind: str = Field(max_length=32, description="level, type, link or element")
     id: StrictInt = Field(description="the item's element id")
     label: str | None = Field(default=None, max_length=500, description="what the page showed; not sent to the model")
 
@@ -300,37 +297,19 @@ def rate_limit(request: Request) -> None:
         raise HTTPException(429, "Too many requests")
 
 
-def inline_card_instructions(**kwargs) -> str:
-    """Adapt the pinned 0.9.1 prompt until the package ships inline-card guidance."""
-    text = host_instructions(**kwargs)
-    role = kwargs.get("role")
-    replacements = []
-    if role is None:
-        replacements.append(("Show the spec card; wait for an explicit yes.",
-                             "Summarize the ready spec and propose it in this reply."))
-    if role != roles.ANALYST:
-        location = "on the card in this chat" if role == roles.SUPERVISOR else "on the card in this chat reply"
-        replacements.append(("in this host's interface", location))
-    for old, new in replacements:
-        if old not in text:
-            raise RuntimeError(f"Review the 0.9.1 inline-card shim: expected {old!r} in {role or 'single'} prompt")
-        text = text.replace(old, new)
-    return text
-
-
 def build_system_prompt(bridge: bool = True) -> str:
     """The package's host instructions without code and with the selections rule, then
     ``WORKBENCH_LINE``; the base prompt without the bridge. No skills, no lessons."""
     if not bridge:
         return BASE_PROMPT
-    return inline_card_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
+    return host_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
 
 
 def build_role_prompt(role: str) -> str:
     """A role's system prompt: the package's text for it and at most one host line - the
     planner's notes end with ``WORKBENCH_LINE``, the analyst's text with
     ``roles.ANALYST_WORKBENCH_LINE`` as a paragraph of its own; the supervisor's as it is."""
-    text = inline_card_instructions(role=role, **ROLE_INSTRUCTIONS)
+    text = host_instructions(role=role, **ROLE_INSTRUCTIONS)
     if role == roles.PLANNER:
         return text.rstrip("\n") + "\n" + WORKBENCH_LINE
     if role == roles.ANALYST:
@@ -852,14 +831,29 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
 
 
 def has_host_marker(text: str) -> bool:
-    normalized = unicodedata.normalize("NFKC", text)
-    visible = "".join(c for c in normalized if unicodedata.category(c) != "Cf").casefold()
-    return any(marker.casefold() in visible for marker in (roles.FROM_HOST, roles.FORM_MARKER))
+    # Compare the visible letters and numbers. Whitespace, punctuation and Unicode
+    # presentation characters are not meaningful distinctions in a host marker.
+    def letters(value: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFKD", value).casefold() if c.isalnum())
+    visible = letters(text)
+    return any(letters(marker) in visible for marker in (roles.FROM_HOST, roles.FORM_MARKER))
 
 
 def quote_marked_json(value: object) -> str:
     """Keep a marker in designer data inside one quoted JSON value, including lookalikes."""
     return json.dumps(value, ensure_ascii=True).replace("(", r"\u0028")
+
+
+def selection_block(items: list[dict]) -> str:
+    """Keep marked model names as JSON string literals, including normalized lookalikes."""
+    def escape_marked(match: re.Match) -> str:
+        literal = match.group()
+        name = json.loads(literal)
+        if not has_host_marker(name):
+            return literal
+        return quote_marked_json(name).replace("h", r"\u0068").replace("H", r"\u0048")
+
+    return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, mention_block(items, MENTION_BLOCK_LANGUAGE))
 
 
 def prefers_chinese(accept_language: str) -> bool:
@@ -981,7 +975,10 @@ async def chat(req: ChatRequest, request: Request,
         picks = await check_mentions(req.mentions)
         session.remember_picks(scope, picks["resolved"])
         session.forget_picks(scope, picks["not_found"])
-        block = mention_block(picks["resolved"], MENTION_BLOCK_LANGUAGE)
+        block = selection_block(picks["resolved"])
+        if any(item["kind"] == "element" for item in picks["resolved"]):
+            block += ("\nFor element_ids use a comma-separated string of selected element IDs and evidence "
+                      "mention:element#<id>[,<id>...] with the same IDs.")
         if block:
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):

@@ -80,6 +80,10 @@ class FakeHost:
             if isinstance(self.runs, int):
                 return httpx.Response(self.runs, json={"error": "admin_required", "message": "admin token"})
             return httpx.Response(200, json={"items": self.runs})
+        if request.url.path == "/api/v1/bridge/revit-health":
+            return httpx.Response(200, json={"bridge_version": "0.10.0"})
+        if request.url.path == "/api/v1/bridge/tools":
+            return httpx.Response(200, json=[{"name": "query_levels"}])
         if request.url.path == "/config.json":
             self.other.append(request)
             return httpx.Response(200, json={"features": {"mode": "local"}})
@@ -273,6 +277,7 @@ def test_query_needs_successful_read_tool_and_no_accepted_spec(tool_name):
 
 @pytest.mark.parametrize("tool_name,correct", [
     ("query_levels", True), ("query_model_stats", True), ("count_by_level", True), ("list_types", True),
+    ("list_elements", True), ("get_element_geometry", True), ("get_element_parameters", True),
     ("elements_in_link", True), ("create_wall", False), ("create_level", False), ("move_elements", False),
 ])
 def test_a_query_answered_with_a_read_only_pack_counts(tool_name, correct):
@@ -323,13 +328,18 @@ def test_without_the_flags_the_marked_tasks_run():
 
 def test_example_tasks_need_nothing_unreleased_and_pick_their_mentions():
     tasks = load_tasks(Path(__file__).parents[1] / "tasks.yml")
-    assert len(tasks) == 12
+    assert len(tasks) == 15
     # create_level, create_grid and move_elements ship with revit-bridge 0.9.1: no task is marked.
     assert [item["id"] for item in tasks if item.get("requires")] == []
     assert {item["id"] for item in tasks if item.get("placeholder_ids")} == set()
     mentions = {item["id"]: item["mentions"] for item in tasks if item.get("mentions")}
     assert mentions == {"mentioned-level": [{"kind": "level", "pick": {"name": "F2"}}],
-                        "mentioned-link": [{"kind": "link", "pick": {"first": True}}]}
+                        "mentioned-link": [{"kind": "link", "pick": {"first": True}}],
+                        "wall-by-type": [{"kind": "type", "pick": {"first": True, "category": "OST_Walls"}},
+                                        {"kind": "level", "pick": {"first": True}}],
+                        "wall-from-selection": [{"kind": "element", "pick": {"first": True, "category": "OST_Walls"}}],
+                        "window-along-wall": [{"kind": "element", "pick": {"first": True, "category": "OST_Walls"}},
+                                              {"kind": "type", "pick": {"first": True, "category": "OST_Windows"}}]}
 
 
 def test_task_file_validation(tmp_path):
@@ -347,6 +357,7 @@ def test_task_file_validation(tmp_path):
                  [task(mentions=[{"kind": "level", "pick": {"name": "F2", "category": "OST_Walls"}}])],
                  [task(mentions=[{"kind": "type", "pick": {"name": "Generic - 200mm"}}])],
                  [task(mentions=[{"kind": "type", "pick": {"name": "Generic", "category": "Walls"}}])],
+                 [task(expect={"tool": "wall", "pick_params": {"wall_id": 0}})],
                  [task(requires="basic-tools")], [task(requires=["Basic Tools"])],
                  [task(placeholder_ids="yes")], [task(execution="failed")], [task(execution={"error": "x"})],
                  [task(execution={"success": "no"})]):
@@ -696,7 +707,7 @@ def test_cli_run_writes_bench_results_in_the_current_directory(cli_host, tmp_pat
                  "--tasks", str(cli_host["tasks"]), "--execution-fixture", str(fixture)]) == 0
     result = json.loads((tmp_path / "bench-results" / "sample.json").read_text(encoding="utf-8"))
     assert result["version"] == 2 and result["mode"] == "synthetic" and result["repeat"] == 1
-    assert result["host"]["features"] == {"mode": "local"}
+    assert result["host"] == {"features": {"mode": "local"}, "revit_bridge_version": "0.10.0", "tool_count": 1}
     assert cli_host["host"].requests[1][0]["execution"] == {"success": True, "result": "fixture"}
     assert cli_host["options"][0]["trust_env"] is False
     out = capsys.readouterr()
@@ -816,8 +827,8 @@ def test_picks_are_looked_up_and_sent_with_the_first_message_only():
     sent = [{"kind": "level", "id": 312}, {"kind": "link", "id": 501}, {"kind": "type", "id": 401},
             {"kind": "level", "id": 77}]
     assert result["error"] is None and result["mentions"] == sent
-    assert host.lookups == [{"kind": "level", "limit": "200", "q": "F2"}, {"kind": "link", "limit": "200"},
-                            {"kind": "type", "limit": "200", "category": "OST_Walls", "q": "Generic - 200mm"}]
+    assert host.lookups == [{"kind": "level", "limit": "200"}, {"kind": "link", "limit": "200"},
+                            {"kind": "type", "limit": "200", "category": "OST_Walls"}]
     assert host.requests[0][0]["mentions"] == sent                      # exactly F2, not the mezzanine
     assert "mentions" not in host.requests[1][0]                        # the answer: the session keeps them
     assert "mentions" not in host.requests[2][0]                        # the execution report
@@ -840,6 +851,66 @@ def test_a_pick_that_finds_nothing_skips_the_task_unscored(pick, candidates, rea
     summary = summarize([run])
     assert summary["tasks"][0]["skipped"] == reason and summary["tasks"][0]["runs"] == 0
     assert summary["scored"]["median"] == 1 and summary["correct"]["median"] == 1
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_exact_type_name_with_an_alias_and_many_words(legacy):
+    from bench.runner import pick_mentions
+
+    name = "Window Head Steel Frame Number Four East Edge Thick"
+    match = {**TYPES[0], "name": name}
+    requests = []
+    def reply(request):
+        params = dict(request.url.params)
+        requests.append(params)
+        if legacy:
+            found = "q" in params
+            return httpx.Response(200, json={"items": [match] if found else [], "truncated": not found})
+        assert "q" not in params
+        offset = int(params.get("offset", 0))
+        rows = [match] if offset else [{**TYPES[0], "id": n, "name": "other"} for n in range(500, 700)]
+        return httpx.Response(200, json={"items": rows, "offset": offset, "total": 201, "truncated": not offset})
+    with httpx.Client(transport=httpx.MockTransport(reply)) as client:
+        picks = pick_mentions(client, BASE, [{"kind": "type", "pick": {"name": name, "category": "OST_Walls"}}])
+    assert picks == [{"kind": "type", "id": 401}]
+    assert len(requests) == 2
+    assert (requests[1].get("q") == name) if legacy else (requests[1].get("offset") == "200")
+
+
+@pytest.mark.parametrize("rows", [[], [LEVELS[1]]])
+def test_truncated_final_page_cannot_establish_an_absent_or_unique_name(rows):
+    response = httpx.Response(200, json={"items": rows, "offset": 0, "total": len(rows), "truncated": True})
+    host = FakeHost([], candidates={"level": response})
+    result = host.run([task(mentions=[{"kind": "level", "pick": {"name": "F2"}}])])["tasks"][0]
+    assert result["skipped"] is None and "incomplete listing" in result["error"]
+    assert not host.requests
+
+
+def test_selected_wall_on_a_later_page_is_scored_against_its_id_and_evidence():
+    from bench.runner import pick_mentions
+    from bench.metrics import evaluate
+
+    queries = []
+    def page(request):
+        params = dict(request.url.params)
+        queries.append(params)
+        offset = int(params.get("offset", 0))
+        rows = [{"kind": "element", "category": "OST_Doors", "id": i + 1} for i in range(50)] if not offset else [
+            {"kind": "element", "category": "OST_Walls", "id": 820}]
+        return httpx.Response(200, json={"items": rows, "offset": offset, "total": 51, "truncated": not offset})
+    task = next(t for t in load_tasks(Path(__file__).parents[1] / "tasks.yml") if t["id"] == "wall-from-selection")
+    with httpx.Client(transport=httpx.MockTransport(page)) as client:
+        refs = pick_mentions(client, BASE, task["mentions"])
+    assert refs == [{"kind": "element", "id": 820}]
+    assert queries == [{"kind": "element", "source": "selection", "limit": "50"},
+                       {"kind": "element", "source": "selection", "limit": "50", "offset": "50"}]
+    bindings = [{"name": k, "value": v} for k, v in task["expect"]["params"].items()]
+    ref = {"name": "reference_id", "value": "820", "evidence": "mention:element#820"}
+    proposal = {"spec": {"action": {"kind": "run_tool", "tool": task["expect"]["tool"]}, "parameters": [*bindings, ref]}}
+    for value, evidence, correct in [("820", "mention:element#820", True), ("820", "mention:element#821", False),
+                                     ("821", "mention:element#820", False)]:
+        ref.update(value=value, evidence=evidence)
+        assert evaluate(task, [proposal], [], "card", 1, mentions=refs)["correct"] is correct
 
 
 def test_a_pick_with_two_items_of_that_name_fails_the_task_before_any_chat():
@@ -977,6 +1048,20 @@ def test_cli_mode_and_confirm(cli_host, tmp_path, capsys):
     for wrong in (["--mode", "fast"], ["--confirm", "always"]):
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args(["run", "--label", "x", *wrong])
+
+
+def test_compare_notes_catalogue_changes(tmp_path, capsys):
+    paths = []
+    for version, count in (("0.9.1", 22), ("0.10.0", 40)):
+        result = results(summary_task())
+        result["host"] = {"revit_bridge_version": version, "tool_count": count}
+        path = tmp_path / f"{version}.json"
+        path.write_text(json.dumps(result), encoding="utf-8")
+        paths.append(path)
+    assert main(["compare", *map(str, paths)]) == 0
+    out = capsys.readouterr().out
+    assert "NOTE: revit_bridge version differs: before 0.9.1, after 0.10.0." in out
+    assert "NOTE: tool count differs: before 22, after 40." in out
 
 
 def test_compare_notes_a_different_confirm_policy(tmp_path, capsys):

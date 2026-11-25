@@ -1,3 +1,4 @@
+import { browserLanguage } from '../../utils/language'
 import { useState } from 'react'
 import type { ChatMessage, DesignerAnswers, DesignerForm } from '../../types/api'
 
@@ -30,10 +31,8 @@ function typedChoice(q: DesignerForm['questions'][number], text: string) {
 }
 
 export default function QuestionForm({ form, answered, disabled, onAnswer }: Props) {
-  const languages = typeof navigator === 'undefined' ? [] : navigator.languages?.length
-    ? navigator.languages : [navigator.language]
-  const language = languages.map(tag => tag.toLowerCase().split('-')[0]).find(tag => tag === 'en' || tag === 'zh')
-  const labels = formText[language === 'zh' ? 'zh' : 'en']
+  const language = browserLanguage()
+  const labels = formText[language]
   const [picked, setPicked] = useState(new Map<string, number[]>())
   const [other, setOther] = useState(new Map<string, string>())
   const answers: DesignerAnswers = { ask_id: form.ask_id, items: [] }

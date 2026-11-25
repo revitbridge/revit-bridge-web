@@ -3,7 +3,7 @@ import type { Mention, MentionKind } from '../../../types/hostv2'
 export interface MentionText { text: string; mentions: Mention[] }
 export interface MentionSpan { start: number; end: number; index: number; mention: Mention }
 export interface TextSelection { start: number; end: number; direction: 'forward' | 'backward' | 'none' }
-export const mentionLabel = (mention: Pick<Mention, 'kind' | 'name'>) => `@${mention.kind}:${mention.name}`
+export const mentionLabel = (mention: Mention) => `@${mention.kind}:${mention.name}${mention.kind === 'element' ? '#' + mention.id : ''}`
 export const normalizeNewlines = (text: string) => text.replace(/\r\n?/g, '\n')
 export const hasLineBreak = (name: string) => /[\r\n]/.test(name)
 export function normalizeInputSelection(text: string, selection: TextSelection): TextSelection {
@@ -32,7 +32,7 @@ export function mentionSpans(text: string, mentions: Mention[]): MentionSpan[] {
   for (const { mention, index, label } of claims) {
     const free = (start: number) => !spans.some(span => start < span.end && start + label.length > span.start)
     let start = text.indexOf(label)
-    while (start >= 0 && !free(start)) start = text.indexOf(label, start + 1)
+    while (start >= 0 && (!free(start) || (mention.kind === 'element' && /[0-9]/.test(text.charAt(start + label.length))))) start = text.indexOf(label, start + 1)
     if (start >= 0) spans.push({ start, end: start + label.length, index, mention })
   }
   return spans.sort((a, b) => a.start - b.start)
@@ -139,7 +139,7 @@ export type MentionMenu =
   | { mode: 'kinds'; start: number; end: number; query: string }
   | { mode: 'items'; start: number; end: number; query: string; kind: MentionKind; category?: string; categoryLabel?: string }
 
-export const mentionKinds: MentionKind[] = ['link', 'type', 'level']
+export const mentionKinds: MentionKind[] = ['link', 'type', 'level', 'element']
 export function matchingKinds(prefix: string): MentionKind[] {
   return mentionKinds.filter(kind => kind.startsWith(prefix.toLowerCase()))
 }
@@ -165,7 +165,7 @@ export function menuAt(text: string, spans: MentionSpan[], caret: number, previo
   if (start === null) return null
   if (start > 0 && IN_A_WORD.test(text[start - 1])) return null
   const query = text.slice(start, caret)
-  const items = /^@(link|type|level):([^\r\n@]*)$/i.exec(query)
+  const items = /^@(link|type|level|element):([^\r\n@]*)$/i.exec(query)
   if (items) {
     const kind = items[1].toLowerCase() as MentionKind
     const keep = previous?.mode === 'items' && previous.start === start && previous.kind === kind ? previous : undefined

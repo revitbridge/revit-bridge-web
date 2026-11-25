@@ -4,7 +4,6 @@ tool fits."""
 from __future__ import annotations
 
 import json
-import pytest
 
 from backend.api import chat as chat_module
 from backend.api import model_tools
@@ -46,20 +45,9 @@ def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     assert reply["error"] == "unknown_tool" and "get_guidance" not in reply["known"]
 
 
-@pytest.mark.parametrize("role,missing", [(None, "Show the spec card; wait for an explicit yes."),
-                                          ("planner", "in this host's interface"),
-                                          ("supervisor", "in this host's interface")])
-def test_inline_shim_detects_replaced_package_wording(monkeypatch, role, missing):
-    original = chat_module.host_instructions
-    monkeypatch.setattr(chat_module, "host_instructions",
-                        lambda **kwargs: original(**kwargs).replace(missing, "inline card"))
-    with pytest.raises(RuntimeError, match="inline-card shim"):
-        chat_module.inline_card_instructions(role=role, code=False)
-
-
 def test_the_system_prompt_is_the_package_text_without_code_and_one_host_line(client, model):
     system = chat_module.build_system_prompt(True)
-    package = chat_module.inline_card_instructions(code=False, mentions=True)
+    package = chat_module.host_instructions(code=False, mentions=True)
     assert system == package.rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
     # The package's text is the no-code one, with the selections rule; nothing of the code variant.
     assert "## Designer's selections" in package and "- Write code:" in package
@@ -120,16 +108,16 @@ def test_a_run_tool_proposal_still_shows_its_card(client, model):
 def test_when_no_tool_fits_the_reply_points_to_the_workbench(client, model):
     """A scripted model that follows the prompt: it looks at the tools, finds none, writes
     no code and links the workbench."""
-    answer = ("No saved tool here can rotate a grid. The tool you would need: rotate the selected grids by an "
+    answer = ("No saved tool here can dimension a grid. The tool you would need: dimension the selected grids at an "
               f"angle. You can make it in the [workbench]({WORKBENCH_PATH}).")
     model.turns += [tool_turn(("list_tools", {})), text_turn(answer)]
-    resp = client.post("/api/chat", json={"message": "rotate grid A by 15 degrees"}, headers=HEADERS)
+    resp = client.post("/api/chat", json={"message": "dimension grid A at an angle"}, headers=HEADERS)
     assert resp.status_code == 200
     frames = sse(resp.text)
     assert tokens(frames) == answer and events(frames, "spec") == [] and frames[-1] == ("done", None)
     listing = model.tool_results("list_tools")[0]
     assert all({"builtin", "origin"} <= set(t) and "directory" not in t for t in listing)
-    assert not any("rotate" in t["name"] for t in listing)
+    assert not any("dimension" in t["name"] for t in listing)
     assert model.requests[0]["messages"][0]["content"].endswith("\n" + chat_module.WORKBENCH_LINE)
 
 

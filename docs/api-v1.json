@@ -1030,7 +1030,7 @@
           "bridge"
         ],
         "summary": "Mention Items",
-        "description": "What the designer can pick after ``@level``, ``@type`` or ``@link``: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?}], total, truncated, warnings?}``. ``type`` without\n``category`` lists the categories (items of kind ``category`` whose ``id`` is the OST_*\nname); a link that is not loaded is listed with ``disabled: true`` and its ``reason``. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
+        "description": "Items the designer can pick in chat: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?, summary?, level?, category_label?}], total, truncated,\noffset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;\nelement lists the current selection with a summary, level and category label. When\nfacets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
         "operationId": "mention_items_api_v1_bridge_mentions_get",
         "parameters": [
           {
@@ -1040,10 +1040,10 @@
             "schema": {
               "type": "string",
               "maxLength": 32,
-              "description": "level, type or link",
+              "description": "level, type, link or element",
               "title": "Kind"
             },
-            "description": "level, type or link"
+            "description": "level, type, link or element"
           },
           {
             "name": "category",
@@ -1059,10 +1059,10 @@
                   "type": "null"
                 }
               ],
-              "description": "type only: an OST_* category; without it the categories are listed",
+              "description": "type only: filter by OST_* category",
               "title": "Category"
             },
-            "description": "type only: an OST_* category; without it the categories are listed"
+            "description": "type only: filter by OST_* category"
           },
           {
             "name": "q",
@@ -1078,10 +1078,10 @@
                   "type": "null"
                 }
               ],
-              "description": "keep the items whose name, label, family or category contains this (case-insensitive)",
+              "description": "rank matches for the search terms",
               "title": "Q"
             },
-            "description": "keep the items whose name, label, family or category contains this (case-insensitive)"
+            "description": "rank matches for the search terms"
           },
           {
             "name": "limit",
@@ -1100,6 +1100,38 @@
               "title": "Limit"
             },
             "description": "at most this many items (1-200, default 50)"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "number of matching items to skip",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "number of matching items to skip"
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 32
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "element requires selection",
+              "title": "Source"
+            },
+            "description": "element requires selection"
           }
         ],
         "responses": {
@@ -1945,7 +1977,7 @@
           "bridge"
         ],
         "summary": "Confirm Spec",
-        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone or renamed since is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here. The token belongs to the browser session and never enters the model\ncontext.",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here. The token belongs to the browser session and never enters the model\ncontext.",
         "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
         "requestBody": {
           "content": {
@@ -3180,7 +3212,7 @@
             "type": "string",
             "maxLength": 32,
             "title": "Kind",
-            "description": "level, type or link"
+            "description": "level, type, link or element"
           },
           "id": {
             "type": "integer",
@@ -3208,7 +3240,7 @@
           "id"
         ],
         "title": "ChatMention",
-        "description": "A model item the designer picked in the message (``@level``, ``@type``, ``@link``), as\n``GET /api/v1/bridge/mentions`` listed it. Only ``kind`` and ``id`` are checked and used:\nthe model gets the item as the package reads it from Revit now, never the page's\n``label``."
+        "description": "A model item the designer picked in the message (``@level``, ``@type``, ``@link``, ``@element``), as\n``GET /api/v1/bridge/mentions`` listed it. Only ``kind`` and ``id`` are checked and used:\nthe model gets the item as the package reads it from Revit now, never the page's\n``label``."
       },
       "ChatRequest": {
         "properties": {

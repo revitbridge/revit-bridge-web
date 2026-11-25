@@ -1,25 +1,25 @@
 """The designer's picks in a spec: the host's check of ``mention:`` evidence (plan 2.4).
 
 The page lets the designer pick model items while writing (``@level``, ``@type``,
-``@link``); the chat checks each pick against the open model with the package's
+``@link``, ``@element``); the chat checks each pick against the open model with the package's
 ``resolve_mentions`` and the session keeps the items it verified, per device scope
 (``Session.picks_for``, keyed by the evidence string). A spec binds a pick by its
-name with evidence ``mention:<kind>#<id>`` - the package's rule, in its
+verified value with evidence ``mention:<kind>#<id>`` - the package's rule, in its
 instructions. The package's ``validate_spec`` cannot know which picks this
 session's designer made, so before a spec is accepted (the model's
 ``propose_spec``), reconciled (the model's ``reconcile``, ``/spec/reconcile``) or
 confirmed (``/spec/confirm``) the host checks every binding whose evidence looks
 like a pick (it starts with ``mention``, whatever the case or the spaces around):
 
-- the evidence is exactly ``mention:<level|type|link>#<positive integer>`` (lower
-  case, no spaces), and that of an item verified in this session for this device;
+- the evidence is exactly ``mention:<level|type|link|element>#<positive integer>`` (lower
+  case, no spaces), or a comma-separated list of element IDs for element_ids, and that of an item verified in this session for this device;
 - the pick's kind fits the parameter, as far as the pack's own declaration says: a
   parameter whose value comes from ``levels`` takes a level, one from
   ``floor_types`` or ``family_types[:OST_*]`` a type (of that category when both
   name one), and a link only a parameter that is neither; a declaration that says
-  nothing about it refuses nothing;
+  nothing about it accepts an element only for an integer ID or the element_ids list;
 - the value is the pick's name as the package's selections block shows it (a
-  link: its label, else its name);
+  link: its label, else its name), or the decimal ID string for an element;
 - the source is ``tool`` for a pack parameter whose value comes from the model
   (``choices_from`` or a ``tool:*`` source) and ``designer`` for any other one:
   the package's rule, of which ``validate_spec`` enforces only part (it takes
@@ -28,7 +28,7 @@ like a pick (it starts with ``mention``, whatever the case or the spaces around)
 
 Anything else is ``unknown_mention``, naming the parameter; a spec with no such
 evidence is not looked at. No value is looked up here: the items are the
-package's, as ``resolve_mentions`` returned them. ``changed_picks`` compares a
+package's, as ``resolve_mentions`` returned them. ``changed_pick`` compares a
 spec's picks with a fresh reading of them (``/spec/confirm`` asks the model again).
 
 The source and value rules repeat what the package's instructions state; they belong
@@ -45,7 +45,18 @@ from revit_bridge.spec.rules import SpecError
 MENTION_PREFIX = "mention:"
 UNKNOWN_MENTION = "unknown_mention"
 # The one form a pick's evidence takes (what mention_evidence writes for a verified item).
-CANONICAL = re.compile(r"mention:(level|type|link)#[1-9][0-9]*")
+CANONICAL = re.compile(r"mention:(?:level|type|link)#[1-9][0-9]*|mention:element#[1-9][0-9]*(?:,[1-9][0-9]*)*")
+
+
+def evidence_keys(evidence: str) -> list[str]:
+    if not CANONICAL.fullmatch(evidence):
+        return []
+    prefix, ids = evidence.split("#")
+    return [f"{prefix}#{number}" for number in ids.split(",")]
+
+
+def _id_list(pdef: dict | None) -> bool:
+    return bool(pdef and pdef.get("name") == "element_ids" and pdef.get("type") == "string")
 
 
 def mention_evidence(kind: object, item_id: object) -> str:
@@ -59,7 +70,9 @@ def looks_like_a_pick(evidence: str | None) -> bool:
 
 
 def picked_value(item: dict) -> str:
-    """The value a pick binds: its name as the package's block shows it (a link: label, else name)."""
+    """The package's binding value: decimal element ID, link label or name, or level/type name."""
+    if item.get("kind") == "element":
+        return str(item["id"])
     value = (item.get("label") or item.get("name")) if item.get("kind") == "link" else item.get("name")
     return str(value or "")
 
@@ -84,12 +97,17 @@ def _wanted_kind(pdef: dict | None) -> tuple[str | None, str | None]:
     if not source:
         declared = str(pdef.get("source", ""))
         source = declared[len("tool:"):] if declared.startswith("tool:") else ""
+    if source == "elements" or source.startswith("elements:"):
+        return "element", source.partition(":")[2] or None
     if source == "levels":
         return "level", None
     if source == "floor_types":
         return "type", None
     if source == "family_types" or source.startswith("family_types:"):
         return "type", source.partition(":")[2] or None
+    name = pdef.get("name", "")
+    if _id_list(pdef) or (pdef.get("type") in ("int", "integer") and (name == "id" or name.endswith("_id"))):
+        return "element", None
     return None, None
 
 
@@ -97,11 +115,13 @@ def _kind_problem(binding: ParamBinding, pdef: dict | None, item: dict) -> str |
     kind, category = _wanted_kind(pdef)
     picked = item.get("kind")
     if kind is None:
+        if picked == "element":
+            return f"{binding.name}: an element pick requires an element ID parameter"
         return None
     if picked != kind:
         return f"{binding.name}: takes a {kind} (the pack's {pdef.get('choices_from') or pdef.get('source')}), not a {picked}"
-    if category and item.get("category") and item["category"] != category:
-        return f"{binding.name}: takes a type of {category}, and this one is of {item['category']}"
+    if category and (kind == "element" or item.get("category")) and item.get("category") != category:
+        return f"{binding.name}: takes a {kind} of {category}, and this one is of {item.get('category') or 'unknown category'}"
     return None
 
 
@@ -120,26 +140,36 @@ def mention_errors(spec: TaskSpec, pack, picks: Mapping[str, dict]) -> list[Spec
         evidence = binding.evidence or ""
         if not looks_like_a_pick(evidence):
             continue
-        if not CANONICAL.fullmatch(evidence):
+        keys = evidence_keys(evidence)
+        if not keys:
             errors.append(_refused(binding, (
-                f"{binding.name}: evidence {evidence!r} is not mention:<kind>#<id> exactly (kind level, type "
-                f"or link, a positive id, lower case, no spaces)")))
+                f"{binding.name}: evidence {evidence!r} is not mention:<kind>#<id> exactly (kind level, type, link "
+                f"or element, a positive id, lower case, no spaces)")))
             continue
-        item = picks.get(evidence)
-        if item is None:
-            errors.append(_refused(binding, (
-                f"{binding.name}: {evidence!r} is not a pick the designer made in this session; a value "
-                f"bound by mention:<kind>#<id> must come from the Designer's selections block")))
+        missing = next((key for key in keys if key not in picks), None)
+        if missing:
+            errors.append(_refused(binding, f"{binding.name}: {missing!r} is not a pick the designer made in this session"))
             continue
         pdef = params.get(binding.name)
-        problem = _kind_problem(binding, pdef, item)
+        items = [picks[key] for key in keys]
+        problems = (_kind_problem(binding, pdef, item) for item in items)
+        problem = next((p for p in problems if p), None)
         if problem:
             errors.append(_refused(binding, problem))
             continue
-        if not _same_value(binding.value, item):
+        if _id_list(pdef) and items[0]["kind"] == "element":
+            expected_ids = {picked_value(item) for item in items}
+            if not isinstance(binding.value, str) or {s.strip() for s in binding.value.split(",")} != expected_ids:
+                errors.append(_refused(binding, f"{binding.name}: the bound IDs must match {evidence}"))
+                continue
+        elif len(keys) != 1:
+            errors.append(_refused(binding, f"{binding.name}: multiple element IDs require the element_ids parameter"))
+            continue
+        elif not _same_value(binding.value, items[0]):
+            item = items[0]
             errors.append(_refused(binding, (
                 f"{binding.name}: {evidence} is {item.get('kind')} {picked_value(item)!r}; the value bound "
-                f"to it must be exactly that name, not {binding.value!r}")))
+                f"to it must be exactly that value, not {binding.value!r}")))
             continue
         expected = Source.tool if _model_sourced(pdef) else Source.designer
         if binding.source is not expected:
@@ -151,21 +181,20 @@ def mention_errors(spec: TaskSpec, pack, picks: Mapping[str, dict]) -> list[Spec
 
 def bound_picks(spec: TaskSpec, picks: Mapping[str, dict]) -> list[tuple[ParamBinding, dict]]:
     """The spec's bindings to picks of this session, with the item each was verified as."""
-    return [(b, picks[b.evidence]) for b in spec.parameters if b.evidence in picks]
+    return [(b, picks[key]) for b in spec.parameters for key in evidence_keys(b.evidence or "") if key in picks]
 
 
-def changed_picks(bound: list[tuple[ParamBinding, dict]], fresh: Mapping[str, dict]) -> list[SpecError]:
-    """``unknown_mention`` for each bound pick that a fresh reading (``fresh``: evidence -> item)
-    no longer has, or reads under another name than the one bound."""
-    errors: list[SpecError] = []
-    for binding, _ in bound:
-        now = fresh.get(binding.evidence)
-        if now is None:
-            errors.append(_refused(binding, (
-                f"{binding.name}: {binding.evidence} is no longer in the open model (or cannot be read): "
-                f"pick it again")))
-        elif not _same_value(binding.value, now):
-            errors.append(_refused(binding, (
-                f"{binding.name}: {binding.evidence} is now {picked_value(now)!r} in the open model, "
-                f"not {binding.value!r}: propose the spec again")))
-    return errors
+def changed_pick(binding: ParamBinding, selected: dict, now: dict | None) -> SpecError | None:
+    """Compare the fresh reading with the session's selection-time record."""
+    key = mention_evidence(selected["kind"], selected["id"])
+    if now is None:
+        return _refused(binding, f"{binding.name}: {key} is no longer in the open model (or cannot be read): pick it again")
+    if selected["kind"] == "element":
+        fields = ("category", "family", "name")
+        if any(now.get(field) != selected.get(field) for field in fields):
+            identity = ", ".join(f"{field}={now.get(field)!r}" for field in fields)
+            return _refused(binding, f"{binding.name}: {key} is now {identity}. Pick it again.")
+    elif not _same_value(binding.value, now):
+        return _refused(binding, f"{binding.name}: {key} is now {picked_value(now)!r} in the open model, "
+                                 f"not {binding.value!r}: propose the spec again")
+    return None

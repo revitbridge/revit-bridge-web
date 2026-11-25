@@ -4,6 +4,7 @@
 import { useEffect, useRef } from 'react'
 import type { ExecutionResult, SpecError, TaskSpec } from '../../types/api'
 import { confirmLabel, interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
+import { browserLanguage } from '../../utils/language'
 import { showValue, tokenPrefix } from './format'
 import { ExecutionView, TamperDemo } from './ExecutionPanel'
 
@@ -29,13 +30,14 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
   conflicts?: Array<Record<string, unknown>>
   defaults?: Array<{ name: string; value: unknown; unit?: string | null }>
 }) {
+  const zh = browserLanguage() === 'zh'
   return (
     <table className="spec-table">
       <thead>
-        <tr><th>Parameter</th><th>Value</th><th>Source</th><th>Evidence</th></tr>
+        <tr><th>{zh ? '参数' : 'Parameter'}</th><th>{zh ? '值' : 'Value'}</th><th>{zh ? '来源' : 'Source'}</th><th>{zh ? '依据' : 'Evidence'}</th></tr>
       </thead>
       <tbody>
-        {spec.parameters.length === 0 && defaults.length === 0 && <tr><td colSpan={4} className="muted">no parameters</td></tr>}
+        {spec.parameters.length === 0 && defaults.length === 0 && <tr><td colSpan={4} className="muted">{zh ? '无参数' : 'no parameters'}</td></tr>}
         {spec.parameters.map(p => (
           <tr key={p.name} className={conflicts.some(c => c.param === p.name) ? 'has-conflict' : undefined}>
             <td className="mono">{p.name}</td>
@@ -47,9 +49,9 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
         {defaults.map(d => (
           <tr key={`default-${d.name}`}>
             <td className="mono">{d.name}</td>
-            <td className="mono">default {JSON.stringify(d.value)}{d.unit ? ` ${d.unit}` : ''} will be used</td>
-            <td><span className="source-pill source-default">default</span></td>
-            <td className="evidence">not in the spec: the tool fills it</td>
+            <td className="mono">{zh ? '将使用默认值' : 'default'} {JSON.stringify(d.value)}{d.unit ? ` ${d.unit}` : ''}{zh ? '' : ' will be used'}</td>
+            <td><span className="source-pill source-default">{zh ? '默认' : 'default'}</span></td>
+            <td className="evidence">{zh ? '由工具填入' : 'not in the spec: the tool fills it'}</td>
           </tr>
         ))}
       </tbody>
@@ -59,6 +61,7 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
 
 export default function SpecCard({ proposal, canConfirm, confirming, confirmErrors, onToggleInterpretation, onConfirm,
   execution, confirmation, running, archived, onTamper }: Props) {
+  const zh = browserLanguage() === 'zh'
   const card = useRef<HTMLElement>(null)
   useEffect(() => {
     if (!archived) card.current?.scrollIntoView?.({ block: 'nearest' })
@@ -74,21 +77,22 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       <div className="panel-head">
         <h3 className="section-title">{draft.task}</h3>
         <span className={`readiness ${ready ? 'is-ready' : 'is-open'}`}>
-          {proposal.reconciling ? 'reconciling...' : ready ? 'ready' : reconcile ? 'not ready' : 'not reconciled'}
+          {proposal.reconciling ? (zh ? '正在核对…' : 'reconciling...') : ready ? (zh ? '就绪' : 'ready')
+            : reconcile ? (zh ? '尚未就绪' : 'not ready') : (zh ? '尚未核对' : 'not reconciled')}
         </span>
       </div>
 
       <p className="section-copy small" style={{ margin: 0 }}>
         {spec.action.kind === 'run_tool'
-          ? <>Pack <code>{spec.action.tool}</code> (run_tool)</>
-          : <>{spec.action.kind}: not offered here - this host runs saved tools only</>}
+          ? <>{zh ? '工具包' : 'Pack'} <code>{spec.action.tool}</code> (run_tool)</>
+          : <>{spec.action.kind}{zh ? '：此宿主仅执行已保存的工具' : ': not offered here - this host runs saved tools only'}</>}
       </p>
 
       <SpecTable spec={draft} conflicts={conflicts} />
 
       {interpretations.length > 0 && (
         <div className="spec-block">
-          <span className="label-text">Interpretations to confirm</span>
+          <span className="label-text">{zh ? '请确认以下理解' : 'Interpretations to confirm'}</span>
           {interpretations.map(it => (
             <label key={it.text} className="interpretation">
               <input type="checkbox" checked={it.confirmed} disabled={archived || proposal.ended || !!execution?.success || confirming || running || proposal.reconciling}
@@ -105,7 +109,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
             <li key={i} className="spec-conflict">
               <strong>{String(c.param ?? '')}</strong> {String(c.kind ?? '')}: {String(c.message ?? '')}
               {Array.isArray(c.available) && c.available.length > 0 && (
-                <span className="muted"> | available: {c.available.map(showValue).join(', ')}</span>
+                <span className="muted"> {zh ? '可选：' : '| available: '}{c.available.map(showValue).join(', ')}</span>
               )}
             </li>
           ))}
@@ -113,23 +117,24 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       )}
 
       {openQuestions > 0 && (
-        <p className="spec-open">{openQuestions} question{openQuestions === 1 ? '' : 's'} still open: answer in the chat (the options are there).</p>
+        <p className="spec-open">{zh ? `还有 ${openQuestions} 个问题，请在聊天中选择答案。`
+          : `${openQuestions} question${openQuestions === 1 ? '' : 's'} still open: answer in the chat (the options are there).`}</p>
       )}
 
       {reconcileError && (
-        <p className="spec-conflict">Not reconciled: {reconcileError.message ?? reconcileError.error} ({reconcileError.error})</p>
+        <p className="spec-conflict">{zh ? '核对失败：' : 'Not reconciled: '}{reconcileError.message ?? reconcileError.error} ({reconcileError.error})</p>
       )}
 
       {errors.length > 0 && (
         <ul className="spec-errors">
-          {errors.map((e, i) => <li key={i}><code>{e.code}</code>{e.param ? <> on <code>{e.param}</code></> : null}: {e.message}</li>)}
+          {errors.map((e, i) => <li key={i}><code>{e.code}</code>{e.param ? <>{zh ? '，参数 ' : ' on '}<code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
 
       <details className="spec-details">
-        <summary>详情</summary>
-        {spec.snapshot_fingerprint && <p>Snapshot <code>{spec.snapshot_fingerprint}</code></p>}
-        {confirmation && <p>Token <code>{tokenPrefix(confirmation.token)}</code> · {confirmation.expires_at}</p>}
+        <summary>{zh ? '详情' : 'Details'}</summary>
+        {spec.snapshot_fingerprint && <p>{zh ? '快照' : 'Snapshot'} <code>{spec.snapshot_fingerprint}</code></p>}
+        {confirmation && <p>{zh ? '令牌' : 'Token'} <code>{tokenPrefix(confirmation.token)}</code> · {confirmation.expires_at}</p>}
         <pre className="spec-text">{proposal.card}</pre>
         {confirmation?.used && onTamper && <TamperDemo key={confirmation.token} confirmation={confirmation}
           running={!!running} onTamper={onTamper} />}
@@ -137,13 +142,13 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
 
       {confirmErrors.length > 0 && (
         <ul className="spec-errors" data-testid="confirm-errors">
-          {confirmErrors.map((e, i) => <li key={i}>Confirm refused: <code>{e.code}</code>{e.param ? <> on <code>{e.param}</code></> : null}: {e.message}</li>)}
+          {confirmErrors.map((e, i) => <li key={i}>{zh ? '确认被拒绝：' : 'Confirm refused: '}<code>{e.code}</code>{e.param ? <>{zh ? '，参数 ' : ' on '}<code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
       {execution && <ExecutionView execution={execution} />}
-      {proposal.ended ? <p role="status">任务已结束</p> : execution?.success ? <p role="status">已执行</p> : archived ? <p>已被新卡替换</p> :
+      {proposal.ended ? <p role="status">{zh ? '任务已结束' : 'Task ended'}</p> : execution?.success ? <p role="status">{zh ? '已执行' : 'Executed'}</p> : archived ? <p>{zh ? '已被新卡替换' : 'Replaced by a new card'}</p> :
         <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
-          {confirming ? '正在确认…' : running ? '正在执行…' : confirmLabel(execution, confirmErrors)}
+          {confirming ? (zh ? '正在确认…' : 'Confirming…') : running ? (zh ? '正在执行…' : 'Running…') : confirmLabel(execution, confirmErrors)}
         </button>}
     </section>
   )

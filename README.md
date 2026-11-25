@@ -171,9 +171,12 @@ its connection.
    would need in one sentence and links the workbench (`/capabilities/workbench`), where a person
    tries code and saves it as a tool - code is written in the coding frameworks (Claude Code and
    others, with the `revit-bridge` plugin's skills). **Type `@` to pick from the open model:**
-   `@level`, `@type` (a category first, then its types) or `@link` (a link that is not loaded is
-   listed but cannot be picked); keep typing to narrow the list, arrows and Enter to choose, Esc to
-   close. A picked item is one tag - Backspace removes it whole. An `@` right after a letter or a
+   Choose a level, type or loaded link, or choose **Get current Revit selection** to check several
+   elements and insert them as `@element:<type name>#<id>`. For types, browse a category or type
+   directly, for example `@type:wal 200`. Results are grouped with counts. Click a category to
+   filter, clear the category chip to browse again, or scroll to load another page. A warning
+   indicates when the category counts cover only part of the selection. Arrows and Enter choose
+   an item. Esc closes the picker. A picked item is one tag - Backspace removes it whole. An `@` right after a letter or a
    digit (an e-mail address) opens nothing; after a space, punctuation or a Chinese character it
    does. The host checks the picks against the model before the model is called and gives the model
    the ones it found, with their names as Revit has them, so it does not ask for them again; under
@@ -260,6 +263,14 @@ default - longer than the host's longest model call, 1200 s (600 s, plus the par
 above 300) - so a long non-streamed call the host is still waiting for is not counted as a failure;
 connecting to a host that does not answer fails after 15 s. Example: `python -m bench run --label
 nightly --repeat 3 --confirm once`.
+
+The default task set includes a wall of a picked type on a picked level, a perpendicular wall
+and a window 1500 mm from a host wall's start. The bench checks each proposed binding against
+the item picked for that run. A missing pick skips the task. To execute these cases in a test
+model, the first wall type must be a uniquely named basic wall type and the first window type
+a uniquely named wall-hosted type. Preselect one straight basic wall with zero base offset.
+At the window centre, leave more than half its width to either end, and enough wall height for
+the 900 mm sill and the entire window.
 
 The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
 `roles_analyst` - each with its own prompt (see *Chat modes* and *The chat's roles* under
@@ -578,28 +589,34 @@ is the package's `success: false` without consuming the token), and a refusal by
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
 
-The chat's `@` picker: `GET /mentions?kind=level|type|link&category=&q=&limit=` is the package's
-`mention_candidates` reply as it is - `{kind, items: [{kind, id, name, label, detail, category?,
-family?, disabled?, reason?}], total, truncated, warnings?}`; `type` without `category` lists the
-categories (items of kind `category` whose `id` is the OST_* name), `q` keeps what contains it,
-`limit` is 1-200 (default 50). A kind or category the package refuses is 422 (`unknown_kind`,
+The chat picker calls `GET /mentions` with `kind` (level, type, link or element), optional `q`,
+`category`, `offset` and `limit`. Elements require `source=selection` and have a maximum page
+size of 50. Other kinds accept 1-200 items per page (default 50). The package returns `items`,
+`total`, `truncated`, `offset`, category counts in `facets`, and inferred categories in
+`category_matched`. A type search can span categories. With an empty search and no category it
+returns the category directory. A partial selection index reports `facets_partial` and warnings. A kind or category the package refuses is 422 (`unknown_kind`,
 `invalid_args`), Revit reporting an error 200 with the package's `error` (as on `/query`), no Revit
 503 `revit_unreachable`; the device rules are those of every read route. A spec may bind the
-designer's picks by name with evidence `mention:<kind>#<id>` (the package's rule); before such a
+designer's picks with evidence `mention:<kind>#<id>` (the package's rule); before such a
 spec is accepted, reconciled (the model's `reconcile` too) or confirmed the host checks every
 binding whose evidence starts with `mention` against the picks the package verified in that chat
-session for the device the request drives: the evidence exactly `mention:<level|type|link>#<id>`
+session for the device the request drives: the evidence exactly `mention:<level|type|link|element>#<id>`
 (lower case, no spaces), the kind the parameter takes as its pack declares it (`levels`: a level;
 `floor_types`, `family_types[:OST_*]`: a type, of that category when both name one; a link only
-where the pack names neither), the value (the name the package's block shows: a level's or a
-type's name, a link's label or else its name) and the source (`tool` for a pack parameter whose
-value comes from the model, else `designer`); any other is `unknown_mention` naming the parameter.
+where the pack names no kind, and an element for `elements[:OST_*]`, an integer ID parameter,
+or the string parameter `element_ids`), the value (a level or
+type name, a link label or name, or an element ID as a decimal string) and the source (`tool` for a pack parameter whose
+value comes from the model, else `designer`). For `element_ids`, use `mention:element#901,902`
+with the same set of decimal IDs in the value. Each ID must have been selected in this session.
+An invalid binding returns `unknown_mention` naming the parameter.
 So `POST /spec/reconcile` and `POST /spec/confirm` take the chat's `session_id` (the
 `X-Session-Id` of `/api/chat`); a binding to a pick with no session, another session's or another
 device's is 422 `invalid_spec` with those `errors`. `POST /spec/confirm` also reads the bound picks
-again from the open model before it issues a token (one `resolve_mentions`): a pick gone or
-renamed since is `unknown_mention` too (the session takes the new reading and lets the gone one
-go); no Revit to ask is 503 `revit_unreachable` (503 `revit_error` when the add-in cannot say, 504
+again from the open model before it issues a token (batches of up to 20 under one timeout). An element can be
+deselected between messages. For each element ID the host compares the category, family and type name
+with the selection-time record. A missing or changed element returns `unknown_mention` and must be picked
+again, including on retry. IDs with identical metadata in different documents cannot yet be distinguished.
+Renamed levels, types and links require a binding to their current name or label. No Revit to ask is 503 `revit_unreachable` (503 `revit_error` when the add-in cannot say, 504
 `revit_timeout` after 15 s). A spec without picks needs no Revit to be confirmed.
 
 The workbench's routes: `POST /check` is the package's `check_code` (compile in Revit, never run;

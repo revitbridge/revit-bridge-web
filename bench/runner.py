@@ -1,6 +1,6 @@
 """Drive a running host over HTTP the way the page does.
 
-By default only ``POST /api/chat`` is called (plus the read-only ``GET /config.json``,
+By default only ``POST /api/chat`` is called (plus the read-only bridge health and catalogue, ``GET /config.json``,
 ``GET /api/usage/runs`` and, for a task that picks model items by name,
 ``GET /api/v1/bridge/mentions``): when the model's spec is accepted, a fixed execution
 result (the task's own ``execution``, else the run's fixture) goes back through
@@ -35,7 +35,7 @@ session keeps them for its later turns): ``{kind, id}`` as written, or ``{kind,
 pick: {name | first: true, category?}}`` looked up first, as the page's picker
 does, through ``GET /api/v1/bridge/mentions`` - the item of that kind whose name is
 exactly ``name``, or the first one that can be picked (``category``: the OST_*
-category of a type). A pick that finds nothing skips the task (``skipped: pick not
+category of a type or a selected element). A pick that finds nothing skips the task (``skipped: pick not
 found (<kind> <name>)``: the open model lacks what the task needs, which says nothing
 about the model); more than one item of that name, or a lookup the host refuses,
 fails it. Either way nothing is sent.
@@ -159,11 +159,54 @@ class PickNotFound(Exception):
     """A task's pick found nothing in the open model: the task is skipped, not scored."""
 
 
+def candidate_pages(client: httpx.Client, base: str, kind: str, pick: dict, what: str):
+    """List pages of the picker. A V1 host only supports the first page."""
+    limit = 50 if kind == "element" else PICK_LIMIT
+    params = {"kind": kind, "limit": limit}
+    if kind == "element":
+        params["source"] = "selection"
+    elif pick.get("category"):
+        params["category"] = pick["category"]
+    offset = 0
+    ceiling = None
+    incomplete = False
+    while True:
+        response = client.get(base + MENTIONS_PATH, params=params)
+        check_status(response)
+        reply = response.json()
+        if not isinstance(reply, dict) or reply.get("error"):
+            error = reply.get("error") if isinstance(reply, dict) else "not an object"
+            raise ValueError(f"mention pick {what}: the host answered {error}")
+        rows = reply.get("items")
+        if not isinstance(rows, list):
+            raise ValueError(f"mention pick {what}: invalid items")
+        if "offset" not in reply and reply.get("truncated") and "name" in pick and "q" not in params:
+            # V1 has one page and a substring filter. V2 ranks and interprets aliases,
+            # so enumerate its pages with no search terms for an exact-name lookup.
+            params["q"] = pick["name"]
+            continue
+        yield rows
+        if "offset" not in reply:
+            return
+        incomplete |= bool(reply.get("facets_partial") or reply.get("warnings"))
+        if not reply.get("truncated"):
+            break
+        total = reply.get("total")
+        if type(total) is not int or reply["offset"] != offset:
+            raise ValueError(f"mention pick {what}: invalid pagination")
+        ceiling = total if ceiling is None else min(ceiling, total)
+        offset += limit
+        if not rows or offset >= ceiling:
+            # A truncated last page can mean the native inventory itself was cut short.
+            incomplete = True
+            break
+        params["offset"] = offset
+    if incomplete:
+        raise ValueError(f"mention pick {what}: incomplete listing")
+
+
 def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list[dict]:
-    """The task's mentions as the chat takes them, ``{kind, id}``: an id as written, a pick
-    looked up with ``GET /api/v1/bridge/mentions`` (see the module). A pick that finds no
-    item raises PickNotFound; more than one of that name ValueError; a refused request
-    HostError."""
+    """Resolve named or first matching picks. No match skips a task; ambiguous names fail."""
     picked = []
     for mention in mentions:
         kind = mention["kind"]
@@ -171,31 +214,21 @@ def pick_mentions(client: httpx.Client, base: str, mentions: list[dict]) -> list
             picked.append({"kind": kind, "id": mention["id"]})
             continue
         pick = mention["pick"]
-        named = pick["name"] if "name" in pick else "first"
+        named = pick.get("name", "first")
         if pick.get("category"):
             named += f" in {pick['category']}"
-        what = f"@{kind} " + (repr(pick["name"]) if "name" in pick else "first") + (
-            f" in {pick['category']}" if pick.get("category") else "")
-        params = {"kind": kind, "limit": PICK_LIMIT}
-        if pick.get("category"):
-            params["category"] = pick["category"]
-        if "name" in pick:
-            params["q"] = pick["name"]
-        response = client.get(base + MENTIONS_PATH, params=params)
-        check_status(response)
-        reply = response.json()
-        if not isinstance(reply, dict) or reply.get("error"):
-            error = reply.get("error") if isinstance(reply, dict) else "not an object"
-            raise ValueError(f"mention pick {what}: the host answered {error}")
-        items = [item for item in reply.get("items") or []
-                 if isinstance(item, dict) and item.get("kind") == kind and not item.get("disabled")]
-        if "name" in pick:
-            items = [item for item in items if item.get("name") == pick["name"]]
-            if len(items) > 1:
-                raise ValueError(f"mention pick {what}: {len(items)} items have that name")
-        if not items:
+        what = f"@{kind} {named}"
+        ids = (item["id"] for page in candidate_pages(client, base, kind, pick, what) for item in page
+               if isinstance(item, dict) and item.get("kind") == kind and not item.get("disabled")
+               and type(item.get("id")) is int and item["id"] > 0
+               and ("name" not in pick or item.get("name") == pick["name"])
+               and (kind != "element" or "category" not in pick or item.get("category") == pick["category"]))
+        first = next(ids, None)
+        if first is None:
             raise PickNotFound(f"pick not found ({kind} {named})")
-        picked.append({"kind": kind, "id": items[0]["id"]})
+        if "name" in pick and next(ids, None) is not None:
+            raise ValueError(f"mention pick {what}: 2 items have that name (or more)")
+        picked.append({"kind": kind, "id": first})
     return picked
 
 
@@ -337,7 +370,7 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
     usage_events = [event for event in events if event["type"] == "usage"]
     tool_events = merge_tools([event for event in events if event["type"] == "tool" and "id" in event])
     text = "".join(event["text"] for event in events if event["type"] == "text")
-    verdict = evaluate(task, specs, tool_events, text, turns)
+    verdict = evaluate(task, specs, tool_events, text, turns, mentions=mentions)
     if failure:
         verdict["correct"] = False
     result = {
@@ -439,6 +472,23 @@ def host_features(client: httpx.Client, base: str) -> dict | None:
         return None
 
 
+def host_catalogue(client: httpx.Client, base: str) -> dict:
+    """Measure the target host, including its installed user packs. Older hosts may omit either value."""
+    def read(path):
+        try:
+            response = client.get(base.rstrip("/") + "/api/v1/bridge/" + path)
+            check_status(response)
+            return response.json()
+        except (HostError, httpx.HTTPError, ValueError):
+            return None
+
+    health = read("revit-health")
+    tools = read("tools")
+    version = health.get("bridge_version") if isinstance(health, dict) else None
+    return {"revit_bridge_version": version if isinstance(version, str) else None,
+            "tool_count": len(tools) if isinstance(tools, list) else None}
+
+
 def run_labels(label: str, repeat: int) -> list[str]:
     return [f"{label}-{index}" for index in range(1, repeat + 1)]
 
@@ -473,7 +523,7 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
         "version": 2, "label": label, "base_url": base, "repeat": repeat,
         "mode": "execute" if execute else "synthetic",
         "skip_requires": sorted(set(skip_requires)), "include_placeholder_ids": include_placeholder_ids,
-        "host": {"features": features},
+        "host": {"features": features, **host_catalogue(client, base)},
         "chat_mode": mode,
         "chat": chat_mode(features, runs),
         "feedback_policy": FEEDBACK_ONCE if execute else FEEDBACK_FOLLOWS,

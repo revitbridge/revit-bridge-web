@@ -1,16 +1,19 @@
 # Token bench tasks. Fields:
 #   id, kind (chat | query | tool | none | ask), message
 #   mentions: [...]               optional: the designer's picks, sent with the task's message
-#                                   {kind, id}: as written (level, type or link and its element id)
+#                                   {kind, id}: as written (level, type, link or element and its id)
 #                                   {kind, pick: {name: <name>}}: the item of that kind named exactly
 #                                     so, looked up with GET /api/v1/bridge/mentions before sending
 #                                   {kind, pick: {first: true}}: the first item that can be picked
 #                                   a type pick also names its category: pick: {category: OST_Walls, ...}
+#                                   element picks use the current Revit selection; category filters it locally
 #                                 a pick that finds nothing in the open model skips the task
 #                                 ("pick not found (<kind> <name>)"), it is not scored
 #   answers: [text]               optional: sent in turn when the model asks
 #   expect: {tool, params, max_turns}   params compared by value, numbers as numbers;
 #                                 lengths are written in millimetres, units are not compared
+#   expect.pick_params: {parameter: index}   bind that parameter to the zero-based mention
+#                                 with its verified evidence; element values are decimal ID strings
 #   requires: [name]              optional: what the host must offer; --skip-requires <name>
 #                                 skips these tasks and reports them as skipped, not wrong
 #   placeholder_ids: true         optional: the literal mention ids are placeholders; skipped
@@ -63,6 +66,40 @@
   message: "List the levels in the selected linked model without changing it."
   mentions: [{kind: link, pick: {first: true}}]
   expect: {max_turns: 1}
+# V2: use a test model with a basic wall type and a wall-hosted window type first in their lists.
+# Preselect one straight basic wall. At 1500 mm from its start, leave clearance for the full
+# window width and for a 900 mm sill plus the window height (see README).
+- id: wall-by-type
+  kind: tool
+  message: "Create a 3000 mm high straight wall of the picked wall type on the picked level, from (0,0) to (6000,0) mm."
+  mentions:
+    - {kind: type, pick: {first: true, category: OST_Walls}}
+    - {kind: level, pick: {first: true}}
+  expect:
+    tool: create_wall
+    params: {start_x: 0, start_y: 0, end_x: 6000, end_y: 0, height: 3000}
+    pick_params: {type_name: 0, level_name: 1}
+    max_turns: 3
+- id: wall-from-selection
+  kind: tool
+  message: "Create a 3000 mm long wall from the midpoint of the selected straight wall, along its left normal in plan. Use the document defaults."
+  mentions: [{kind: element, pick: {first: true, category: OST_Walls}}]
+  expect:
+    tool: create_wall_from_element
+    params: {anchor: mid, direction: normal_left, length: 3000}
+    pick_params: {reference_id: 0}
+    max_turns: 3
+- id: window-along-wall
+  kind: tool
+  message: "Place a window of the picked window type in the selected basic wall, 1500 mm from its start along the wall, at a sill height of 900 mm."
+  mentions:
+    - {kind: element, pick: {first: true, category: OST_Walls}}
+    - {kind: type, pick: {first: true, category: OST_Windows}}
+  expect:
+    tool: create_window_on_wall
+    params: {offset_along_wall: 1500, sill_height: 900}
+    pick_params: {wall_id: 0, type_name: 1}
+    max_turns: 3
 - id: unsupported-pipe
   kind: none
   message: "Create a sprinkler piping system. If no installed tool supports it, explain that limitation."

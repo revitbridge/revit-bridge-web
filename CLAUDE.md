@@ -44,18 +44,15 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   first `stage` event and every `llm_calls` row. With the roles the turn runs in role segments (`Turn.loop`,
   one per role; `message_roles`: the analyst (mode `roles_analyst`), then the planner for `query` / `tool`;
   `execution_roles`: the supervisor, then the planner on `retry`), each role with the package's
-  `host_instructions(role=..., code=False)` through `inline_card_instructions`. This temporary
-  0.9.1 shim checks and replaces old card wording. Remove it when upgrading to the package with
-  native inline-card instructions. The planner adds `WORKBENCH_LINE` with `CARD_GUIDANCE`,
-  the analyst adds `roles.ANALYST_WORKBENCH_LINE` with conditional guidance for a pending card,
-  and the supervisor uses only the adapted package text. Each role has its own tools and the model
+  `host_instructions(role=..., code=False)` directly. The planner adds `WORKBENCH_LINE`,
+  the analyst adds `roles.ANALYST_WORKBENCH_LINE`, and the supervisor uses the package text. Each role has its own tools and the model
   `models_file.resolve(role, headers)` gives it; the analyst's digest is the package's
   `snapshot_digest` (`model_digest`: one snapshot per session and device scope, again after a
   reported run; a failed read waits a minute). `ROLES_PLANNER_TOOLS` (`route` / `all`) is a
   variant of the roles for measuring, `ROLES_ANALYST` (`off` / `on`) the default mode (`WebSettings`);
   `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
-  prompt from the same shim with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all eight
+  prompt from the package with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all eight
   tools. A request with `bridge: false` uses the baseline prompt and no tools;
   `backend/roles.py` the role table, the route -> tools map (`ROUTE_TOOLS`, `SUPERVISOR_TOOLS`; a call
   outside it is `tool_not_offered`, never run), the hand-offs (`analyst_message`, `planner_message`,
@@ -87,8 +84,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `ModelTarget.browser_model` / `entry_max_tokens`) - every role, no repair, no fallback. Without
   a models file the requests and streams are byte for byte the record in
   `tests/default_path_golden.json` (`tests/test_default_path.py`). The V3 request hashes live in
-  `inline_forms_16384` and `inline_forms_4096`. The existing scenarios' SSE streams must also
-  match the frozen `max_tokens_4096` stream hashes from aa5556c;
+  `mention_picker_16384` and `mention_picker_4096`. Streams are also compared to the frozen
+  `max_tokens_4096` record from aa5556c, allowing only the 0.10 tool catalogue size and preview
+  in the single-loop listing;
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
   pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
@@ -107,6 +105,8 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   (`feedback_policy`) and confirmed ready proposals (`confirm_policy`; `--confirm once`, the
   unattended mode: one "yes" when the host's tool events show a ready `reconcile` and no
   `propose_spec`, `runner.waits_for_confirmation`; `compare` notes a difference in either).
+  `bench/tasks.yml` compares static values in `expect.params` and verified mention evidence in
+  `expect.pick_params` (parameter name to zero-based mention index).
   `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's own
   `execution`), to measure the report step and the supervisor's send-backs.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
@@ -154,11 +154,11 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   never changed, hidden or replaced (409 `builtin_read_only`).
 - The model in the chat writes no code: no `get_guidance`, no skills in the prompt, `propose_spec`
   refuses `execute_code`. Code is tried and saved as a tool by a person on the workbench.
-- The designer's picks (`@level`, `@type`, `@link`): what to offer, whether a pick exists and the
+- The designer's picks (`@level`, `@type`, `@link`, `@element`): what to offer, whether a pick exists and the
   text the model gets all come from the package (`revit_bridge.mentions`). The host only keeps the
   verified items on the session and compares a spec's `mention:` evidence strings and values with
-  them (`backend/mention_check.py`: the name the package's block shows - a link's label, else its
-  name), per device scope; `/spec/confirm` reads the bound picks again with the package before a
+  them (`backend/mention_check.py`: a decimal ID for elements, a label or name for links, a name
+  for levels and types), per device scope; `/spec/confirm` reads the bound picks again with the package before a
   token. The page sends only `{kind, id}`.
 - Every tool name from a request or from the model goes through `require_tool_name` (ASCII
   letters, digits and `_`, at most 100 characters, no Windows device name) before any `ToolStore`
@@ -190,11 +190,11 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 Runtime attribute lookup across the host/package boundary:
 
 - `WebSocketRevitClient.mention_cache_scope` returns (device ID, connection identity), or
-  `None` when disconnected. The 0.9.1 package does not read it. The updated picker looks up
+  `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge>=0.9,<0.10` from PyPI; `uv.lock` pins the exact
-release (0.9.1: 22 built-in packs). When the host needs something newer, bump the constraint and
+`pyproject.toml` requires `revit-bridge==0.10.0` from PyPI; `uv.lock` pins the exact
+release (0.10.0). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
 a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).

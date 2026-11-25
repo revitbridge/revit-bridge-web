@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from backend.api.model_tools import CARD_GUIDANCE, TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
+from backend.api.model_tools import TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
 
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
@@ -111,7 +111,7 @@ SUPERVISOR_DEFINITIONS = definitions(SUPERVISOR_TOOLS)
 # ends with its never-list): where a tool that does not exist yet is made.
 ANALYST_WORKBENCH_LINE = (
     "With route none, end `note` with exactly this Markdown link to where a new tool is tried "
-    f"and saved: {WORKBENCH_LINK}. When a card is pending confirmation: {CARD_GUIDANCE}"
+    f"and saved: {WORKBENCH_LINK}."
 )
 
 REPAIR_INSTRUCTION = (
@@ -342,12 +342,14 @@ def is_refused(execution: dict) -> bool:
 # The package's error codes of a run it stopped before anything changed in the model
 # (``revit_bridge.execution``): a precondition failed, the validator could not take its first
 # sample, the sandbox blocked the code.
-STOPPED_BEFORE_RUN = {"preconditions_failed": "a precondition failed",
-                      "validator_before_failed": "the validator could not take its first sample",
-                      "blocked": "the code was blocked"}
+STOPPED_BEFORE_RUN = {
+    "preconditions_failed": ("a precondition failed", "前置条件未满足"),
+    "validator_before_failed": ("the validator could not take its first sample", "校验器未能读取执行前的数据"),
+    "blocked": ("the code was blocked", "代码被阻止"),
+}
 
 
-def refusal_kind(execution: dict) -> str | None:
+def refusal_kind(execution: dict, *, chinese: bool = False) -> str | None:
     """Why a failed run is a refusal by nature - not a value the planner could change - read from
     the package's fields, never from its wording; None when it is not one:
     ``refused: true`` (0.9.1: the pack refused the input in Revit); ``preconditions_failed``
@@ -355,17 +357,17 @@ def refusal_kind(execution: dict) -> str | None:
     ``evidence_id`` - nothing reached the ledger: the package refused it before dispatch (its
     parameter check, an unknown or unhealthy tool) or Revit could not be reached."""
     if is_refused(execution):
-        return "the tool refused the input in Revit; nothing was kept"
+        return "Revit 工具拒绝了输入，修改未保留" if chinese else "the tool refused the input in Revit; nothing was kept"
     if execution.get("success") is True:
         return None
     failed = execution.get("preconditions_failed")
     if isinstance(failed, list) and failed:
-        return STOPPED_BEFORE_RUN["preconditions_failed"]
+        return STOPPED_BEFORE_RUN["preconditions_failed"][int(chinese)]
     error = execution.get("error")
     if isinstance(error, str) and error in STOPPED_BEFORE_RUN:
-        return STOPPED_BEFORE_RUN[error]
+        return STOPPED_BEFORE_RUN[error][int(chinese)]
     if not execution.get("evidence_id") and validation_of(execution) is None:
-        return "nothing was run or recorded"
+        return "没有执行记录" if chinese else "nothing was run or recorded"
     return None
 
 
@@ -380,20 +382,23 @@ def failed_first(checks: list[dict]) -> list[dict]:
     return [c for c in checks if c.get("passed") is not True] + [c for c in checks if c.get("passed") is True]
 
 
-def _check_line(check: dict) -> str:
+def _check_line(check: dict, chinese: bool = False) -> str:
     """One validator check as the host shows it: ``- <name> (passed|failed): <detail>``, the
     detail as the package wrote it (cut to ``ITEM_MAX``; none: no colon)."""
     state = "passed" if check.get("passed") is True else "failed"
+    if chinese:
+        state = "通过" if check.get("passed") is True else "未通过"
     head = f"- {clip(check.get('name', '?'), NAME_MAX)} ({state})"
     detail = check.get("detail")
     return f"{head}: {clip(detail, ITEM_MAX)}" if isinstance(detail, str) and detail else head
 
 
-def _check_lines(checks: list[dict]) -> list[str]:
+def _check_lines(checks: list[dict], chinese: bool = False) -> list[str]:
     """At most ``CHECKS_SHOWN`` check lines, then ``(+N more checks)``."""
-    lines = [_check_line(c) for c in checks[:CHECKS_SHOWN]]
+    lines = [_check_line(c, chinese) for c in checks[:CHECKS_SHOWN]]
     if len(checks) > CHECKS_SHOWN:
-        lines.append(f"(+{len(checks) - CHECKS_SHOWN} more checks)")
+        more = len(checks) - CHECKS_SHOWN
+        lines.append(f"（另有 {more} 项检查）" if chinese else f"(+{more} more checks)")
     return lines
 
 
@@ -424,30 +429,34 @@ def enforce(verdict: Verdict, execution: dict, retries: int, *, chinese: bool = 
     report built from the result - every piece of it cut to its cap."""
     succeeded = execution.get("success") is True
     failed_validator = validator_failed(execution)
-    kind = refusal_kind(execution)
+    kind = refusal_kind(execution, chinese=chinese)
     default_question = "接下来要怎么做？" if chinese else DEFAULT_QUESTION
     if verdict.verdict == DONE and failed_validator:
         checks = checks_of(execution)
         failed = [c for c in checks if c.get("passed") is not True] or checks
-        lines = "\n".join(_check_lines(failed)) or "- (the result lists no checks)"
-        return Verdict(ASK, f"The validator did not pass, so this is not done:\n{lines}",
+        lines = "\n".join(_check_lines(failed, chinese)) or ("未列出检查项。" if chinese else "- (the result lists no checks)")
+        return Verdict(ASK, ("校验未通过，任务尚未完成。\n" if chinese else "The validator did not pass, so this is not done:\n") + lines,
                        question="需要调整什么？" if chinese else "What should change?", forced=FORCED_VALIDATOR)
     if kind is not None and verdict.verdict != ASK:
-        return Verdict(ASK, f"This run is not sent back: {kind}. {_error_text(execution)}",
+        report = f"本次执行未重试。{kind}。{_error_text(execution)}" if chinese else f"This run is not sent back: {kind}. {_error_text(execution)}"
+        return Verdict(ASK, report,
                        question=default_question, forced=FORCED_REFUSED)
     if verdict.verdict == DONE and not succeeded:
-        return Verdict(ASK, f"Revit did not report success, so this is not done: {_error_text(execution)}",
+        report = "Revit 未报告执行成功，任务尚未完成。" if chinese else "Revit did not report success, so this is not done: "
+        return Verdict(ASK, report + _error_text(execution),
                        question=default_question, forced=FORCED_FAILED)
     if verdict.verdict == RETRY and succeeded and not failed_validator:
-        return Verdict(ASK, f"{clip(verdict.report)}\n\nRevit reported success and the validator did not fail, so "
-                            "the host does not send this run back; you decide whether anything should change.",
+        note = ("Revit 已报告成功，校验未发现失败。请决定是否需要调整。" if chinese else
+                "Revit reported success and the validator did not fail, so the host does not send this run back; you decide whether anything should change.")
+        return Verdict(ASK, f"{clip(verdict.report)}\n\n{note}",
                        question=(f"需要调整吗？监督员建议：{clip(verdict.fix)}" if chinese else
                                  f"Should anything change? (the supervisor suggested: {clip(verdict.fix)})")
                        if verdict.fix else default_question, forced=FORCED_SUCCEEDED)
     if verdict.verdict == RETRY and retries >= MAX_RETRIES:
-        how = " and still did not succeed" if not succeeded else ""
-        return Verdict(ASK, f"{clip(verdict.report)}\n\nThe task was sent back {MAX_RETRIES} times{how}; the host "
-                            f"does not send it back again.",
+        how = ("，仍未成功" if chinese else " and still did not succeed") if not succeeded else ""
+        note = (f"任务已退回 {MAX_RETRIES} 次{how}，请决定下一步。" if chinese else
+                f"The task was sent back {MAX_RETRIES} times{how}; the host does not send it back again.")
+        return Verdict(ASK, f"{clip(verdict.report)}\n\n{note}",
                        question=(f"需要调整什么？上次建议：{clip(verdict.fix)}" if chinese else
                                  f"What should change? (last suggestion: {clip(verdict.fix)})") if verdict.fix
                        else default_question, forced=FORCED_RETRIES)
@@ -456,20 +465,24 @@ def enforce(verdict: Verdict, execution: dict, retries: int, *, chinese: bool = 
 
 def fallback_verdict(execution: dict, *, chinese: bool = False) -> Verdict:
     """The supervisor's reply could not be read: the host reports the raw outcome and asks."""
-    lines = [f"success: {json.dumps(execution.get('success'))}"]
+    success = json.dumps(execution.get("success"))
+    lines = [f"执行成功：{success}" if chinese else f"success: {success}"]
     if execution.get("error"):
-        lines.append(f"error: {_error_text(execution)}")
+        lines.append(("错误：" if chinese else "error: ") + _error_text(execution))
     if is_refused(execution):
-        lines.append("refused: true")
+        lines.append("工具已拒绝执行" if chinese else "refused: true")
     validation = validation_of(execution)
     if validation is not None:
-        lines.append(f"validator {clip(validation.get('validator', '?'), NAME_MAX)}: "
-                     f"{'passed' if validation.get('passed') is True else 'did not pass'}")
-        lines += _check_lines(checks_of(execution))
+        name = clip(validation.get("validator", "?"), NAME_MAX)
+        passed = validation.get("passed") is True
+        lines.append(f"校验器 {name}：{'通过' if passed else '未通过'}" if chinese else
+                     f"validator {name}: {'passed' if passed else 'did not pass'}")
+        lines += _check_lines(checks_of(execution), chinese)
     if execution.get("evidence_id"):
-        lines.append(f"evidence: {clip(execution['evidence_id'], NAME_MAX)}")
-    return Verdict(ASK, "The execution result, as the host received it (the supervisor's reply could not "
-                        "be read):\n" + "\n".join(lines), question="接下来要怎么做？" if chinese else DEFAULT_QUESTION,
+        lines.append(("证据：" if chinese else "evidence: ") + clip(execution['evidence_id'], NAME_MAX))
+    heading = ("未能读取监督员回复。以下为收到的执行结果。\n" if chinese else
+               "The execution result, as the host received it (the supervisor's reply could not be read):\n")
+    return Verdict(ASK, heading + "\n".join(lines), question="接下来要怎么做？" if chinese else DEFAULT_QUESTION,
                    forced="supervisor_unreadable")
 
 

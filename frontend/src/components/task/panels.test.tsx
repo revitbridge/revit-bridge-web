@@ -1,7 +1,7 @@
 /* The spec card and the execution view, rendered from the events' shapes (no browser needed). */
 
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
 import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
@@ -37,6 +37,8 @@ function render(p: Proposal, canConfirm: boolean) {
 }
 
 describe('SpecCard', () => {
+  beforeEach(() => vi.stubGlobal('navigator', { languages: ['zh-CN'] }))
+  afterEach(() => vi.unstubAllGlobals())
   it('shows every parameter with its source and evidence, the interpretation as a checkbox, Confirm dark', () => {
     const html = render(proposalFrom({
       type: 'spec', spec, card: 'Task: ...\nConfirm? (yes / change something)', errors: [],
@@ -48,7 +50,7 @@ describe('SpecCard', () => {
     expect(html).toContain('type="checkbox"')
     expect(html).toContain('y 未标单位，按 mm 理解，请确认')
     expect(html).toMatch(/<button class="btn-primary" disabled="">确认并执行<\/button>/)
-    expect(html).toContain('not ready')
+    expect(html).toContain('尚未就绪')
     expect(html).toContain('fp-1')
   })
 
@@ -60,12 +62,12 @@ describe('SpecCard', () => {
     expect(html).toContain('class="has-conflict"')
     expect(html).toContain('class="spec-conflict"')
     expect(html).toContain('does not exist in the snapshot')
-    expect(html).toContain('available: Level 1, Level 2')
+    expect(html).toContain('可选：Level 1, Level 2')
     expect(html).toContain('guessed_value')
 
     const away = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null, reconcile_error: { error: 'revit_unreachable', message: 'connect refused' } }), false)
-    expect(away).toContain('Not reconciled: connect refused (revit_unreachable)')
-    expect(away).toContain('not reconciled')
+    expect(away).toContain('核对失败：connect refused (revit_unreachable)')
+    expect(away).toContain('尚未核对')
   })
 
   it.each([[false, '已被新卡替换'], [true, '已执行']] as const)('renders an archived card with success=%s', (success, label) => {
@@ -81,12 +83,14 @@ describe('SpecCard', () => {
     const html = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: { conflicts: [], questions: [], interpretations_required: [], ready: true } }), true)
     expect(html).toMatch(/<button class="btn-primary">确认并执行<\/button>/)
     expect(html).toContain('data-ready="true"')
+    vi.stubGlobal('navigator', { languages: ['en-US'] })
+    expect(render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null }), true)).toContain('Confirm and run · 确认并执行')
   })
 
   it('a spec that is not a saved tool says it is not offered here and shows no code', () => {
     const code: TaskSpec = { ...spec, action: { kind: 'execute_code', code: 'return 42;', code_parameters: [] } }
     const html = render(proposalFrom({ type: 'spec', spec: code, card: 'c', errors: [], reconcile: null }), false)
-    expect(html).toContain('execute_code: not offered here - this host runs saved tools only')
+    expect(html).toContain('execute_code：此宿主仅执行已保存的工具')
     expect(html).not.toContain('return 42;')
   })
 })

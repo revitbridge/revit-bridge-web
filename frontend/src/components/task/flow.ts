@@ -7,6 +7,7 @@
    this store only: never in localStorage or sessionStorage. Only saved tools
    run here (run_tool): the model in this host proposes no code. */
 
+import { browserLanguage } from '../../utils/language'
 import { createStore } from 'zustand/vanilla'
 import type {
   ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
@@ -159,7 +160,8 @@ export function canConfirm(s: TaskState): boolean {
 }
 
 export function confirmLabel(execution?: ExecutionResult | null, errors: SpecError[] = []): string {
-  return execution || errors.length ? '重试执行' : '确认并执行'
+  const retry = Boolean(execution || errors.length)
+  return browserLanguage() === 'zh' ? (retry ? '重试执行' : '确认并执行') : (retry ? 'Retry execution' : 'Confirm and run · 确认并执行')
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>
@@ -306,7 +308,8 @@ export function createTaskFlow(deps: FlowDeps) {
     if (open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
       push('bridge', { role: 'user', content: message })
       push('bridge', { role: 'assistant',
-        content: `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。` })
+        content: browserLanguage() === 'zh' ? `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。`
+          : `The card is in the reply where I proposed it. Click “${confirmLabel(s.execution, s.confirmErrors)}” on that card.` })
       setState({ highlight: s.highlight + 1 })
       return
     }

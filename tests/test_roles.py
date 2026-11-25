@@ -173,6 +173,31 @@ def test_route_query_runs_the_planner_with_the_read_tools_only(revit, client, mo
         USAGE_SHAPES[shape][1][:2] for shape in ("deepseek", "openai", "gemini")]
 
 
+def test_workbench_instruction_requires_the_exact_link():
+    assert f"with exactly this Markdown link: {WORKBENCH_LINK}" in chat_module.WORKBENCH_LINE
+
+
+@pytest.mark.parametrize("verdict, execution, phrase", [
+    ("done", {"success": True, "validation": {"passed": False, "checks": [{"name": "rows", "passed": False}]}},
+     "rows (未通过)"),
+    ("done", {"refused": True}, "Revit 工具拒绝了输入"),
+    ("done", {"success": False, "evidence_id": "e"}, "Revit 未报告执行成功"),
+    ("retry", {"success": True}, "Revit 已报告成功"),
+    ("retry", {"success": False, "evidence_id": "e"}, "仍未成功"),
+])
+def test_chinese_supervisor_reports(verdict, execution, phrase):
+    outcome = roles.enforce(roles.Verdict(verdict, "报告", fix="建议"), execution, roles.MAX_RETRIES, chinese=True)
+    assert outcome.verdict == "ask" and phrase in outcome.report and "？" in outcome.question
+
+
+def test_chinese_unreadable_supervisor_report():
+    output = roles.fallback_verdict({"success": False, "error": "bad", "refused": True, "evidence_id": "ev-7",
+                                     "validation": {"validator": "rows", "passed": False}}, chinese=True)
+    for part in ("未能读取监督员回复", "执行成功：false", "错误：bad", "工具已拒绝执行", "校验器 rows：未通过", "证据：ev-7"):
+        assert part in output.report
+    assert output.question == "接下来要怎么做？"
+
+
 def test_route_tool_proposes_and_the_supervisor_reports(revit, client, model):
     session_id = wall_turn(client, model)
     planner = model.requests_of("planner")[0]
@@ -337,12 +362,11 @@ def test_ask_shows_the_report_and_the_question(revit, client, model):
     for role in ("analyst", "planner", "supervisor"):
         prompt = model.requests_of(role)[0]["messages"][0]["content"]
         if role == "supervisor":
-            assert chat_module.CARD_GUIDANCE not in prompt
-            assert "on the card in this chat" in prompt and "on the card in this chat reply" not in prompt
+            assert "on the card in the chat reply" in prompt
         else:
             assert "确认并执行" in prompt and "卡片在我上一条提交它的回复里" in prompt
         if role == "analyst":
-            assert "When a card is pending confirmation" in prompt
+            assert "With a pending card, route plain assent" in prompt
         if role == "planner":
             assert "other: true marks the designer's own words" in prompt
         assert "wait for an explicit yes" not in prompt and "in this host\'s interface" not in prompt
@@ -630,14 +654,14 @@ def test_each_role_prompt_is_the_packages_text_and_stays_the_same(revit, client,
     assert built == ["analyst", "planner"]
     analysts = model.requests_of("analyst")
     assert len({json.dumps(b["messages"][0]) for b in analysts}) == 1
-    assert analysts[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="analyst", code=False).rstrip("\n")
+    assert analysts[0]["messages"][0]["content"] == (chat_module.host_instructions(role="analyst", code=False).rstrip("\n")
                                                      + "\n\n" + roles.ANALYST_WORKBENCH_LINE)
     # The analyst's message opens with the same tools and digest every turn.
     heads = {user_text(b).split("\n\nDesigner's message:")[0].split("\n\nOpen task")[0] for b in analysts}
     assert len(heads) == 1
     planners = model.requests_of("planner")
     assert len({json.dumps(b["messages"][0]) for b in planners}) == 1
-    assert planners[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="planner", code=False).rstrip("\n")
+    assert planners[0]["messages"][0]["content"] == (chat_module.host_instructions(role="planner", code=False).rstrip("\n")
                                                      + "\n" + chat_module.WORKBENCH_LINE)
     # Append, never rewrite: every planner request starts with the whole previous one.
     for earlier, later in zip(planners, planners[1:]):
