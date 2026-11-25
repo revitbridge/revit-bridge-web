@@ -86,7 +86,11 @@ provider options (the responses api, the output limit's name, the reasoning effo
 read timeout: ``backend.llm``). What a provider returns with a tool call to have it back
 (a thought signature, encrypted reasoning) is kept with the session
 (``Session.provider_memory``). A reply that used up its output limit on thinking, with
-no text and no tool call, ends the turn with ``event: error`` naming the limit. Events
+no text and no tool call, ends the turn - for every role, with no repair call and no
+fallback - with ``event: error`` whose detail is ``Turn.limit_notice``: the role and its
+model, the limit as it was sent, what of the task is still there (a card proposed in this
+turn, the reported run) and how to raise it (``max_tokens`` in the models file entry;
+the default is ``backend.llm.DEFAULT_MAX_TOKENS``). Events
 and ``llm_calls`` carry the role and the model the call actually went to; ``round``
 counts the model calls of the turn across its roles.
 
@@ -142,9 +146,10 @@ from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
 )
 from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
+from backend import llm as llm_client
 from backend.llm import (
-    SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, stream_completion,
-    tool_message,
+    SSE_DONE, CallStats, LLMError, OutputLimitError, assistant_message, format_sse, format_sse_event,
+    stream_completion, tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
 from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
@@ -445,17 +450,52 @@ class Turn:
     names the role and the model of the call; the turn's first ``stage`` event and every row
     name the mode too."""
 
-    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool, mode: str = MODE_SINGLE):
+    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool, mode: str = MODE_SINGLE,
+                 execution: dict | None = None):
         self.session = session
         self.turn = turn
         self.run_label = run_label
         self.bridge = bridge
         self.mode = mode
         self.mode_sent = False
+        self.execution = execution                      # the run this turn reports, if it reports one
+        self.accepted_spec = False                      # a spec ready to confirm was proposed in this turn
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
         self.ran: dict[str, str] = {}                   # role -> model, in the order the roles ran
+
+    def limit_notice(self, role: str, model: str, exc: OutputLimitError) -> str:
+        """The ``error`` event's text when ``role``'s reply used up its output limit: who and which
+        model, the limit as it was sent, what of the task is still there (``limit_state``) and how
+        to raise the limit. The turn ends there: no repair call, no fallback."""
+        head = (f"Output limit used up: the {role} ({model}) spent its whole output limit ({exc.param} "
+                f"{exc.limit}) before it wrote a reply or called a tool - most likely on thinking, which "
+                f"counts toward the limit.")
+        how = (f"To raise it, set max_tokens for this model in its entry in the host's models file "
+               f"(models.yml); without one the host's default, {llm_client.DEFAULT_MAX_TOKENS}, applies.")
+        return f"{head} {self.limit_state(role)} {how}"
+
+    def limit_state(self, role: str) -> str:
+        """What the designer still has after a used-up limit, read from what this turn did: a card
+        proposed in it, or the run it reports, stays; otherwise nothing was proposed."""
+        if self.accepted_spec:
+            return ("The spec card proposed in this turn is kept: it can still be confirmed and run; only "
+                    "the text after it is missing.")
+        if self.execution is not None:
+            evidence = self.execution.get("evidence_id")
+            where = f" (evidence {evidence})" if isinstance(evidence, str) and evidence else ""
+            done = f"The run you reported is not affected: its result stays as the page received it{where}."
+            if role == roles.SUPERVISOR:
+                return f"{done} Only the supervisor's report on it is missing, and nothing was sent back to the planner."
+            if roles.SUPERVISOR in self.ran:
+                return f"{done} The supervisor's report is above; the planner proposed no new card."
+            return f"{done} Only the report on it is missing."
+        earlier = " Cards and results from earlier turns stay as they were." if self.session.spec else ""
+        if role == roles.ANALYST:
+            return (f"Your message was not passed on to the planner and nothing was proposed; send it again "
+                    f"once the limit is raised.{earlier}")
+        return f"No spec ready to confirm was proposed in this turn.{earlier}"
 
     def stage(self, role: str, model: str, status: str) -> str:
         self.open = (role, model) if status == "start" else None
@@ -519,9 +559,12 @@ class Turn:
                             yield format_sse(item)
                     else:
                         calls = item
-            except LLMError:
+            except LLMError as exc:
                 if stats.accepted:          # the endpoint took the call: it may have cost tokens
                     yield await self.usage(role, llm.model, this_round, stats, started)
+                if isinstance(exc, OutputLimitError):
+                    # The turn ends with the designer's notice: no repair call, no fallback.
+                    raise LLMError(self.limit_notice(role, llm.model, exc), status=exc.status) from None
                 raise
             yield await self.usage(role, llm.model, this_round, stats, started)
             content = "".join(parts)
@@ -576,6 +619,8 @@ class Turn:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
                 if outcome.spec_event is not None:
+                    if isinstance(outcome.result, dict) and outcome.result.get("accepted") is True:
+                        self.accepted_spec = True
                     yield format_sse_event("spec", outcome.spec_event)
                 # The session keeps at most the head; this turn sees all of it.
                 if keep is not None:
@@ -805,7 +850,7 @@ async def chat(req: ChatRequest, request: Request,
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
-    run = Turn(session, turn, run_label, req.bridge, mode)
+    run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
 
     if with_roles:
         scope = current_scope()                   # the device this request drives

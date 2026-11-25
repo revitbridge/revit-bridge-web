@@ -424,7 +424,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "score the task on what follows - the unattended mode; never (default): as before")
     run.add_argument("--out", type=Path, default=DEFAULT_OUT,
                      help="directory of <label>.json (default: ./bench-results)")
-    run.add_argument("--timeout", type=float, default=120.0, help="HTTP timeout in seconds (default 120)")
+    run.add_argument("--timeout", type=float, default=960.0,
+                     help="HTTP read timeout in seconds (default 960: a long non-streamed model call on the host "
+                          "is not a failure)")
     run.add_argument("--allow-remote", action="store_true",
                      help="allow a --base-url that is not this machine")
     compare = sub.add_parser("compare", help="compare two results files task by task")

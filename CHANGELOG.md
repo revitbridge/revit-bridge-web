@@ -128,9 +128,16 @@ the host shares your tools with the package's MCP server (see *Changed*).
   require - now go back unchanged on that call in the following requests to the same endpoint and
   model (kept in memory with the chat session; never on disk or in a log). A reply that ends at
   its output limit before it wrote anything or called a tool (a thinking model that spent the limit
-  thinking) is now an `error` event naming the limit (`max_tokens 4096`) instead of an empty reply.
-  Without a models file, and for an entry without these fields, every request and every stream is
-  byte for byte what it was (a test compares them with a record taken before the change).
+  thinking) now ends the turn - for the analyst, the planner and the supervisor alike, with no
+  repair request and no fallback - with an `error` event the chat shows as its reply: *Output limit
+  used up*, the role and its model, the limit as sent (`max_tokens 16384`), what is still there (a
+  card proposed in that turn is kept; after a reported run the run and its result stand and only
+  the report is missing; otherwise nothing was proposed) and how to raise it (`max_tokens` in the
+  model's models file entry; there is no environment variable for it). Before, such a reply was an
+  empty message. Without a models file, and for an entry without these fields, every request and
+  every stream is byte for byte what it was, except the output limit (see *Changed*): a test
+  compares them with a record taken before the change, with the limit forced back to 4096 and
+  with the new one.
 - **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*), the default. A
   message goes to the **analyst** (the package's `host_instructions(role="analyst", code=False)`
   and one host line linking the workbench; no tools): it sees the message with its selections
@@ -487,6 +494,13 @@ the host shares your tools with the package's MCP server (see *Changed*).
   analyst + planner + supervisor): without the analyst the chat makes one model call less per
   message. Turn it on with a strong model only (`ROLES_ANALYST=on`, or mode `roles_analyst`).
   `.env.example` says `off`.
+- **The default output limit is 16384 tokens** (it was 4096): `max_tokens` in every request whose
+  models file entry sets none, and in every request without a models file (`max_output_tokens` on
+  the responses api). A thinking model's thinking counts toward it, and the old default was used up
+  by thinking. This is the one change to the default request body; an entry's `max_tokens` still
+  sets its own. There is no environment variable for it.
+- The token bench's HTTP read timeout (`--timeout`) defaults to 960 seconds (it was 120), so a long
+  non-streamed model call the host is waiting for is not counted as a failure.
 - A model call's read timeout is 300 seconds (it was 120): a thinking model may be silent for
   minutes before its first token. A models file entry's `timeout_s` sets its own; one above 300 also
   lengthens the whole call's limit (600 s) by as much.

@@ -1,14 +1,20 @@
 """The default path stays byte for byte what it was: without a models file and without its
 optional fields, every request the host sends to the model (URL, headers, body bytes) and every
 SSE stream it sends to the page match a record taken from the build before the provider options
-and chat modes existed (revit-bridge-web at aa5556c).
+and chat modes existed (revit-bridge-web at aa5556c) - except for one value on purpose: the
+default output limit, ``max_tokens``, is 16384 now (``backend.llm.DEFAULT_MAX_TOKENS``; it was
+4096).
 
 The record (``tests/default_path_golden.json``) holds one SHA-256 per request and per stream of
 four scripted conversations: the one loop with the server's model and with the browser's, the
-roles with the analyst and the roles without it. What differs from run to run - the snapshot's
-clock, durations, the ms of a trace event - is fixed before hashing (``normalize``). The chat modes
-added one field to the streams, ``mode`` on a turn's first ``stage`` event: it is checked and taken
-off before the comparison (``without_mode``). A record taken again on purpose (the package's texts
+roles with the analyst and the roles without it. It has two sections: ``max_tokens_4096``, taken
+from aa5556c and never regenerated, and ``max_tokens_16384``, taken with the new default. With the
+default forced back to 4096 the requests and streams still match the aa5556c section: that proves
+the limit is the only difference (``test_the_default_path_is_byte_identical_to_the_record``,
+parametrised over both). What differs from run to run - the snapshot's clock, durations, the ms of
+a trace event - is fixed before hashing (``normalize``). The chat modes added one field to the
+streams, ``mode`` on a turn's first ``stage`` event: it is checked and taken off before the
+comparison (``without_mode``). The current section taken again on purpose (the package's texts
 changed with a new revit-bridge, say):
 
     REGEN_DEFAULT_PATH_GOLDEN=1 uv run pytest tests/test_default_path.py
@@ -210,24 +216,54 @@ def hashes(texts: list[str]) -> list[str]:
     return [digest(t) for t in texts]
 
 
+# The record's section taken from aa5556c (never regenerated) and the one of the current default.
+AA5556C_LIMIT = 4096
+AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
+
+
+def current_section() -> str:
+    return f"max_tokens_{llm_module.DEFAULT_MAX_TOKENS}"
+
+
+def recorded(name: str, section: str | None = None) -> dict:
+    return json.loads(GOLDEN.read_text(encoding="utf-8"))[section or current_section()][name]
+
+
+@pytest.mark.parametrize("limit", [AA5556C_LIMIT, None], ids=["aa5556c-limit-4096", "current-default"])
 @pytest.mark.parametrize("name", list(SCENARIOS))
-def test_the_default_path_is_byte_identical_to_the_record(name, env, revit, recorder):
+def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revit, recorder, monkeypatch):
+    """The current default against its section; the default forced back to aa5556c's 4096 against
+    the record taken from aa5556c - the output limit is the only difference."""
+    if limit is not None:
+        if REGENERATE:
+            pytest.skip("the aa5556c section is never regenerated")
+        monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
+    section = AA5556C_SECTION if limit is not None else current_section()
     requests, streams = run_scenario(name, env, revit, recorder)
+    sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
+    assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        record[name] = {"requests": hashes(requests), "streams": hashes(streams)}
+        assert section != AA5556C_SECTION
+        record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")
-    record = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
+    record = recorded(name, section)
     assert len(requests) == len(record["requests"])
     for index, (text, expected) in enumerate(zip(requests, record["requests"])):
         assert digest(text) == expected, f"request {index + 1} of {name} differs from the record"
     assert len(streams) == len(record["streams"])
     for index, (text, expected) in enumerate(zip(streams, record["streams"])):
         assert digest(text) == expected, f"stream {index + 1} of {name} differs from the record"
+    if limit is None:
+        # The same bytes as aa5556c's once the one value is written back: nothing else moved.
+        old = recorded(name, AA5556C_SECTION)
+        written_back = [re.sub(r'("max_tokens":\s*)%d\b' % llm_module.DEFAULT_MAX_TOKENS, rf"\g<1>{AA5556C_LIMIT}",
+                               text, count=1) for text in requests]
+        assert hashes(written_back) == old["requests"] and hashes(streams) == old["streams"]
 
 
-ENTRY = "models:\n  only: {base_url: https://srv.example/v1, model: srv-model, api_key_env: W8_SRV_KEY%s}\n" \
+ENTRY ="models:\n  only: {base_url: https://srv.example/v1, model: srv-model, api_key_env: W8_SRV_KEY%s}\n" \
         "roles: {planner: only}\n"
 
 
@@ -244,7 +280,7 @@ def test_a_models_file_entry_without_options_sends_what_llm_sends(name, fields, 
     env.setenv("W8_SRV_KEY", SERVER["LLM_API_KEY"])
     requests, streams = run_scenario(name, env, revit, recorder,
                                      env_override={"LLM_BASE_URL": None, "LLM_MODEL": None, "LLM_API_KEY": None})
-    record = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
+    record = recorded(name)
     assert hashes(requests) == record["requests"]
     assert hashes(streams) == record["streams"]
 
@@ -260,7 +296,7 @@ def test_a_requested_mode_sends_what_its_switch_sends(name, mode, env, revit, re
     requests, streams = run_scenario(name, env, revit, recorder, extra={"mode": mode},
                                      env_override={"LLM_SINGLE_MODEL": None, "ROLES_ANALYST": None},
                                      headers={"X-Admin-Token": FIXTURE_ADMIN_PASSWORD})
-    record = json.loads(GOLDEN.read_text(encoding="utf-8"))[name]
+    record = recorded(name)
     assert hashes(requests) == record["requests"]
     assert hashes(streams) == record["streams"]
 

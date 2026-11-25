@@ -254,7 +254,9 @@ proposal that is ready for confirmation - the host's tool events show a `reconci
 extra turn's tokens are counted (`confirm_turns`). Nothing runs in Revit unless `--execute` is given.
 `--mode auto|single|roles|roles_analyst` (default `auto`, the host's default) goes as the chat mode
 with every request; the results record it and the modes the host ran (a cloud host runs its
-default: the bench sends no admin token). Example: `python -m bench run --label nightly --repeat 3
+default: the bench sends no admin token). Its HTTP read timeout (`--timeout`) is 960 seconds by
+default, so a long non-streamed model call the host is still waiting for (a responses call, up to
+`timeout_s` 900) is not counted as a failure. Example: `python -m bench run --label nightly --repeat 3
 --confirm once`.
 
 The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
@@ -460,12 +462,19 @@ roles:
   Tool calls on the chat api come back with their provider's own keys - Gemini's `extra_content`
   with its thought signature, which Gemini 3 and later require on the next request - and the host
   sends them back unchanged on that call in the following requests to the same endpoint and model
-  (held with the chat session in memory, never logged). A reply that ends at its output limit
+  (held with the chat session in memory, never logged).
+- **The output limit** (`max_tokens`) is 16384 unless an entry sets its own (it was 4096). A thinking
+  model's thinking counts toward it - Gemini's and DeepSeek's do. A reply that ends at its limit
   (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote anything or
-  called a tool - a thinking model that spent the limit thinking - is an `error` event that names the
-  limit (`max_tokens 4096`), not an empty reply: raise the entry's `max_tokens`. Without a models file
-  every request is the chat api with `max_tokens` 4096, `temperature` 0.3 and a 300 s read timeout
-  (it was 120 s).
+  called a tool - a thinking model that spent the limit thinking - ends the turn, for the analyst,
+  the planner and the supervisor alike (no repair request, no fallback), with an `error` event the
+  chat shows as its reply: *Output limit used up: the planner (some-model) spent its whole output
+  limit (max_tokens 16384) ...*, then what is still there - a card proposed in that turn is kept and
+  can be confirmed; after a reported run, the run and its result stand and only the report on it is
+  missing (the supervisor's limit sends nothing back to the planner); otherwise nothing was
+  proposed - and how to raise it: `max_tokens` in the model's entry here. There is no environment
+  variable for it. Without a models file every request is the chat api with `max_tokens` 16384,
+  `temperature` 0.3 and a 300 s read timeout (it was 120 s).
 - **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
   the planner's entry.
 - **The browser's model settings** (`X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key`) keep their
@@ -515,8 +524,9 @@ roles:
   supervisor: other
 ```
 
-Gemini through its OpenAI-compatible endpoint (thinking needs a larger output limit and time; its
-thought signatures go back by themselves):
+Gemini through its OpenAI-compatible endpoint (Gemini's thinking counts toward `max_tokens`, so it
+needs a large output limit - more than 16384 if the chat shows the "output limit used up" notice -
+and time; its thought signatures go back by themselves):
 
 ```yaml
 models:

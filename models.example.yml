@@ -12,8 +12,11 @@
 # other host only with LLM_ALLOW_HTTP=1, as for the browser's endpoint), model,
 # api_key_env, and optionally:
 #
-#   max_tokens         the output limit (a whole number; default 4096). A thinking model
-#                      spends it on thinking too: give it room (16384 and more)
+#   max_tokens         the output limit (a whole number; default 16384). A thinking model
+#                      spends it on thinking too (Gemini's and DeepSeek's thinking counts
+#                      toward it): give it room. A reply that used it all up on thinking
+#                      ends the turn with a notice in the chat that names the role, the
+#                      model and the limit - raise max_tokens here then
 #   temperature        0 to 2 (default 0.3 on the chat api; not sent on the responses
 #                      api unless set here - some reasoning models refuse it)
 #   api                chat (default: <base_url>/chat/completions) or responses
@@ -89,7 +92,9 @@ roles:
 # (An OpenAI model on the chat api that refuses max_tokens: max_tokens_param: max_completion_tokens.)
 #
 # Gemini through its OpenAI-compatible endpoint (the thought signature Gemini returns with
-# a tool call goes back with it by itself; thinking needs a larger output limit and time):
+# a tool call goes back with it by itself; Gemini's thinking counts toward max_tokens, so it
+# needs a large output limit - 16384, more if the chat shows the "output limit used up"
+# notice - and time):
 #
 # models:
 #   gemini:

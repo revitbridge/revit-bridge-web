@@ -198,7 +198,7 @@ def test_a_reply_without_encrypted_reasoning_goes_back_as_plain_calls(revit, env
     assert client.post("/api/chat", json={"message": "levels?"}).status_code == 200
     first, second = provider.responses_bodies()
     assert "reasoning" not in first and "include" not in first
-    assert first["temperature"] == 0.2 and first["max_output_tokens"] == 4096
+    assert first["temperature"] == 0.2 and first["max_output_tokens"] == 16384
     assert second["input"][2] == {"type": "function_call", "call_id": "call_x", "name": "query",
                                   "arguments": '{"kind": "levels"}'}
     assert second["input"][3]["type"] == "function_call_output"
@@ -238,7 +238,7 @@ def test_a_browser_model_on_a_responses_entry_uses_the_chat_api(revit, env, keys
     assert tokens(sse(resp.text)) == "hello"
     sent = provider.sent[0]
     assert sent["url"] == "https://main.example/v1/chat/completions"
-    assert (sent["body"]["model"], sent["body"]["max_tokens"], sent["body"]["temperature"]) == ("visitor-model", 4096, 0.3)
+    assert (sent["body"]["model"], sent["body"]["max_tokens"], sent["body"]["temperature"]) == ("visitor-model", 16384, 0.3)
     assert "reasoning_effort" not in sent["body"]
     assert provider.timeouts[-1] == llm_module.DEFAULT_TIMEOUT == 300.0
 
@@ -246,7 +246,7 @@ def test_a_browser_model_on_a_responses_entry_uses_the_chat_api(revit, env, keys
 @pytest.mark.parametrize("answer, problem", [
     (httpx.Response(400, json={"error": {"message": "Unsupported parameter: temperature"}}), "HTTP 400"),
     (reply(status="incomplete", incomplete={"reason": "max_output_tokens"}, usage=USAGE_NO_CACHE),
-     "used up its output limit (max_output_tokens 2048)"),
+     "the planner (main-model) spent its whole output limit (max_output_tokens 2048)"),
     (reply(status="failed", usage=USAGE_NO_CACHE) | {"error": {"code": "server_error", "message": "x"}},
      "the response failed (server_error)"),
     (httpx.Response(200, text="not json"), "not a responses api object"),
@@ -426,15 +426,134 @@ def test_the_example_file_and_its_commented_examples_are_valid(tmp_path):
 
 # -- an output limit used up by thinking ----------------------------------------------------------------
 
+LIMIT = {"content": "", "finish": "length", "usage": USAGE_SHAPES["gemini"][0]}
+HOW = ("To raise it, set max_tokens for this model in its entry in the host's models file (models.yml); "
+       "without one the host's default, 16384, applies.")
+
+
+def notice(frames) -> str:
+    """The turn's one error event, after its stage closed; nothing streamed after it."""
+    assert [e for e, _ in frames][-2:] == ["stage", "error"]
+    return events(frames, "error")[0]["detail"]
+
+
 def test_an_empty_reply_at_the_output_limit_is_an_error_naming_it(env, keys, tmp_path, provider):
     client = app_client(env, tmp_path, models_text(main=", max_tokens: 1024"))
-    provider.chat.script("single", {"content": "", "finish": "length", "usage": USAGE_SHAPES["gemini"][0]})
+    provider.chat.script("single", LIMIT)
     resp = client.post("/api/chat", json={"message": "hi"})
     frames = sse(resp.text)
-    detail = events(frames, "error")[0]["detail"]
-    assert "used up its output limit (max_tokens 1024)" in detail
+    assert notice(frames) == (
+        "Output limit used up: the planner (main-model) spent its whole output limit (max_tokens 1024) before it "
+        "wrote a reply or called a tool - most likely on thinking, which counts toward the limit. No spec ready "
+        "to confirm was proposed in this turn. " + HOW)
     assert tokens(frames) == "" and len(events(frames, "usage")) == 1          # the call cost tokens
     assert get_session_store().get(resp.headers["X-Session-Id"]).history == [{"role": "user", "content": "hi"}]
+
+
+def test_the_default_limit_is_16384_and_named_in_the_notice(env, tmp_path, provider):
+    """Without a models file: max_tokens 16384 goes out, and the notice names it."""
+    env.setenv("LLM_BASE_URL", "https://srv.example/v1")
+    env.setenv("LLM_MODEL", "srv-model")
+    env.setenv("LLM_API_KEY", "made-up-srv-key")
+    from tests.conftest import _reset
+    _reset()
+    from backend.main import create_app
+    client = TestClient(create_app())
+    provider.chat.script("single", LIMIT)
+    frames = sse(client.post("/api/chat", json={"message": "hi"}).text)
+    assert provider.sent[0]["body"]["max_tokens"] == 16384 == llm_module.DEFAULT_MAX_TOKENS
+    assert "the planner (srv-model) spent its whole output limit (max_tokens 16384)" in notice(frames)
+
+
+def test_a_card_proposed_before_the_limit_is_said_to_be_kept(revit, env, keys, tmp_path, provider):
+    client = app_client(env, tmp_path, models_text(main=", max_tokens: 1024"))
+    provider.chat.script("single", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})), LIMIT)
+    resp = client.post("/api/chat", json={"message": "a wall on L1"})
+    frames = sse(resp.text)
+    spec_event = events(frames, "spec")[0]
+    assert spec_event["errors"] == [] and spec_event["reconcile"]["ready"] is True
+    text = notice(frames)
+    assert "The spec card proposed in this turn is kept: it can still be confirmed and run" in text
+    assert "No spec ready" not in text
+    assert get_session_store().get(resp.headers["X-Session-Id"]).spec is not None
+
+
+def roles_client(env, tmp_path, analyst: str = "on"):
+    env.delenv("LLM_SINGLE_MODEL")
+    return app_client(env, tmp_path, models_text(roles="analyst: small, planner: main, supervisor: small"),
+                      ROLES_ANALYST=analyst)
+
+
+def test_the_analysts_limit_ends_the_turn_before_the_planner(revit, env, keys, tmp_path, provider):
+    client = roles_client(env, tmp_path)
+    provider.chat.script("analyst", LIMIT)
+    resp = client.post("/api/chat", json={"message": "a wall on L1"})
+    text = notice(sse(resp.text))
+    assert text.startswith("Output limit used up: the analyst (small-model) spent its whole output limit "
+                           "(max_tokens 16384)")
+    assert "Your message was not passed on to the planner and nothing was proposed" in text and text.endswith(HOW)
+    # No repair call, no fallback to the planner.
+    assert provider.chat.roles == ["analyst"]
+    assert get_session_store().get(resp.headers["X-Session-Id"]).history == []
+
+
+def accepted_wall(client, provider, analyst: bool = True) -> str:
+    """A turn whose planner proposes an accepted wall; the session id."""
+    if analyst:
+        provider.chat.script("analyst", json_turn({"route": "tool", "tool": "create_wall", "facts_needed": [],
+                                                   "note": ""}))
+    provider.chat.script("planner", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})),
+                         text_turn("The card is below."))
+    resp = client.post("/api/chat", json={"message": "a wall on L1"})
+    assert len(events(sse(resp.text), "spec")) == 1
+    return resp.headers["X-Session-Id"]
+
+
+RUN = {"success": True, "tool": "create_wall", "evidence_id": "ev_9", "result": {"ElementId": 7},
+       "validation": {"validator": "element_count", "passed": True, "checks": []}}
+
+
+def test_the_supervisors_limit_after_a_run_says_the_run_is_not_lost(revit, env, keys, tmp_path, provider):
+    client = roles_client(env, tmp_path, analyst="off")
+    sid = accepted_wall(client, provider, analyst=False)
+    provider.chat.script("supervisor", LIMIT)
+    resp = client.post("/api/chat", json={"execution": RUN, "session_id": sid})
+    text = notice(sse(resp.text))
+    assert text.startswith("Output limit used up: the supervisor (small-model)")
+    assert ("The run you reported is not affected: its result stays as the page received it (evidence ev_9). "
+            "Only the supervisor's report on it is missing, and nothing was sent back to the planner.") in text
+    assert "lost" not in text and "No spec ready" not in text and text.endswith(HOW)
+    assert provider.chat.roles == ["planner", "planner", "supervisor"]            # no repair, no fallback
+    session = get_session_store().get(sid)
+    assert session.spec is not None and session.pending_verdict is None
+
+
+def test_the_planners_limit_after_a_send_back(revit, env, keys, tmp_path, provider):
+    client = roles_client(env, tmp_path, analyst="off")
+    sid = accepted_wall(client, provider, analyst=False)
+    provider.chat.script("supervisor", json_turn({"verdict": "retry", "report": "Not counted.", "fix": "use L1"}))
+    provider.chat.script("planner", LIMIT)
+    resp = client.post("/api/chat", json={"execution": {**RUN, "success": False, "error": "validation_failed",
+                                                         "validation": {"validator": "v", "passed": False,
+                                                                        "checks": []}}, "session_id": sid})
+    frames = sse(resp.text)
+    assert tokens(frames).startswith("Not counted.")
+    text = notice(frames)
+    assert text.startswith("Output limit used up: the planner (main-model)")
+    assert "The supervisor's report is above; the planner proposed no new card." in text
+
+
+def test_the_one_loops_limit_on_a_report(revit, env, keys, tmp_path, provider):
+    client = app_client(env, tmp_path, models_text())
+    provider.chat.script("single", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})),
+                         text_turn("card"), LIMIT)
+    sid = client.post("/api/chat", json={"message": "a wall"}).headers["X-Session-Id"]
+    text = notice(sse(client.post("/api/chat", json={"execution": RUN, "session_id": sid}).text))
+    assert "The run you reported is not affected" in text and "Only the report on it is missing." in text
+    # A later message's limit: the earlier card is said to stay.
+    provider.chat.script("single", LIMIT)
+    text = notice(sse(client.post("/api/chat", json={"message": "and now?", "session_id": sid}).text))
+    assert "No spec ready to confirm was proposed in this turn. Cards and results from earlier turns stay" in text
 
 
 def test_a_cut_reply_with_text_or_a_call_is_still_a_reply(monkeypatch):

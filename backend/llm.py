@@ -41,9 +41,11 @@ one every call is the chat api with the defaults, byte for byte as before):
   the encrypted content, and its function calls). ``ProviderMemory`` holds them by
   tool call, in memory with the chat session, for the endpoint and model that sent
   them only; nothing of it is written to disk or logged.
-- A reply that ran out of its output limit before it wrote anything or called a
-  tool (finish_reason ``length`` / status ``incomplete``, max_output_tokens) is an
-  ``LLMError`` naming the limit, not an empty reply (``output_limit_error``).
+- The output limit is ``DEFAULT_MAX_TOKENS`` (16384) unless an entry sets ``max_tokens``.
+  A reply that ran out of it before it wrote anything or called a tool
+  (finish_reason ``length`` / status ``incomplete``, max_output_tokens) is an
+  ``OutputLimitError`` naming the limit, not an empty reply (``output_limit_error``);
+  the chat ends the turn with it for every role - no repair call, no fallback.
 
 Ported from the streaming half of the former ``pipeline/llm_client.py``,
 rewritten on ``httpx.AsyncClient`` so the event loop is never blocked.
@@ -74,10 +76,14 @@ HEADER_KEY = "x-llm-key"
 # a thinking model may be silent for minutes before its first token, and a responses call
 # sends nothing until it is done.
 DEFAULT_TIMEOUT = 300.0
-# One completion from request to last byte. 4096 tokens at a slow 7 tokens a second
-# take under 10 minutes; the read timeout still bounds every single read. A read timeout
-# above DEFAULT_TIMEOUT (timeout_s up to 900) extends it by as much (call_deadline).
+# One completion from request to last byte; the read timeout still bounds every single
+# read. A read timeout above DEFAULT_TIMEOUT (timeout_s up to 900) extends it by as much
+# (call_deadline).
 MODEL_CALL_DEADLINE = 600.0
+# The output limit of a call whose models file entry sets no max_tokens (and of every call
+# without a models file). A thinking model spends it on thinking too, so it is well above
+# what a reply needs (it was 4096). Read at call time.
+DEFAULT_MAX_TOKENS = 16384
 
 CHAT_API, RESPONSES_API = "chat", "responses"
 APIS = (CHAT_API, RESPONSES_API)
@@ -458,11 +464,23 @@ def call_deadline(timeout: float) -> float:
     return MODEL_CALL_DEADLINE + max(0.0, timeout - DEFAULT_TIMEOUT)
 
 
-def output_limit_error(param: str, limit: int) -> LLMError:
+class OutputLimitError(LLMError):
+    """A reply that used up its output limit before it wrote a word or called a tool; ``param``
+    and ``limit`` name the limit as it was sent (``max_tokens 16384``). The chat turns it into
+    the designer's notice with the role, the model and the task's state
+    (``backend.api.chat.Turn.limit_notice``)."""
+
+    def __init__(self, param: str, limit: int):
+        super().__init__(f"The model used up its output limit ({param} {limit}) before it wrote a reply or "
+                         f"called a tool - most likely on thinking. Raise max_tokens for this model in the "
+                         f"models file, or lower its reasoning_effort.", status=502)
+        self.param = param
+        self.limit = limit
+
+
+def output_limit_error(param: str, limit: int) -> OutputLimitError:
     """A reply that used up its output limit before it wrote a word or called a tool."""
-    return LLMError(f"The model used up its output limit ({param} {limit}) before it wrote a reply or "
-                    f"called a tool - most likely on thinking. Raise max_tokens for this model in the "
-                    f"models file, or lower its reasoning_effort.", status=502)
+    return OutputLimitError(param, limit)
 
 
 # -- token usage -----------------------------------------------------------------
@@ -659,7 +677,7 @@ async def stream_completion(
     *,
     tools: list[dict] | None = None,
     temperature: float | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     stats: CallStats | None = None,
     api: str = CHAT_API,
@@ -680,8 +698,8 @@ async def stream_completion(
     (``stats.retried``), and only when that retry is accepted is the endpoint and
     model remembered and not asked again while the process runs.
 
-    ``temperature`` is 0.3 when not given. ``max_tokens`` goes out under
-    ``max_tokens_param``; ``reasoning_effort`` only when given. ``memory``: the session's
+    ``temperature`` is 0.3 when not given. ``max_tokens`` (``DEFAULT_MAX_TOKENS`` when not
+    given) goes out under ``max_tokens_param``; ``reasoning_effort`` only when given. ``memory``: the session's
     ``ProviderMemory`` - the extra keys of a tool call this endpoint and model returned go
     back on that call, and the extra keys of this reply's calls are kept there. ``api``
     ``"responses"`` hands the call to ``stream_responses`` (which takes no
@@ -700,6 +718,7 @@ async def stream_completion(
         return
     if not llm.configured:
         raise _not_configured()
+    max_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
     stats = stats if stats is not None else CallStats()
     url = completions_url(llm.base_url)
     origin = _origin(url, llm.model)
@@ -913,7 +932,7 @@ async def stream_responses(
     *,
     tools: list[dict] | None = None,
     temperature: float | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     stats: CallStats | None = None,
     reasoning_effort: str | None = None,
@@ -928,14 +947,15 @@ async def stream_responses(
     chat call. Stateless (``store`` false): with ``reasoning_effort`` set the request asks
     for ``reasoning.encrypted_content``, and a reply with tool calls is kept in ``memory``
     so the next request sends its output items back as they came (``responses_input``).
-    ``max_tokens`` goes out as ``max_output_tokens``; ``temperature`` only when given (some
-    reasoning models refuse it); tools in the flat form, ``strict`` false. Usage:
-    ``parse_responses_usage`` (``stats.asked_usage`` stays false: there is no option to ask
-    with). ``LLMError`` as ``stream_completion`` raises it; a reply ``incomplete`` for
-    ``max_output_tokens`` with no text and no tool call is ``output_limit_error``; a reply
-    ``failed`` names its error code."""
+    ``max_tokens`` (``DEFAULT_MAX_TOKENS`` when not given) goes out as ``max_output_tokens``;
+    ``temperature`` only when given (some reasoning models refuse it); tools in the flat form,
+    ``strict`` false. Usage: ``parse_responses_usage`` (``stats.asked_usage`` stays false: there
+    is no option to ask with). ``LLMError`` as ``stream_completion`` raises it; a reply
+    ``incomplete`` for ``max_output_tokens`` with no text and no tool call is
+    ``output_limit_error``; a reply ``failed`` names its error code."""
     if not llm.configured:
         raise _not_configured()
+    max_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
     stats = stats if stats is not None else CallStats()
     url = responses_url(llm.base_url)
     origin = _origin(url, llm.model)

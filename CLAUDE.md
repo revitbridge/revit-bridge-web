@@ -71,9 +71,13 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   options a models file entry sets (`api: responses` -> `stream_responses`, not streamed, the same
   items out; `max_tokens_param`, `reasoning_effort`, `timeout_s`) and `ProviderMemory` (a tool
   call's provider keys - Gemini's `extra_content` - and a responses reply's output items, per
-  session, back to the same endpoint and model only); an empty reply at the output limit is an
-  `LLMError` naming it. Without a models file the requests and streams are byte for byte the
-  record in `tests/default_path_golden.json` (`tests/test_default_path.py`);
+  session, back to the same endpoint and model only); the default output limit
+  `DEFAULT_MAX_TOKENS` (16384, read at call time); an empty reply at the output limit is an
+  `OutputLimitError`, which `chat.Turn.limit_notice` turns into the turn's `error` detail (role,
+  model, limit, what is still there, how to raise it) - every role, no repair, no fallback. Without
+  a models file the requests and streams are byte for byte the record in
+  `tests/default_path_golden.json` (`tests/test_default_path.py`: section `max_tokens_16384`, and
+  `max_tokens_4096` - taken from aa5556c, never regenerated - with the default forced back to 4096);
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
   pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
