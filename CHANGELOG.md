@@ -9,6 +9,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 Task chat now offers opt-in automatic execution for verified built-in tools. Each automatic
 step has a confirmation identity and a usage record. Stop finishes only the active operation.
 
+The host now requires revit-bridge 0.10.1. Tool listings and details expose the `read_only`
+flag. Element picker rows expose `document_id` for rechecking the selected document.
+
 A read-only built-in declared by the package can return its result directly to chat. The
 planner can use that evidence to propose a write in the same turn. Each message permits
 up to ten reads. Element picks carry the document identity through submission and confirmation.

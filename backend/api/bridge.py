@@ -447,7 +447,7 @@ class DryRunRequest(WorkbenchCodeRequest):
 
 class ChoicesRequest(BaseModel):
     """One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |
-    elements:OST_*."""
+    elements | elements:OST_*."""
     model_config = ConfigDict(extra="forbid")
 
     choices_from: str
@@ -493,9 +493,8 @@ def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
         "used": tool.execution_count,
         "builtin": origin == "builtin",
         "origin": origin,
+        "read_only": tool.read_only,
     }
-    if hasattr(tool, "read_only"):
-        item["read_only"] = tool.read_only
     if directory:
         item["directory"] = str(path.parent if path is not None else store.user_dir)
     return item
@@ -515,6 +514,7 @@ def _tool_detail(tool) -> dict:
         "version": tool.version,
         "parameters": tool.parameters,
         "tags": tool.tags,
+        "read_only": tool.read_only,
         "execution_count": tool.execution_count,
         "code_template": tool.code_template,
         "source_query": tool.source_query,
@@ -591,9 +591,9 @@ async def mention_items(
 ):
     """Items the designer can pick in chat: the package's
     ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
-    category?, family?, disabled?, reason?, summary?, level?, category_label?}], total, truncated,
+    category?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,
     offset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;
-    element lists the current selection with a summary, level and category label. When
+    element lists the current selection with a summary, level, category label and document identity. When
     facets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A
     kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
     reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
@@ -617,7 +617,7 @@ async def mention_items(
 
 @router.get("/tools", responses=responses(403))
 async def list_tools():
-    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and
+    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, including the pack's ``read_only`` flag, plus ``builtin`` and
     ``origin`` (and, on a local host, ``directory``: where the file was read). Read from
     disk on every call."""
     return list_packs(directory=not get_settings().cloud)
@@ -625,6 +625,7 @@ async def list_tools():
 
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
+    """The full pack, including its declared ``read_only`` flag."""
     tool = ToolStore().load(require_tool_name(name))
     if not tool:
         raise unknown_tool(name)
@@ -1163,13 +1164,13 @@ async def dry_run_code(req: DryRunRequest):
 @router.post("/choices", responses=responses(403, 422, 503, 504))
 async def choices_of(req: ChoicesRequest):
     """The real options of one ``choices_from`` (``levels``, ``floor_types``,
-    ``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's
+    ``family_types:OST_*``, ``elements``, ``elements:OST_*``) as ``[{label, value}]``: the package's
     ``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,
     asked for one parameter - so the values are what a saved pack receives. A value the
     pack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504
     after 15 s)."""
     if not CHOICES_FROM_RE.fullmatch(req.choices_from):
-        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_* or "
+        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_*, elements or "
                                             "elements:OST_*", choices_from=req.choices_from[:100])
     client = await get_revit_client()
     try:

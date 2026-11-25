@@ -29,25 +29,11 @@ def test_pick_is_rejected_if_the_document_changed_before_send(monkeypatch):
     assert not report["resolved"] and report["not_found"][0]["reason"] == "document_changed"
 
 
-def declare_reader(monkeypatch):
-    # Simulate the next published catalogue while exercising the installed execution package.
-    original = ToolStore.load
-
-    def load(self, name):
-        tool = original(self, name)
-        if tool:
-            tool.read_only = name == READER
-        return tool
-
-    monkeypatch.setattr(ToolStore, "load", load)
-
-
 def read_call():
     return ("propose_spec", {"spec": spec_for(READER, element_id=72)})
 
 
-def test_reader_returns_to_planner_without_a_confirmation_or_supervisor(client, model, revit, monkeypatch):
-    declare_reader(monkeypatch)
+def test_reader_returns_to_planner_without_a_confirmation_or_supervisor(client, model, revit):
     original = revit.handler
     def handler(req):
         if "LocationCurve" in req.get("params", {}).get("code", ""):
@@ -69,8 +55,7 @@ def test_reader_returns_to_planner_without_a_confirmation_or_supervisor(client, 
     assert 'host:read-only' in client.get(f"{B}/evidence").text
 
 
-def test_explicit_reader_step_records_evidence_and_rejects_stale_ids(client, model, revit, monkeypatch):
-    declare_reader(monkeypatch)
+def test_explicit_reader_step_records_evidence_and_rejects_stale_ids(client, model, revit):
     name, args = read_call()
     model.script("analyst", json_turn(ROUTING_TOOL))
     model.script("planner", tool_turn((name, {**args, "step_id": "missing"})),
@@ -86,8 +71,7 @@ def test_explicit_reader_step_records_evidence_and_rejects_stale_ids(client, mod
 
 
 @pytest.mark.parametrize("tool", [None, "create_wall"])
-def test_supporting_read_with_current_id_leaves_write_step_pending(client, model, revit, monkeypatch, tool):
-    declare_reader(monkeypatch)
+def test_supporting_read_with_current_id_leaves_write_step_pending(client, model, revit, tool):
     first = {"id": "a", "title": "Build wall"}
     if tool:
         first["tool"] = tool
@@ -102,8 +86,7 @@ def test_supporting_read_with_current_id_leaves_write_step_pending(client, model
     assert [s["status"] for s in created["steps"]] == ["pending", "pending"]
 
 
-def test_a_user_override_never_gets_direct_execution(client, model, revit, monkeypatch):
-    declare_reader(monkeypatch)
+def test_a_user_override_never_gets_direct_execution(client, model, revit):
     store = ToolStore()
     store.user_dir.mkdir(parents=True, exist_ok=True)
     (store.user_dir / (READER + ".yaml")).write_bytes(store.path_of(READER).read_bytes())
@@ -115,7 +98,6 @@ def test_a_user_override_never_gets_direct_execution(client, model, revit, monke
 
 
 def test_limit_is_per_designer_message(client, model, revit, monkeypatch):
-    declare_reader(monkeypatch)
     monkeypatch.setattr(direct_reads, "MAX_READS", 1)
     sid = None
     for _ in range(2):

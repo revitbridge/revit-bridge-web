@@ -279,7 +279,7 @@ async def _list_tools(args: dict, session: Session) -> ToolOutcome:
     """Read from disk on every call; no directory paths for the model."""
     packs = list_packs()
     for pack in packs:
-        if pack.get("read_only") and pack["builtin"]:
+        if pack["read_only"] and pack["builtin"]:
             pack["description"] += " Propose this reader to get its result directly in this turn."
     return ToolOutcome(packs)
 
