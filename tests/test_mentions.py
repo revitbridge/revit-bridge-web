@@ -76,7 +76,8 @@ def picker_handler(state: dict):
             return FakeRevit.code_result(rid, {**snap, "items": rows, "warnings": []})
         if "bool names = true, details = true;" in code:
             rows = [r for r in state.get("elements", []) if f"new ElementId({r['id']})" in code]
-            return FakeRevit.code_result(rid, {"view": "fake-view", "items": rows, "warnings": []})
+            return FakeRevit.code_result(rid, {"view": "fake-view", "items": rows, "warnings": [],
+                                               "document_id": state.get("document_id", "fake-document")})
         if "OfClass(typeof(Level))" in code and "return levels;" in code and "CategoryNames" not in code:
             return FakeRevit.code_result(rid, state["levels"])
         return base(request)
@@ -156,6 +157,7 @@ def test_current_selection_page_and_element_id_confirm(picker, client, model):
     page = response.json()
     assert page["offset"] == 1 and page["total"] == 2
     assert [r["id"] for r in page["items"]] == [901] and "L1" in page["items"][0]["summary"]
+    assert page["items"][0]["document_id"] == "fake-document"
     assert page["facets"] == [{"category": "OST_Walls", "label": "Walls", "count": 2}]
     assert client.get(f"{B}/mentions", params={"kind": "element"}).status_code == 422
 
@@ -164,11 +166,15 @@ def test_current_selection_page_and_element_id_confirm(picker, client, model):
     sid = response.headers["X-Session-Id"]
     assert events(sse(response.text), "mentions")[0]["resolved"][0]["id"] == 901
     spec = spec_for("create_wall_from_element", reference_id="901", anchor="mid", direction="normal_left", length=3000)
-    spec["parameters"][0].update(source="designer", evidence="mention:element#901")
+    spec["parameters"][0].update(source="tool", evidence="mention:element#901")
     picker["selection"] = []
     body = {"spec": spec, "session_id": sid}
     good = client.post(f"{B}/spec/confirm", json=body)
     assert good.status_code == 200, good.text
+    spec["parameters"][0]["source"] = "designer"
+    rejected = client.post(f"{B}/spec/confirm", json=body)
+    assert rejected.status_code == 422 and rejected.json()["errors"][0]["code"] == UNKNOWN_MENTION
+    spec["parameters"][0]["source"] = "tool"
     constrained = spec_for("modify_wall_height", element_id="901", height=3500)
     constrained["parameters"][0].update(source="tool", evidence="mention:element#901")
     wall_only = {"spec": constrained, "session_id": sid}
@@ -198,7 +204,7 @@ def test_changed_element_requires_explicit_reselection(picker, client, model, to
     else:
         spec = spec_for(tool, reference_id="901", anchor="mid", direction="normal_left", length=3000)
         evidence = "mention:element#901"
-    spec["parameters"][0].update(source="designer", evidence=evidence)
+    spec["parameters"][0].update(source="tool", evidence=evidence)
     body = {"spec": spec, "session_id": sid}
     assert client.post(f"{B}/spec/confirm", json=body).status_code == 200
     picker["elements"] = [dict(rows[0], **{field: new}), rows[1]]
@@ -245,7 +251,7 @@ def test_multi_turn_element_ids_all_rechecked_before_confirmation(picker, client
     assert "mention:element#<id>[,<id>...]" in model.requests[-1]["messages"][-1]["content"]
     ids = ",".join(str(row["id"]) for row in rows)
     spec = spec_for("delete_elements", element_ids=ids)
-    spec["parameters"][0].update(source="designer", evidence=f"mention:element#{ids}")
+    spec["parameters"][0].update(source="tool", evidence=f"mention:element#{ids}")
     body = {"spec": spec, "session_id": sid}
     assert client.post(f"{B}/spec/confirm", json=body).status_code == 200
     rows[-1]["name"] = "B"
@@ -716,6 +722,16 @@ PICKS = {"mention:element#901": {"kind": "element", "id": 901, "category": "OST_
          "mention:element#902": {"kind": "element", "id": 902, "category": "OST_Doors"},
          "mention:level#2": L2, "mention:type#401": GENERIC, "mention:link#501": LINK,
          "mention:link#503": UNLABELLED, "mention:type#451": COLUMN, "mention:type#460": NO_CATEGORY}
+
+
+def test_user_pack_without_choices_keeps_element_id_picks():
+    user_pack = SimpleNamespace(name="inspect_reference", read_only=False, parameters=[
+        {"name": "reference_id", "type": "integer", "source": "designer"},
+        {"name": "element_ids", "type": "string", "source": "designer"},
+    ])
+    for name, ids in [("reference_id", "901"), ("element_ids", "901,902")]:
+        spec = bound(name, ids, "designer", "mention:element#" + ids)
+        assert not mention_errors(spec, user_pack, PICKS)
 
 
 def bound(name: str, value, source: str, evidence: str) -> TaskSpec:

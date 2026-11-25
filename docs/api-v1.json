@@ -1030,7 +1030,7 @@
           "bridge"
         ],
         "summary": "Mention Items",
-        "description": "Items the designer can pick in chat: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?, summary?, level?, category_label?}], total, truncated,\noffset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;\nelement lists the current selection with a summary, level and category label. When\nfacets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
+        "description": "Items the designer can pick in chat: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,\noffset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;\nelement lists the current selection with a summary, level, category label and document identity. When\nfacets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
         "operationId": "mention_items_api_v1_bridge_mentions_get",
         "parameters": [
           {
@@ -1192,7 +1192,7 @@
           "bridge"
         ],
         "summary": "List Tools",
-        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and\n``origin`` (and, on a local host, ``directory``: where the file was read). Read from\ndisk on every call.",
+        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape, including the pack's ``read_only`` flag, plus ``builtin`` and\n``origin`` (and, on a local host, ``directory``: where the file was read). Read from\ndisk on every call.",
         "operationId": "list_tools_api_v1_bridge_tools_get",
         "responses": {
           "200": {
@@ -1222,6 +1222,7 @@
           "bridge"
         ],
         "summary": "Get Tool",
+        "description": "The full pack, including its declared ``read_only`` flag.",
         "operationId": "get_tool_api_v1_bridge_tools__name__get",
         "parameters": [
           {
@@ -2197,7 +2198,7 @@
           "bridge"
         ],
         "summary": "Choices Of",
-        "description": "The real options of one ``choices_from`` (``levels``, ``floor_types``,\n``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's\n``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,\nasked for one parameter - so the values are what a saved pack receives. A value the\npack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504\nafter 15 s).",
+        "description": "The real options of one ``choices_from`` (``levels``, ``floor_types``,\n``family_types:OST_*``, ``elements``, ``elements:OST_*``) as ``[{label, value}]``: the package's\n``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,\nasked for one parameter - so the values are what a saved pack receives. A value the\npack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504\nafter 15 s).",
         "operationId": "choices_of_api_v1_bridge_choices_post",
         "requestBody": {
           "content": {
@@ -3241,6 +3242,19 @@
             "title": "Id",
             "description": "the item's element id"
           },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id",
+            "description": "Document identity recorded by the element picker"
+          },
           "label": {
             "anyOf": [
               {
@@ -3422,7 +3436,7 @@
           "choices_from"
         ],
         "title": "ChoicesRequest",
-        "description": "One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |\nelements:OST_*."
+        "description": "One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |\nelements | elements:OST_*."
       },
       "ConfirmRequest": {
         "properties": {

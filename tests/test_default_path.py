@@ -208,11 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "multi_step_4096"
+PLAN_4096 = "direct_reads_4096"
 
 
 def current_section() -> str:
-    return f"multi_step_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -229,7 +229,16 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     requests, streams = run_scenario(name, env, revit, recorder)
     sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
-    assert hashes(streams) == recorded(name, f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}")["streams"]
+    picker_streams = recorded(name, f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}")["streams"]
+    if name.startswith("single-"):
+        # The 0.10.1 catalogue changes the list_tools preview and size in turn three.
+        # Pin its full stream as captured with the released wheel; below, also compare
+        # every byte outside those two fields with the original aa5556c checkout.
+        picker_streams[2] = {
+            "single-server": "17d67e7646723e26516bd601b78f240167ebebaaf448b62f685c70e669c1024a",
+            "single-browser": "246f91fc159f1ca65f23e3d11ddf346c6b1f3adf59b6784c62a1fef24429087c",
+        }[name]
+    assert hashes(streams) == picker_streams
     legacy = recorded(name, AA5556C_SECTION)["streams"]
     for index, stream in enumerate(streams):
         if name.startswith("single-") and index == 2:
@@ -249,7 +258,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
             assert digest(stream) == legacy[index]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("multi_step_")
+        assert section.startswith("direct_reads_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")

@@ -383,7 +383,7 @@ def test_v2_tasks_bind_the_current_model_items_and_account_for_usage(roles_host,
             pick = task["mentions"][index]
             number, value = values[name]
             spec["parameters"].append({"name": name, "value": value,
-                                       "source": "designer" if name == "reference_id" else "tool",
+                                       "source": "tool",
                                        "evidence": f"mention:{pick['kind']}#{number}"})
         model.script("analyst", json_turn(dict(ROUTE_TOOL, tool=spec["action"]["tool"]), usage=SMALL))
         model.script("planner", tool_turn(("list_tools", {}), usage=FULL),

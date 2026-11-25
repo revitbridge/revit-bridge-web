@@ -195,6 +195,7 @@ export interface SentMention extends Mention {
 /* A pick as POST /api/chat takes it: the kind and the element id (the host also takes a
    `label`, which this page does not send: the host reads the item from the model). */
 export interface MentionRef {
+  document_id?: string
   kind: string
   id: number
 }

@@ -273,6 +273,7 @@ class ChatMention(BaseModel):
 
     kind: str = Field(max_length=32, description="level, type, link or element")
     id: StrictInt = Field(description="the item's element id")
+    document_id: str | None = Field(default=None, max_length=200, description="Document identity recorded by the element picker")
     label: str | None = Field(default=None, max_length=500, description="what the page showed; not sent to the model")
 
 
@@ -429,6 +430,18 @@ async def check_mentions(mentions: list[ChatMention]) -> dict:
               "not_found": [e for e in found["not_found"] if e.get("reason") != "invalid"],
               "invalid": [e for e in found["not_found"] if e.get("reason") == "invalid"],
               "unresolved": []}
+    documents: dict[int, set[str]] = {}
+    for pick in mentions:
+        if pick.kind == "element" and pick.document_id is not None:
+            documents.setdefault(pick.id, set()).add(pick.document_id)
+    matched = []
+    for item in report["resolved"]:
+        expected = documents.get(item["id"]) if item["kind"] == "element" else None
+        if expected and expected != {item.get("document_id")}:
+            report["not_found"].append({"kind": "element", "id": item["id"], "reason": "document_changed"})
+        else:
+            matched.append(item)
+    report["resolved"] = matched
     if found.get("warnings"):
         report["warnings"] = list(found["warnings"])
     return report
@@ -654,6 +667,7 @@ class Turn:
                 keep(assistant)
             messages.append(assistant)
             questions = None
+            stop_reply = None
             for index, call in enumerate(calls, start=1):
                 event_id = f"{self.turn}.{this_round}.{index}"     # unique in the session
                 args = parse_arguments(call.arguments)
@@ -690,6 +704,8 @@ class Turn:
                 error = tool_error_text(outcome.result)
                 closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
                            "preview": result_text[:TOOL_PREVIEW]}
+                if outcome.read_tool is not None:
+                    closing["read"] = {"name": outcome.read_tool, "result": outcome.result}
                 if error is not None:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
@@ -707,10 +723,11 @@ class Turn:
                 messages.append(reply)
                 if outcome.questions_event is not None:
                     questions = outcome.questions_event
+                    stop_reply = outcome.stop_reply
             if questions is not None:
                 self.session.pending_form = questions
                 self.session.form_routing = self.routing
-                self.session.form_stop_reply = None
+                self.session.form_stop_reply = stop_reply
                 yield format_sse_event("questions", questions)
                 return
 
@@ -1087,6 +1104,7 @@ async def chat(req: ChatRequest, request: Request,
         plan.reporting = True
     changed_plan = None
     if req.bridge and req.message:
+        session.direct_reads = 0
         if not step and pending is None and session.clarification is None:
             session.request_text = req.message
             session.request_answers = []

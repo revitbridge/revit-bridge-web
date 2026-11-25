@@ -295,7 +295,8 @@ export class MentionController {
         { ...menu, category, categoryLabel: item.label || item.name || category })
       return
     }
-    const mention: Mention = { kind: menu.kind, id: elementId(item)!, name: item.name ?? '' }
+    const mention: Mention = { kind: menu.kind, id: elementId(item)!, name: item.name ?? '',
+      ...(menu.kind === 'element' && item.document_id ? { document_id: item.document_id } : {}) }
     if (menu.kind === 'element') {
       const checked = this.state.checked.some(m => m.id === mention.id)
         ? this.state.checked.filter(m => m.id !== mention.id) : [...this.state.checked, mention]
