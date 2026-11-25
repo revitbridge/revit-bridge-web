@@ -362,7 +362,7 @@ def test_ask_shows_the_report_and_the_question(revit, client, model):
     for role in ("analyst", "planner", "supervisor"):
         prompt = model.requests_of(role)[0]["messages"][0]["content"]
         if role == "supervisor":
-            assert "on the card in the chat reply" in prompt
+            assert "on the card in this chat" in prompt
         else:
             assert "确认并执行" in prompt and "卡片在我上一条提交它的回复里" in prompt
         if role == "analyst":

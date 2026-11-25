@@ -52,7 +52,6 @@ class Plan:
     expires_at: float = 0
     running: bool = False
     closed: bool = False
-    auto_paused: bool = False
     auto_receipt_pending: bool = False
 
     @staticmethod

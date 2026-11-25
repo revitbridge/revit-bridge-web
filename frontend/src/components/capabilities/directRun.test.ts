@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolParam } from '../../types/api'
+import moveElementIds from './moveElementIds.fixture.json'
 import { BridgeApiError } from '../shared/http'
 import { confirmAndRun, describePreconditions, initialValues, specFromForm, typedValue } from './directRun'
 
@@ -17,7 +18,7 @@ const choices = {
 }
 
 it.each(['elements', 'elements:OST_Walls'])('keeps optional %s targets empty for the entire selection', source => {
-  const targets = { name: 'element_ids', type: 'string', source: 'designer', required: false, choices_from: source }
+  const targets = { ...moveElementIds, choices_from: source }
   const options = [{ label: 'Wall A', value: '72' }, { label: 'Wall B', value: '73' }]
   const all = [targets, { ...targets, name: 'host', required: true }, ...params]
   const ch = { ...choices, element_ids: options, host: options }

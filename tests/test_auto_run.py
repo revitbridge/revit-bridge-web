@@ -1,4 +1,6 @@
 """Exercise the request switch, form answers and dispatch with a fake add-in and model."""
+import re
+
 import pytest
 
 from backend.config import get_settings
@@ -294,6 +296,18 @@ def test_invalid_auto_run_settings_fail_at_startup(local_env, name, value):
         create_app()
 
 
+def cite_result(proposal, binding, path, *, evidence_id=None):
+    """A scripted planner uses the evidence ID from the host's actual reply."""
+    def reply(body):
+        ident = evidence_id
+        if ident is None:
+            context = "\n".join(m.get("content") or "" for m in body["messages"])
+            ident = re.findall(r'"evidence_id":\s*"([^"]+)"', context)[-1]
+        binding["evidence"] = f"result:{ident}#{path}"
+        return proposal
+    return reply
+
+
 @pytest.mark.parametrize("wall_id,ok", [("4242", True), ("4243", False)])
 def test_window_uses_only_the_created_wall_id(client, model, revit, monkeypatch, wall_id, ok):
     from tests.fake_revit import SNAPSHOT_RESULT
@@ -310,48 +324,147 @@ def test_window_uses_only_the_created_wall_id(client, model, revit, monkeypatch,
         return original(req)
     revit.handler = handle
     window = spec_for("create_window_on_wall", wall_id=wall_id, type_name="OST_Windows-TypeA", offset_along_wall=1500)
-    window["parameters"][0].update(source="tool", evidence="previous result")
+    host_wall = window["parameters"][0]
+    host_wall.update(source="tool")
     for p in window["parameters"][1:]:
         p["evidence"] = f"{p['name']}={p['value']}"
     model.script("analyst", json_turn(ROUTING_TOOL))
     model.script("planner", tool_turn(("set_plan", {"steps": STEPS})), wall("wall"),
-                 tool_turn(("propose_spec", {"step_id": "window", "spec": window})))
+                 cite_result(tool_turn(("propose_spec", {"step_id": "window", "spec": window})), host_wall, "ElementId"))
     model.script("supervisor", json_turn(DONE), json_turn(DONE))
     _, frames = request(client, run="auto", message=BRIEF + ", type_name=OST_Windows-TypeA, offset_along_wall=1500")
-    assert events(frames, "execution")[0]["result"]["ElementId"] == 4242
+    first = events(frames, "execution")[0]
+    assert first["result"]["ElementId"] == 4242
+    assert host_wall["evidence"] == f"result:{first['evidence_id']}#ElementId"
+    assert "result:<evidence_id>#<path>" in model.requests_of("planner")[0]["messages"][0]["content"]
     assert len(writes) == (2 if ok else 1)
     assert events(frames, "spec")[-1].get("run_reason") == (None if ok else "unverified_evidence")
     if ok:
         assert [s["status"] for s in events(frames, "plan")[-1]["steps"]] == ["done", "done"]
 
 
-@pytest.mark.parametrize("same_message,value,ok", [(True, 1750, True), (True, 175, False), (False, 1750, False)])
-def test_direct_read_evidence_expires_at_the_next_message(client, model, revit, monkeypatch, same_message, value, ok):
-    from tests.test_direct_reads import declare_reader, read_call
-    declare_reader(monkeypatch)
+@pytest.mark.parametrize("same_message,path,value,evidence_id,source,ok", [
+    (True, "Geometry.0.Midpoint", 1750, None, "tool", True),
+    (True, "Geometry.0.Midpoint", 1751, None, "tool", False),
+    (True, "Geometry.1.Midpoint", 1750, None, "tool", False),
+    (True, "Geometry.0.NoSuchField", 1750, None, "tool", False),
+    (True, "Geometry.0.Flag", 1, None, "tool", False),
+    (True, "Geometry.0.Midpoint", 1750, "ev_unknown", "tool", False),
+    (True, "Geometry.0.Midpoint", 1750, None, "designer", False),
+    (True, "Geometry.0.Midpoint", 1750, None, "answer", False),
+    (False, "Geometry.0.Midpoint", 1750, None, "tool", False),
+])
+def test_direct_read_evidence_expires_at_the_next_message(client, model, revit, same_message, path, value,
+                                                         evidence_id, source, ok):
+    from tests.test_direct_reads import read_call
     writes = simulated_wall_counter(revit)
     original = revit.handler
     def handler(req):
         code = req.get("params", {}).get("code", "")
         if "LocationCurve" in code and "Wall.Create" not in code:
-            return FakeRevit.code_result(req["id"], {"Geometry": [{"Midpoint": 1750}]})
+            return FakeRevit.code_result(req["id"], {"Geometry": [{"Midpoint": 1750.0, "Flag": True}]})
         return original(req)
     revit.handler = handler
     proposal = wall()
-    coords = proposal["tool_calls"][0]["arguments"]["spec"]["parameters"]
-    next(p for p in coords if p["name"] == "start_x").update(value=value, evidence="read geometry")
+    height = next(p for p in proposal["tool_calls"][0]["arguments"]["spec"]["parameters"] if p["name"] == "height")
+    height.update(value=value, source=source)
     sid = None
     model.script("analyst", json_turn(ROUTING_TOOL))
     model.script("planner", tool_turn(read_call()))
     if not same_message:
         model.script("planner", text_turn("Read complete."))
-        sid, _ = request(client, run="auto", message="Read element 72")
+        sid, read_frames = request(client, run="auto", message="Read element 72")
+        evidence_id, = [e["read"]["result"]["evidence_id"] for e in events(read_frames, "tool") if "read" in e]
         model.script("analyst", json_turn(ROUTING_TOOL))
-    model.script("planner", proposal)
+    model.script("planner", cite_result(proposal, height, path, evidence_id=evidence_id))
     model.script("supervisor", json_turn(DONE))
-    _, frames = request(client, session_id=sid, message=BRIEF.replace("start_x=0", "use its midpoint"), run="auto")
+    _, frames = request(client, session_id=sid, message=BRIEF.replace("height=3000", "use its midpoint for height"), run="auto")
     assert events(frames, "spec")[0].get("run_reason") == (None if ok else "unverified_evidence")
     assert bool(writes) == ok
+
+
+@pytest.mark.parametrize("with_read", [True, False])
+def test_reading_element_72_does_not_supply_guessed_wall_coordinates(client, model, revit, with_read):
+    from tests.test_direct_reads import read_call
+    writes = simulated_wall_counter(revit)
+    original = revit.handler
+    def handler(req):
+        code = req.get("params", {}).get("code", "")
+        if "LocationCurve" in code and "Wall.Create" not in code:
+            return FakeRevit.code_result(req["id"], {"LengthMm": 5000.0, "Y": 0.0, "Z": 0.0})
+        return original(req)
+    revit.handler = handler
+    proposal = wall()
+    for p in proposal["tool_calls"][0]["arguments"]["spec"]["parameters"]:
+        if p["name"] == "level_name":
+            p["evidence"] = "L1"
+        elif p["name"] != "height":
+            p.update(source="designer", evidence="coordinates")
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    if with_read:
+        model.script("planner", tool_turn(read_call()))
+    model.script("planner", proposal)
+    model.script("supervisor", json_turn(DONE))
+    _, frames = request(client, run="auto", message="看一下元素 72，在 L1 上建一面墙")
+    assert sum("read" in e for e in events(frames, "tool")) == int(with_read)
+    assert not writes and not events(frames, "execution")
+    assert events(frames, "spec")[0]["run_reason"] == "unverified_evidence"
+
+
+@pytest.mark.parametrize("failure", ["error", "refusal", "validator"])
+def test_closing_failed_plan_waits_for_click_until_new_request(client, model, revit, failure):
+    writes = []
+    original = revit.handler
+    def handler(req):
+        code = req.get("params", {}).get("code", "")
+        if "GetElementCount" in code and "Enum.Parse(typeof(BuiltInCategory)" in code:
+            return FakeRevit.code_result(req["id"], 1)
+        if "Wall.Create" in code:
+            writes.append(code)
+            if failure != "validator":
+                reason = "System.InvalidOperationException: REFUSED: fixture" if failure == "refusal" else "wall failed"
+                return FakeRevit.code_result(req["id"], None, success=False, error=reason)
+        return original(req)
+    revit.handler = handler
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", tool_turn(("set_plan", {"steps": [{"id": "a", "title": "First wall"},
+                                                              {"id": "b", "title": "Second wall"}]})), wall("a"))
+    model.script("supervisor", json_turn({"verdict": "ask", "report": "The wall failed.", "question": "Retry?"}))
+    sid, failed = request(client, run="auto", message=BRIEF)
+    receipt, = events(failed, "execution")
+    assert receipt["success"] is False and bool(receipt.get("refused")) == (failure == "refusal")
+    if failure == "validator":
+        assert receipt["validation"]["passed"] is False
+    assert events(failed, "plan")[-1]["steps"][0]["status"] == "failed"
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", tool_turn(("set_plan", {"steps": []})), wall())
+    model.script("supervisor", json_turn(DONE))
+    _, retry = request(client, session_id=sid, run="auto", message="Try again.")
+    assert [s["status"] for s in events(retry, "plan")[-1]["steps"]] == ["skipped", "skipped"]
+    assert len(writes) == 1 and not events(retry, "execution")
+    assert events(retry, "spec")[0]["run_reason"] == "previous_failure"
+
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", wall())
+    _, fresh = request(client, session_id=sid, run="auto", message=BRIEF)
+    assert events(fresh, "spec")[0]["run"] == "auto" and len(writes) == 2
+
+
+def test_named_result_is_scoped_to_the_session_and_device(local_env, monkeypatch):
+    from backend.api import bridge
+    from backend.api.auto_run import AutoRun
+    from backend.session import Session
+
+    owner, visitor = Session("first"), Session("second")
+    owner.read_results["device-A", "ev_a"] = {"measured": 3125}
+    draft = wall()["tool_calls"][0]["arguments"]["spec"]
+    draft["parameters"][-1].update(value=3125, source="tool", evidence="result:ev_a#measured")
+    event = {"spec": draft, "reconcile": {"ready": True}, "errors": []}
+    for session, device, expected in [(owner, "device-A", None), (owner, "device-B", "unverified_evidence"),
+                                      (visitor, "device-A", "unverified_evidence")]:
+        monkeypatch.setattr(bridge, "current_scope", lambda: device)
+        gate = AutoRun(session, None, get_settings(), False, BRIEF, None)
+        assert gate.inspect(event) == (expected, None)
 
 
 @pytest.mark.parametrize("selected", [True, False])
