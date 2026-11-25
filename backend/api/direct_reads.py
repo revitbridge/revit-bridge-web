@@ -23,11 +23,11 @@ class BuiltinReaderStore(ToolStore):
 async def try_read(spec, session, store, *, step=None):
     name = spec.action.tool
     pack = store.load(name)
-    if getattr(pack, "read_only", False) is not True or bridge.pack_origin(store, name)[0] != "builtin":
+    if pack is None or not pack.read_only or bridge.pack_origin(store, name)[0] != "builtin":
         return None
     readers = BuiltinReaderStore(user_dir=store.user_dir, builtin_dir=store.builtin_dir)
     pack = readers.load(name)
-    if getattr(pack, "read_only", False) is not True:
+    if pack is None or not pack.read_only:
         return None
     if step and step.status != "pending":
         return {"error": "invalid_step", "message": "Omit step_id for a supporting read or revise the plan."}

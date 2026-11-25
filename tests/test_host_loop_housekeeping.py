@@ -57,7 +57,7 @@ def test_small_tool_results_are_stored_as_they_are():
 
 
 def test_only_a_parsable_spec_lands_in_the_session(client, model):
-    from tests.test_api_v1 import spec_for
+    from tests.test_api_v1 import WALL, spec_for
 
     model.turns += [
         tool_turn(("propose_spec", {"spec": {"task": "half a spec"}})),
@@ -68,13 +68,13 @@ def test_only_a_parsable_spec_lands_in_the_session(client, model):
     session = get_session_store().get(resp.headers["X-Session-Id"])
     assert session.spec is None                      # the unparsable one was not kept
 
-    good = spec_for("query_levels")
+    good = spec_for("create_wall", **WALL)
     model.turns += [tool_turn(("propose_spec", {"spec": good})), text_turn("card shown")]
     client.post("/api/chat", json={"message": "again", "session_id": session.session_id}, headers=HEADERS)
-    assert session.spec["action"] == {"kind": "run_tool", "tool": "query_levels", "code": None, "code_parameters": None}
-    assert session.spec["task"] == "run query_levels"
+    assert session.spec["action"] == {"kind": "run_tool", "tool": "create_wall", "code": None, "code_parameters": None}
+    assert session.spec["task"] == "run create_wall"
 
     model.turns += [tool_turn(("propose_spec", {"spec": "not even an object"})), text_turn("nope")]
     client.post("/api/chat", json={"message": "once more", "session_id": session.session_id}, headers=HEADERS)
-    assert session.spec["task"] == "run query_levels"   # still the last good one
+    assert session.spec["task"] == "run create_wall"   # still the last good one
     assert model.tool_results("propose_spec")[-1]["errors"][0]["code"] == "invalid_spec"

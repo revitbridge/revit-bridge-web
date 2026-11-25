@@ -198,17 +198,17 @@ def test_propose_spec_edge_cases(client, model):
     """An unparsable spec is a verdict for the model only; no Revit still shows the card, not ready."""
     model.turns += [
         tool_turn(("propose_spec", {"spec": {"task": "x"}})),
-        tool_turn(("propose_spec", {"spec": spec_for("query_levels")})),
+        tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})),
         text_turn("noted"),
     ]
-    resp = client.post("/api/chat", json={"message": "list levels"}, headers=HEADERS)
+    resp = client.post("/api/chat", json={"message": "build a wall"}, headers=HEADERS)
     assert resp.status_code == 200
     specs = events(sse(resp.text), "spec")
     verdicts = model.tool_results("propose_spec")
     assert verdicts[0]["accepted"] is False and verdicts[0]["errors"][0]["code"] == "invalid_spec"
     assert verdicts[0]["reconcile"] is None
     assert len(specs) == 1                                        # the unparsable one made no event
-    assert specs[0]["card"].startswith("Task: run query_levels") and specs[0]["errors"] == []
+    assert specs[0]["card"].startswith("Task: run create_wall") and specs[0]["errors"] == []
     assert specs[0]["reconcile"] is None                          # no add-in in this test: the page sees why
     assert specs[0]["reconcile_error"]["error"] == "revit_unreachable"
     assert verdicts[1]["accepted"] is False and verdicts[1]["reconcile"]["error"] == "revit_unreachable"
