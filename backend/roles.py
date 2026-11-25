@@ -12,7 +12,7 @@ segments and one execution report in up to two:
   host shows ``note`` (``none`` with the workbench link, added by the host when the note
   lacks it) and the turn ends.
 - **planner** (``host_instructions(role="planner", code=False)`` plus
-  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all eight on every
+  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all planner tools on every
   route with ``ROLES_PLANNER_TOOLS=all``), the session's conversation, and this turn's
   message with the analyst's routing after it (``planner_message``) - not the analyst's
   prompt, digest or tool list. With ``ROLES_ANALYST=off`` every message comes to it with
@@ -521,6 +521,31 @@ def execution_summary(execution: dict) -> dict:
         if len(checks) > CHECKS_MAX:
             shown["checks_more"] = len(checks) - CHECKS_MAX
         summary["validation"] = shown
+    return summary
+
+
+def step_result(execution: dict) -> dict:
+    """Keep numeric element identifiers beside a clipped result, independent of JSON field order."""
+    summary = execution_summary(execution)
+    raw = execution.get("result")
+    if isinstance(raw, dict) and isinstance(summary.get("result"), str):
+        ids = {}
+        remaining = 256
+        omitted = 0
+        for key, value in raw.items():
+            if not key.casefold().endswith(("id", "ids")):
+                continue
+            items = value if isinstance(value, list) else [value]
+            numeric = [v for v in items if type(v) is int or (isinstance(v, str) and len(v) <= 20 and v.isdecimal())]
+            keep = numeric[:remaining]
+            if keep:
+                ids[key] = keep if isinstance(value, list) else keep[0]
+                remaining -= len(keep)
+            omitted += len(numeric) - len(keep)
+        if ids:
+            summary["element_ids"] = ids
+        if omitted:
+            summary["more_element_ids"] = omitted
     return summary
 
 

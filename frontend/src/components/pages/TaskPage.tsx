@@ -73,6 +73,8 @@ export default function TaskPage({ events }: { events?: EventSource }) {
               {state.cardMessage === index && state.proposal && <SpecCard proposal={state.proposal}
                 canConfirm={canConfirm(state)} confirming={state.confirming} running={state.running}
                 execution={state.execution} confirmation={state.confirmation} confirmErrors={state.confirmErrors}
+                onRetryReport={state.proposal.planStep && !state.proposal.ended && state.confirmation?.used
+                  && state.execution && !state.reported && !state.bridge.streaming ? flow.report : undefined}
                 onConfirm={flow.confirmAndRun} onToggleInterpretation={flow.toggleInterpretation}
                 onTamper={flow.demoTamper} />}
             </>}

@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 from backend.llm import ProviderMemory, call_keys
 from backend.mention_check import mention_evidence
+from backend.plans import Plan
+from revit_bridge.spec.gate import GateError
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
     from backend.roles import RoleTask, Routing
@@ -78,6 +80,13 @@ class Session:
     # Only a supervisor-issued form can close a task. The acknowledgement uses its display language.
     form_stop_reply: str | None = None
     confirmed_spec: dict | None = None
+    plan: Plan | None = None
+    request_text: str = ""
+    clarification: str | None = None
+    bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    proposed_in_request: bool = False
+    request_answers: list[dict] = field(default_factory=list)
+    reported_evidence: set[str] = field(default_factory=set)
     # What a provider returned with a tool call that goes back with it in the next requests
     # (Gemini's thought signature, the responses api's reasoning items): by call, for the
     # endpoint and model that returned it, in memory only (backend.llm.ProviderMemory). Bounded
@@ -162,6 +171,7 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._plan_tokens: dict[str, tuple[Plan, str, float]] = {}
 
     def get_or_create(self, session_id: str | None = None) -> Session:
         with self._lock:
@@ -185,6 +195,28 @@ class SessionStore:
                 session.touch()
                 return session
             return None
+
+    def bind_plan_token(self, digest: str, plan: Plan, projection: str) -> None:
+        with self._lock:
+            now = time.time()
+            self._plan_tokens = {k: entry for k, entry in self._plan_tokens.items() if entry[2] > now}
+            self._plan_tokens[digest] = (plan, projection, plan.expires_at)
+
+    def claim_plan_token(self, digest: str, projection: str, scope: str) -> Plan | None:
+        with self._lock:
+            entry = self._plan_tokens.get(digest)
+            if entry is None:
+                return None
+            plan, expected, expiry = entry
+            if expiry <= time.time():
+                del self._plan_tokens[digest]
+                raise GateError("expired", "The confirmation expired.")
+            if plan.scope != scope or projection != expected:
+                raise GateError("mismatch", "The execution does not match the confirmed spec.")
+            if not plan.confirmed or plan.token_digest != digest or plan.running or plan.receipt is not None:
+                raise GateError("used", "This plan confirmation has already been used.")
+            plan.running = True
+            return plan
 
     def _cleanup(self) -> None:
         for key in [k for k, v in self._sessions.items() if v.is_expired()]:

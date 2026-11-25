@@ -48,7 +48,7 @@ def _token_count(value) -> int | None:
         value = int(value)
     return value if 0 <= value <= MAX_COUNT else None
 _CALL_COLUMNS = ("session_id, turn, round, role, model, input, output, cache_read, cache_write, "
-                 "ms, created_at, run_label, mode")
+                 "ms, created_at, run_label, mode, plan_id, step_id")
 # A run whose calls ran in more than one chat mode.
 MIXED_MODES = "mixed"
 # Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
@@ -74,6 +74,7 @@ class InteractionLogStore:
 
     def _init_db(self) -> None:
         with contextlib.closing(self._conn()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS interaction_logs (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,8 +113,9 @@ class InteractionLogStore:
             """)
             # A table created before the chat modes: the column is added, its old rows NULL.
             columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)")}
-            if "mode" not in columns:
-                conn.execute("ALTER TABLE llm_calls ADD COLUMN mode TEXT")
+            for column in ("mode", "plan_id", "step_id"):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {column} TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_label ON llm_calls(run_label)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(created_at)")
@@ -234,7 +236,8 @@ class InteractionLogStore:
     # -- model calls -------------------------------------------------------------
 
     def record_call(self, *, session_id: str, turn: int, round: int, role: str, model: str | None,
-                    usage: dict, ms: int, run_label: str | None = None, mode: str | None = None) -> None:
+                    usage: dict, ms: int, run_label: str | None = None, mode: str | None = None,
+                    plan_id: str | None = None, step_id: str | None = None) -> None:
         """One model call; ``usage`` is ``{input, output, cache_read, cache_write}`` with
         ``None`` kept as ``NULL``; a value that is not a count from 0 to ``MAX_COUNT`` is
         stored as ``NULL`` too, so the row is kept. ``mode``: the chat mode of the request.
@@ -248,10 +251,10 @@ class InteractionLogStore:
                     conn.execute(
                         """INSERT INTO llm_calls
                            (created_at, session_id, turn, round, role, model,
-                            input, output, cache_read, cache_write, ms, run_label, mode)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            input, output, cache_read, cache_write, ms, run_label, mode, plan_id, step_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (ts, session_id, turn, round, role, (model or "")[:MAX_MODEL_NAME] or None,
-                         *counts, ms, run_label, mode),
+                         *counts, ms, run_label, mode, plan_id, step_id),
                     )
             except Exception as exc:  # noqa: BLE001
                 _log.error("failed to write a model call: %s", exc)
@@ -281,7 +284,10 @@ class InteractionLogStore:
         with contextlib.closing(self._conn()) as conn:
             rows = conn.execute(
                 f"""SELECT run_label, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms,
-                           MIN(created_at) AS first_at, MAX(created_at) AS last_at, {mode}
+                           MIN(created_at) AS first_at, MAX(created_at) AS last_at, {mode},
+                           CASE WHEN COUNT(DISTINCT plan_id) = 1 THEN MIN(plan_id) END AS plan_id,
+                           CASE WHEN COUNT(DISTINCT plan_id) = 1 AND COUNT(DISTINCT step_id) = 1
+                                THEN MIN(step_id) END AS step_id
                     FROM llm_calls WHERE run_label IS NOT NULL
                     GROUP BY run_label ORDER BY MIN(id)"""
             ).fetchall()

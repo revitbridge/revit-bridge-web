@@ -95,8 +95,8 @@ from revit_bridge.revit.probe import check_connection
 from revit_bridge.snapshot import RevitQueryExecutor
 from revit_bridge.snapshot.project import ProjectSnapshot, take_snapshot, validate_categories
 from revit_bridge.snapshot.query import RevitQueryError, run_query
-from revit_bridge.spec.gate import Gate, confirmation_required
-from revit_bridge.spec.models import TaskSpec
+from revit_bridge.spec.gate import Gate, GateError, confirmation_invalid, confirmation_required
+from revit_bridge.spec.models import TaskSpec, projection_hash
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
 from backend.api import devices as devices_api
@@ -106,6 +106,7 @@ from backend.mention_check import bound_picks, changed_pick, mention_errors, men
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 from backend.session import get_session_store
+from backend.plans import Plan
 
 _log = logging.getLogger("backend.bridge")
 
@@ -822,16 +823,57 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
 async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
     validator, evidence, all in the package. An unknown pack is 404 and a missing token
-    400 ``confirmation_required`` before anything else is looked at."""
+    400 ``confirmation_required`` before anything else is looked at. With a claimed plan
+    token, execution failures including ``unknown_tool`` and ``revit_unreachable`` return
+    HTTP 200 with ``success: false`` so the supervisor can handle the step's receipt."""
     require_tool_name(name)
     store = ToolStore()
-    if store.load(name) is None:
+    if not req.token.strip() and store.load(name) is None:
         raise unknown_tool(name)
     token = _require_token(req.token)
-    client = await get_revit_client()
-    result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
-                            name=name, params=req.params, token=token, host=HOST, scope=current_scope())
-    return _execution_payload(result)
+    token_digest = Plan.fingerprint(token)
+    projection = {"kind": "run_tool", "tool": name, "params": req.params}
+    scope = current_scope()
+    try:
+        plan = get_session_store().claim_plan_token(token_digest, projection_hash(projection), scope)
+    except GateError as exc:
+        return confirmation_invalid(exc)
+    try:
+        if store.load(name) is None:
+            raise unknown_tool(name)
+        client = await get_revit_client()
+        result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
+                                name=name, params=req.params, token=token, host=HOST, scope=scope)
+        payload = _execution_payload(result)
+        if plan:
+            if payload.get("error") in ("confirmation_required", "confirmation_invalid"):
+                plan.confirmed = False
+                plan.token_digest = None
+            else:
+                plan.receipt = payload
+        return payload
+    except ApiError as exc:
+        if plan:
+            plan.receipt = {"success": False, **exc.payload}
+            return plan.receipt
+        raise
+    except Exception:
+        if not plan:
+            raise
+        _log.exception("The confirmed plan execution did not return its result")
+        plan.receipt = {"success": False, "error": "execution_failed",
+                        "message": "The host could not determine the execution outcome. Check the model before retrying."}
+        return plan.receipt
+    finally:
+        if plan:
+            # The package leaves a token unused on preflight failures. A plan's
+            # confirmation covers exactly one attempt, even across a host restart.
+            try:
+                await run_in_threadpool(get_gate().consume, token, projection, scope)
+            except GateError:
+                pass  # already spent by run_pack, or expired
+            finally:
+                plan.running = False
 
 
 # -- specs ---------------------------------------------------------------------
@@ -956,10 +998,32 @@ async def confirm_spec(req: ConfirmRequest):
     if changed:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in changed])
     refuse_unknown_mentions(spec, pack, req.session_id)
-    # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
-    conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
-                                   channel=CONFIRM_CHANNEL, scope=current_scope())
     session = picks_session(req.session_id)
+    plan = session.plan if session else None
+    proposal = plan.proposed if plan else None
+    given = spec.model_dump(mode="json")
+    marked = bool(spec.workflow and re.search(r"\[plan [0-9a-f]{32}\]\Z", spec.workflow.name)
+                  and re.search(r"\[step [\s\S]+; card [0-9a-f]{32}\]\Z", spec.workflow.stage))
+    if marked or (plan and plan.current):
+        if not plan or not plan.current or not proposal or plan.scope != current_scope() or not plan.matches_card(given):
+            raise ApiError(422, "invalid_spec", "This card no longer belongs to the current plan step.")
+        if plan.confirmed and (plan.expires_at == 0 or plan.expires_at > time.time() or plan.receipt or plan.running):
+            raise ApiError(422, "invalid_spec", "This plan step has already been confirmed.")
+        plan.confirmed = True
+        plan.expires_at = 0
+    # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
+    try:
+        conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
+                                       channel=CONFIRM_CHANNEL, scope=current_scope())
+    except BaseException:
+        if marked and plan:
+            plan.confirmed = False
+        raise
+    if marked and plan:
+        plan.token_digest = Plan.fingerprint(conf.token)
+        plan.receipt = None
+        plan.expires_at = datetime.fromisoformat(conf.expires_at).timestamp()
+        get_session_store().bind_plan_token(plan.token_digest, plan, conf.projection_hash)
     if session is not None:
         # What the chat's supervisor reads when the page reports this run (backend.roles).
         session.confirmed_spec = spec.model_dump(mode="json")

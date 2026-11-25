@@ -4,6 +4,7 @@
 import { useEffect, useRef } from 'react'
 import type { ExecutionResult, SpecError, TaskSpec } from '../../types/api'
 import { confirmLabel, interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
+import { planStatus } from './plan'
 import { browserLanguage } from '../../utils/language'
 import { showValue, tokenPrefix } from './format'
 import { ExecutionView, TamperDemo } from './ExecutionPanel'
@@ -19,6 +20,7 @@ interface Props {
   confirming: boolean
   confirmErrors: SpecError[]
   onToggleInterpretation: (text: string, confirmed: boolean) => void
+  onRetryReport?: () => void
   onConfirm: () => void
 }
 
@@ -60,7 +62,7 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
 }
 
 export default function SpecCard({ proposal, canConfirm, confirming, confirmErrors, onToggleInterpretation, onConfirm,
-  execution, confirmation, running, archived, onTamper }: Props) {
+  execution, confirmation, running, archived, onTamper, onRetryReport }: Props) {
   const zh = browserLanguage() === 'zh'
   const card = useRef<HTMLElement>(null)
   useEffect(() => {
@@ -146,7 +148,8 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
         </ul>
       )}
       {execution && <ExecutionView execution={execution} />}
-      {proposal.ended ? <p role="status">{zh ? '任务已结束' : 'Task ended'}</p> : execution?.success ? <p role="status">{zh ? '已执行' : 'Executed'}</p> : archived ? <p>{zh ? '已被新卡替换' : 'Replaced by a new card'}</p> :
+      {onRetryReport ? <button type="button" onClick={onRetryReport}>{zh ? '重新提交执行结果' : 'Resend execution result'}</button>
+        : proposal.ended ? <p role="status">{proposal.planStep && proposal.planStep.status !== 'proposed' ? planStatus(proposal.planStep.status, zh).label : (zh ? '任务已结束' : 'Task ended')}</p> : execution?.success ? <p role="status">{zh ? '已执行' : 'Executed'}</p> : archived ? <p>{zh ? '已被新卡替换' : 'Replaced by a new card'}</p> :
         <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
           {confirming ? (zh ? '正在确认…' : 'Confirming…') : running ? (zh ? '正在执行…' : 'Running…') : confirmLabel(execution, confirmErrors)}
         </button>}

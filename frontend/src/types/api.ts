@@ -157,7 +157,22 @@ export interface Skill {
   raw?: string
 }
 
+export type PlanStatus = 'pending' | 'proposed' | 'done' | 'failed' | 'skipped'
+export interface PlanStep {
+  id: string
+  title: string
+  status: PlanStatus
+  evidence_id?: string
+}
+export interface TaskPlan {
+  plan_id: string
+  steps: PlanStep[]
+}
+
 export interface ChatMessage {
+  plan?: TaskPlan
+  stepResults?: Record<string, ExecutionResult>
+  continuesTurn?: boolean
   form?: DesignerForm
   supervisorForm?: boolean
   answered?: 'form' | 'text' | 'replaced' | 'invalid' | 'execution'
@@ -305,6 +320,7 @@ export interface HostRequest {
 
 /* The SSE events of one turn, as chatEvents() yields them. */
 export type HostEvent =
+  | ({ type: 'plan' } & TaskPlan)
   | ({ type: 'questions' } & DesignerForm)
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
@@ -416,6 +432,8 @@ export interface UsagePart {
 }
 
 export interface UsageRun {
+  plan_id?: string | null
+  step_id?: string | null
   run_label: string
   calls: number
   input: number | null

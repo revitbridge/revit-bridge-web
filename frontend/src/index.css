@@ -1333,6 +1333,19 @@ select {
   .device-row { align-items: flex-start; flex-direction: column; }
 }
 
+.task-plan { list-style: none; padding: 0; margin: .6rem 0; border-block: 1px solid var(--line); }
+.task-plan li { padding: .45rem 0; }
+.task-plan li + li { border-top: 1px solid var(--line); }
+.task-plan li > div, .task-plan summary { display: flex; align-items: baseline; gap: .65rem; }
+.task-plan summary { cursor: pointer; }
+.task-plan summary::after { content: '▸'; }
+.task-plan details[open] summary::after { content: '▾'; }
+.task-plan small { margin-left: auto; white-space: nowrap; color: var(--mid); }
+.task-plan pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-step-icon { min-width: 1em; text-align: center; }
+.task-plan [data-status="done"] .plan-step-icon { color: var(--success); }
+.task-plan [data-status="failed"] .plan-step-icon { color: var(--danger); }
+
 /* Token page */
 .token-runs .token-run.is-open td { background: rgba(217, 119, 87, 0.1); }
 .token-role-row td { color: var(--mid); font-size: 11px; border-bottom-style: dashed; }

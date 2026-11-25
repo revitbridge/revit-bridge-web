@@ -10,7 +10,7 @@
 import { apiStream } from './client'
 import { llmHeaders } from '../store'
 import type {
-  DesignerForm, ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, ReconcileResult, SpecError, TaskSpec,
+  DesignerForm, ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, PlanStep, ReconcileResult, SpecError, TaskSpec,
 } from '../types/api'
 import type { Role, ToolEvent } from '../types/hostv2'
 
@@ -98,6 +98,12 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (!isRecord(parsed)) return null
     return { type: 'execution', execution: parsed as unknown as ExecutionResult }
   }
+  if (event === 'plan') {
+    if (!isRecord(parsed) || typeof parsed.plan_id !== 'string' || !parsed.plan_id || !Array.isArray(parsed.steps)
+      || !parsed.steps.length || !parsed.steps.every(isPlanStep)
+      || new Set(parsed.steps.map(step => step.id)).size !== parsed.steps.length) return null
+    return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps }
+  }
   if (event === 'mentions') return mentionsEvent(parsed)
   if (event === 'questions') {
     if (!isRecord(parsed) || typeof parsed.ask_id !== 'string' || !Array.isArray(parsed.questions)
@@ -111,6 +117,13 @@ export function parseSseFrame(frame: string): HostEvent | null {
   if (event === 'stage' || event === 'tool' || event === 'usage') return traceEvent(event, parsed)
   if (event === '' && typeof parsed === 'string') return { type: 'token', text: parsed }
   return null
+}
+
+function isPlanStep(value: unknown): value is PlanStep {
+  return isRecord(value) && typeof value.id === 'string' && !!value.id
+    && typeof value.title === 'string' && typeof value.status === 'string'
+    && ['pending', 'proposed', 'done', 'failed', 'skipped'].includes(value.status)
+    && (value.evidence_id === undefined || typeof value.evidence_id === 'string')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

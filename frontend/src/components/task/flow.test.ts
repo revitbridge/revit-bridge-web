@@ -95,6 +95,56 @@ describe('the task flow', () => {
     expect(flow.store.getState().bridge.messages.filter(m => m.form).map(m => m.answered)).toEqual(['replaced', 'invalid'])
   })
 
+  it('keeps the plan on the first reply and starts the next card in its own reply after confirmation', async () => {
+    const steps = [
+      { id: 'wall', title: 'Build a wall', status: 'pending' as const },
+      { id: 'window', title: 'Place a window', status: 'pending' as const },
+    ]
+    const snapshot = (a: 'pending' | 'proposed' | 'done', b: 'pending' | 'proposed' | 'done'): HostEvent =>
+      ({ type: 'plan', plan_id: 'p', steps: [{ ...steps[0], status: a, ...(a === 'done' ? { evidence_id: success.evidence_id } : {}) },
+        { ...steps[1], status: b }] })
+    const stage = (role: 'planner' | 'supervisor', status: 'start' | 'end'): HostEvent => ({ type: 'stage', role, status, model: 'm' })
+    const readyCard = { ...specEvent, reconcile: ready }
+    const api = fakeApi()
+    const host = scriptedHost([{ type: 'session', id: 's' }, snapshot('pending', 'pending'), snapshot('proposed', 'pending'), readyCard],
+      [stage('supervisor', 'start'), { type: 'token', text: 'Wall built.' }, stage('supervisor', 'end'), snapshot('done', 'pending'),
+        stage('planner', 'start'), snapshot('done', 'proposed'), readyCard, { type: 'token', text: 'Place the window.' }])
+    const flow = createTaskFlow({ events: host.events, api })
+    await flow.send('Build a wall and place a window.')
+    expect(api.calls).toEqual([])
+    await flow.confirmAndRun()
+    const state = flow.store.getState()
+    const messages = state.bridge.messages
+    const owners = messages.filter(m => m.plan)
+    expect(owners).toEqual([messages[1]])
+    expect(owners[0].plan?.steps.map(s => s.status)).toEqual(['done', 'proposed'])
+    expect(owners[0].stepResults?.wall).toEqual(success)
+    expect(messages.at(-2)?.content).toBe('Wall built.')
+    expect(messages[state.cardMessage].content).toBe('Place the window.')
+    expect(state.archived[0].message).toBe(1)
+    expect(canConfirm(state)).toBe(true)
+    expect(api.calls.map(([action]) => action)).toEqual(['confirm', 'runTool'])
+  })
+
+  it('resends a plan result after a failed supervisor request without running the tool again', async () => {
+    const plan: HostEvent = { type: 'plan', plan_id: 'p', steps: [
+      { id: 'wall', title: 'Build a wall', status: 'proposed' }, { id: 'window', title: 'Place a window', status: 'pending' },
+    ] }
+    const host = scriptedHost([{ type: 'session', id: 's' }, plan, { ...specEvent, reconcile: ready }],
+      [{ type: 'error', detail: 'Supervisor unavailable' }],
+      [{ ...plan, steps: [{ ...plan.steps[0], status: 'done' }, plan.steps[1]] }, { type: 'done' }])
+    const api = fakeApi()
+    const flow = createTaskFlow({ events: host.events, api })
+    await flow.send('Build a wall and place a window.')
+    await flow.confirmAndRun()
+    expect(flow.store.getState().reported).toBe(false)
+    expect(flow.store.getState().execution).toEqual(success)
+    await flow.report()
+    expect(flow.store.getState().reported).toBe(true)
+    expect(host.requests[2]).toEqual(host.requests[1])
+    expect(api.calls.map(([name]) => name)).toEqual(['confirm', 'runTool'])
+  })
+
   it('consumes a form when a typed reply is accepted', async () => {
     const host = scriptedHost([{ type: 'questions', ask_id: 'old', questions: [
       { id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false },

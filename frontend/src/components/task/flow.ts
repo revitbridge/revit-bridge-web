@@ -11,7 +11,7 @@ import { browserLanguage } from '../../utils/language'
 import { createStore } from 'zustand/vanilla'
 import type {
   ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
-  SpecError, TaskSpec,
+  PlanStatus, SpecError, TaskPlan, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
 import { interruptOpen } from '../hostv2/trace/events'
@@ -47,6 +47,7 @@ export interface Transcript {
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
 export interface Proposal {
   ended?: boolean
+  planStep?: { planId: string; stepId: string; status: PlanStatus }
   spec: TaskSpec
   card: string
   errors: SpecError[]
@@ -146,10 +147,10 @@ export function interpretationsOf(p: Proposal): Interpretation[] {
 /* The token usage of a transcript: the model calls of its latest turn (the last assistant
    message) and of the whole session, as the usage events reported them. */
 export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEvent[] } {
-  const perReply = t.messages
-    .filter(m => m.role === 'assistant')
-    .map(m => (m.trace ?? []).filter((e): e is UsageEvent => e.type === 'usage'))
-  return { turn: perReply.at(-1) ?? [], session: perReply.flat() }
+  const replies = t.messages.filter(m => m.role === 'assistant')
+  const calls = (m: ChatMessage) => (m.trace ?? []).filter((e): e is UsageEvent => e.type === 'usage')
+  const first = replies.findLastIndex(m => !m.continuesTurn)
+  return { turn: replies.slice(Math.max(first, 0)).flatMap(calls), session: replies.flatMap(calls) }
 }
 
 const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
@@ -176,6 +177,20 @@ function reportPicks(t: Transcript, report: MentionsEvent): Transcript {
   messages[at] = { ...message, mentions: withReport(message.mentions, report) }
   return { ...t, messages }
 }
+function updatePlan(t: Transcript, plan: TaskPlan, execution?: ExecutionResult): Transcript {
+  const previous = t.messages.findIndex(m => m.plan?.plan_id === plan.plan_id)
+  const index = previous < 0 ? t.messages.length - 1 : previous
+  const message = t.messages[index]
+  const resultStep = execution && plan.steps.find(step =>
+    (step.status === 'done' || step.status === 'failed')
+    && message.plan?.steps.some(old => old.id === step.id && old.status === 'proposed')
+    && (!step.evidence_id || step.evidence_id === execution.evidence_id))
+  const messages = t.messages.slice()
+  messages[index] = { ...message, plan, ...(resultStep
+    ? { stepResults: { ...message.stepResults, [resultStep.id]: execution } } : {}) }
+  return { ...t, messages }
+}
+
 type Side = 'bridge' | 'baseline'
 
 export function createTaskFlow(deps: FlowDeps) {
@@ -209,6 +224,8 @@ export function createTaskFlow(deps: FlowDeps) {
     let reply = ''
     let sawSpec = false
     let sawForm = false
+    let sawPlan = false
+    let startNextReply = false
     let supervisor = false
     const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
@@ -221,7 +238,27 @@ export function createTaskFlow(deps: FlowDeps) {
         if (onAccepted) { onAccepted(); onAccepted = undefined }
         if (evt.type === 'session') { patch(side, t => ({ ...t, sessionId: evt.id })); continue }
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
+        if (evt.type === 'plan') {
+          sawPlan = true
+          const plan = { plan_id: evt.plan_id, steps: evt.steps }
+          const current = getState().proposal?.planStep
+          if (side === 'bridge' && current?.planId === plan.plan_id) {
+            const step = plan.steps.find(s => s.id === current.stepId)
+            if (request.execution && step?.status === 'done') startNextReply = true
+            if (!step || step.status !== 'proposed') {
+              setState(s => s.proposal ? { proposal: { ...s.proposal, ended: true,
+                planStep: { ...current, status: step?.status ?? 'skipped' } } } : {})
+            }
+          }
+          patch(side, t => updatePlan(t, plan, request.execution))
+          continue
+        }
         if (isTraceEvent(evt)) {
+          if (startNextReply && evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start') {
+            push(side, { role: 'assistant', content: '', continuesTurn: true })
+            reply = ''
+            sawSpec = sawForm = sawPlan = startNextReply = false
+          }
           if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
           update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
           continue
@@ -260,7 +297,7 @@ export function createTaskFlow(deps: FlowDeps) {
         show(reply)
       }
     }
-    if (!reply && !sawForm) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
+    if (!reply && !sawForm && !sawPlan) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
     // However the stream ended (done, error, abort, broken off): a tool or stage still open
     // will never be closed by the server now - mark it interrupted.
     patch(side, t => {
@@ -271,24 +308,29 @@ export function createTaskFlow(deps: FlowDeps) {
     })
   }
 
-  const onSpec = (evt: SpecEvent) => setState(s => ({
-    cardMessage: s.bridge.messages.length - 1,
-    archived: s.proposal ? [...s.archived, { message: s.cardMessage, proposal: s.proposal,
-      execution: s.execution, confirmation: s.confirmation }] : s.archived,
-    proposal: {
-      spec: evt.spec,
-      card: evt.card,
-      errors: evt.errors ?? [],
-      reconcile: evt.reconcile ?? null,
-      reconcileError: evt.reconcile_error ?? null,
-      draft: structuredClone(evt.spec),
-      reconciling: false,
-    },
-    confirmation: null,     // a new proposal supersedes the confirmed one
-    confirmErrors: [],
-    execution: null,
-    reported: false,
-  }))
+  const onSpec = (evt: SpecEvent) => setState(s => {
+    const plan = s.bridge.messages.findLast(m => m.plan)?.plan
+    const step = plan?.steps.find(item => item.status === 'proposed')
+    return {
+      cardMessage: s.bridge.messages.length - 1,
+      archived: s.proposal ? [...s.archived, { message: s.cardMessage, proposal: s.proposal,
+        execution: s.execution, confirmation: s.confirmation }] : s.archived,
+      proposal: {
+        ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
+        spec: evt.spec,
+        card: evt.card,
+        errors: evt.errors ?? [],
+        reconcile: evt.reconcile ?? null,
+        reconcileError: evt.reconcile_error ?? null,
+        draft: structuredClone(evt.spec),
+        reconciling: false,
+      },
+      confirmation: null,     // a new proposal supersedes the confirmed one
+      confirmErrors: [],
+      execution: null,
+      reported: false,
+    }
+  })
 
   /* The designer's message, with the model items picked in it (bridge side only: the
      comparison has no model to check them against, and gets the text as typed). */
@@ -424,6 +466,12 @@ export function createTaskFlow(deps: FlowDeps) {
     push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
     controller = new AbortController()
     await consume('bridge', withMode({ execution: s.execution, session_id: s.bridge.sessionId }), onSpec)
+    const current = getState()
+    if (s.proposal?.planStep && current.proposal === s.proposal && !current.proposal.ended
+        && current.execution === s.execution) {
+      // No plan transition acknowledged this result. Retry the report without running the tool again.
+      setState({ reported: false })
+    }
   }
 
   async function run() {

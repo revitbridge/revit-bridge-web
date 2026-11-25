@@ -27,7 +27,7 @@ def test_usage_routes_keep_unknown_unknown(make_client, local_env):
     assert one.json()["session_id"] == "s2"
     assert [(r["turn"], r["round"], r["input"], r["output"]) for r in one.json()["items"]] == [(1, 1, None, 7), (2, 1, 50, 3)]
     assert set(one.json()["items"][0]) == {"session_id", "turn", "round", "role", "model", "input", "output",
-                                           "cache_read", "cache_write", "ms", "created_at", "run_label", "mode"}
+                                           "cache_read", "cache_write", "ms", "created_at", "run_label", "mode", "plan_id", "step_id"}
     assert one.json()["items"][0]["mode"] is None            # recorded without a mode
     assert client.get("/api/usage", params={"session_id": "nope"}).json()["items"] == []
     assert client.get("/api/usage").status_code == 422
@@ -39,6 +39,7 @@ def test_usage_routes_keep_unknown_unknown(make_client, local_env):
     # One call without an input count makes the run's input unknown, not 50.
     assert (b["calls"], b["input"], b["output"], b["cache_read"], b["cache_write"]) == (2, None, 10, None, None)
     assert a["first_at"] <= a["last_at"]
+    assert a["plan_id"] is None and a["step_id"] is None
 
 
 def test_usage_routes_follow_the_logs_admin_rule(make_client, env):

@@ -52,8 +52,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   variant of the roles for measuring, `ROLES_ANALYST` (`off` / `on`) the default mode (`WebSettings`);
   `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
-  prompt from the package with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all eight
-  tools. A request with `bridge: false` uses the baseline prompt and no tools;
+  prompt from the package with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all nine
+  tools. An active plan uses the same configured model to review the current step and prepare the next card.
+  A request with `bridge: false` uses the baseline prompt and no tools;
   `backend/roles.py` the role table, the route -> tools map (`ROUTE_TOOLS`, `SUPERVISOR_TOOLS`; a call
   outside it is `tool_not_offered`, never run), the hand-offs (`analyst_message`, `planner_message`,
   `retry_message`, `supervisor_message`), the parsing of the analyst's and the supervisor's JSON
@@ -64,8 +65,8 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   everything a model or the session gets of a result (`clip`, `execution_summary`,
   `supervisor_message`: `MESSAGE_KEEP` = the one loop's `EXECUTION_KEEP`) and the session's open
   task (`RoleTask`, `next_task`: only a `tool` routing opens one);
-  `backend/api/model_tools.py` the six read-only tools, `propose_spec` (saved tools only) and
-  `ask_designer`. The last tool ends the turn with an inline `questions` event. An optional
+  `backend/api/model_tools.py` provides the six read-only tools, `set_plan`, `propose_spec` (saved tools
+  only) and `ask_designer`. The last tool ends the turn with an inline `questions` event. An optional
   `answers` field in the next chat request submits the active form. The host validates and labels
   these answers before handing them to the planner. Typed messages follow ordinary routing;
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
