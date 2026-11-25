@@ -27,7 +27,8 @@ _NUMBER = re.compile(r"(?<![a-zA-Z0-9_.+-])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+
 _UNIT = re.compile(r"\s*(毫米|厘米|公分|公尺|米|英尺|英寸|度|[a-zA-Z]+|[°%'\"])", re.I)
 _UNIT_NAMES = {"毫米": "mm", "厘米": "cm", "公分": "cm", "米": "m", "公尺": "m",
                "英寸": "in", "英尺": "ft", "度": "deg", "°": "deg", "'": "ft", '"': "in"}
-_FIELD_NAMES = {"height": ("墙高", "高度"), "width": ("宽度",), "length": ("长度",),
+_FIELD_NAMES = {"height": ("墙高", "墙体高度", "墙高度", r"(?<!\w)高度"),
+                "width": (r"(?<!\w)宽度",), "length": (r"(?<!\w)长度",),
                 "sill_height": ("窗台高度", "窗台高")}
 
 
@@ -69,7 +70,8 @@ def _text_supports(binding, text, quote, parameter_type, unit, *, answer_label=F
                 if _UNIT_NAMES.get(symbol, symbol) != (unit or "").casefold():
                     continue
                 suffix = suffix[stated.end():]
-            if suffix and not re.match(r"[\s,，。;；.!?、)\]]", suffix):
+            suffix = suffix.lstrip()
+            if suffix and not re.match(r"[,，。;；.!?、)\]]", suffix):
                 continue
             if not prefix.strip() and not suffix.strip() and (answer_label or stated):
                 return True

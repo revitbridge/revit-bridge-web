@@ -248,7 +248,8 @@ def test_height_requires_provenance_regardless_of_source(client, model, revit, s
 
 @pytest.mark.parametrize("words,height,ok", [("墙高3100", 3100, True), ("3100mm", 3100, True),
                                              ("高度 3 米", 3000, False), ("高度 3 米", 3, False),
-                                             ("宽度3100mm", 3100, False)])
+                                             ("宽度3100mm", 3100, False), ("窗台高度3100", 3100, False),
+                                             ("高度 3 千米", 3, False)])
 def test_spoken_dimensions_match_the_declared_unit(words, height, ok):
     from types import SimpleNamespace
     from backend.api.auto_run import _supported
