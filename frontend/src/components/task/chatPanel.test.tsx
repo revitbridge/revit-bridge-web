@@ -3,7 +3,7 @@
    is replaced by a stub that keeps the props it was given (no browser needed). */
 
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '../../types/api'
 import type { Mention } from '../../types/hostv2'
 import type { MentionInputProps } from '../hostv2/mention'
@@ -31,6 +31,9 @@ function render(transcript: Transcript, props: Partial<Parameters<typeof ChatPan
 }
 
 const empty: Transcript = { messages: [], sessionId: null, streaming: false }
+
+beforeEach(() => vi.stubGlobal('navigator', { languages: ['en-US'] }))
+afterEach(() => vi.unstubAllGlobals())
 
 describe('ChatPanel and the mention input', () => {
   it('the input is the mention input, fed by the host, off while a turn streams', () => {

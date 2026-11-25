@@ -25,7 +25,8 @@ export interface MentionInputProps {
 }
 
 export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandidates,
-  disabled = false, placeholder = 'Write a message. Type @ to mention a model item.', invalid = [] }: MentionInputProps) {
+  disabled = false, placeholder, invalid = [] }: MentionInputProps) {
+  const zh = browserLanguage() === 'zh'
   const [controller] = useState(() => new MentionController(value, mentions,
     { onChange, onSubmit, fetchCandidates }, disabled))
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
@@ -54,7 +55,7 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
     const prefix = state.text.slice(index === 0 ? 0 : spans[index - 1].end, span.start)
     const isInvalid = invalid.some(item => item.kind === span.mention.kind && item.id === span.mention.id)
     return [prefix, <span key={span.index} className={`mention-tag${isInvalid ? ' is-invalid' : ''}`}
-      title={isInvalid ? 'This model item is no longer available.' : undefined}>
+      title={isInvalid ? (zh ? '这个模型项已不可用。' : 'This model item is no longer available.') : undefined}>
       {state.text.slice(span.start, span.end)}
     </span>]
   })
@@ -81,9 +82,9 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
       <div className="mention-editor">
         <div ref={backdrop} className="mention-backdrop" aria-hidden="true">{highlighted}{'\n'}</div>
         <textarea ref={input} className="mention-textarea" value={state.text}
-          role="combobox" aria-label="Message" aria-autocomplete="list" aria-controls={state.menu ? listId : undefined}
+          role="combobox" aria-label={zh ? '消息' : 'Message'} aria-autocomplete="list" aria-controls={state.menu ? listId : undefined}
           aria-expanded={Boolean(state.menu)} aria-activedescendant={state.menu && hasActive ? `${id}-option-${state.active}` : undefined}
-          aria-describedby={`${id}-hint`} placeholder={placeholder} disabled={disabled} rows={3}
+          aria-describedby={`${id}-hint`} placeholder={placeholder ?? (zh ? '输入消息。输入 @ 引用模型项。' : 'Write a message. Type @ to mention a model item.')} disabled={disabled} rows={3}
           onChange={event => controller.editNative(event.currentTarget.value, selectionOf(event.currentTarget))}
           onSelect={event => syncSelection(controller, event.currentTarget)}
           onKeyDown={event => handleKeyDown(controller, event)}
@@ -108,10 +109,10 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
           />
       </div>
       <div className="mention-hint" id={`${id}-hint`}>
-        Enter to send. Shift+Enter for a new line. Type @ to select a model item.
-        {invalidHere && <span className="mention-invalid-note"> Some model items are unavailable. Remove or replace the marked tags.</span>}
-        {dropsUnrepresentable && <span className="mention-invalid-note"> Names with line breaks cannot be represented as tags. Remove or rename those model items.</span>}
-        {dropsMissing && <span className="mention-invalid-note"> Some selected model items were not found in the text and were removed.</span>}
+        {zh ? '按 Enter 发送，Shift+Enter 换行。输入 @ 选择模型项。' : 'Enter to send. Shift+Enter for a new line. Type @ to select a model item.'}
+        {invalidHere && <span className="mention-invalid-note">{zh ? '部分模型项已不可用，请移除或替换标记的标签。' : ' Some model items are unavailable. Remove or replace the marked tags.'}</span>}
+        {dropsUnrepresentable && <span className="mention-invalid-note">{zh ? '名称中含换行的模型项无法作为标签插入，请移除或重命名。' : ' Names with line breaks cannot be represented as tags. Remove or rename those model items.'}</span>}
+        {dropsMissing && <span className="mention-invalid-note">{zh ? '部分已选模型项在文本中找不到，已移除。' : ' Some selected model items were not found in the text and were removed.'}</span>}
       </div>
       <MentionSuggestions state={state} controller={controller} id={id} listRef={list} focusInput={() => input.current?.focus()} />
     </div>
@@ -145,7 +146,7 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
         {item.label || item.name}{checking && item.name && ' #' + item.id}</span>
       <span className="mention-item-detail">{item.summary || item.detail}</span>
       {item.kind !== 'category' && hasLineBreak(item.name ?? '') &&
-        <span className="mention-item-detail">Names with line breaks cannot be inserted as tags.</span>}
+        <span className="mention-item-detail">{zh ? '名称中含换行，无法作为标签插入。' : 'Names with line breaks cannot be inserted as tags.'}</span>}
     </button>
   }
   return (
@@ -156,7 +157,7 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
           {zh ? '插入所选' : 'Insert selected'} ({state.checked.length})</button>}
         {filter && <button type="button" onClick={() => controller.filterCategory('', '')}>
           {menu.mode === 'items' && menu.categoryLabel || categoryName(filter)} ×</button>}
-        {!!autoCategories.length && <button type="button" title={zh ? '清除触发类别筛选的搜索' : 'Clear the search that matched these categories'}
+        {!!autoCategories.length && <button type="button" title={zh ? '移除类别关键词' : 'Remove the matching category terms'}
           onClick={() => controller.clearMatched()}>{autoCategories.map(categoryName).join(' / ')} ×</button>}
       </div>
       {menu.mode === 'items' && (menu.kind === 'type' || checking) && !!candidates?.facets?.length &&
@@ -165,7 +166,7 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
             onClick={() => controller.filterCategory(filter === f.category ? '' : f.category, f.label)}>
             {f.label} ({f.count})</button>)}
         </div>}
-      <div ref={listRef} className="mention-options" id={id + '-candidates'} role="listbox" aria-label="Mention candidates"
+      <div ref={listRef} className="mention-options" id={id + '-candidates'} role="listbox" aria-label={zh ? '可选模型项' : 'Mention candidates'}
         aria-multiselectable={checking || undefined} onScroll={event => {
           const list = event.currentTarget
           if (!state.error && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) controller.loadMore()

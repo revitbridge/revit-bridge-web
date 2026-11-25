@@ -9,7 +9,16 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 The chat picker can insert multiple elements from the current Revit selection with stable IDs.
 Type searches accept partial words, spelling variants and category aliases across categories.
 Category filters show counts, and scrolling loads more results. Each message accepts up to 20
-distinct picks. Confirmation rechecks bound elements in the open document, even after deselection.
+distinct picks. Clearing an inferred category retains the other search words.
+`GET /mentions` accepts `offset` and `source=selection` for element picks. All kinds return 422
+for more than eight distinct search terms. With a query and no category, `kind=type` returns matching
+types. Responses include `offset`, `facets`, `category_matched` and, for partial counts,
+`facets_partial`. Element rows include `summary`, `level` and `category_label`.
+Confirmation rechecks each bound element's category, family and type name, even after deselection.
+Multi-ID evidence must match the bound ID set. Changed or missing elements require a new pick.
+Host-generated reports follow the browser language. The English confirmation button reads
+`Confirm and run · 确认并执行`. Host-marker checks compare case-folded Unicode letters and digits
+after compatibility decomposition, including in model names shown to the planner.
 The benchmark covers walls of a chosen type, walls from selected elements and windows positioned
 along a wall. It checks each proposed binding against the model item picked for that run.
 

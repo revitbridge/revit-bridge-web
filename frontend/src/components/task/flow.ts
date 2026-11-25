@@ -161,7 +161,7 @@ export function canConfirm(s: TaskState): boolean {
 
 export function confirmLabel(execution?: ExecutionResult | null, errors: SpecError[] = []): string {
   const retry = Boolean(execution || errors.length)
-  return browserLanguage() === 'zh' ? (retry ? '重试执行' : '确认并执行') : (retry ? 'Retry execution' : 'Confirm and run')
+  return browserLanguage() === 'zh' ? (retry ? '重试执行' : '确认并执行') : (retry ? 'Retry execution' : 'Confirm and run · 确认并执行')
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>

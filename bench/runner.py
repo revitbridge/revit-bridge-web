@@ -1,6 +1,6 @@
 """Drive a running host over HTTP the way the page does.
 
-By default only ``POST /api/chat`` is called (plus the read-only ``GET /config.json``,
+By default only ``POST /api/chat`` is called (plus the read-only bridge health and catalogue, ``GET /config.json``,
 ``GET /api/usage/runs`` and, for a task that picks model items by name,
 ``GET /api/v1/bridge/mentions``): when the model's spec is accepted, a fixed execution
 result (the task's own ``execution``, else the run's fixture) goes back through
@@ -472,6 +472,23 @@ def host_features(client: httpx.Client, base: str) -> dict | None:
         return None
 
 
+def host_catalogue(client: httpx.Client, base: str) -> dict:
+    """Measure the target host, including its installed user packs. Older hosts may omit either value."""
+    def read(path):
+        try:
+            response = client.get(base.rstrip("/") + "/api/v1/bridge/" + path)
+            check_status(response)
+            return response.json()
+        except (HostError, httpx.HTTPError, ValueError):
+            return None
+
+    health = read("revit-health")
+    tools = read("tools")
+    version = health.get("bridge_version") if isinstance(health, dict) else None
+    return {"revit_bridge_version": version if isinstance(version, str) else None,
+            "tool_count": len(tools) if isinstance(tools, list) else None}
+
+
 def run_labels(label: str, repeat: int) -> list[str]:
     return [f"{label}-{index}" for index in range(1, repeat + 1)]
 
@@ -506,7 +523,7 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
         "version": 2, "label": label, "base_url": base, "repeat": repeat,
         "mode": "execute" if execute else "synthetic",
         "skip_requires": sorted(set(skip_requires)), "include_placeholder_ids": include_placeholder_ids,
-        "host": {"features": features},
+        "host": {"features": features, **host_catalogue(client, base)},
         "chat_mode": mode,
         "chat": chat_mode(features, runs),
         "feedback_policy": FEEDBACK_ONCE if execute else FEEDBACK_FOLLOWS,

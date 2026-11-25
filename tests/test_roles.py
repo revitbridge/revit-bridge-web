@@ -173,6 +173,31 @@ def test_route_query_runs_the_planner_with_the_read_tools_only(revit, client, mo
         USAGE_SHAPES[shape][1][:2] for shape in ("deepseek", "openai", "gemini")]
 
 
+def test_workbench_instruction_requires_the_exact_link():
+    assert f"with exactly this Markdown link: {WORKBENCH_LINK}" in chat_module.WORKBENCH_LINE
+
+
+@pytest.mark.parametrize("verdict, execution, phrase", [
+    ("done", {"success": True, "validation": {"passed": False, "checks": [{"name": "rows", "passed": False}]}},
+     "rows (未通过)"),
+    ("done", {"refused": True}, "Revit 工具拒绝了输入"),
+    ("done", {"success": False, "evidence_id": "e"}, "Revit 未报告执行成功"),
+    ("retry", {"success": True}, "Revit 已报告成功"),
+    ("retry", {"success": False, "evidence_id": "e"}, "仍未成功"),
+])
+def test_chinese_supervisor_reports(verdict, execution, phrase):
+    outcome = roles.enforce(roles.Verdict(verdict, "报告", fix="建议"), execution, roles.MAX_RETRIES, chinese=True)
+    assert outcome.verdict == "ask" and phrase in outcome.report and "？" in outcome.question
+
+
+def test_chinese_unreadable_supervisor_report():
+    output = roles.fallback_verdict({"success": False, "error": "bad", "refused": True, "evidence_id": "ev-7",
+                                     "validation": {"validator": "rows", "passed": False}}, chinese=True)
+    for part in ("未能读取监督员回复", "执行成功：false", "错误：bad", "工具已拒绝执行", "校验器 rows：未通过", "证据：ev-7"):
+        assert part in output.report
+    assert output.question == "接下来要怎么做？"
+
+
 def test_route_tool_proposes_and_the_supervisor_reports(revit, client, model):
     session_id = wall_turn(client, model)
     planner = model.requests_of("planner")[0]

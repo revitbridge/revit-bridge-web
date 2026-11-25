@@ -190,7 +190,7 @@ INSTRUCTIONS = {"code": False, "mentions": True}
 # does not exist yet is made. The link is the workbench page's path as a relative Markdown
 # link, which the chat renders as a link.
 WORKBENCH_LINE = (
-    f"- When no tool fits, describe it and link to {WORKBENCH_LINK} to try and save it for list_tools. "
+    f"- When no tool fits, describe it with exactly this Markdown link: {WORKBENCH_LINK} to try and save it for list_tools. "
     "In form answers, other: true marks the designer's own words."
 )
 
@@ -844,6 +844,18 @@ def quote_marked_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=True).replace("(", r"\u0028")
 
 
+def selection_block(items: list[dict]) -> str:
+    """Keep marked model names as JSON string literals, including normalized lookalikes."""
+    def escape_marked(match: re.Match) -> str:
+        literal = match.group()
+        name = json.loads(literal)
+        if not has_host_marker(name):
+            return literal
+        return quote_marked_json(name).replace("h", r"\u0068").replace("H", r"\u0048")
+
+    return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, mention_block(items, MENTION_BLOCK_LANGUAGE))
+
+
 def prefers_chinese(accept_language: str) -> bool:
     """Negotiate the two sets of host labels using the browser's language preferences."""
     best = 0.0
@@ -963,7 +975,10 @@ async def chat(req: ChatRequest, request: Request,
         picks = await check_mentions(req.mentions)
         session.remember_picks(scope, picks["resolved"])
         session.forget_picks(scope, picks["not_found"])
-        block = mention_block(picks["resolved"], MENTION_BLOCK_LANGUAGE)
+        block = selection_block(picks["resolved"])
+        if any(item["kind"] == "element" for item in picks["resolved"]):
+            block += ("\nFor element_ids use a comma-separated string of selected element IDs and evidence "
+                      "mention:element#<id>[,<id>...] with the same IDs.")
         if block:
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):

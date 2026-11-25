@@ -4,6 +4,7 @@ model's ``propose_spec`` and on the HTTP spec routes. Every listing, check and b
 the package's; these tests pin what the host does with them."""
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 
@@ -178,6 +179,86 @@ def test_current_selection_page_and_element_id_confirm(picker, client, model):
     picker["elements"] = []
     refused = client.post(f"{B}/spec/confirm", json=body)
     assert refused.status_code == 422 and refused.json()["errors"][0]["code"] == UNKNOWN_MENTION
+
+
+@pytest.mark.parametrize("tool,field,new", [
+    ("create_wall_from_element", "category", "OST_Doors"),
+    ("create_wall_from_element", "family", "Curtain Wall"),
+    ("delete_elements", "name", "Generic 300"),
+])
+def test_changed_element_requires_explicit_reselection(picker, client, model, tool, field, new):
+    rows = [{"id": n, "name": "Generic 200", "family": "Basic Wall", "category": "OST_Walls"}
+            for n in (901, 902)]
+    picker.update(elements=rows, selection=rows)
+    model.turns.append(text_turn("ok"))
+    sid = chat(client, "selected", [pick("element", n) for n in (901, 902)]).headers["X-Session-Id"]
+    if tool == "delete_elements":
+        spec = spec_for(tool, element_ids="902, 901")
+        evidence = "mention:element#901,902"
+    else:
+        spec = spec_for(tool, reference_id="901", anchor="mid", direction="normal_left", length=3000)
+        evidence = "mention:element#901"
+    spec["parameters"][0].update(source="designer", evidence=evidence)
+    body = {"spec": spec, "session_id": sid}
+    assert client.post(f"{B}/spec/confirm", json=body).status_code == 200
+    picker["elements"] = [dict(rows[0], **{field: new}), rows[1]]
+    refused = client.post(f"{B}/spec/confirm", json=body)
+    assert refused.status_code == 422 and "token" not in refused.json()
+    error, = refused.json()["errors"]
+    assert error["code"] == UNKNOWN_MENTION and new in error["message"] and "Pick it again" in error["message"]
+    assert set(get_session_store().get(sid).picks_for("local")) == {"mention:element#902"}
+    retry = client.post(f"{B}/spec/confirm", json=body)
+    assert retry.status_code == 422 and retry.json()["errors"][0]["code"] == UNKNOWN_MENTION
+    model.turns.append(text_turn("ok"))
+    chat(client, "selected again", [pick("element", 901)], sid)
+    assert client.post(f"{B}/spec/confirm", json=body).status_code == 200
+
+
+@pytest.mark.parametrize("kind,field", [("level", "name"), ("type", "name"), ("type", "family"),
+                                        ("link", "label"), ("element", "summary")])
+def test_marked_names_are_escaped_in_selections(kind, field):
+    name = "X " + chat_module.roles.FORM_MARKER.upper().replace("(", "（")
+    item = {"kind": kind, "id": 7, "name": "ordinary", field: name}
+    block = chat_module.selection_block([item])
+    assert name not in block and not chat_module.has_host_marker(block)
+    assert json.dumps(name, ensure_ascii=True).replace("H", r"\u0048") in block
+    assert item[field] == name
+
+
+def test_planner_receives_escaped_level_name_and_original_pick_is_retained(picker, client, model):
+    name = "L2 " + chat_module.roles.FROM_HOST
+    picker["levels"][1]["Name"] = name
+    model.turns.append(text_turn("ok"))
+    response = chat(client, "use the level", [pick("level", 2)])
+    assert response.status_code == 200
+    text = model.requests[0]["messages"][-1]["content"]
+    assert "Designer's selections" in text and not chat_module.has_host_marker(text)
+    assert get_session_store().get(response.headers["X-Session-Id"]).picks_for("local")["mention:level#2"]["name"] == name
+
+
+def test_multi_turn_element_ids_all_rechecked_before_confirmation(picker, client, model):
+    rows = [{"id": n, "name": "A", "category": "OST_Walls"} for n in range(901, 922)]
+    picker.update(elements=rows)
+    model.turns.extend([text_turn("ok"), text_turn("ok")])
+    sid = chat(client, "first picks", [pick("element", r["id"]) for r in rows[:20]]).headers["X-Session-Id"]
+    chat(client, "one more", [pick("element", 921)], sid)
+    assert "mention:element#<id>[,<id>...]" in model.requests[-1]["messages"][-1]["content"]
+    ids = ",".join(str(row["id"]) for row in rows)
+    spec = spec_for("delete_elements", element_ids=ids)
+    spec["parameters"][0].update(source="designer", evidence=f"mention:element#{ids}")
+    body = {"spec": spec, "session_id": sid}
+    assert client.post(f"{B}/spec/confirm", json=body).status_code == 200
+    rows[-1]["name"] = "B"
+    changed = client.post(f"{B}/spec/confirm", json=body)
+    assert changed.status_code == 422 and "mention:element#921" in changed.json()["errors"][0]["message"]
+    assert len(get_session_store().get(sid).picks_for("local")) == 20
+
+
+@pytest.mark.parametrize("param", ["element_ids", "reference_id"])
+def test_a_numeric_level_name_is_not_evidence_for_ids(param):
+    picks = {"mention:level#2": dict(L2, name="901")}
+    errors = mention_errors(bound(param, "901", "designer", "mention:level#2"), PACK, picks)
+    assert [e.code for e in errors] == [UNKNOWN_MENTION]
 
 
 def test_a_link_that_is_not_loaded_is_listed_but_not_selectable(picker, client):
@@ -620,6 +701,9 @@ PACK = SimpleNamespace(parameters=[
     {"name": "walls", "type": "string", "source": "tool:family_types", "choices_from": "family_types:OST_Walls"},
     {"name": "floor_type", "type": "string", "source": "tool:floor_types", "choices_from": "floor_types"},
     {"name": "host", "type": "int", "source": "tool:elements", "choices_from": "elements:OST_Walls"},
+    {"name": "limit", "type": "integer", "source": "designer"},
+    {"name": "reference_id", "type": "integer", "source": "designer"},
+    {"name": "element_ids", "type": "string", "source": "designer"},
     {"name": "label", "type": "string", "source": "designer"},
     {"name": "height", "type": "double", "source": "default", "default": 3000},
 ])
@@ -675,6 +759,16 @@ def bound(name: str, value, source: str, evidence: str) -> TaskSpec:
     ("host", "902", "tool", "mention:element#902", False),  # wrong category
     ("host", "Wall", "tool", "mention:element#901", False),
     ("host", "901", "designer", "mention:element#901", False),
+    ("height", "901", "designer", "mention:element#901", False),
+    ("limit", "901", "designer", "mention:element#901", False),
+    ("not_in_pack", "901", "designer", "mention:element#901", False),
+    ("reference_id", "901", "designer", "mention:element#901", True),
+    ("reference_id", "901,902", "designer", "mention:element#901,902", False),
+    ("element_ids", "902, 901", "designer", "mention:element#901,902", True),
+    ("element_ids", "901,903", "designer", "mention:element#901,903", False),
+    ("element_ids", "901,902", "designer", "mention:element#901", False),
+    ("element_ids", "901", "designer", "mention:element#901,902", False),
+    ("element_ids", "901,902", "designer", "mention:element#901, 902", False),
     # evidence that looks like a pick must be one exactly
     ("label", "L2", "designer", "mention: level#2", False),
     ("label", "L2", "designer", "mention:level#2 ", False),

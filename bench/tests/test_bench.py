@@ -80,6 +80,10 @@ class FakeHost:
             if isinstance(self.runs, int):
                 return httpx.Response(self.runs, json={"error": "admin_required", "message": "admin token"})
             return httpx.Response(200, json={"items": self.runs})
+        if request.url.path == "/api/v1/bridge/revit-health":
+            return httpx.Response(200, json={"bridge_version": "0.10.0"})
+        if request.url.path == "/api/v1/bridge/tools":
+            return httpx.Response(200, json=[{"name": "query_levels"}])
         if request.url.path == "/config.json":
             self.other.append(request)
             return httpx.Response(200, json={"features": {"mode": "local"}})
@@ -273,6 +277,7 @@ def test_query_needs_successful_read_tool_and_no_accepted_spec(tool_name):
 
 @pytest.mark.parametrize("tool_name,correct", [
     ("query_levels", True), ("query_model_stats", True), ("count_by_level", True), ("list_types", True),
+    ("list_elements", True), ("get_element_geometry", True), ("get_element_parameters", True),
     ("elements_in_link", True), ("create_wall", False), ("create_level", False), ("move_elements", False),
 ])
 def test_a_query_answered_with_a_read_only_pack_counts(tool_name, correct):
@@ -702,7 +707,7 @@ def test_cli_run_writes_bench_results_in_the_current_directory(cli_host, tmp_pat
                  "--tasks", str(cli_host["tasks"]), "--execution-fixture", str(fixture)]) == 0
     result = json.loads((tmp_path / "bench-results" / "sample.json").read_text(encoding="utf-8"))
     assert result["version"] == 2 and result["mode"] == "synthetic" and result["repeat"] == 1
-    assert result["host"]["features"] == {"mode": "local"}
+    assert result["host"] == {"features": {"mode": "local"}, "revit_bridge_version": "0.10.0", "tool_count": 1}
     assert cli_host["host"].requests[1][0]["execution"] == {"success": True, "result": "fixture"}
     assert cli_host["options"][0]["trust_env"] is False
     out = capsys.readouterr()
@@ -1043,6 +1048,20 @@ def test_cli_mode_and_confirm(cli_host, tmp_path, capsys):
     for wrong in (["--mode", "fast"], ["--confirm", "always"]):
         with pytest.raises(SystemExit):
             cli.build_parser().parse_args(["run", "--label", "x", *wrong])
+
+
+def test_compare_notes_catalogue_changes(tmp_path, capsys):
+    paths = []
+    for version, count in (("0.9.1", 22), ("0.10.0", 40)):
+        result = results(summary_task())
+        result["host"] = {"revit_bridge_version": version, "tool_count": count}
+        path = tmp_path / f"{version}.json"
+        path.write_text(json.dumps(result), encoding="utf-8")
+        paths.append(path)
+    assert main(["compare", *map(str, paths)]) == 0
+    out = capsys.readouterr().out
+    assert "NOTE: revit_bridge version differs: before 0.9.1, after 0.10.0." in out
+    assert "NOTE: tool count differs: before 22, after 40." in out
 
 
 def test_compare_notes_a_different_confirm_policy(tmp_path, capsys):

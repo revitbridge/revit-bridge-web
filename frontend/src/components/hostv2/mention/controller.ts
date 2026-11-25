@@ -348,9 +348,30 @@ export class MentionController {
     const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, prefix)
     this.commit(edited.text, edited.spans, edited.caret, null)
   }
-  clearMatched() {
-    // The package inferred the categories from this search text; clear it to browse all categories.
-    this.pickKind('type')
+  async clearMatched() {
+    const menu = this.state.menu
+    if (menu?.mode !== 'items' || menu.kind !== 'type' || !this.state.candidates?.category_matched?.length) return
+    const generation = this.request
+    // The listing names the inferred categories, not the words that matched. Ask the
+    // same picker about ambiguous terms on removal, keeping alias rules in the package.
+    const words = menu.query.match(/[\u3400-\u9fff]+|[^\u3400-\u9fff\s]+/gu) ?? []
+    const terms = [...new Set(words.map(word => word.toLowerCase()).filter(word => !/^\d+$/.test(word)))]
+    const remove = new Set<string>()
+    try {
+      for (const word of terms) {
+        if (terms.length === 1) remove.add(word)
+        else {
+          const page = await this.callbacks.fetchCandidates('type', { q: word })
+          if (generation !== this.request) return
+          if (page.category_matched?.length) remove.add(word)
+        }
+      }
+      const query = words.filter(word => !remove.has(word.toLowerCase())).join(' ')
+      const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, '@type:' + query)
+      this.commit(edited.text, edited.spans, edited.caret, null)
+    } catch (error) {
+      if (generation === this.request) this.publish({ error: error instanceof Error ? error.message : String(error) })
+    }
   }
   backToCategories() {
     if (this.state.menu?.mode !== 'items' || this.state.menu.kind !== 'type' || this.state.composing || this.state.disabled) return

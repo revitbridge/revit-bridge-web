@@ -387,6 +387,11 @@ def command_compare(args: argparse.Namespace) -> int:
     rows = compare_runs(before, after)
     print_comparison(rows)
     code = compare_exit_code(rows)
+    for field, label in (("revit_bridge_version", "revit_bridge version"), ("tool_count", "tool count")):
+        old, new = (run.get("host", {}).get(field) for run in (before, after))
+        if old != new:
+            print(f"NOTE: {label} differs: before {old if old is not None else 'unknown'}, "
+                  f"after {new if new is not None else 'unknown'}.")
     policies = feedback_policy(before), feedback_policy(after)
     if policies[0] != policies[1]:
         # A task whose report was sent back is measured over more reports in one of the two runs.

@@ -6,6 +6,9 @@ import { handleKeyDown, handlePaste, type KeyDownLike, type TextareaLike } from 
 import MentionInput, { MentionSuggestions } from './MentionInput'
 import { applyNativeEdit, matchingKinds, mentionLabel, mentionSpans, menuAt, normalizeSelection, removeMentionAt, replaceRange, serialize } from './model'
 
+beforeEach(() => vi.stubGlobal('navigator', { languages: ['en-US'] }))
+afterEach(() => vi.unstubAllGlobals())
+
 const level: Mention = { kind: 'level', id: 10, name: 'Level 1' }
 const sameName: Mention = { ...level, id: 11 }
 const at = (end: number) => ({ start: end, end, direction: 'none' as const })
@@ -826,7 +829,8 @@ describe('V2 search, selection and paging', () => {
     expect(popup(controller)).toContain('Walls ×')
     controller.clearMatched()
     await vi.advanceTimersByTimeAsync(200)
-    expect(fetch).toHaveBeenLastCalledWith('type', { q: '' })
+    expect(fetch).toHaveBeenLastCalledWith('type', { q: '200' })
+    expect(controller.getSnapshot().text).toBe('@type:200')
     input(controller, '@type:200')
     await vi.advanceTimersByTimeAsync(200)
     controller.filterCategory(walls.category, walls.label)

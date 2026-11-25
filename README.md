@@ -603,15 +603,20 @@ binding whose evidence starts with `mention` against the picks the package verif
 session for the device the request drives: the evidence exactly `mention:<level|type|link|element>#<id>`
 (lower case, no spaces), the kind the parameter takes as its pack declares it (`levels`: a level;
 `floor_types`, `family_types[:OST_*]`: a type, of that category when both name one; a link only
-where the pack names no kind, and an element for `elements[:OST_*]`), the value (a level or
+where the pack names no kind, and an element for `elements[:OST_*]`, an integer ID parameter,
+or the string parameter `element_ids`), the value (a level or
 type name, a link label or name, or an element ID as a decimal string) and the source (`tool` for a pack parameter whose
-value comes from the model, else `designer`); any other is `unknown_mention` naming the parameter.
+value comes from the model, else `designer`). For `element_ids`, use `mention:element#901,902`
+with the same set of decimal IDs in the value. Each ID must have been selected in this session.
+An invalid binding returns `unknown_mention` naming the parameter.
 So `POST /spec/reconcile` and `POST /spec/confirm` take the chat's `session_id` (the
 `X-Session-Id` of `/api/chat`); a binding to a pick with no session, another session's or another
 device's is 422 `invalid_spec` with those `errors`. `POST /spec/confirm` also reads the bound picks
-again from the open model before it issues a token (one `resolve_mentions`). An element can be
-deselected between messages. A deleted element or a changed binding is `unknown_mention` too (the session takes the new reading and lets the gone one
-go); no Revit to ask is 503 `revit_unreachable` (503 `revit_error` when the add-in cannot say, 504
+again from the open model before it issues a token (batches of up to 20 under one timeout). An element can be
+deselected between messages. For each element ID the host compares the category, family and type name
+with the selection-time record. A missing or changed element returns `unknown_mention` and must be picked
+again, including on retry. IDs with identical metadata in different documents cannot yet be distinguished.
+Renamed levels, types and links require a binding to their current name or label. No Revit to ask is 503 `revit_unreachable` (503 `revit_error` when the add-in cannot say, 504
 `revit_timeout` after 15 s). A spec without picks needs no Revit to be confirmed.
 
 The workbench's routes: `POST /check` is the package's `check_code` (compile in Revit, never run;

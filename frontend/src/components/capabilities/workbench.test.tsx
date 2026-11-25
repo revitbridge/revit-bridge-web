@@ -3,7 +3,7 @@
    at a time). */
 
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../App'
 import type { ConfirmResponse, ExecutionResult, ToolDetail } from '../../types/api'
 import type { ToolDraft, WorkbenchApi } from '../../types/hostv2'
@@ -101,6 +101,9 @@ describe('the workbench address', () => {
     expect(html).toContain('<a href="/capabilities/workbench" target="_blank" rel="noopener noreferrer">workbench</a>')
   })
 })
+
+beforeEach(() => vi.stubGlobal('navigator', { languages: ['en-US'] }))
+afterEach(() => vi.unstubAllGlobals())
 
 describe('the page', () => {
   it('shows the note and the workbench; on a cloud host without the admin password, no import and the reason', () => {

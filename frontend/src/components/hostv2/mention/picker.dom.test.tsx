@@ -75,16 +75,43 @@ it('keeps checked identities and the category through scrolling and typing, and 
   expect(submit).toHaveBeenCalledWith(input.value, [91, 93].map(id => ({ kind: 'element', id, name: 'Basic 200' })))
 })
 
-it('shows the inferred category chip and clears its search when clicked', async () => {
+it('shows Chinese picker instructions and caps a selection at 20 distinct elements', async () => {
+  vi.stubGlobal('navigator', { languages: ['zh-CN'] })
+  const rows = Array.from({ length: 21 }, (_, i) => wall(100 + i))
+  const fetch = vi.fn<FetchCandidates>(async kind => ({ kind, total: rows.length, items: rows, truncated: false }))
+  act(() => root.render(<Editor fetch={fetch} submit={vi.fn()} />))
+  const input = container.querySelector('textarea')!
+  expect(input.placeholder).toContain('输入消息')
+  expect(input.getAttribute('aria-label')).toBe('消息')
+  expect(container.textContent).toContain('按 Enter 发送')
+  edit('@')
+  click('取 Revit 当前选择')
+  await debounce()
+  expect(container.querySelector('[role=listbox]')?.getAttribute('aria-label')).toBe('可选模型项')
+  for (const row of rows.slice(0, 20)) click('#' + row.id)
+  const last = [...container.querySelectorAll<HTMLButtonElement>('[role=option]')].at(-1)!
+  expect(last.disabled).toBe(true)
+  expect(container.textContent).toContain('最多引用 20 个')
+  click('#100')
+  expect(last.disabled).toBe(false)
+  click('#120')
+  click('插入所选 (20)')
+  expect(input.value.match(/@element:/g)).toHaveLength(20)
+  expect(input.value).not.toContain('#100')
+  expect(input.value).toContain('#120')
+})
+
+it('shows the inferred category chip and keeps the remaining search words when clicked', async () => {
   const fetch = vi.fn<FetchCandidates>(async (kind, opts) => ({
-    kind, facets, total: 1, truncated: false, category_matched: opts.q ? ['OST_Walls'] : [],
+    kind, facets, total: 1, truncated: false, category_matched: opts.q?.toLowerCase().includes('wal') ? ['OST_Walls'] : [],
     items: [{ ...wall(8), kind: 'type' }],
   }))
   act(() => root.render(<Editor fetch={fetch} submit={vi.fn()} />))
-  edit('@type:wal 200')
+  edit('@type:wal Basic 200')
   await debounce()
   expect(container.querySelector('[role=group]')?.textContent).toContain('Walls (2)')
   click('Walls ×')
   await debounce()
-  expect(fetch).toHaveBeenLastCalledWith('type', { q: '' })
+  expect(container.querySelector('textarea')!.value).toBe('@type:Basic 200')
+  expect(fetch).toHaveBeenLastCalledWith('type', { q: 'Basic 200' })
 })

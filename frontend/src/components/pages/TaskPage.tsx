@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { useStore } from 'zustand'
 import { chatEvents } from '../../api/chat'
+import { browserLanguage } from '../../utils/language'
 import { getConfig } from '../../config'
 import { flowApi } from '../task/api'
 import { currentRequestMode, useChatMode } from '../task/chatMode'
@@ -34,6 +35,7 @@ function stepOf(s: TaskState): number {
 }
 
 export default function TaskPage({ events }: { events?: EventSource }) {
+  const zh = browserLanguage() === 'zh'
   const [flow] = useState(() => flowFor(events))
   const state = useStore(flow.store)
   const chatMode = useChatMode(s => s.mode)
@@ -75,8 +77,9 @@ export default function TaskPage({ events }: { events?: EventSource }) {
                 onTamper={flow.demoTamper} />}
             </>}
             onSend={(t, picked) => flow.send(t, picked)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
-            placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
-            hint="The model sees the snapshot and the packs. It asks what it cannot know, then adds a spec card to its reply. Type @ to pick a level, type, link or selected Revit element. The host verifies each pick against the open model."
+            placeholder={zh ? '例如：在坐标 (3000, 3000) 放一根结构柱。' : 'For example, place a structural column at (3000, 3000).'}
+            hint={zh ? '模型会读取快照和工具包，询问缺少的信息，再在回复中给出任务卡。输入 @ 可选择标高、类型、链接或 Revit 中选中的构件。宿主会逐项与当前模型核对。'
+              : 'The model sees the snapshot and the packs. It asks what it cannot know, then adds a spec card to its reply. Type @ to pick a level, type, link or selected Revit element. The host verifies each pick against the open model.'}
             showTrace
             controls={<ChatModeSelect features={getConfig().features} mode={chatMode} onChange={setChatMode} disabled={busy} />} />
           {state.compare && (

@@ -10,6 +10,8 @@ import { MAX_PICKS } from '../../types/hostv2'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError, request } from '../shared/http'
 
+import { browserLanguage } from '../../utils/language'
+
 const B = '/api/v1/bridge'
 
 /* A listing that hangs would hold Enter in the picker (it waits while candidates load):
@@ -36,9 +38,12 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: MentionOpt
     if (reply.error) throw new Error(reply.message || reply.error)
     return reply
   } catch (e: unknown) {
-    if (controller.signal.aborted || isAbortError(e)) throw new Error(TIMEOUT_MESSAGE)
+    if (controller.signal.aborted || isAbortError(e)) throw new Error(browserLanguage() === 'zh'
+      ? 'Revit 在 10 秒内未响应。可以继续输入，或按 Enter 发送。' : TIMEOUT_MESSAGE)
     if (e instanceof BridgeApiError && e.status === 503) {
-      throw new Error(`Revit is not connected, so there is nothing to pick: ${e.body?.message ?? e.message}`)
+      const reason = e.body?.message ?? e.message
+      throw new Error(browserLanguage() === 'zh' ? `未连接 Revit，无法选择模型项：${reason}`
+        : `Revit is not connected, so there is nothing to pick: ${reason}`)
     }
     throw new Error(getErrorMessage(e))
   } finally {
@@ -65,6 +70,7 @@ export function distinctMentions(mentions: Mention[]): Mention[] {
 /* Why a message cannot be sent with these picks, or null: more than MAX_PICKS different items. */
 export function tooManyPicks(mentions: Mention[]): string | null {
   const count = distinctMentions(mentions).length
+  if (count > MAX_PICKS && browserLanguage() === 'zh') return `已选择 ${count} 个模型项，每条消息最多 ${MAX_PICKS} 个。请移除部分标签后发送。`
   return count > MAX_PICKS
     ? `This message picks ${count} model items; at most ${MAX_PICKS} can go with one message. Remove some tags, then send.`
     : null
@@ -113,13 +119,25 @@ export function unavailableInInput(messages: ChatMessage[], inInput: Mention[]):
   return unavailableMentions(messages).filter(m => inInput.some(p => p.kind === m.kind && p.id === m.id))
 }
 
+const zhReasons: Record<string, string> = {
+  not_found: '模型中找不到此项', not_loaded: '链接尚未加载', timeout: '读取超时',
+  revit_unreachable: '无法连接 Revit', revit_error: 'Revit 读取失败', unresolved: '原因未知',
+}
+
 /* How a sent pick reads on its chip. */
 export function mentionNote(m: SentMention): string {
+  const zh = browserLanguage() === 'zh'
   switch (m.status) {
-    case 'resolved': return 'checked against the model'
-    case 'not_found': return `not used: ${(m.reason ?? 'not_found').replace(/_/g, ' ')}`
-    case 'invalid': return 'not used: not a model item'
-    case 'unresolved': return `not checked: ${(m.reason ?? 'unresolved').replace(/_/g, ' ')}`
-    default: return 'not checked yet'
+    case 'resolved': return zh ? '已与模型核对' : 'checked against the model'
+    case 'not_found': {
+      const reason = m.reason ?? 'not_found'
+      return zh ? `未使用：${zhReasons[reason] ?? reason}` : `not used: ${reason.replace(/_/g, ' ')}`
+    }
+    case 'invalid': return zh ? '未使用：无效的模型项' : 'not used: not a model item'
+    case 'unresolved': {
+      const reason = m.reason ?? 'unresolved'
+      return zh ? `未核对：${zhReasons[reason] ?? reason}` : `not checked: ${reason.replace(/_/g, ' ')}`
+    }
+    default: return zh ? '待核对' : 'not checked yet'
   }
 }

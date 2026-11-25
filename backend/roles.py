@@ -453,8 +453,8 @@ def enforce(verdict: Verdict, execution: dict, retries: int, *, chinese: bool = 
                                  f"Should anything change? (the supervisor suggested: {clip(verdict.fix)})")
                        if verdict.fix else default_question, forced=FORCED_SUCCEEDED)
     if verdict.verdict == RETRY and retries >= MAX_RETRIES:
-        how = " and still did not succeed" if not succeeded else ""
-        note = (f"任务已退回 {MAX_RETRIES} 次，请决定下一步。" if chinese else
+        how = ("，仍未成功" if chinese else " and still did not succeed") if not succeeded else ""
+        note = (f"任务已退回 {MAX_RETRIES} 次{how}，请决定下一步。" if chinese else
                 f"The task was sent back {MAX_RETRIES} times{how}; the host does not send it back again.")
         return Verdict(ASK, f"{clip(verdict.report)}\n\n{note}",
                        question=(f"需要调整什么？上次建议：{clip(verdict.fix)}" if chinese else

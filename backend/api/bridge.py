@@ -89,7 +89,7 @@ from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
-from revit_bridge.mentions import mention_candidates, resolve_mentions
+from revit_bridge.mentions import MAX_MENTIONS, mention_candidates, resolve_mentions
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
 from revit_bridge.revit.probe import check_connection
 from revit_bridge.snapshot import RevitQueryExecutor
@@ -102,7 +102,7 @@ from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 from backend.api import devices as devices_api
 from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
 from backend.config import get_settings
-from backend.mention_check import bound_picks, changed_picks, mention_errors, mention_evidence
+from backend.mention_check import bound_picks, changed_pick, mention_errors, mention_evidence
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 from backend.session import get_session_store
@@ -588,9 +588,10 @@ async def mention_items(
 ):
     """Items the designer can pick in chat: the package's
     ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
-    category?, family?, disabled?, reason?}], total, truncated, offset, facets, category_matched,
-    warnings?}``. An empty type query offers categories. A type search offers matching types;
-    element lists the current selection. A disconnected link is disabled. A
+    category?, family?, disabled?, reason?, summary?, level?, category_label?}], total, truncated,
+    offset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;
+    element lists the current selection with a summary, level and category label. When
+    facets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A
     kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
     reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
     is 503 ``revit_unreachable``. The same device rules as every route here."""
@@ -852,9 +853,9 @@ PICK_RECHECK_TIMEOUT = 15.0
 
 
 async def recheck_picks(spec: TaskSpec, session_id: str | None) -> list:
-    """The spec's picks read again from the open model before a token is issued (one
-    ``resolve_mentions`` call): ``unknown_mention`` for one that is gone or reads under another
-    name now. The session takes the new readings and loses the picks found gone. No pick bound:
+    """The spec's picks read again from the open model before a token is issued (bounded batches
+    under a shared deadline): ``unknown_mention`` for one that is gone or reads under another
+    name now. Changed elements must be selected again. Renamed non-elements take their new names. No pick bound:
     nothing is asked. No Revit: 503 ``revit_unreachable``; an add-in that could not say: 503
     ``revit_error``; no answer within ``PICK_RECHECK_TIMEOUT`` seconds: 504 ``revit_timeout``."""
     session = picks_session(session_id)
@@ -866,10 +867,16 @@ async def recheck_picks(spec: TaskSpec, session_id: str | None) -> list:
                    for _, item in bound}.values())
 
     async def resolve() -> dict:
-        return await resolve_mentions(RevitQueryExecutor(await get_revit_client()), wanted)
+        executor = RevitQueryExecutor(await get_revit_client())
+        fresh = {}
+        # A spec may bind picks accumulated across several chat messages.
+        for start in range(0, len(wanted), MAX_MENTIONS):
+            page = await resolve_mentions(executor, wanted[start:start + MAX_MENTIONS])
+            fresh.update((mention_evidence(item["kind"], item["id"]), item) for item in page["resolved"])
+        return fresh
 
     try:
-        found = await asyncio.wait_for(resolve(), PICK_RECHECK_TIMEOUT)
+        fresh = await asyncio.wait_for(resolve(), PICK_RECHECK_TIMEOUT)
     except TimeoutError:                       # before OSError: TimeoutError is one
         raise ApiError(504, "revit_timeout",
                        f"Revit did not read the picks again within {PICK_RECHECK_TIMEOUT:g}s") from None
@@ -877,10 +884,23 @@ async def recheck_picks(spec: TaskSpec, session_id: str | None) -> list:
         raise revit_unreachable(exc) from None
     except RevitQueryError as exc:
         raise ApiError(503, "revit_error", f"The picks could not be read again: {exc}") from None
-    session.remember_picks(scope, found["resolved"])
-    session.forget_picks(scope, found["not_found"])
-    fresh = {mention_evidence(item.get("kind"), item.get("id")): item for item in found["resolved"]}
-    return changed_picks(bound, fresh)
+    current = session.picks_for(scope)
+    errors = []
+    for binding, selected in bound:
+        key = mention_evidence(selected["kind"], selected["id"])
+        # A concurrent confirmation or a new selection may have replaced this record
+        # during the Revit read. Only update the record that we actually checked.
+        still_selected = current.get(key) is selected
+        now = fresh.get(key) if still_selected else None
+        error = changed_pick(binding, selected, now)
+        if error:
+            errors.append(error)
+        if still_selected:
+            if now is None or (error and selected["kind"] == "element"):
+                session.forget_picks(scope, [selected])
+            elif selected["kind"] != "element":
+                session.remember_picks(scope, [now])
+    return errors
 
 
 def refuse_unknown_mentions(spec: TaskSpec, pack, session_id: str | None) -> None:
@@ -920,7 +940,7 @@ async def confirm_spec(req: ConfirmRequest):
     a parameter bound to a pick that is not one verified in the chat session ``session_id``
     for this device (or not bound as that pick is) among them, code ``unknown_mention``. A
     spec that binds picks has them read again from the open model first (``recheck_picks``):
-    one gone or renamed since is ``unknown_mention`` too; no Revit to ask is 503
+    one gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
     needs no Revit here. The token belongs to the browser session and never enters the model
     context."""

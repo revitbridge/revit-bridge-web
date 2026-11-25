@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage, MentionReport, SentMention } from '../../types/api'
 import type { Mention } from '../../types/hostv2'
 import { MentionController } from '../hostv2/mention/controller'
@@ -34,6 +34,8 @@ function stubHangingFetch() {
   }))
   return calls
 }
+
+beforeEach(() => vi.stubGlobal('navigator', { languages: ['en-US'] }))
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -150,5 +152,9 @@ describe('the picks of a message', () => {
     expect(mentionNote({ ...wall, status: 'invalid', reason: 'invalid' })).toBe('not used: not a model item')
     expect(mentionNote({ ...f2, status: 'unresolved', reason: 'revit_unreachable' })).toBe('not checked: revit unreachable')
     expect(mentionNote({ ...f2, status: 'pending' })).toBe('not checked yet')
+    vi.stubGlobal('navigator', { languages: ['zh-CN'] })
+    expect(mentionNote({ ...mep, status: 'not_found', reason: 'not_loaded' })).toBe('未使用：链接尚未加载')
+    expect(mentionNote({ ...f2, status: 'not_found' })).toBe('未使用：模型中找不到此项')
+    expect(mentionNote({ ...f2, status: 'not_found', reason: 'new_reason' })).toBe('未使用：new_reason')
   })
 })
