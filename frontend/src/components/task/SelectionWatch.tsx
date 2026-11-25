@@ -39,7 +39,7 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
     const stop = () => active.current?.abort()
     window.addEventListener('pagehide', stop)
     return () => { stop(); window.removeEventListener('pagehide', stop) }
-  }, [disabled])
+  }, [])
 
   async function select(current = false) {
     if (active.current || disabled) return
@@ -48,7 +48,9 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
     const session = sessionId ?? draftSession
     const watch = newId()
     const headers = deviceHeaders()
+    const cancelled = zh ? '已取消选择。' : 'Selection cancelled.'
     const cancel = () => {
+      setMessage(cancelled)
       if (!current) void apiFetch(path + '/' + encodeURIComponent(session) + '/' + watch,
         { method: 'DELETE', headers, keepalive: true }).catch(() => {})
     }
@@ -61,7 +63,11 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
         method: 'POST', signal: controller.signal, headers,
         body: JSON.stringify({ session_id: session, watch_id: watch, mode, category: category.trim() || null }),
       })
-      if (controller.signal.aborted || reply.cancelled) return
+      if (controller.signal.aborted) return
+      if (reply.cancelled) {
+        setMessage(cancelled)
+        return
+      }
       if (reply.error === 'unsupported_addin') {
         setFallback(true)
         return
@@ -90,7 +96,7 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
       if (error instanceof BridgeApiError && error.code === 'revit_unreachable')
         setMessage(zh ? '无法连接 Revit。' : 'Revit is unreachable.')
       else if (error instanceof BridgeApiError && error.code === 'watch_in_progress')
-        setMessage(zh ? '此会话已在等待该设备的选择。' : 'A watch is already running for this session and device.')
+        setMessage(zh ? '该设备已在等待选择。' : 'A selection watch is already running on this device.')
       else setMessage(String(error))
     } finally {
       controller.signal.removeEventListener('abort', cancel)

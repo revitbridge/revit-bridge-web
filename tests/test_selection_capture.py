@@ -12,6 +12,7 @@ from revit_bridge import list_host_functions
 from revit_bridge.capabilities import ToolStore
 
 from backend import llm
+from backend.captures import capture_id
 from backend.api import bridge
 from backend.log_store import get_log_store
 from backend.models_file import reset_models
@@ -126,6 +127,9 @@ def test_duplicate_and_cancel_stop_polling(client, revit):
         watching = worker.submit(client.post, WATCH, json=WATCH_ARGS)
         assert polled.wait(3)
         assert client.post(WATCH, json={**WATCH_ARGS, "watch_id": "other"}).status_code == 409
+        other = client.post(WATCH, json={**WATCH_ARGS, "session_id": "other", "timeout_s": .06})
+        assert other.status_code == 409 and "device" in other.json()["message"]
+        client.delete(f"{WATCH}/other/watch")
         client.delete(f"{WATCH}/tab/other")
         assert not watching.done()
         assert client.delete(f"{WATCH}/tab/watch").status_code == 200
@@ -133,6 +137,52 @@ def test_duplicate_and_cancel_stop_polling(client, revit):
     count = len(revit.requests)
     time.sleep(.45)
     assert len(revit.requests) == count
+    focus = [r["params"].get("focus", False) for r in revit.requests if r["method"] == STATE]
+    assert len(focus) >= 2 and focus == [True, *([False] * (len(focus) - 1))]
+
+
+def test_rate_limited_watch_never_polls(make_client, env, revit):
+    env.setenv("CHAT_RATE_LIMIT", "1")
+    with make_client() as client:
+        assert client.post(f"{B}/spec/confirm", json={"spec": {"task": "x"}}).status_code == 422
+        response = client.post(WATCH, json=WATCH_ARGS)
+        assert response.status_code == 429 and response.json()["error"] == "rate_limited"
+        assert not revit.requests
+
+
+@pytest.mark.parametrize("assistant_changed", [True, False])
+def test_watch_only_clears_the_selection_it_started_with(client, revit, monkeypatch, assistant_changed):
+    session = get_session_store().get_or_create()
+    before = {"tool": "select_elements", "count": 1, "ids": ["11"]}
+    after = {**before, "ids": ["22"]}
+    session.assistant_selections["local"] = before
+
+    async def observe(executor, mode, category, timeout_s):
+        if assistant_changed:
+            session.assistant_selections["local"] = after
+        else:
+            session.assistant_selections.clear()  # Designer started a new request during the watch.
+        return {"kind": "element", "items": [{"id": 22}]}
+
+    monkeypatch.setattr(bridge.RevitQueryExecutor, "watch_selection", observe)
+    response = client.post(WATCH, json={**WATCH_ARGS, "session_id": session.session_id})
+    if assistant_changed:
+        assert response.status_code == 409 and response.json()["error"] == "selection_changed"
+        assert session.assistant_selections["local"] == after
+    else:
+        assert response.status_code == 200 and response.json()["items"] == [{"id": 22}]
+
+
+def test_planner_tool_schemas_use_plain_optional_properties(client, model):
+    model.turns.append(text_turn("Ready"))
+    client.post("/api/chat", headers=HEADERS, json={"message": "What tools can I use?"})
+    tools = model.requests[0]["tools"]
+    assert '"anyOf"' not in json.dumps(tools)
+    question = next(t["function"]["parameters"] for t in tools if t["function"]["name"] == "ask_selection")
+    assert set(question["required"]) == {"prompt", "mode"}
+    assert question["properties"]["mode"]["enum"] == ["single", "multiple", "box"]
+    assert question["properties"]["category"]["type"] == "string"
+    assert not any(key in json.dumps(question) for key in ('"default"', '"pattern"', '"null"'))
 
 
 def test_disconnect_cancels_package_coroutine(client, revit):
@@ -195,13 +245,17 @@ def test_ui_and_reader_share_direct_budget_in_auto_mode(client, model, revit, en
     assert get_session_store().get(response.headers["X-Session-Id"]).auto_count == 0
 
 
-@pytest.mark.parametrize("vision", [True, False])
-def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path, caplog, vision):
+def configure_vision(env, tmp_path, vision=True):
     path = tmp_path / "data" / "models.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(ONE_MODEL.replace("W5A_FAKE_MAIN_KEY }", f"W5A_FAKE_MAIN_KEY, vision: {str(vision).lower()} }}"))
     env.setenv("W5A_FAKE_MAIN_KEY", "fake-long-key")
     reset_models()
+
+
+@pytest.mark.parametrize("vision", [True, False])
+def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path, caplog, vision):
+    configure_vision(env, tmp_path, vision)
     native(revit, {"export_view_image_in_revit": lambda args: {"png_base64": PNG, "width": 1, "height": 1, "view_name": "Plan"},
                    "activate_view_in_revit": lambda args: {"view_name": args["name"], "view_type": "Plan", "view_id": 15}})
     assert client.get(f"{B}/host-functions").json() == list_host_functions()
@@ -216,6 +270,8 @@ def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path
     assert PNG not in str([(event, value) for event, value in frames if event != "view_image"])
     assert PNG not in json.dumps(model.requests)
     for attach in (False, True, False):
+        if attach:
+            model.turns.append(tool_turn(("query", {"kind": "levels"})))
         model.turns.append(text_turn("OK"))
         response = client.post("/api/chat", json={"session_id": sid, "message": "Describe the view",
                                                   **({"capture": attachment} if attach else {})})
@@ -224,7 +280,9 @@ def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path
         assert ("vision_unavailable" in response.text) == (attach and not vision)
         assert (PNG in json.dumps(model.requests[-1])) == (attach and vision)
         if attach and vision:
-            parts = model.requests[-1]["messages"][-1]["content"]
+            first, second = [r["messages"] for r in model.requests[-2:]]
+            assert second[:len(first)] == first
+            parts = first[-1]["content"]
             assert parts[1] == {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}
             assert llm.responses_input([{"role": "user", "content": parts}])[0]["content"][1] == {
                 "type": "input_image", "image_url": "data:image/png;base64," + PNG}
@@ -241,6 +299,39 @@ def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path
     for surface in [ledger, caplog.text, get_log_store().query(), get_log_store().calls_of_session(sid),
                     get_session_store().get(sid).history]:
         assert PNG not in str(surface)
+
+
+@pytest.mark.parametrize("surface", ["text", "tool"])
+def test_partial_image_echo_never_reaches_chat_or_logs(client, model, env, tmp_path, caplog, surface):
+    configure_vision(env, tmp_path)
+    model.turns.append(text_turn("Ready"))
+    sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
+    fragment = PNG[39:73]
+    model.turns.append(text_turn(fragment) if surface == "text" else tool_turn(("query", {"kind": fragment})))
+    reply = client.post("/api/chat", json={"message": "Describe", "session_id": sid, "capture": {
+        "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+    assert "Model endpoint echoed the image" in reply.text
+    for value in (reply.text, caplog.text, get_session_store().get(sid).history,
+                  get_log_store().query(), get_log_store().calls_of_session(sid)):
+        assert fragment not in str(value)
+
+
+def test_capture_on_query_answer_skips_analyst_and_uses_full_tool_route(roles_client, roles_model, picker, env, tmp_path):
+    configure_vision(env, tmp_path)
+    select_one(picker)
+    roles_model.script("analyst", json_turn(ROUTING_QUERY))
+    roles_model.script("planner", tool_turn(("ask_selection", {"mode": "single", "prompt": "Choose a wall"})),
+                       text_turn("Ready"))
+    first = roles_client.post("/api/chat", json={"message": "Inspect"})
+    sid = first.headers["X-Session-Id"]
+    form, = events(sse(first.text), "ask_selection")
+    reply = roles_client.post("/api/chat", json={"message": "Use this wall and view",
+        "session_id": sid, "selection_answer": form["ask_id"],
+        "mentions": [{"kind": "element", "id": 93, "document_id": "fake-document"}],
+        "capture": {"capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+    assert reply.status_code == 200 and roles_model.roles == ["analyst", "planner", "planner"]
+    assert "propose_spec" in [t["function"]["name"] for t in roles_model.requests[-1]["tools"]]
+    assert PNG in json.dumps(roles_model.requests[-1]["messages"])
 
 
 @pytest.mark.parametrize("too_wide", [True, False])
@@ -269,3 +360,15 @@ def test_responses_planner_receives_pixels_only_on_the_attached_request(env, key
     first, followup, attached, later = provider.responses_bodies()
     assert attached["input"][-1]["content"][1] == {"type": "input_image", "image_url": "data:image/png;base64," + PNG}
     assert PNG not in json.dumps([first, followup, later])
+
+
+def test_responses_blocks_partial_image_echo_in_tool_arguments(env, keys, tmp_path, provider):
+    fragment = PNG[-37:]
+    provider.replies.extend([reply(message_item("Ready")), reply(call_item("query", {"kind": fragment}, "echo"))])
+    with app_client(env, tmp_path, models_text(main=", api: responses, vision: true")) as client:
+        sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
+        response = client.post("/api/chat", json={"session_id": sid, "message": "Describe", "capture": {
+            "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+        assert "Model endpoint echoed the image" in response.text
+        for value in (response.text, get_log_store().query(), get_session_store().get(sid).history):
+            assert fragment not in str(value)

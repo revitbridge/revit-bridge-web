@@ -565,30 +565,44 @@ async def _disconnected(request: Request):
         pass
 
 
-@router.post("/watch-selection", responses=responses(403, 409, 422, 503))
+def bridge_write_rate_limit(request: Request) -> None:
+    if not confirm_limiter.allow(client_key(request), get_settings().chat_rate_limit):
+        raise ApiError(429, "rate_limited", "Too many requests from this address; try again in a minute")
+
+
+@router.post("/watch-selection", dependencies=[Depends(bridge_write_rate_limit)], responses=responses(403, 409, 422, 429, 503))
 async def watch_selection(req: WatchRequest, request: Request):
     """Observe normal selection on this device. Returns the element mention page (items carry
     document_id and filtered_out counts category exclusions), or a terminal flag: cancelled,
     timed_out or document_changed. An unsupported_addin reply offers the current-selection
     picker. A disconnected Revit returns HTTP 503 revit_unreachable. Only one watch may run
-    for this session/device pair. Disconnecting the HTTP request cancels observation."""
+    per device. Each start counts toward the confirmation rate limit. Disconnecting the
+    HTTP request cancels observation."""
     watches = request.app.state.selection_watches
-    key = (current_scope(), req.session_id)
-    if key in watches and not watches[key][1].done():
-        raise ApiError(409, "watch_in_progress", "A selection watch is already running.")
+    scope = current_scope()
+    if scope in watches:
+        raise ApiError(409, "watch_in_progress", "A selection watch is already running on this device.")
+    session = get_session_store().get(req.session_id)
+    previous = session.assistant_selections.get(scope) if session else None
 
     async def observe():
         executor = RevitQueryExecutor(await get_revit_client())
         return await executor.watch_selection(req.mode, req.category, timeout_s=req.timeout_s)
 
     watch = asyncio.create_task(observe())
-    watches[key] = (req.watch_id, watch)
+    watches[scope] = (req.session_id, req.watch_id, watch)
     disconnected = asyncio.create_task(_disconnected(request))
     try:
         await asyncio.wait((watch, disconnected), return_when=asyncio.FIRST_COMPLETED)
         if disconnected.done() or watch.cancelled():
             return {"cancelled": True}
-        return watch.result()
+        result = watch.result()
+        if session and "items" in result:
+            current = session.assistant_selections.get(scope)
+            if current is not None and current is not previous:
+                raise ApiError(409, "selection_changed", "The assistant changed the selection. Select again.")
+            session.assistant_selections.pop(scope, None)
+        return result
     except OSError as exc:
         raise revit_unreachable(exc) from None
     except RuntimeError as exc:
@@ -599,17 +613,16 @@ async def watch_selection(req: WatchRequest, request: Request):
         try:
             await asyncio.gather(watch, disconnected, return_exceptions=True)
         finally:
-            if watches.get(key) == (req.watch_id, watch):
-                del watches[key]
+            del watches[scope]
 
 
 @router.delete("/watch-selection/{session_id}/{watch_id}", responses=responses(403, 422))
 async def cancel_selection(session_id: Identifier, watch_id: Identifier, request: Request):
     """Cancel only the matching watch on the caller's device. Safe to retry."""
-    active = request.app.state.selection_watches.get((current_scope(), session_id))
-    if active and active[0] == watch_id:
-        active[1].cancel()
-        await asyncio.gather(active[1], return_exceptions=True)
+    active = request.app.state.selection_watches.get(current_scope())
+    if active and active[:2] == (session_id, watch_id):
+        active[2].cancel()
+        await asyncio.gather(active[2], return_exceptions=True)
     return {"cancelled": True}
 
 
@@ -1071,13 +1084,7 @@ async def reconcile_spec(req: ReconcileRequest):
     return reconcile(draft, snapshot, pack).model_dump(mode="json")
 
 
-def confirm_rate_limit(request: Request) -> None:
-    """Each confirmation writes a pending file to the data volume: CHAT_RATE_LIMIT per minute per address."""
-    if not confirm_limiter.allow(client_key(request), get_settings().chat_rate_limit):
-        raise ApiError(429, "rate_limited", "Too many confirmations from this address; try again in a minute")
-
-
-@router.post("/spec/confirm", dependencies=[Depends(confirm_rate_limit)],
+@router.post("/spec/confirm", dependencies=[Depends(bridge_write_rate_limit)],
              responses=responses(403, 422, 429, 503, 504))
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
@@ -1162,9 +1169,8 @@ def workbench_rate_limit(request: Request) -> None:
     """A cloud host: ``/check`` and ``/dry-run`` count against ``/spec/confirm``'s limiter and
     limit (CHAT_RATE_LIMIT per minute per address); each reaches a Revit and a dry run
     writes a ledger line without any token. A local host does not limit them."""
-    settings = get_settings()
-    if settings.cloud and not confirm_limiter.allow(client_key(request), settings.chat_rate_limit):
-        raise ApiError(429, "rate_limited", "Too many requests from this address; try again in a minute")
+    if get_settings().cloud:
+        bridge_write_rate_limit(request)
 
 
 RENDER_FAILED = "render_failed"

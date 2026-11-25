@@ -7,6 +7,8 @@ import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
 import { ExecutionView } from './ExecutionPanel'
 import type { Proposal } from './flow'
+import { createTaskFlow } from './flow'
+import { parseSseFrame } from '../../api/chat'
 import { expiresIn, questionBadge, tokenPrefix } from './format'
 import SpecCard from './SpecCard'
 
@@ -39,6 +41,19 @@ function render(p: Proposal, canConfirm: boolean) {
 describe('SpecCard', () => {
   beforeEach(() => vi.stubGlobal('navigator', { languages: ['zh-CN'] }))
   afterEach(() => vi.unstubAllGlobals())
+  it('shows the assistant selection from the spec event beside the confirmation button', async () => {
+    vi.stubGlobal('navigator', { languages: ['en'] })
+    const frame = parseSseFrame('event: spec\ndata: ' + JSON.stringify({
+      spec: { ...spec, action: { kind: 'run_tool', tool: 'delete_selected' } }, errors: [], card: 'Delete',
+      assistant_selection: { tool: 'select_elements', count: 2, ids: ['93', '94'] },
+    }))
+    const flow = createTaskFlow({ events: async function* () { yield frame! },
+      api: { confirm: vi.fn(), runTool: vi.fn(), reconcile: vi.fn() } })
+    await flow.send('Delete')
+    const html = render(flow.store.getState().proposal!, true)
+    expect(html).toMatch(/selection was set by the assistant: 2 elements/i)
+    expect(html).toContain('93, 94')
+  })
   it('shows every parameter with its source and evidence, the interpretation as a checkbox, Confirm dark', () => {
     const html = render(proposalFrom({
       type: 'spec', spec, card: 'Task: ...\nConfirm? (yes / change something)', errors: [],

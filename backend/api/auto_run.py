@@ -8,7 +8,7 @@ from revit_bridge.capabilities.schema import NUMERIC_TYPES
 from revit_bridge.spec.models import Source, TaskSpec
 
 from backend.api import bridge
-from backend.api.direct_reads import BuiltinStore
+from backend.api.direct_reads import BuiltinStore, selection_for_card
 from backend.api.errors import ApiError
 from backend.mention_check import evidence_keys
 from backend.questions import DesignerForm
@@ -201,6 +201,8 @@ class AutoRun:
                                           for param, text in sorted(assumptions, key=lambda pair: (pair[0] or "", pair[1]))]
         if not report.get("ready") or event["errors"]:
             return "not_ready", None
+        if selection_for_card(spec, pack, session):
+            return "unverified_evidence", None
         words = (plan.original_request if plan and plan.current else session.request_text) + "\n" + self.user_message
         answers = plan.answers if plan and plan.current else session.request_answers
         declared = {p["name"]: p for p in pack.parameters}
@@ -229,7 +231,7 @@ class AutoRun:
         self.session.auto_count += 1
 
         try:
-            bridge.confirm_rate_limit(self.request)
+            bridge.bridge_write_rate_limit(self.request)
             store = BuiltinStore()
             confirmation = await bridge.issue_spec(bridge.ConfirmRequest(spec=spec, session_id=self.session.session_id,
                                                                          confirmed_by="designer:auto-run"), store)

@@ -45,7 +45,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. A new planner stage can propose the next step in the same stream.",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. A new planner stage can propose the next step in the same stream.",
             "content": {
               "text/event-stream": {}
             }
@@ -1101,7 +1101,7 @@
           "bridge"
         ],
         "summary": "Watch Selection",
-        "description": "Observe normal selection on this device. Returns the element mention page (items carry\ndocument_id and filtered_out counts category exclusions), or a terminal flag: cancelled,\ntimed_out or document_changed. An unsupported_addin reply offers the current-selection\npicker. A disconnected Revit returns HTTP 503 revit_unreachable. Only one watch may run\nfor this session/device pair. Disconnecting the HTTP request cancels observation.",
+        "description": "Observe normal selection on this device. Returns the element mention page (items carry\ndocument_id and filtered_out counts category exclusions), or a terminal flag: cancelled,\ntimed_out or document_changed. An unsupported_addin reply offers the current-selection\npicker. A disconnected Revit returns HTTP 503 revit_unreachable. Only one watch may run\nper device. Each start counts toward the confirmation rate limit. Disconnecting the\nHTTP request cancels observation.",
         "operationId": "watch_selection_api_v1_bridge_watch_selection_post",
         "requestBody": {
           "content": {
@@ -1144,6 +1144,16 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
             "content": {
               "application/json": {
                 "schema": {

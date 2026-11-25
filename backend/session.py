@@ -88,6 +88,8 @@ class Session:
     direct_reads: int = 0
     chinese: bool = False
     read_results: dict[tuple[str, str], object] = field(default_factory=dict)
+    # Last direct selection change in this request, by device. Only the host sets this.
+    assistant_selections: dict[str, dict] = field(default_factory=dict)
     auto_paused: bool = False  # A plan failure lasts for the designer's request, including after set_plan([]).
     auto_count: int = 0
     auto_assumptions: tuple | None = None

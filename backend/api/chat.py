@@ -516,6 +516,7 @@ class Turn:
         self.auto: AutoRun | None = None
         self.question_tools = False
         self.attachment: str | None = None
+        self.attachment_message: dict | None = None
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
@@ -600,6 +601,48 @@ class Turn:
                                 plan_id=plan.id if step else None, step_id=step.id if step else None)
         return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
 
+    def add_designer_message(self, text: str):
+        message = {"role": "user", "content": text}
+        self.session.add(message)
+        if self.attachment:
+            self.attachment_message = message
+
+    def model_context(self, role: str, messages: list[dict]) -> list[dict]:
+        """Apply the host context to a copy. Session history contains only text."""
+        context = list(messages)
+        plan = self.session.plan if self.bridge else None
+        if plan and plan.current:
+            index = next(i for i in range(len(context) - 1, -1, -1) if context[i]["role"] == "user")
+            data = json.dumps(plan.context(), ensure_ascii=False)
+            if has_host_marker(data):
+                data = quote_marked_json(plan.context())
+            instruction = ("Judge only the current step. If it completes the final unfinished step, "
+                           "summarize every step in the final report." if role == roles.SUPERVISOR else
+                           "Use the original request, verified form answers and previous results throughout the plan.")
+            context[index] = {**context[index], "content": context[index]["content"] +
+                              f"\n\nPlan {roles.FROM_HOST}: {instruction}\n{data}"}
+        if self.auto and role in (roles.PLANNER, roles.SUPERVISOR, ROLE):
+            context[0] = dict(context[0])
+            context[0]["content"] += ("\nThe host automatically runs eligible ready cards. Do not ask for a click "
+                                      "unless the host requires manual confirmation. Ask whenever information is missing.")
+            if role != roles.SUPERVISOR:
+                context[0]["content"] += (
+                    " For a value from a read in this message or a completed step in this plan, cite "
+                    "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
+                    "value and source tool. Designer and answer need the designer's words or form answer.")
+        if self.attachment_message is not None and role == roles.PLANNER:
+            # A later planner stage can follow a supervisor report in this same turn.
+            index = next((i for i, m in enumerate(messages) if m is self.attachment_message), None)
+            if index is None:  # The history window rolled past the attached request.
+                index = 1
+                context.insert(index, self.attachment_message)
+            message = context[index]
+            context[index] = {**message, "content": [
+                {"type": "text", "text": message["content"]},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + self.attachment}},
+            ]}
+        return context
+
     async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
                    max_rounds: int, stream: bool, keep: Callable[[dict], None] | None,
                    offered: tuple[str, ...] | None, out: LoopResult) -> AsyncGenerator[str, None]:
@@ -610,6 +653,10 @@ class Turn:
         tool is answered ``tool_not_offered`` and never run (None: the one loop, every tool).
         The last round's text ends in ``out``. ``LLMError`` and a raising tool end the turn."""
         llm = target.llm
+        initial_length = len(messages)
+        # Keep the attached designer message byte-identical across tool rounds, including
+        # when set_plan changes the host context. Its result carries the new plan.
+        prefix = self.model_context(role, messages) if self.attachment and role == roles.PLANNER else None
         for round_no in range(max_rounds + 1):
             # The last round goes out without tools so the model has to answer in text.
             round_tools = tools if round_no < max_rounds else None
@@ -620,36 +667,7 @@ class Turn:
             stats = CallStats()
             started = time.monotonic()
             try:
-                context = messages
-                plan = self.session.plan if self.bridge else None
-                if plan and plan.current:
-                    context = list(messages)
-                    index = next(i for i in range(len(context) - 1, -1, -1) if context[i]["role"] == "user")
-                    data = json.dumps(plan.context(), ensure_ascii=False)
-                    if has_host_marker(data):
-                        data = quote_marked_json(plan.context())
-                    instruction = ("Judge only the current step. If it completes the final unfinished step, "
-                                   "summarize every step in the final report." if role == roles.SUPERVISOR else
-                                   "Use the original request, verified form answers and previous results throughout the plan.")
-                    context[index] = {**context[index], "content": context[index]["content"] +
-                                      f"\n\nPlan {roles.FROM_HOST}: {instruction}\n{data}"}
-                if self.auto and role in (roles.PLANNER, roles.SUPERVISOR, ROLE):
-                    context = [dict(m) for m in context]
-                    context[0]["content"] += ("\nThe host automatically runs eligible ready cards. Do not ask for a click "
-                                              "unless the host requires manual confirmation. Ask whenever information is missing.")
-                    if role != roles.SUPERVISOR:
-                        context[0]["content"] += (
-                            " For a value from a read in this message or a completed step in this plan, cite "
-                            "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
-                            "value and source tool. Designer and answer need the designer's words or form answer.")
-                if self.attachment and role == roles.PLANNER:
-                    context = list(context)
-                    index = next(i for i in reversed(range(len(context))) if context[i]["role"] == "user")
-                    context[index] = {**context[index], "content": [
-                        {"type": "text", "text": context[index]["content"]},
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + self.attachment}},
-                    ]}
-                    self.attachment = None
+                context = prefix + messages[initial_length:] if prefix is not None else self.model_context(role, messages)
                 async for item in stream_completion(llm, context, tools=round_tools, stats=stats,
                                                     memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
@@ -875,7 +893,7 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
     task = roles.next_task(session.role_task, routing) if routing.route == roles.TOOL else None
     if task is not None:
         session.role_task = task
-    session.add({"role": "user", "content": roles.planner_message(text, routing, session.pending_verdict)})
+    run.add_designer_message(roles.planner_message(text, routing, session.pending_verdict))
     session.pending_verdict = None
     out = LoopResult()
     async for frame in run.planner(targets[roles.PLANNER], routing.route, out):
@@ -1046,6 +1064,7 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
                                              "1-4 questions with id, text, options, allow_other and multiple. "
                                              "Reply with a message and optional answers. The plan event carries "
                                              "plan_id and steps with id, title, status and optional evidence_id. "
+                                             "A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. "
                                              "ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. "
                                              "view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. "
                                              "A new planner stage can propose the next step in the same stream."}})
@@ -1121,7 +1140,7 @@ async def chat(req: ChatRequest, request: Request,
     if req.answers and verified is None:
         raise ApiError(422, "invalid_answers", "answers must match this session's open form")
     form_routing = session.form_routing if verified or req.selection_answer else None
-    if req.capture and req.message and form_routing is None:
+    if req.capture and req.message:
         form_routing = roles.FALLBACK_ROUTING  # An attachment addresses the planner.
     stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
                   and not verified[0].get("other") else None)
@@ -1213,11 +1232,14 @@ async def chat(req: ChatRequest, request: Request,
             plan.answers.append({"question": "After reconnecting", "answer": resume_message})
     changed_plan = None
     if req.bridge and req.message:
+        if picks and any(item["kind"] == "element" for item in picks["resolved"]):
+            session.assistant_selections.pop(current_scope(), None)
         session.direct_reads = 0
         session.read_results.clear()
         session.auto_count = 0
         if not step and pending is None and session.clarification is None:
             session.auto_paused = False
+            session.assistant_selections.clear()
             session.request_text = req.message
             session.request_answers = []
             session.pending_interpretations.clear()
@@ -1310,7 +1332,7 @@ async def chat(req: ChatRequest, request: Request,
             yield SSE_DONE
     else:
         log_model = llm.model
-        session.add({"role": "user", "content": text})
+        run.add_designer_message(text)
         tools = TOOL_DEFINITIONS if req.bridge else None
         # The first turn's prompt for the whole session: the cached prefix stays the same.
         messages = [{"role": "system", "content": session.system_prompt(req.bridge, build_system_prompt)}]
@@ -1380,6 +1402,7 @@ async def chat(req: ChatRequest, request: Request,
                             session.pending_auto_receipt = None
                             session.confirmed_spec = None
         finally:
+            run.attachment = run.attachment_message = None
             if step and req.execution is not None:
                 plan.reporting = False
             if req.bridge:

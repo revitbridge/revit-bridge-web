@@ -11,6 +11,40 @@ from backend.config import get_settings
 from backend.mention_check import mention_errors
 
 
+SELECTION_WRITERS = {"select_elements", "select_in_box", "select_by_filter", "clear_selection"}
+MAX_CARD_IDS = 20
+
+
+def selection_record(name, params, result):
+    result = result if isinstance(result, dict) else {}
+    count = result.get("Count")
+    ids = result.get("ElementIds", result.get("Ids"))
+    if not isinstance(ids, list):
+        ids = []
+        # Only replace makes the supplied IDs the complete resulting selection.
+        if name == "select_elements" and params.get("mode") in (None, "replace"):
+            ids = list(dict.fromkeys(s.strip().lstrip("0") for s in str(params["element_ids"]).split(",")))
+            if count is not None and count != len(ids):
+                ids = []
+    if type(count) is not int or count < 0:
+        count = len(ids) if ids or name == "clear_selection" else None
+    return {"tool": name, "count": count, "ids": [str(i) for i in ids[:MAX_CARD_IDS]]}
+
+
+def selection_for_card(spec, pack, session):
+    record = session.assistant_selections.get(bridge.current_scope())
+    if not record or not pack:
+        return None
+    if pack.name == "delete_selected":
+        return record
+    params = spec.execution_projection()["params"]
+    for p in pack.parameters:
+        if (p["name"] in ("element_id", "element_ids") and p.get("default") == ""
+                and params.get(p["name"]) in (None, "")):
+            return record
+    return None
+
+
 def reserve_direct_run(session):
     if session.direct_reads >= get_settings().direct_run_limit:
         return {"error": "read_limit", "message": "Direct run limit reached for this message. Use the results already returned."}
@@ -59,6 +93,8 @@ async def try_read(spec, session, store, *, step=None):
         payload = bridge._execution_payload(result)
         if pack.ui_only:
             payload["ui_only"] = True
+            if pack.name in SELECTION_WRITERS and payload.get("success"):
+                session.assistant_selections[scope] = selection_record(pack.name, projection["params"], payload.get("result"))
         return payload
     finally:
         try:

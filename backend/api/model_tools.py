@@ -50,7 +50,7 @@ from backend.api import bridge
 from backend.api.bridge import (
     current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
-from backend.api.direct_reads import reserve_direct_run, try_read
+from backend.api.direct_reads import reserve_direct_run, selection_for_card, try_read
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
 from backend.session import Session
@@ -192,7 +192,10 @@ TOOL_DEFINITIONS: list[dict] = [
 
 TOOL_DEFINITIONS.append({"type": "function", "function": {
     "name": "ask_selection", "description": "Ask the designer to select elements. Only their click starts observation.",
-    "parameters": SelectionQuestion.model_json_schema(),
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["prompt", "mode"],
+                   "properties": {"prompt": {"type": "string"},
+                                  "mode": {"type": "string", "enum": ["single", "multiple", "box"]},
+                                  "category": {"type": "string", "description": "BuiltInCategory such as OST_Walls"}}},
 }})
 for descriptor in list_host_functions():
     params = descriptor["parameters"]
@@ -487,6 +490,8 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     picks = session.picks_for(current_scope())
     errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
     event = {"spec": normalized, "card": spec.card(), "errors": errors, "reconcile": None}
+    if selection := selection_for_card(spec, pack, session):
+        event["assistant_selection"] = selection
     try:
         report = reconcile(spec, await snapshot_now(await get_revit_client()), pack_for(spec, store)).model_dump(mode="json")
     except ApiError as exc:

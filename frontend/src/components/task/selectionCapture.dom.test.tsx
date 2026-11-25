@@ -58,16 +58,33 @@ it('waits for a selection-question click, offers the old picker on unsupported a
   expect(select).toHaveBeenCalledWith('q', [picked])
   expect(onSend).not.toHaveBeenCalled()
 })
-it.each(['Cancel', 'pagehide'])('aborts the active watch on %s', async end => {
+it.each(['Cancel', 'unmount', 'pagehide'])('aborts the active watch on %s', async end => {
   const fetch = vi.spyOn(client, 'apiFetch').mockImplementation((_url, init) => init?.method === 'DELETE'
     ? Promise.resolve({ cancelled: true }) : new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', reject)))
   render()
   await click('Select in Revit')
   expect(container.textContent).toContain('Click one new element')
   if (end === 'Cancel') await click(end)
+  else if (end === 'unmount') render([], { onSend: undefined })
   else await act(async () => { window.dispatchEvent(new Event('pagehide')) })
   expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true)
   expect(fetch.mock.calls[1][1]?.method).toBe('DELETE')
+  if (end === 'Cancel') expect(container.textContent).toContain('Selection cancelled.')
+  expect(onSend).not.toHaveBeenCalled()
+})
+it('keeps watching through disabled changes and displays a server cancellation', async () => {
+  let finish!: () => void
+  const fetch = vi.spyOn(client, 'apiFetch').mockImplementation(() => new Promise(resolve => {
+    finish = () => resolve({ cancelled: true })
+  }))
+  render()
+  await click('Select in Revit')
+  render([], { disabled: true })
+  render([], { disabled: false })
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false)
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await act(async () => finish())
+  expect(container.textContent).toContain('Selection cancelled.')
   expect(onSend).not.toHaveBeenCalled()
 })
 it('opens the captured view and starts with attachment off', async () => {

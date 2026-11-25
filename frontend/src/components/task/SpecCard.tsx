@@ -73,6 +73,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
   const conflicts = reconcile?.conflicts ?? []
   const openQuestions = reconcile?.questions.length ?? 0
   const ready = reconcile?.ready === true
+  const selection = proposal.assistantSelection
 
   return (
     <section ref={card} className="card section spec-card" data-ready={ready} data-active-card={!archived}>
@@ -147,6 +148,14 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
           {confirmErrors.map((e, i) => <li key={i}>{zh ? '确认被拒绝：' : 'Confirm refused: '}<code>{e.code}</code>{e.param ? <>{zh ? '，参数 ' : ' on '}<code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
+      {selection && <p role="status">
+        {zh ? '助手设置了当前选择：' : 'Selection was set by the assistant: '}
+        {selection.count === null ? (zh ? '数量未知' : 'count unknown') : zh ? `${selection.count} 个构件`
+          : `${selection.count} element${selection.count === 1 ? '' : 's'}`}
+        {' · '}<code>{selection.tool}</code>
+        {selection.ids.length > 0 && <> · {selection.ids.join(', ')}
+          {selection.count !== null && selection.ids.length < selection.count && '…'}</>}
+      </p>}
       {proposal.runReason && <p role="status">{(zh ? '未自动执行：' : 'Manual confirmation: ') + (
         ({ excluded_tool: zh ? '此工具需要单独确认' : 'tool requires a separate confirmation',
            previous_failure: zh ? '此前步骤未成功' : 'a previous step failed',

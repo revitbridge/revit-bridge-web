@@ -43,7 +43,8 @@ The tool drawer lists the native functions `open_view` and `capture_view_image`.
 Click a captured PNG to enlarge it. **Attach to model (next message)** starts off.
 Enabling it sends the image with the next designer message to the planner when
 its selected `models.yml` entry has `vision: true`. Otherwise the chat explains
-the text-only delivery. The page holds the PNG and its session/device signature
+the text-only delivery. Attaching a capture skips the analyst for that message
+and gives the planner the full tool route. The page holds the PNG and its session/device signature
 in memory. The maximum is 1600 pixels wide and
 1 MiB per image. The ledger stores the image hash and dimensions.
 

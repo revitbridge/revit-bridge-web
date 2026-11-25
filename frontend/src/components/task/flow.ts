@@ -10,7 +10,7 @@
 import { browserLanguage } from '../../utils/language'
 import { createStore } from 'zustand/vanilla'
 import type {
-  ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
+  AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   PlanStatus, SpecError, TaskPlan, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
@@ -49,6 +49,7 @@ export interface Transcript {
 export interface Proposal {
   run?: 'auto' | 'confirm'
   runReason?: string
+  assistantSelection?: AssistantSelection
   awaitingReceipt?: boolean
   ended?: boolean
   planStep?: { planId: string; stepId: string; status: PlanStatus }
@@ -343,7 +344,7 @@ export function createTaskFlow(deps: FlowDeps) {
         execution: s.execution, confirmation: s.confirmation }] : s.archived,
       proposal: {
         ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
-        run: evt.run, runReason: evt.run_reason,
+        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection,
         spec: evt.spec,
         card: evt.card,
         errors: evt.errors ?? [],

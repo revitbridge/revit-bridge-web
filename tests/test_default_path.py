@@ -227,6 +227,26 @@ def recorded(name: str, section: str | None = None) -> dict:
     return base
 
 
+def assert_catalogue_streams(name, streams):
+    legacy = recorded(name, AA5556C_SECTION)["streams"]
+    for index, stream in enumerate(streams):
+        if name.startswith("single-") and index == 2:
+            # Only list_tools' size and preview changed as the catalogue grew.
+            # Compare every other byte with the same turn in the V1 checkout.
+            blocks = stream.split("\n\n")
+            for i, block in enumerate(blocks):
+                if block.startswith("event: tool\ndata: "):
+                    event = json.loads(block.split("\ndata: ", 1)[1])
+                    if event["name"] == "list_tools" and event["status"] == "ok":
+                        del event["preview"], event["size"]
+                        blocks[i] = "event: tool\ndata: " + json.dumps(event, ensure_ascii=False)
+            normalized_v1 = {"single-server": "829c16046f065629f557ea1b30739f55a4c066b0180928b551911f773d7df2e6",
+                             "single-browser": "74f10ac97f9ea92f500eb58723652f7492e6727f1ea16db0bd65f1c6c0d11f02"}
+            assert digest("\n\n".join(blocks)) == normalized_v1[name]
+        else:
+            assert digest(stream) == legacy[index]
+
+
 @pytest.mark.parametrize("limit", [AA5556C_LIMIT, None], ids=["aa5556c-limit-4096", "current-default"])
 @pytest.mark.parametrize("name", list(SCENARIOS))
 def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env, revit, recorder, monkeypatch):
@@ -255,23 +275,7 @@ def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env
     prior = recorded(name, f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}")
     assert hashes([r.replace("/capabilities/authoring", "/capabilities/workbench") for r in requests]) == prior["requests"]
     assert hashes(streams) == prior["streams"]
-    legacy = recorded(name, AA5556C_SECTION)["streams"]
-    for index, stream in enumerate(streams):
-        if name.startswith("single-") and index == 2:
-            # Only list_tools' size and preview changed with the published 0.10 catalogue.
-            # Compare every other byte with the same turn in the V1 checkout.
-            blocks = stream.split("\n\n")
-            for i, block in enumerate(blocks):
-                if block.startswith("event: tool\ndata: "):
-                    event = json.loads(block.split("\ndata: ", 1)[1])
-                    if event["name"] == "list_tools" and event["status"] == "ok":
-                        del event["preview"], event["size"]
-                        blocks[i] = "event: tool\ndata: " + json.dumps(event, ensure_ascii=False)
-            normalized_v1 = {"single-server": "829c16046f065629f557ea1b30739f55a4c066b0180928b551911f773d7df2e6",
-                             "single-browser": "74f10ac97f9ea92f500eb58723652f7492e6727f1ea16db0bd65f1c6c0d11f02"}
-            assert digest("\n\n".join(blocks)) == normalized_v1[name]
-        else:
-            assert digest(stream) == legacy[index]
+    assert_catalogue_streams(name, streams)
     record = recorded(name, section)
     assert len(requests) == len(record["requests"])
     for index, (text, expected) in enumerate(zip(requests, record["requests"])):
@@ -292,6 +296,7 @@ def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env
 def test_selection_capture_bytes(name, limit, env, revit, recorder, monkeypatch):
     monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
     requests, streams = run_scenario(name, env, revit, recorder)
+    assert_catalogue_streams(name, streams)
     actual = {"requests": hashes(requests), "streams": hashes(streams)}
     prior = recorded(name, f"tool_authoring_{limit}")
     assert all(len(actual[k]) == len(prior[k]) for k in actual)

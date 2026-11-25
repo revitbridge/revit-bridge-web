@@ -97,6 +97,11 @@ export function parseSseFrame(frame: string): HostEvent | null {
     }
     if (parsed.run === 'auto' || parsed.run === 'confirm') spec.run = parsed.run
     if (typeof parsed.run_reason === 'string') spec.run_reason = parsed.run_reason
+    const selected = parsed.assistant_selection
+    if (isRecord(selected) && typeof selected.tool === 'string' && Array.isArray(selected.ids)
+      && selected.ids.every(id => typeof id === 'string')) {
+      spec.assistant_selection = { tool: selected.tool, count: count(selected.count), ids: selected.ids }
+    }
     return spec
   }
   if (event === 'execution') {

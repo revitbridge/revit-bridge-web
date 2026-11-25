@@ -342,7 +342,8 @@ export type HostEvent =
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
-      run?: 'confirm' | 'auto'; run_reason?: string; reconcile_error?: { error: string; message?: string } }
+      run?: 'confirm' | 'auto'; run_reason?: string; assistant_selection?: AssistantSelection;
+      reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
   | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
   | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
@@ -350,6 +351,7 @@ export type HostEvent =
   | { type: 'done' }
 
 export interface SelectionQuestion { prompt: string; mode: 'single' | 'multiple' | 'box'; category?: string }
+export interface AssistantSelection { tool: string; count: number | null; ids: string[] }
 export interface ViewImage { capture_id: string; png_base64: string; width: number; height: number; view_name: string }
 
 export interface HostFunction {
