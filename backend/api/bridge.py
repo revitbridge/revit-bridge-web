@@ -85,6 +85,7 @@ from revit_bridge import checking
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
+from revit_bridge.revit.capabilities import discover
 from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
@@ -474,7 +475,7 @@ class UpdateToolRequest(BaseModel):
     not_for: list[str] | None = None
 
 
-def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
+def tool_listing(tool, store: ToolStore, *, directory: bool = False, catalog: bool = False) -> dict:
     """One item of ``GET /tools`` and of the model's ``list_tools``: the MCP ``list_tools``
     shape plus ``builtin`` and ``origin`` (``"builtin"``: the wheel's read-only pack;
     ``"user"``: a file in the user capabilities directory). ``directory`` adds the
@@ -495,15 +496,18 @@ def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
         "origin": origin,
         "read_only": tool.read_only,
     }
+    if catalog:
+        item.update(display_name=tool.display_name, applies_when=tool.applies_when,
+                    not_for=tool.not_for, revit_versions=tool.revit_versions)
     if directory:
         item["directory"] = str(path.parent if path is not None else store.user_dir)
     return item
 
 
-def list_packs(*, directory: bool = False) -> list[dict]:
+def list_packs(*, directory: bool = False, catalog: bool = False) -> list[dict]:
     """Every pack, read from disk now (no cache: a pack another process just wrote is in it)."""
     store = ToolStore()
-    return [tool_listing(t, store, directory=directory) for t in store.list_tools()]
+    return [tool_listing(t, store, directory=directory, catalog=catalog) for t in store.list_tools()]
 
 
 def _tool_detail(tool) -> dict:
@@ -619,8 +623,8 @@ async def mention_items(
 async def list_tools():
     """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, including the pack's ``read_only`` flag, plus ``builtin`` and
     ``origin`` (and, on a local host, ``directory``: where the file was read). Read from
-    disk on every call."""
-    return list_packs(directory=not get_settings().cloud)
+    disk on every call. Catalog metadata includes display_name, applies_when, not_for and revit_versions."""
+    return list_packs(directory=not get_settings().cloud, catalog=True)
 
 
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
@@ -1292,9 +1296,20 @@ async def trigger_selection():
 
 # -- health --------------------------------------------------------------------
 
+async def _user_tools_allowed():
+    try:
+        caps = await discover(await get_revit_client(), refresh=True, timeout=2)
+        tools = caps.info.get("user_tools")
+        if isinstance(tools, dict) and type(tools.get("allowed")) is bool:
+            return tools["allowed"]
+    except Exception:
+        pass  # Older add-ins may answer health but lack the capabilities method.
+    return None
+
+
 @router.get("/revit-health", responses=responses(403, 422))
 async def revit_health():
-    """Is a Revit reachable: the selected device, else the local TCP add-in."""
+    """Whether the selected Revit is reachable. A connected add-in can report user_tools_allowed."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     device_id = request_device()
     relay = get_relay()
@@ -1311,6 +1326,7 @@ async def revit_health():
         t0 = time.monotonic()
         ok = await WebSocketRevitClient(relay, device_id, timeout=10).ping()
         return {
+            "user_tools_allowed": await _user_tools_allowed() if ok else None,
             "revit_connected": ok,
             "latency_ms": round((time.monotonic() - t0) * 1000) if ok else None,
             "mode": "websocket",
@@ -1324,6 +1340,7 @@ async def revit_health():
     latency = round((time.monotonic() - t0) * 1000)
     if status["reachable"]:
         return {
+            "user_tools_allowed": await _user_tools_allowed(),
             "revit_connected": True, "latency_ms": latency, "mode": "tcp",
             "detail": "Local add-in responded",
             "endpoint": f"{status['host']}:{status['port']}",

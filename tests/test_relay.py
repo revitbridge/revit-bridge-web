@@ -31,10 +31,14 @@ def test_a_confirmed_execution_travels_over_the_device(client, device):
         thread = threading.Thread(target=lambda: outcome.update(
             {"health": client.get(f"{B}/revit-health", headers=headers).json()}))
         thread.start()
-        request = serve(ws, 1, lambda r: json.dumps({"jsonrpc": "2.0", "id": r["id"],
-                                                     "result": {"message": "hi"}}))[0]
+        def health_reply(request):
+            result = ({"message": "hi"} if request["method"] == "say_hello" else
+                      {"protocol": "1", "user_tools": {"allowed": False}})
+            return json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result})
+        checks = serve(ws, 2, health_reply)
         thread.join(timeout=5)
-        assert request["method"] == "say_hello"
+        assert [r["method"] for r in checks] == ["say_hello", "get_bridge_capabilities"]
+        assert outcome["health"]["user_tools_allowed"] is False
         assert outcome["health"]["revit_connected"] is True and outcome["health"]["mode"] == "websocket"
 
         issued = client.post(f"{B}/spec/confirm", json={"spec": {
