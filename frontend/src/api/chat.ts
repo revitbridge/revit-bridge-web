@@ -110,6 +110,21 @@ export function parseSseFrame(frame: string): HostEvent | null {
     return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps }
   }
   if (event === 'mentions') return mentionsEvent(parsed)
+  if (event === 'ask_selection' && isRecord(parsed) && typeof parsed.ask_id === 'string' && isRecord(parsed.selection)) {
+    const { prompt, mode, category } = parsed.selection
+    if (typeof prompt === 'string' && (mode === 'single' || mode === 'multiple' || mode === 'box')
+      && (category === undefined || typeof category === 'string'))
+      return { type: 'ask_selection', ask_id: parsed.ask_id, selection: { prompt, mode, category } }
+  }
+  if (event === 'view_image' && isRecord(parsed)) {
+    const { capture_id, width, height, view_name, png_base64 } = parsed
+    if (typeof capture_id === 'string' && typeof view_name === 'string' && typeof png_base64 === 'string'
+      && png_base64.length <= 1398104 && typeof width === 'number' && width > 0 && width <= 1600
+      && typeof height === 'number' && height > 0)
+      return { type: 'view_image', capture_id, width, height, view_name, png_base64 }
+  }
+  if (event === 'image_notice' && isRecord(parsed) && typeof parsed.reason === 'string')
+    return { type: 'image_notice', reason: parsed.reason }
   if (event === 'questions') {
     if (!isRecord(parsed) || typeof parsed.ask_id !== 'string' || !Array.isArray(parsed.questions)
       || !parsed.questions.length || parsed.questions.length > 4
@@ -191,6 +206,8 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.bridge !== undefined) body.bridge = request.bridge
   if (request.mentions?.length) body.mentions = request.mentions
   if (request.answers) body.answers = request.answers
+  if (request.selection_answer) body.selection_answer = request.selection_answer
+  if (request.capture) body.capture = request.capture
   if (request.mode !== undefined) body.mode = request.mode
   if (request.run !== undefined) body.run = request.run
   const resp = await apiStream('/api/chat', body, { ...llmHeaders(), ...(request.run === 'auto' ? adminHeaders() : {}) }, signal)

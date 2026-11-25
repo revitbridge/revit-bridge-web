@@ -575,6 +575,106 @@
    ]
   }
  },
+ "selection_capture_16384": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "3904ab442581beb91bd9ce68b9644ba82453f1649cc853330ab850665e8d4635",
+    "1": "9a473f9158966a9ec84c0a6b7a10ea98a20f533e14bf1704b924daa1d6f77d03",
+    "2": "02ea1e6fda23e0be19014573c94fc8afd797323fdd9f43fb7d99298bdec14409",
+    "4": "17cbb2ba7edf5f2eb0719e111b81aebe4850acc531e0444a8317efdc6edefeea",
+    "5": "d3d0d2c7f62b450b796cf47bdcdee73a38a665f7dc95bb2fd79dc1088798aa5b",
+    "7": "4c03085d1f88e5d55983573fbcdbcab73cd883b0d1b91ef5649199b55893d0bc",
+    "8": "96baa222e755794f0f81b8383f8ac55ac44e62477af452e91320d3671726f502",
+    "9": "f7057b402e1cebb0c02f7f49cec5e8e11a22f42aed4bc6b919552ff07ec4a423"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {
+    "0": "765552cb78cc9d076f0625454b0f339b59e4f32f13c7cc05a1192561e9db8b12",
+    "1": "244a3192da3f2602f0b95492550814c6fe025869c1344fde2e7eed014cddcb3a",
+    "3": "421baf1cc66ab326181afb89072124d1ea9616eea384a39eb7c8faa907e59081",
+    "4": "a90a4dd0d60c16d13f5ddd5b422968ff19053b5939cd4b11d0ac47dd604bd4ce"
+   },
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "0": "340228060ed2f661b86d5cd329ef3f8591f2f0aee2284449506b148e4908f66f",
+    "1": "2ce2007a7c2abe00b39b4fa3fedf1dd2dfc8f0ae4b36369eb567c589b07dbcd1",
+    "2": "474adc4c83347311516f6a31315bd92e8300d02d35a5679586c06fb90b63ad7a",
+    "3": "af23f0aace2293bb6f19f290f45e727ed58d2b3f1a3bf63c73f5283040d2f7de",
+    "4": "3021feb07c3e0396f8990ff684e0e63b173d7fdfeaef379ed3ebd9e8a95447bd",
+    "5": "656d613fc703a08a3872efd398b045ededca06390de78c3b1275b44c43953b04"
+   },
+   "streams": {
+    "2": "cd7a2b53907415b4d6523ee0a2c681a328ab4c54fc6f707c0fefbeb8b8a738ba"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "0": "fa1f59d9d1b60d71d2b9aac9cc96c6b2cb312e52b2839075e3139765a3dd513a",
+    "1": "14f20437a7f92bf0ff2231fa53974837e091c5ffe69f86ef94e569196b67c9cc",
+    "2": "9215cd18b1b9addea99dde299499b6960117a0533f64961ac3951978bc8690d5",
+    "3": "a2b272f4b3901cb9c29b395e28d98dde537a20aee08b32b8b4ab2c3746cd4949",
+    "4": "8ad2c21d9aeea300874b53b8d3b02a8f536733db813484f15a113b94011cc1e9",
+    "5": "7b9e5bc91a29c8c9ebbbc413c0de93689a3f2b402ef83f750572b9d525918df6"
+   },
+   "streams": {
+    "2": "1a8f95da5a33e586c8cfefe27f9cf315df8852ad10ccec73c24c6b44ca8ccfa5"
+   }
+  }
+ },
+ "selection_capture_4096": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "a8e2160fb60ed199dd273e451caace214e25ff46a247b80ab43e23ba9f227157",
+    "1": "7d05dcb227601e69672dd171972d6918af93e422af34ceb007fb023f88624944",
+    "2": "3c13d17e64dec179446739c3ef4ecb4d664fb8aedaa158017b027e40c4ae13ea",
+    "4": "f5ed074271cb483777bb6d0e1bef0b71a53df9e52166f3259b27a4c531445f79",
+    "5": "536d0be34d5d45a881fb895cf19214d32ba0c04dcac9197b99c7834599ee2287",
+    "7": "25813ece9f2b3e2e47a7775b1f7251c045a113372b989f041dd7de8beb1bd92e",
+    "8": "e59964af54066dee63fff612c1635216cc3e0b1584459546485a3f62094e6ac1",
+    "9": "ba1ed644cc2b8d7317cfdb5d3fe4e29f2751c7e792f755754993512dade7c13e"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {
+    "0": "9c0796a67485341668160afe0162eb640c796673933a236ab8fac2afdd7cc69e",
+    "1": "af67d824c9e0e4cecd7b59bf2e2bb32c88554b5969b1733c33e0d08e369c71ef",
+    "3": "52876f531d5fba002b46531df28a9e84f0634ca8959014a3ced15dd0043c0a23",
+    "4": "44a454a7974999df88edd930fc57111b86a4846bc3fa5478a61335ac24e6f818"
+   },
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "0": "3e9a233b21fd5d9bfaaec427bc7825193929e01bb3cc9df7d3494620d76db8ad",
+    "1": "59b8a43a0d9ee4759594f2a7615f4aa3356955e4f5e65aab62527530af3e58af",
+    "2": "dfa44201ad620fe44af7fb3a8d59a704b69b9cba77a67190f4ff4021cec7201a",
+    "3": "a9de8ac8d060c1b767bf67f65a585773df8cb50144bbd724cab5b4f622d2eca8",
+    "4": "f9cd0f900f15434c7b98defa3f9e74dd6a8dfd0f8ecc5aa7063dd38457cf5208",
+    "5": "645db438de497c155783701541ff1859e89ae43edaa01ab8b1f029a478a2027e"
+   },
+   "streams": {
+    "2": "cd7a2b53907415b4d6523ee0a2c681a328ab4c54fc6f707c0fefbeb8b8a738ba"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "0": "9a95b65a43eb33f81ba7e6b9504b00f77e2fb306f525adb33510e09d72c70c30",
+    "1": "f2bc8b2e4700da010fc9fa3d42f65ec168115eb3b4f3bb80841301ef78c74d61",
+    "2": "5e9167542a7911e94ccc5617247c81db6dcc7a17f8a760786b22e3486d350449",
+    "3": "53f3a826fe7b1b0ea8c1aca610644b77d623a965a8183a0dac374d733da4e87b",
+    "4": "cc1ab1a6f1818e6581dfd590232c41ab9bc35a5a83274ec7a054d89473bc71d5",
+    "5": "7a722afdd8ef38c6d16a472929b805bf7f79f23e917ac56161eaacd300014a99"
+   },
+   "streams": {
+    "2": "1a8f95da5a33e586c8cfefe27f9cf315df8852ad10ccec73c24c6b44ca8ccfa5"
+   }
+  }
+ },
  "tool_authoring_16384": {
   "roles-analyst-server": {
    "requests": [

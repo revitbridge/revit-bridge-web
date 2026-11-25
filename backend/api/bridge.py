@@ -81,7 +81,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.requests import HTTPConnection
 
 from revit_bridge import __version__ as bridge_version
-from revit_bridge import checking
+from revit_bridge import checking, list_host_functions
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
@@ -109,6 +109,7 @@ from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 from backend.session import get_session_store
 from backend.plans import Plan
+from backend.questions import Identifier, SelectionOptions
 
 _log = logging.getLogger("backend.bridge")
 
@@ -500,6 +501,8 @@ def tool_listing(tool, store: ToolStore, *, directory: bool = False, catalog: bo
     if catalog:
         item.update(display_name=tool.display_name, applies_when=tool.applies_when,
                     not_for=tool.not_for, revit_versions=tool.revit_versions)
+    if tool.ui_only:
+        item["ui_only"] = True
     if directory:
         item["directory"] = str(path.parent if path is not None else store.user_dir)
     return item
@@ -519,6 +522,7 @@ def _tool_detail(tool) -> dict:
         "version": tool.version,
         "parameters": tool.parameters,
         "tags": tool.tags,
+        "ui_only": tool.ui_only,
         "read_only": tool.read_only,
         "execution_count": tool.execution_count,
         "code_template": tool.code_template,
@@ -543,6 +547,71 @@ def _invalid_pack(exc: ValueError) -> ApiError:
 
 
 # -- the model, read-only --------------------------------------------------------
+
+@router.get("/host-functions")
+def host_functions() -> list[dict]:
+    """Native view functions available to the planner."""
+    return list_host_functions()
+
+
+class WatchRequest(SelectionOptions):
+    session_id: Identifier
+    watch_id: Identifier
+    timeout_s: float = Field(default=120, gt=0, le=120)
+
+
+async def _disconnected(request: Request):
+    while (await request.receive())["type"] != "http.disconnect":
+        pass
+
+
+@router.post("/watch-selection", responses=responses(403, 409, 422, 503))
+async def watch_selection(req: WatchRequest, request: Request):
+    """Observe normal selection on this device. Returns the element mention page (items carry
+    document_id and filtered_out counts category exclusions), or a terminal flag: cancelled,
+    timed_out or document_changed. An unsupported_addin reply offers the current-selection
+    picker. A disconnected Revit returns HTTP 503 revit_unreachable. Only one watch may run
+    for this session/device pair. Disconnecting the HTTP request cancels observation."""
+    watches = request.app.state.selection_watches
+    key = (current_scope(), req.session_id)
+    if key in watches and not watches[key][1].done():
+        raise ApiError(409, "watch_in_progress", "A selection watch is already running.")
+
+    async def observe():
+        executor = RevitQueryExecutor(await get_revit_client())
+        return await executor.watch_selection(req.mode, req.category, timeout_s=req.timeout_s)
+
+    watch = asyncio.create_task(observe())
+    watches[key] = (req.watch_id, watch)
+    disconnected = asyncio.create_task(_disconnected(request))
+    try:
+        await asyncio.wait((watch, disconnected), return_when=asyncio.FIRST_COMPLETED)
+        if disconnected.done() or watch.cancelled():
+            return {"cancelled": True}
+        return watch.result()
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    except RuntimeError as exc:
+        raise ApiError(503, "selection_failed", str(exc)) from None
+    finally:
+        disconnected.cancel()
+        watch.cancel()
+        try:
+            await asyncio.gather(watch, disconnected, return_exceptions=True)
+        finally:
+            if watches.get(key) == (req.watch_id, watch):
+                del watches[key]
+
+
+@router.delete("/watch-selection/{session_id}/{watch_id}")
+async def cancel_selection(session_id: str, watch_id: str, request: Request):
+    """Cancel only the matching watch on the caller's device. Safe to retry."""
+    active = request.app.state.selection_watches.get((current_scope(), session_id))
+    if active and active[0] == watch_id:
+        active[1].cancel()
+        await asyncio.gather(active[1], return_exceptions=True)
+    return {"cancelled": True}
+
 
 @router.get("/snapshot", responses=responses(400, 403, 422, 500, 503))
 async def get_snapshot(categories: list[str] | None = Query(default=None)):

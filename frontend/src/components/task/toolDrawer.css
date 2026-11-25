@@ -21,3 +21,10 @@
 .tool-drawer-row dl { display: grid; grid-template-columns: minmax(6rem, 30%) 1fr; gap: .6rem; }
 .tool-drawer-row dd { margin: 0; overflow-wrap: anywhere; }
 .tool-drawer-row ul { margin: 0; padding-inline-start: 1rem; }
+.chat-capture { margin: .5rem 0; }
+.chat-capture img { display: block; max-width: 100%; max-height: 16rem; object-fit: contain; }
+.chat-capture figcaption label { display: block; }
+.chat-capture dialog img { max-width: 88vw; max-height: 80vh; }
+.selection-watch { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.selection-watch input { max-width: 12em; }
+.selection-watch p { flex-basis: 100%; margin: .3rem 0; }

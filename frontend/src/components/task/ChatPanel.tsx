@@ -11,7 +11,7 @@
 
 import { mentionLabel } from '../hostv2/mention/model'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { DesignerAnswers, Question, SentMention } from '../../types/api'
+import type { DesignerAnswers, Question, SentMention, ViewImage } from '../../types/api'
 import type { FetchCandidates, Mention } from '../../types/hostv2'
 import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
@@ -20,11 +20,15 @@ import PlanChecklist from './PlanChecklist'
 import ToolDrawer from './ToolDrawer'
 import { browserLanguage } from '../../utils/language'
 import QuestionForm from './QuestionForm'
+import SelectionWatch from './SelectionWatch'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
 import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
+  onSelectionAnswer?: (askId: string, items: Mention[]) => void
+  attachment?: string | null
+  onAttach?: (id: string | null) => void
   renderCards?: (message: number) => ReactNode
   onSubmitForm?: (text: string, answers: DesignerAnswers) => void
   highlight?: number
@@ -43,6 +47,21 @@ interface Props {
   controls?: ReactNode                   // drawn next to the input, above Send (the chat mode)
 }
 
+function Capture({ image, attached, toggle }: { image: ViewImage; attached: boolean; toggle: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const zh = browserLanguage() === 'zh'
+  const src = 'data:image/png;base64,' + image.png_base64
+  return <figure className="chat-capture">
+    <button type="button" aria-label={zh ? '放大视图' : 'Enlarge view'} onClick={() => dialog.current?.showModal()}>
+      <img src={src} alt={image.view_name} /></button>
+    <figcaption>{image.view_name} · {image.width} × {image.height}
+      <label><input type="checkbox" role="switch" checked={attached} onChange={toggle} />
+        {zh ? '附给模型（下一条消息）' : 'Attach to model (next message)'}</label></figcaption>
+    <dialog ref={dialog} aria-label={image.view_name}><button type="button" onClick={() => dialog.current?.close()}>
+      {zh ? '关闭' : 'Close'}</button><img src={src} alt={image.view_name} /></dialog>
+  </figure>
+}
+
 function SentMentions({ mentions }: { mentions: SentMention[] }) {
   return (
     <div className="chat-mentions">
@@ -56,10 +75,13 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
 }
 
 export default function ChatPanel({ title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
-  showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight }: Props) {
+  showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
+  onSelectionAnswer, attachment, onAttach }: Props) {
+  const zh = browserLanguage() === 'zh'
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
+  const [composerSession, setComposerSession] = useState(0)
   const scroll = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -104,15 +126,21 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
             <div className={`chat-bubble ${m.role}`}>
               {m.role === 'assistant'
-                ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan ? '' : '...')}</Markdown></div>
+                ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan || m.images?.length ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
               {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details key={evt.id}>
-                <summary>{evt.read.result.success === false
+                <summary>{evt.read.result.ui_only ? (evt.read.result.success === false
+                  ? (zh ? 'Revit 操作失败：' : 'Revit action failed: ') : (zh ? '已在 Revit 中：' : 'Done in Revit: ')) : evt.read.result.success === false
                   ? (browserLanguage() === 'zh' ? '读取失败：' : 'Read failed: ')
                   : (browserLanguage() === 'zh' ? '已读取：' : 'Read: ')}{evt.read.name}</summary>
                 <pre>{JSON.stringify(evt.read.result, null, 2)}</pre>
               </details>)}
+              {m.images?.map(img => <Capture key={img.capture_id} image={img} attached={attachment === img.capture_id}
+                toggle={() => onAttach?.(attachment === img.capture_id ? null : img.capture_id)} />)}
+              {m.imageNotice && <p role="status">{m.imageNotice === 'vision_unavailable'
+                ? (zh ? '当前规划模型未启用图像输入，已仅发送文字。' : 'Image input is disabled for this planner. Your text was sent.')
+                : (zh ? '截图已不可用，请重新截图。' : 'This capture is unavailable. Capture the view again.')}</p>}
               {m.plan && <PlanChecklist plan={m.plan} results={m.stepResults} />}
               {m.role === 'assistant' && renderCards?.(i)}
               {i === questionMessage && !m.form && questions.length > 0 && onAnswer && (
@@ -140,8 +168,11 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                   })}
                 </div>
               )}
-              {m.form && onSubmitForm && <QuestionForm key={m.form.ask_id} form={m.form} answered={m.answered}
-                disabled={disabled} onAnswer={onSubmitForm} />}
+              {m.form?.selection ? <SelectionWatch key={m.form.ask_id} sessionId={transcript.sessionId}
+                question={m.form.selection} disabled={disabled || !!m.answered}
+                onPick={items => onSelectionAnswer?.(m.form!.ask_id, items)} />
+                : m.form && onSubmitForm && <QuestionForm key={m.form.ask_id} form={m.form} answered={m.answered}
+                  disabled={disabled} onAnswer={onSubmitForm} />}
             </div>
           </Fragment>
         ))}
@@ -155,9 +186,19 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             {controls}
+            <SelectionWatch key={composerSession} sessionId={transcript.sessionId} disabled={disabled} onPick={items => {
+              const problem = tooManyPicks([...mentions, ...items])
+              if (problem) { setNotice(problem); return }
+              setInput(text => [text.trimEnd(), ...items.map(mentionLabel)].filter(Boolean).join(' ') + ' ')
+              setMentions(picked => [...picked, ...items])
+              setNotice('')
+            }} />
             {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
-            {onReset && <button className="btn-ghost" onClick={onReset} disabled={disabled || transcript.streaming}>New session</button>}
+            {onReset && <button className="btn-ghost" onClick={() => {
+              setComposerSession(previous => previous + 1)
+              onReset()
+            }} disabled={disabled || transcript.streaming}>New session</button>}
           </div>
         </div>
       )}

@@ -86,6 +86,7 @@ class Session:
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
     proposed_in_request: bool = False
     direct_reads: int = 0
+    chinese: bool = False
     read_results: dict[tuple[str, str], object] = field(default_factory=dict)
     auto_paused: bool = False  # A plan failure lasts for the designer's request, including after set_plan([]).
     auto_count: int = 0

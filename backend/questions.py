@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
@@ -10,6 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class SelectionOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["single", "multiple", "box"]
+    category: str | None = Field(default=None, max_length=100, pattern=r"^OST_[A-Za-z0-9_]+$")
+
+
+class SelectionQuestion(SelectionOptions):
+    prompt: Label
 
 
 class Option(BaseModel):

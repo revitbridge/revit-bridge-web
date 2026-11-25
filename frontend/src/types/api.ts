@@ -91,6 +91,7 @@ export interface ToolInfo {
   not_for?: string[]
   revit_versions?: string[]
   read_only?: boolean
+  ui_only?: boolean
   description: string
   version: string
   parameters: ToolParam[]
@@ -176,6 +177,8 @@ export interface TaskPlan {
 }
 
 export interface ChatMessage {
+  images?: ViewImage[]
+  imageNotice?: string
   plan?: TaskPlan
   stepResults?: Record<string, ExecutionResult>
   continuesTurn?: boolean
@@ -306,6 +309,7 @@ export interface DesignerOption {
 }
 
 export interface DesignerForm {
+  selection?: SelectionQuestion
   ask_id: string
   questions: { id: string; text: string; options: DesignerOption[]; allow_other?: boolean; multiple?: boolean }[]
 }
@@ -316,6 +320,8 @@ export interface DesignerAnswers {
 }
 
 export interface HostRequest {
+  selection_answer?: string
+  capture?: Pick<ViewImage, 'capture_id' | 'png_base64'>
   run?: 'confirm' | 'auto'
   answers?: DesignerAnswers
   message?: string
@@ -328,6 +334,9 @@ export interface HostRequest {
 
 /* The SSE events of one turn, as chatEvents() yields them. */
 export type HostEvent =
+  | { type: 'ask_selection'; ask_id: string; selection: SelectionQuestion }
+  | ({ type: 'view_image' } & ViewImage)
+  | { type: 'image_notice'; reason: string }
   | ({ type: 'plan' } & TaskPlan)
   | ({ type: 'questions' } & DesignerForm)
   | { type: 'session'; id: string }
@@ -339,6 +348,16 @@ export type HostEvent =
   | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
   | { type: 'error'; detail: string }
   | { type: 'done' }
+
+export interface SelectionQuestion { prompt: string; mode: 'single' | 'multiple' | 'box'; category?: string }
+export interface ViewImage { capture_id: string; png_base64: string; width: number; height: number; view_name: string }
+
+export interface HostFunction {
+  name: string
+  class: 'ui_only' | 'read_only'
+  description: string
+  parameters: { name: string; type: string; required: boolean; default?: unknown }[]
+}
 
 /* -- phase 6: confirmed execution, evidence and v1 packs (the /api/v1/bridge contract) -- */
 

@@ -104,7 +104,7 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
                          "builtin", "origin", "read_only", "display_name", "applies_when", "not_for", "revit_versions"}
     assert {t["name"] for t in tools if t["read_only"]} == {
         "count_by_level", "elements_in_link", "list_types", "query_levels", "query_model_stats",
-        "list_elements", "get_element_geometry", "get_element_parameters",
+        "list_elements", "get_element_geometry", "get_element_parameters", "list_mep_types",
     }
     assert all(t["builtin"] is True and t["origin"] == "builtin" for t in tools)
     assert wall["version"] == "1.0.0" and wall["validator"] == "count_delta" and wall["used"] == 0

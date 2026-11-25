@@ -142,12 +142,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
-from revit_bridge import host_instructions
+from revit_bridge import host_instructions, list_host_functions
 from revit_bridge.mentions import MAX_MENTIONS, mention_block, resolve_mentions
 from revit_bridge.snapshot import RevitQueryExecutor, snapshot_digest
 from revit_bridge.snapshot.query import RevitQueryError
 
-from backend import roles
+from backend import captures, roles
 from backend.api.auto_run import AutoRun
 from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
@@ -161,6 +161,7 @@ from backend.llm import (
     stream_completion, tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
+from backend.mention_check import mention_evidence
 from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import Session, get_session_store
@@ -279,6 +280,8 @@ class ChatMention(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    selection_answer: str | None = Field(default=None, max_length=100, description="ask_id answered by document-scoped element mentions")
+    capture: captures.CaptureAttachment | None = Field(default=None, description="Attach a signed PNG from a view_image event to this designer message")
     run: Literal["confirm", "auto"] = "confirm"
     answers: DesignerAnswers | None = None
     message: str | None = Field(default=None, max_length=8000)
@@ -512,6 +515,7 @@ class Turn:
         self.card: str | None = None
         self.auto: AutoRun | None = None
         self.question_tools = False
+        self.attachment: str | None = None
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
@@ -638,6 +642,14 @@ class Turn:
                             " For a value from a read in this message or a completed step in this plan, cite "
                             "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
                             "value and source tool. Designer and answer need the designer's words or form answer.")
+                if self.attachment and role == roles.PLANNER:
+                    context = list(context)
+                    index = next(i for i in reversed(range(len(context))) if context[i]["role"] == "user")
+                    context[index] = {**context[index], "content": [
+                        {"type": "text", "text": context[index]["content"]},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + self.attachment}},
+                    ]}
+                    self.attachment = None
                 async for item in stream_completion(llm, context, tools=round_tools, stats=stats,
                                                     memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
@@ -734,6 +746,8 @@ class Turn:
                 if error is not None:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
+                if outcome.image_event:
+                    yield format_sse_event("view_image", outcome.image_event)
                 if outcome.plan_event is not None:
                     yield format_sse_event("plan", outcome.plan_event)
                 if outcome.spec_event is not None:
@@ -770,7 +784,11 @@ class Turn:
                 self.session.pending_form = questions
                 self.session.form_routing = self.routing
                 self.session.form_stop_reply = stop_reply
-                yield format_sse_event("questions", questions)
+                if "selection" in questions:
+                    self.session.pending_form = {**questions, "scope": current_scope()}
+                    yield format_sse_event("ask_selection", questions)
+                else:
+                    yield format_sse_event("questions", questions)
                 return
             if auto_card:
                 return
@@ -835,6 +853,7 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
         analyst = targets[roles.ANALYST]
         yield run.stage(roles.ANALYST, analyst.model, "start")
         packs = await asyncio.to_thread(list_packs)
+        packs.extend(list_host_functions())
         names = [p["name"] for p in packs if isinstance(p, dict) and isinstance(p.get("name"), str)]
         digest = await model_digest(session, scope)
         messages = [{"role": "system", "content": session.role_prompt(roles.ANALYST, build_role_prompt)},
@@ -1027,6 +1046,8 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
                                              "1-4 questions with id, text, options, allow_other and multiple. "
                                              "Reply with a message and optional answers. The plan event carries "
                                              "plan_id and steps with id, title, status and optional evidence_id. "
+                                             "ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. "
+                                             "view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. "
                                              "A new planner stage can propose the next step in the same stream."}})
 async def chat(req: ChatRequest, request: Request,
                x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
@@ -1036,6 +1057,8 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_args", "message is empty")
     if req.answers and not (req.bridge and req.message and req.session_id):
         raise ApiError(422, "invalid_answers", "answers require a bridge message and its session")
+    if (req.selection_answer or req.capture) and not (req.bridge and req.message and req.session_id):
+        raise ApiError(422, "invalid_args", "Attachments and selection answers require a bridge message and its session.")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
     if req.mentions and req.execution is not None:
@@ -1078,9 +1101,10 @@ async def chat(req: ChatRequest, request: Request,
         req.execution = receipt
         req.message = None
         req.answers = None
+        req.selection_answer = None
         req.mentions = []
         req.run = "confirm"
-    elif step and plan.auto_receipt_pending and plan.receipt is not None and req.message and not req.answers:
+    elif step and plan.auto_receipt_pending and plan.receipt is not None and req.message and not (req.answers or req.selection_answer):
         # A stopped stream may never have delivered the receipt. A new user turn resumes
         # supervision of the completed operation, with any subsequent card left for review.
         resume_message = req.message
@@ -1088,10 +1112,17 @@ async def chat(req: ChatRequest, request: Request,
         req.message = None
         req.run = "confirm"
     pending = session.pending_form
-    verified = req.answers.verified_items(pending) if req.answers else None
+    selection = (pending or {}).get("selection")
+    if req.selection_answer and (not selection or req.selection_answer != pending["ask_id"]
+                                or pending["scope"] != current_scope() or not req.mentions
+                                or any(m.kind != "element" or not m.document_id for m in req.mentions)):
+        raise ApiError(422, "invalid_answers", "Select elements for the open question on its device.")
+    verified = req.answers.verified_items(pending) if req.answers and not selection else None
     if req.answers and verified is None:
         raise ApiError(422, "invalid_answers", "answers must match this session's open form")
-    form_routing = session.form_routing if verified else None
+    form_routing = session.form_routing if verified or req.selection_answer else None
+    if req.capture and req.message and form_routing is None:
+        form_routing = roles.FALLBACK_ROUTING  # An attachment addresses the planner.
     stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
                   and not verified[0].get("other") else None)
     decision = verified[0]["value"] if verified and session.form_stop_reply and not verified[0].get("other") else None
@@ -1138,6 +1169,14 @@ async def chat(req: ChatRequest, request: Request,
         # designer's words. Nothing else of the picks reaches it.
         scope = current_scope()
         picks = await check_mentions(req.mentions)
+        if req.selection_answer:
+            items = picks["resolved"]
+            if (len(items) != len(req.mentions) or (selection["mode"] == "single" and len(items) != 1)
+                    or any(selection.get("category") and item.get("category") != selection["category"] for item in items)):
+                raise ApiError(422, "invalid_answers", "The selection changed or no longer matches the question.")
+            verified = [{"id": "selection", "value": item["id"], "document_id": item["document_id"],
+                         "evidence": mention_evidence("element", item["id"])} for item in items]
+            text += f"\n\n{roles.ANSWERS_PREFIX} " + quote_marked_json({"ask_id": pending["ask_id"], "items": verified})
         session.remember_picks(scope, picks["resolved"])
         session.forget_picks(scope, picks["not_found"])
         block = selection_block(picks["resolved"])
@@ -1187,7 +1226,7 @@ async def chat(req: ChatRequest, request: Request,
             session.request_answers.append({"question": session.clarification, "answer": req.message})
         session.clarification = None
         if pending and (verified or req.message):
-            answer = {"ask_id": pending["ask_id"], "questions": [q["text"] for q in pending["questions"]],
+            answer = {"ask_id": pending["ask_id"], "questions": [selection["prompt"]] if selection else [q["text"] for q in pending["questions"]],
                       "answers": verified if verified else req.message}
             (plan.answers if step else session.request_answers).append(answer)
         if step and decision in ("revise", "continue"):
@@ -1197,10 +1236,19 @@ async def chat(req: ChatRequest, request: Request,
                 stop_reply = "计划已结束。" if prefers_chinese(request.headers.get("accept-language", "")) else "The plan has ended."
     if req.bridge:
         session.pending_form = None
+        session.chinese = prefers_chinese(request.headers.get("accept-language", ""))
         session.form_routing = None
         session.form_stop_reply = None
     turn = session.next_turn()
     run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
+    image_notice = None
+    if req.capture and req.message and not stop_reply:
+        if target.vision:
+            run.attachment = req.capture.verified_png(session.session_id, current_scope())
+            if not run.attachment:
+                image_notice = "capture_unavailable"
+        else:
+            image_notice = "vision_unavailable"
     approved = None
     if session.auto_assumptions and verified and pending and pending["ask_id"] == session.auto_assumptions[0]:
         if verified[0].get("value") == "accept" and not verified[0].get("other"):
@@ -1294,6 +1342,8 @@ async def chat(req: ChatRequest, request: Request,
             yield SSE_DONE
 
     async def with_auto_reports():
+        if image_notice:
+            yield format_sse_event("image_notice", {"reason": image_notice})
         async with aclosing(generate()) as frames:
             async for frame in frames:
                 if frame != SSE_DONE or not run.auto or run.auto.receipt is None:

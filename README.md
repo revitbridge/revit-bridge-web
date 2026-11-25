@@ -21,10 +21,33 @@ User packs and local overrides always require a click. A batch copy or type chan
 multiple elements in one operation. Include `copy_elements` or `change_type` in the exclusion
 list when those batches need individual review. The usage page identifies automatic runs.
 
-## Start on your machine
+Built-in read-only and UI-only tools share a separate budget of ten direct calls per
+designer message (`DIRECT_RUN_LIMIT`). A UI-only call appears as **Done in Revit**
+and records `host:ui-only` in the evidence ledger. A supporting call advances a
+plan step only when that step names the tool and the planner identifies the step.
 
-Chat allows up to ten direct reads per designer message. The steps of a manually
-confirmed plan share that budget until the designer sends another message.
+## Selection and view images
+
+Beside the composer, choose **Single**, **Multiple**, or **Box**, optionally enter
+a category such as `OST_Walls`, then click **Select in Revit**. Select normally in
+Revit. Single mode takes one changed element. Multiple and box modes wait for the
+selection to settle. Review the resulting element tags in the composer and click
+**Send** when ready. Cancelling or closing the page stops observation. On an older
+add-in, select the elements first and click **Take current selection**.
+
+The planner can ask for a selection with a button in its reply. Clicking that
+button starts observation and submits the verified picks as the answer to that
+question. Each element retains its document identity during verification.
+
+The tool drawer lists the native functions `open_view` and `capture_view_image`.
+Click a captured PNG to enlarge it. **Attach to model (next message)** starts off.
+Enabling it sends the image with the next designer message to the planner when
+its selected `models.yml` entry has `vision: true`. Otherwise the chat explains
+the text-only delivery. The page holds the PNG and its session/device signature
+in memory. The maximum is 1600 pixels wide and
+1 MiB per image. The ledger stores the image hash and dimensions.
+
+## Start on your machine
 
 By default the host runs in **local mode** (`DEPLOY_MODE=local`): it is reachable from this machine only,
 it talks to the Revit add-in on this machine over TCP (`127.0.0.1:18080`), and there is no pairing, no
@@ -422,7 +445,7 @@ model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 | Role | Does | Sees | Tools |
 |---|---|---|---|
 | analyst | routes the message: `chat` (talk, answer), `query` (read the model), `tool` (use a saved tool) or `none` (no tool does it); lists the facts still needed | the message with its `@` selections, a digest of the open model (the package's `snapshot_digest`, at most 1200 characters), the tool list (a name and one line each), the open task (its route and tool and the last message you got) | none |
-| planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | Query route offers `query`, `get_project_snapshot` and `ask_designer`. The tool route also offers `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` and `set_plan`. |
+| planner | reads the model, picks tools, asks and proposes the spec | the session conversation, routing, its tool results and the current message's attached image | Query route offers `query`, `get_project_snapshot`, `ask_designer`, `ask_selection`, `open_view` and `capture_view_image`. The tool route also offers `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` and `set_plan`. |
 | supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
 In mode `roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`; the default mode `roles` has no
@@ -515,6 +538,7 @@ roles:
 
   | Field | Values | Default | What it does |
   |---|---|---|---|
+  | `vision` | `true`, `false` | `false` | Enables explicit PNG attachments for this endpoint and model, on either API. |
   | `api` | `chat`, `responses` | `chat` | `responses` calls `<base_url>/responses` (OpenAI's Responses API) instead of `<base_url>/chat/completions` - for models that take tools only there. The call is not streamed: its text reaches the page in one piece when the model is done; the page's events are the same. Stateless (`store: false`); with `reasoning_effort` set the request asks for the encrypted reasoning, and the host sends it back with the function calls in the following calls (kept in memory with the chat session, never on disk or in a log). `max_tokens` goes as `max_output_tokens`; `temperature` only when the entry sets it; the tools in the flat form, `strict: false`. Usage: `input_tokens` is the input, `input_tokens_details.cached_tokens` the cache read (and `cache_write_tokens` the cache write when reported), `output_tokens` the output, reasoning included. |
   | `max_tokens_param` | `max_tokens`, `max_completion_tokens` | `max_tokens` | The name the output limit goes under on the chat api (OpenAI's newer models refuse `max_tokens`). Chat api only. |
   | `reasoning_effort` | `low`, `medium`, `high`, `xhigh` | not sent | `reasoning_effort` on the chat api, `reasoning.effort` on the responses api. |
@@ -634,6 +658,10 @@ is the package's `success: false` without consuming the token), and a refusal by
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
 
+`POST /watch-selection` accepts `session_id`, a fresh `watch_id`, `mode` and an optional
+`category`. A page can cancel with `DELETE /watch-selection/{session_id}/{watch_id}`.
+`GET /host-functions` lists the native view functions and their parameters.
+
 The chat picker calls `GET /mentions` with `kind` (level, type, link or element), optional `q`,
 `category`, `offset` and `limit`. Elements require `source=selection` and have a maximum page
 size of 50. Other kinds accept 1-200 items per page (default 50). The package returns `items`,
@@ -725,7 +753,7 @@ device itself; a No there is `success: false, error: "declined_on_device"`.
 reply text as `data: "<token>"` frames, `event: spec` (`{spec, card, errors, reconcile}`) when the
 model proposed a spec, `event: done`. The model's tools are the package's read-only ones
 (`get_project_snapshot`, `query`, `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`)
-plus `propose_spec`; it has no `confirm_spec`, `run_tool`, `execute_code` or `get_guidance`, and no
+plus `propose_spec`, `set_plan`, `ask_designer`, `ask_selection`, `open_view` and `capture_view_image`; it has no `confirm_spec`, `run_tool`, `execute_code` or `get_guidance`, and no
 tool that writes a pack. `list_tools` is read from disk on every call (a tool saved a moment ago, here
 or by the MCP server, is offered at once) and marks each pack `builtin` and its `origin`. A
 `propose_spec` with `action.kind: "execute_code"` shows no card and answers `{accepted: false,

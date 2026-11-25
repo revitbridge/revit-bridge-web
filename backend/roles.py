@@ -92,7 +92,7 @@ def clip_list(values, limit: int = LIST_MAX, each: int = ITEM_MAX) -> list[str]:
     return items
 
 # The tools of each role and route, by name, in the order of TOOL_DEFINITIONS.
-QUERY_TOOLS = ("get_project_snapshot", "query", "ask_designer")
+QUERY_TOOLS = ("get_project_snapshot", "query", "ask_designer", "ask_selection", "open_view", "capture_view_image")
 ALL_TOOLS = tuple(t["function"]["name"] for t in TOOL_DEFINITIONS)
 ROUTE_TOOLS = {QUERY: QUERY_TOOLS, TOOL: ALL_TOOLS}
 SUPERVISOR_TOOLS = ("query",)

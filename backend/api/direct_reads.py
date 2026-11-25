@@ -1,4 +1,4 @@
-"""Execute only readers declared by the installed package and supplied by the wheel."""
+"""Execute read-only and UI-only built-ins from the installed wheel."""
 from starlette.concurrency import run_in_threadpool
 
 from revit_bridge.capabilities import ToolStore
@@ -7,9 +7,14 @@ from revit_bridge.spec.gate import GateError
 from revit_bridge.spec.rules import reconcile, validate_spec
 
 from backend.api import bridge
+from backend.config import get_settings
 from backend.mention_check import mention_errors
 
-MAX_READS = 10
+
+def reserve_direct_run(session):
+    if session.direct_reads >= get_settings().direct_run_limit:
+        return {"error": "read_limit", "message": "Direct run limit reached for this message. Use the results already returned."}
+    session.direct_reads += 1
 
 
 class BuiltinStore(ToolStore):
@@ -23,17 +28,16 @@ class BuiltinStore(ToolStore):
 async def try_read(spec, session, store, *, step=None):
     name = spec.action.tool
     pack = store.load(name)
-    if pack is None or not pack.read_only or bridge.pack_origin(store, name)[0] != "builtin":
+    if pack is None or not (pack.read_only or pack.ui_only) or bridge.pack_origin(store, name)[0] != "builtin":
         return None
     readers = BuiltinStore(user_dir=store.user_dir, builtin_dir=store.builtin_dir)
     pack = readers.load(name)
-    if pack is None or not pack.read_only:
+    if pack is None or not (pack.read_only or pack.ui_only):
         return None
     if step and step.status != "pending":
         return {"error": "invalid_step", "message": "Omit step_id for a supporting read or revise the plan."}
-    if session.direct_reads >= MAX_READS:
-        return {"error": "read_limit", "message": "Read limit reached for this message. Use the results already returned."}
-    session.direct_reads += 1
+    if limit := reserve_direct_run(session):
+        return limit
     scope = bridge.current_scope()
     errors = validate_spec(spec, pack) + mention_errors(spec, pack, session.picks_for(scope))
     if not errors:
@@ -45,13 +49,17 @@ async def try_read(spec, session, store, *, step=None):
     if not report.ready:
         return {"error": "not_ready", "reconcile": report.model_dump(mode="json")}
     gate = bridge.get_gate()
-    confirmation = await run_in_threadpool(gate.issue, spec, confirmed_by="host:read-only",
+    confirmer = "host:ui-only" if pack.ui_only else "host:read-only"
+    confirmation = await run_in_threadpool(gate.issue, spec, confirmed_by=confirmer,
                                            channel=bridge.CONFIRM_CHANNEL, scope=scope)
     projection = spec.execution_projection()
     try:
         result = await run_pack(store=readers, gate=gate, ledger=bridge.get_ledger(), client=client, name=name,
                                 params=projection["params"], token=confirmation.token, host=bridge.HOST, scope=scope)
-        return bridge._execution_payload(result)
+        payload = bridge._execution_payload(result)
+        if pack.ui_only:
+            payload["ui_only"] = True
+        return payload
     finally:
         try:
             await run_in_threadpool(gate.consume, confirmation.token, projection, scope)

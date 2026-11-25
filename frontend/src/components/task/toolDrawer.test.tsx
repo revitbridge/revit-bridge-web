@@ -21,6 +21,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = function () { this.open = false }
   document.body.append(container)
   root = createRoot(container)
+  vi.spyOn(bridgeApi, 'hostFunctions').mockResolvedValue([])
   vi.spyOn(bridgeApi, 'revitHealth').mockResolvedValue({ revit_connected: false } as Awaited<ReturnType<typeof bridgeApi.revitHealth>>)
 })
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); send.mockClear() })
@@ -38,6 +39,12 @@ it('shows an empty offline catalog', async () => {
   await show([])
   expect(container.textContent).toContain('No tools available')
   expect(container.textContent).toContain('Disconnected')
+})
+it('lists native host functions alongside the packs', async () => {
+  vi.mocked(bridgeApi.hostFunctions).mockResolvedValue([{ name: 'open_view', class: 'ui_only', description: 'Open a view',
+    parameters: [{ name: 'name', type: 'string', required: true }] }])
+  await show([])
+  expect(container.querySelector('dialog')?.textContent).toContain('Host functionsopen_view')
 })
 it('searches offline and puts the example into the real composer without sending', async () => {
   vi.spyOn(bridgeApi, 'getTool').mockResolvedValue({ ...wall, source_query: 'Build a wall on L1', applies_when: [],

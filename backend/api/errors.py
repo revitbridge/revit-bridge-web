@@ -110,6 +110,8 @@ def install(app: FastAPI) -> None:
     async def _invalid_args(request: Request, exc: RequestValidationError) -> JSONResponse:
         """A body or query that does not fit a bridge route: the MCP tools call it
         invalid_args. Every other route keeps FastAPI's ``{detail: [...]}``."""
+        if request.url.path == "/api/chat" and isinstance(exc.body, dict) and "capture" in exc.body:
+            return JSONResponse(status_code=422, content={"error": "invalid_args", "message": "Invalid chat request with an image attachment."})
         if request.url.path == "/api/v1/settings/models":
             from backend.config import get_settings
             settings = get_settings()

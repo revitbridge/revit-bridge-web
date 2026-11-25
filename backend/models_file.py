@@ -89,7 +89,7 @@ _log = logging.getLogger("backend.models")
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
 REQUIRED_FIELDS = ("base_url", "model", "api_key_env")
-OPTIONAL_FIELDS = ("max_tokens", "temperature", "api", "max_tokens_param", "reasoning_effort", "timeout_s")
+OPTIONAL_FIELDS = ("max_tokens", "temperature", "api", "max_tokens_param", "reasoning_effort", "timeout_s", "vision")
 ENTRY_FIELDS = ", ".join(REQUIRED_FIELDS + OPTIONAL_FIELDS)
 MAX_FILE_BYTES = 64 * 1024
 MAX_MODEL_NAME = 200                       # what llm_calls keeps of a model name
@@ -127,6 +127,7 @@ class ModelEntry:
     max_tokens_param: str | None = None
     reasoning_effort: str | None = None
     timeout_s: int | None = None
+    vision: bool = False
 
     def api_key(self) -> str:
         """The key, read now: the variable may be set or changed while the host runs."""
@@ -174,6 +175,7 @@ class ModelTarget:
     timeout_s: int | None = None
     browser_model: bool = False
     entry_max_tokens: bool = False                 # max_tokens is the entry's own
+    vision: bool = False
 
     @property
     def base_url(self) -> str:
@@ -373,11 +375,14 @@ def _entry(name: str, position: int, raw, problems: list[str],
     effort = (_one_of(f"{prefix}.reasoning_effort", raw["reasoning_effort"], REASONING_EFFORTS, problems)
               if "reasoning_effort" in raw else None)
     timeout_s = _timeout_s(f"{prefix}.timeout_s", raw["timeout_s"], problems) if "timeout_s" in raw else None
+    vision = raw.get("vision", False)
+    if type(vision) is not bool:
+        problems.append(f"{prefix}.vision: must be a boolean")
     if len(problems) > before:
         return None
     return ModelEntry(name=name, base_url=base_url, model=model, api_key_env=key_env,
                       max_tokens=max_tokens, temperature=temperature, label=label,
-                      api=api, max_tokens_param=tokens_param, reasoning_effort=effort, timeout_s=timeout_s)
+                      api=api, max_tokens_param=tokens_param, reasoning_effort=effort, timeout_s=timeout_s, vision=vision)
 
 
 def parse_models(data, path: Path, *, allow_http: bool = False) -> ModelsFile:
@@ -596,7 +601,7 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens if own_limit else default_limit,
                        temperature=entry.temperature, api=entry.api, max_tokens_param=entry.max_tokens_param,
                        reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s,
-                       entry_max_tokens=own_limit)
+                       entry_max_tokens=own_limit, vision=entry.vision)
 
 
 def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:
