@@ -123,4 +123,4 @@ def test_when_no_tool_fits_the_reply_points_to_the_workbench(client, model):
 
 def test_the_code_not_offered_message_is_ascii_and_names_the_workbench():
     assert model_tools.CODE_NOT_OFFERED_MESSAGE.isascii()
-    assert model_tools.WORKBENCH_LINK == f"[workbench]({WORKBENCH_PATH})" == "[workbench](/capabilities/workbench)"
+    assert model_tools.WORKBENCH_LINK == f"[workbench]({WORKBENCH_PATH})" == "[workbench](/capabilities/authoring)"

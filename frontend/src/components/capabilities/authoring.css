@@ -1,0 +1,9 @@
+.authoring-page { padding: 1.5rem; }
+.authoring-page fieldset { border: 0; margin: 0; padding: 0; }
+.authoring-columns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1.25rem; }
+.authoring-page label { display: grid; gap: .35rem; margin-block: .75rem; }
+.authoring-page textarea { width: 100%; min-height: 5rem; padding: .6rem; }
+.authoring-page .authoring-code { min-height: 18rem; font-family: monospace; }
+.authoring-page pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+.authoring-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+@media (max-width: 700px) { .authoring-columns { grid-template-columns: 1fr; } }

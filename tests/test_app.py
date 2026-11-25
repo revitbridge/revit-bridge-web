@@ -32,6 +32,7 @@ def test_health_and_config_json(make_client, env):
             # a cloud host's visitor picks no mode (an admin may: tests/test_chat_modes.py)
             "runModes": ["confirm"],
             "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
+            "authoring": False,
             "chatModes": ["auto"],
             "chatModeDefault": "single",
             # kept until the connect page of 7.3 reads maxDevices
@@ -53,6 +54,7 @@ def test_settings_defaults_come_from_env_only():
         "roles": True, "chatModes": ["auto"], "chatModeDefault": "roles", "slotTokenRequired": False,
         "runModes": ["confirm"],
         "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
+        "authoring": False,
         "maxSlots": 20}}
     # The analyst is off by default (planner + supervisor).
     assert s.roles_analyst is False and s.chat_mode_default == "roles"

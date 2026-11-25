@@ -78,7 +78,7 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
       <header><h2>{zh ? '工具清单' : 'Tool catalog'}</h2><button type="button" onClick={close}>{zh ? '关闭' : 'Close'}</button></header>
       <p>{zh ? '助手可读取项目快照、标高、类型和选择集，并使用下列工具。超出范围时会说明缺少工具。聊天里不编写代码。'
         : 'Chat can read the project snapshot, levels, types and selection. It says when a tool is missing and uses saved tools only.'}
-        {' '}<a href="/capabilities/workbench">{zh ? '编写工具' : 'Create a tool'}</a></p>
+        {' '}<a href="/capabilities/authoring">{zh ? '编写工具' : 'Create a tool'}</a></p>
       <p>Revit · {health ? (health.revit_connected ? (zh ? '已连接' : 'Connected') : (zh ? '未连接' : 'Disconnected')) : (zh ? '状态未知' : 'Unknown')}
         {' · '}{zh ? '允许我的工具' : 'Allow my tools'} · {typeof health?.user_tools_allowed === 'boolean'
           ? (health.user_tools_allowed ? (zh ? '开' : 'On') : (zh ? '关' : 'Off')) : (zh ? '未知' : 'Unknown')}</p>

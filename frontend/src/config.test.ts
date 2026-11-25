@@ -3,7 +3,7 @@ import { parseRuntimeConfig } from './config'
 
 const NO_MODELS = {
   models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false,
-  chatModes: [], chatModeDefault: null, runModes: ['confirm'],
+  chatModes: [], chatModeDefault: null, runModes: ['confirm'], authoring: false,
 }
 
 describe('parseRuntimeConfig', () => {
