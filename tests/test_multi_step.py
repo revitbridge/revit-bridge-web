@@ -253,7 +253,8 @@ def test_plan_card_allows_the_designer_to_confirm_its_original_interpretation(cl
     confirm(client, sid, reviewed)
 
 
-@pytest.mark.parametrize("revision", [[], STEPS[:1], [{**STEPS[0], "status": "done"}, STEPS[1]]])
+@pytest.mark.parametrize("revision", [[STEPS[0], STEPS[0]], [{"id": "wall"}],
+                                      [{**STEPS[0], "status": "done"}, STEPS[1]]])
 def test_invalid_revision_keeps_the_existing_plan_and_card(client, model, revit, revision):
     sid, shown = start(client, model)
     model.script("analyst", json_turn(ROUTING_TOOL))
