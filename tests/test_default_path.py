@@ -208,11 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-INLINE_4096 = "mention_picker_4096"
+PLAN_4096 = "multi_step_4096"
 
 
 def current_section() -> str:
-    return f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"multi_step_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -229,6 +229,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     requests, streams = run_scenario(name, env, revit, recorder)
     sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
+    assert hashes(streams) == recorded(name, f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}")["streams"]
     legacy = recorded(name, AA5556C_SECTION)["streams"]
     for index, stream in enumerate(streams):
         if name.startswith("single-") and index == 2:
@@ -248,7 +249,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
             assert digest(stream) == legacy[index]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("mention_picker_")
+        assert section.startswith("multi_step_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")
@@ -261,7 +262,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
         assert digest(text) == expected, f"stream {index + 1} of {name} differs from the record"
     if limit is None:
         # The two v3 sets of request bytes differ only in their output limit.
-        old = recorded(name, INLINE_4096)
+        old = recorded(name, PLAN_4096)
         written_back = [re.sub(r'("max_tokens":\s*)%d\b' % llm_module.DEFAULT_MAX_TOKENS, rf"\g<1>{AA5556C_LIMIT}",
                                text, count=1) for text in requests]
         assert hashes(written_back) == old["requests"] and hashes(streams) == old["streams"]
@@ -305,7 +306,7 @@ def test_a_requested_mode_sends_what_its_switch_sends(name, mode, env, revit, re
     assert hashes(streams) == record["streams"]
 
 
-@pytest.mark.parametrize("value, section", [("16384", None), ("4096", INLINE_4096)])
+@pytest.mark.parametrize("value, section", [("16384", None), ("4096", PLAN_4096)])
 def test_llm_max_tokens_is_the_only_value_it_changes(value, section, env, revit, recorder):
     """LLM_MAX_TOKENS=16384 sends what the default sends; 4096 sends the v3 requests for that limit."""
     if REGENERATE:

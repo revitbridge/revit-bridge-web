@@ -6,6 +6,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Multi-step task chat keeps a checklist, form answers and execution evidence across steps. After
+one step completes, the planner can use its returned element IDs to prepare the next card in
+the same response. Each card requires its own confirmation. A failed step pauses for the
+designer. Usage records include the plan and step identifiers when available.
+
 The chat picker can insert multiple elements from the current Revit selection with stable IDs.
 Type searches accept partial words, spelling variants and category aliases across categories.
 Category filters show counts, and scrolling loads more results. Each message accepts up to 20

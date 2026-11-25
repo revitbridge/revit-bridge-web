@@ -16,6 +16,7 @@ import type { FetchCandidates, Mention } from '../../types/hostv2'
 import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
+import PlanChecklist from './PlanChecklist'
 import QuestionForm from './QuestionForm'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
@@ -101,9 +102,10 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
             <div className={`chat-bubble ${m.role}`}>
               {m.role === 'assistant'
-                ? <div className="markdown-body"><Markdown>{m.content || (m.form ? '' : '...')}</Markdown></div>
+                ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
+              {m.plan && <PlanChecklist plan={m.plan} results={m.stepResults} />}
               {m.role === 'assistant' && renderCards?.(i)}
               {i === questionMessage && !m.form && questions.length > 0 && onAnswer && (
                 <div className="question-list">

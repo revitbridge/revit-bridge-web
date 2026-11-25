@@ -188,6 +188,10 @@ its connection.
    the picks of the card again: one deleted or renamed in Revit since is refused, and the model
    proposes again. The *Compare with no bridge* switch sends the same sentence a second time with
    `bridge: false` (no tools, no skills, nothing executable) and shows both answers side by side.
+   For a request that takes several executions, the first reply shows a checklist. Confirm each
+   card separately. After a step succeeds, expand it to see the result and evidence. The next
+   card appears in a new reply and can use the elements just created. If a step fails, the page
+   asks whether to continue, revise the plan or end the task.
    Above each reply of the bridge transcript is its tool activity: one row per tool call the model
    made (name, arguments, status, time, result size in characters; open a row for the full
    arguments - the first 2000 characters and the size when they run past 8000 - and the first
@@ -377,7 +381,7 @@ model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 | Role | Does | Sees | Tools |
 |---|---|---|---|
 | analyst | routes the message: `chat` (talk, answer), `query` (read the model), `tool` (use a saved tool) or `none` (no tool does it); lists the facts still needed | the message with its `@` selections, a digest of the open model (the package's `snapshot_digest`, at most 1200 characters), the tool list (a name and one line each), the open task (its route and tool and the last message you got) | none |
-| planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | `query` route: `query`, `get_project_snapshot`; `tool` route: those and `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` |
+| planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | Query route offers `query`, `get_project_snapshot` and `ask_designer`. The tool route also offers `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` and `set_plan`. |
 | supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
 In mode `roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`; the default mode `roles` has no

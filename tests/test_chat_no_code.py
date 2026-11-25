@@ -15,7 +15,7 @@ from tests.test_api_v1 import code_spec, spec_for
 from tests.test_host_loop import HEADERS, events, model, sse, tokens  # noqa: F401 - the model fixture
 
 TOOLS = ["get_project_snapshot", "query", "list_tools", "get_tool_choices", "missing_params", "reconcile",
-         "propose_spec", "ask_designer"]
+         "propose_spec", "ask_designer", "set_plan"]
 
 
 def test_the_tools_array_has_no_get_guidance_and_does_not_change(client, model):

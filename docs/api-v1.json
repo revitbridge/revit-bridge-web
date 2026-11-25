@@ -45,7 +45,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers.",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A new planner stage can propose the next step in the same stream.",
             "content": {
               "text/event-stream": {}
             }
@@ -809,7 +809,7 @@
           "usage"
         ],
         "summary": "Run Usage",
-        "description": "One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,\nfirst and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), the chat mode (``mode``), and the same\nper role and model (``by_role``).",
+        "description": "One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,\nfirst and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), the chat mode (``mode``), and the same\nper role and model (``by_role``). ``plan_id`` and ``step_id`` identify the plan and step\nwhen the labelled calls have one distinct value. See the session call rows for a multi-step run.",
         "operationId": "run_usage_api_usage_runs_get",
         "parameters": [
           {
@@ -3175,6 +3175,28 @@
             ],
             "title": "Run Label"
           },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
           "mode": {
             "anyOf": [
               {
@@ -3896,6 +3918,28 @@
             "type": "array",
             "title": "By Role",
             "description": "The same sums per role and model of the run, in the order of their first call."
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan Id"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
           },
           "mode": {
             "anyOf": [

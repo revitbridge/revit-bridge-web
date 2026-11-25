@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -49,6 +50,7 @@ from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
 from backend.session import Session
 from backend.questions import DesignerForm
+from backend.plans import Plan
 
 PROPOSE_SPEC = "propose_spec"
 
@@ -143,7 +145,9 @@ TOOL_DEFINITIONS: list[dict] = [
                        "reconcile}. accepted is true only with no errors and reconcile.ready; "
                        "otherwise fix the spec or ask the designer, then propose again. "
                        "Ask the designer to click the card in this reply to confirm and run.",
-        "parameters": {"type": "object", "properties": {"spec": {"type": "object"}}, "required": ["spec"]},
+        "parameters": {"type": "object", "properties": {"spec": {"type": "object"},
+                       "step_id": {"type": "string", "description": "Required for the first unfinished step in a plan."}},
+                       "required": ["spec"]},
     }},
     {"type": "function", "function": {
         "name": "ask_designer",
@@ -167,6 +171,16 @@ TOOL_DEFINITIONS: list[dict] = [
                            },
                        }}}},
     }},
+    {"type": "function", "function": {
+        "name": "set_plan",
+        "description": "For a request requiring two or more executions, set the plan before the first card. "
+                       "Continue this turn with the first unfinished step. Form answers and earlier step results "
+                       "remain valid throughout the plan. Use created element ids in later specs. Revise unfinished "
+                       "steps as requested, omitting unwanted unfinished steps to skip them. Preserve completed steps.",
+        "parameters": {"type": "object", "required": ["steps"], "properties": {"steps": {
+            "type": "array", "minItems": 2, "maxItems": 8, "items": {"type": "object", "required": ["id", "title"],
+            "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "tool": {"type": "string"}}}}}},
+    }},
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOL_DEFINITIONS)
@@ -179,6 +193,7 @@ class ToolOutcome:
     result: object
     spec_event: dict | None = None
     questions_event: dict | None = None
+    plan_event: dict | None = None
 
 
 def parse_arguments(raw: str) -> dict | None:
@@ -211,6 +226,24 @@ async def _ask_designer(args: dict, session: Session) -> ToolOutcome:
     except ValidationError as exc:
         return ToolOutcome({"error": "invalid_questions", "message": str(exc)})
     return ToolOutcome(event, questions_event=event)
+
+
+async def _set_plan(args: dict, session: Session) -> ToolOutcome:
+    plan = session.plan if session.plan and session.plan.current else None
+    if plan is None:
+        if session.proposed_in_request:
+            return ToolOutcome({"error": "plan_after_card", "message": "Set the plan before proposing its first card."})
+        plan = Plan(session.request_text, list(session.request_answers), current_scope())
+    try:
+        if args.keys() != {"steps"}:
+            raise ValueError("Supply the steps array.")
+        plan.revise(args["steps"])
+    except ValueError as exc:
+        return ToolOutcome({"error": "invalid_plan", "message": str(exc)})
+    session.plan = plan
+    if not plan.proposed:
+        session.spec = None
+    return ToolOutcome(plan.context(), plan_event=plan.event())
 
 
 async def _get_project_snapshot(args: dict, session: Session) -> ToolOutcome:
@@ -307,6 +340,12 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     """validate_spec + reconcile; the page sees the card, the model the verdict. An
     ``execute_code`` spec and a ``run_tool`` spec whose tool is not a tool name are
     refused before anything else, with no card."""
+    plan = session.plan
+    step = plan.current if plan else None
+    if step and (args.get("step_id") != step.id or plan.confirmed or plan.reporting):
+        return _refused("invalid_step", f"Propose only the current unconfirmed plan step {step.id}.")
+    if not step and "step_id" in args:
+        return _refused("invalid_step", "There is no unfinished plan step with that id.")
     given = args.get("spec")
     try:
         spec = TaskSpec.model_validate(given)
@@ -321,27 +360,56 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
             require_tool_name(spec.action.tool)
         except ApiError as exc:
             return _refused(exc.payload["error"], exc.payload["message"])
+    if step:
+        # The existing workflow envelope travels unchanged from the card to /spec/confirm.
+        # Even two identical actions in different steps have distinct confirmation identities.
+        workflow = spec.workflow.model_dump() if spec.workflow else {"name": "", "stage": ""}
+        workflow["name"] = f"{workflow['name']} [plan {plan.id}]".strip()
+        workflow["stage"] = f"{workflow['stage']} [step {step.id}; card {uuid4().hex}]".strip()
+        spec = TaskSpec.model_validate({**spec.model_dump(), "workflow": workflow})
     store = ToolStore()
-    session.spec = spec.model_dump(mode="json")
+    session.proposed_in_request = True
+    normalized = spec.model_dump(mode="json")
+    if not step:
+        session.spec = normalized
     pack = pack_for(spec, store)
     # A parameter bound to a pick (mention:<kind>#<id>) must be one verified in this session,
     # bound as that pick is: unknown_mention otherwise (backend.mention_check).
     picks = session.picks_for(current_scope())
     errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
-    event = {"spec": session.spec, "card": spec.card(), "errors": errors, "reconcile": None}
+    event = {"spec": normalized, "card": spec.card(), "errors": errors, "reconcile": None}
     try:
         report = reconcile(spec, await snapshot_now(await get_revit_client()), pack_for(spec, store)).model_dump(mode="json")
     except ApiError as exc:
         # No Revit to reconcile against: not accepted; the page sees the card and why
         # (reconcile stays null, the package's payload rides in reconcile_error).
         event["reconcile_error"] = exc.payload
-        return ToolOutcome({"accepted": False, "errors": errors, "reconcile": exc.payload}, spec_event=event)
+        if step:
+            if session.plan is not plan or plan.current is not step or plan.confirmed or plan.reporting:
+                return _refused("invalid_step", "The current plan step changed while checking this card.")
+            step.status = "pending"
+            session.spec = plan.proposed = None
+        return ToolOutcome({"accepted": False, "errors": errors, "reconcile": exc.payload}, spec_event=event,
+                           plan_event=plan.event() if step else None)
     event["reconcile"] = report
-    return ToolOutcome({"accepted": not errors and bool(report["ready"]), "errors": errors, "reconcile": report},
-                       spec_event=event)
+    accepted = not errors and bool(report["ready"])
+    if step and (session.plan is not plan or plan.current is not step or plan.confirmed or plan.reporting):
+        return _refused("invalid_step", "The current plan step changed while checking this card.")
+    checkable = (not report["conflicts"] and not report["questions"]
+                 and all(e["code"] == "unconfirmed_interpretation" for e in errors))
+    if checkable and step:
+        step.status = "proposed"
+        session.spec = plan.proposed = normalized
+        plan.interpretations = [*normalized["interpretations"], *report["interpretations_required"]]
+    elif step:
+        step.status = "pending"
+        session.spec = plan.proposed = None
+    return ToolOutcome({"accepted": accepted, "errors": errors, "reconcile": report}, spec_event=event,
+                       plan_event=plan.event() if step else None)
 
 
 _HANDLERS = {
+    "set_plan": _set_plan,
     "get_project_snapshot": _get_project_snapshot,
     "query": _query,
     "list_tools": _list_tools,

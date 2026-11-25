@@ -324,6 +324,21 @@ def test_the_calls_table_is_added_to_an_existing_database(tmp_path):
     assert len(store.calls_of_session("s")) == 1
 
 
+def test_plan_and_step_ids_follow_model_calls_without_splitting_run_totals(tmp_path):
+    store = InteractionLogStore(tmp_path / "usage.sqlite")
+    args = dict(session_id="s", turn=1, role="planner", model="m", usage={"input": 5}, ms=10, run_label="job")
+    store.record_call(**args, round=1)
+    store.record_call(**args, round=2, plan_id="p", step_id="wall")
+    assert (store.runs()[0]["plan_id"], store.runs()[0]["step_id"]) == ("p", "wall")
+    store.record_call(**args, round=3, plan_id="p", step_id="window")
+    row, = store.runs()
+    assert (row["calls"], row["input"], row["plan_id"], row["step_id"]) == (3, 15, "p", None)
+    assert [(r["plan_id"], r["step_id"]) for r in store.calls_of_session("s")] == [
+        (None, None), ("p", "wall"), ("p", "window")]
+    store.record_call(**args, round=4, plan_id="another", step_id="window")
+    assert store.runs()[0]["plan_id"] is None
+
+
 def test_old_calls_age_out_with_the_logs(tmp_path):
     store = InteractionLogStore(tmp_path / "logs.db")
     with contextlib.closing(sqlite3.connect(tmp_path / "logs.db")) as conn, conn:

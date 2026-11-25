@@ -44,6 +44,14 @@ describe('parseSseFrame', () => {
     expect(event).toEqual({ type: 'spec', ...data })
   })
 
+  it('reads plan snapshots and ignores incomplete or ambiguous steps', () => {
+    const step = { id: 'wall', title: 'Create a wall', status: 'proposed' }
+    const parse = (steps: unknown[]) => parseSseFrame('event: plan\ndata: ' + JSON.stringify({ plan_id: 'p', steps }))
+    expect(parse([step])).toEqual({ type: 'plan', plan_id: 'p', steps: [step] })
+    expect(parse([step, step])).toBeNull()
+    expect(parse([{ ...step, status: 'running' }])).toBeNull()
+  })
+
   it('wraps the execution result under execution', () => {
     const execution = { success: false, error: 'validation_failed', tool: 'create_wall', result: { Status: 'Created' },
       validation: { validator: 'count_delta', passed: false, checks: [{ name: 'count_delta', passed: false, detail: 'd' }] },

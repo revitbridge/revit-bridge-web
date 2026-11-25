@@ -17,6 +17,11 @@ the page reported an execution (first frame of that turn), ``event: error``
 for a model failure, and a final ``event: done`` / ``[DONE]``; the response
 header ``X-Session-Id`` names the server-side session.
 
+A multi-step task emits ``event: plan`` when the planner calls ``set_plan`` and when a
+step changes state. The snapshot carries ``{plan_id, steps: [{id, title, status,
+evidence_id?}]}``. A completed step may be followed by a new planner stage and
+the next card in this same stream. Each card still requires a separate confirmation.
+
 The designer's picks: a message may carry ``mentions`` (``[{kind, id, label?}]``,
 at most 20; ``@level``, ``@type``, ``@link``, ``@element`` as ``GET /api/v1/bridge/mentions``
 listed them). Before the model is called the host checks them against the open
@@ -129,6 +134,7 @@ import re
 import time
 import unicodedata
 from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Literal
 
@@ -489,6 +495,7 @@ class Turn:
         # The last spec card this turn sent the page: "ready" (accepted: it can be confirmed),
         # "not_ready" (errors, or reconcile not ready), None (no spec event in this turn).
         self.card: str | None = None
+        self.question_tools = False
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
@@ -565,9 +572,12 @@ class Turn:
         """The ``usage`` event of one model call; its ``llm_calls`` row is written first."""
         ms = int((time.monotonic() - started) * 1000)
         counts = stats.usage.as_dict()
+        plan = self.session.plan if self.bridge else None
+        step = plan.current if plan else None
         await asyncio.to_thread(self.calls_log.record_call, session_id=self.session.session_id, turn=self.turn,
                                 round=round_no, role=role, model=model, usage=counts, ms=ms,
-                                run_label=self.run_label, mode=self.mode)
+                                run_label=self.run_label, mode=self.mode,
+                                plan_id=plan.id if step else None, step_id=step.id if step else None)
         return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
 
     async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
@@ -590,7 +600,20 @@ class Turn:
             stats = CallStats()
             started = time.monotonic()
             try:
-                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats,
+                context = messages
+                plan = self.session.plan if self.bridge else None
+                if plan and plan.current:
+                    context = list(messages)
+                    index = next(i for i in range(len(context) - 1, -1, -1) if context[i]["role"] == "user")
+                    data = json.dumps(plan.context(), ensure_ascii=False)
+                    if has_host_marker(data):
+                        data = quote_marked_json(plan.context())
+                    instruction = ("Judge only the current step. If it completes the final unfinished step, "
+                                   "summarize every step in the final report." if role == roles.SUPERVISOR else
+                                   "Use the original request, verified form answers and previous results throughout the plan.")
+                    context[index] = {**context[index], "content": context[index]["content"] +
+                                      f"\n\nPlan {roles.FROM_HOST}: {instruction}\n{data}"}
+                async for item in stream_completion(llm, context, tools=round_tools, stats=stats,
                                                     memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
                         parts.append(item)
@@ -619,6 +642,12 @@ class Turn:
             if not calls:
                 if content and keep is not None:
                     keep(assistant_message(content))
+                    if self.bridge and role == roles.PLANNER and not (self.session.plan and self.session.plan.current):
+                        # A text clarification can precede the plan, including one grounded in
+                        # reconcile.questions. Preserve the brief until its designer answers.
+                        open_task = self.mode != MODE_SINGLE and self.routing.route == roles.TOOL
+                        if self.card != "ready" and (open_task or self.question_tools or "?" in content or "？" in content):
+                            self.session.clarification = content
                 break
             assistant = assistant_message(content, calls)
             if keep is not None:
@@ -654,12 +683,18 @@ class Turn:
                                           error=type(exc).__name__)
                     raise
                 result_text = reply["content"]
+                if call.name == "reconcile" and isinstance(outcome.result, dict) and outcome.result.get("questions"):
+                    self.question_tools = True
+                if call.name == "missing_params" and isinstance(outcome.result, list) and outcome.result:
+                    self.question_tools = True
                 error = tool_error_text(outcome.result)
                 closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
                            "preview": result_text[:TOOL_PREVIEW]}
                 if error is not None:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
+                if outcome.plan_event is not None:
+                    yield format_sse_event("plan", outcome.plan_event)
                 if outcome.spec_event is not None:
                     # The page shows this card instead of any earlier one: the turn's card is the last.
                     # A refusal that sends no card (no spec event) leaves it as it was.
@@ -711,13 +746,13 @@ class Turn:
 
     async def planner(self, target: ModelTarget, route: str, out: LoopResult) -> AsyncGenerator[str, None]:
         """The planner's segment: the session's conversation (the caller added its user message)
-        under the planner's prompt, with the route's tools - or all eight on every route with
+        under the planner's prompt, with the route's tools - or all planner tools on every route with
         ``ROLES_PLANNER_TOOLS=all``, every one of them offered and run."""
         session = self.session
         messages = [{"role": "system", "content": session.role_prompt(roles.PLANNER, build_role_prompt)}]
         messages.extend(session.window(HISTORY_WINDOW))
         if get_settings().roles_planner_tools == "all":
-            route = roles.TOOL                    # the tool route has all eight
+            route = roles.TOOL                    # the tool route offers the full planner tool list
         yield self.stage(roles.PLANNER, target.model, "start")
         async for frame in self.loop(roles.PLANNER, target, messages, roles.ROUTE_DEFINITIONS[route],
                                      max_rounds=MAX_TOOL_ROUNDS, stream=True, keep=session.add,
@@ -780,12 +815,19 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     session.digest_failures.pop(scope, None)
     task = session.role_task or roles.RoleTask(route=roles.TOOL)
     session.role_task = task
+    plan = session.plan
+    step = plan.current if plan else None
+    if step:
+        task.retries = step.retries
+        step.evidence_id = execution.get("evidence_id")
+        step.result = roles.step_result(execution)
     supervisor = targets[roles.SUPERVISOR]
     # The spec the page confirmed with this session, once: a report without one (the page did
     # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
     confirmed = session.confirmed_spec is not None
     spec = session.confirmed_spec if confirmed else session.spec
-    session.confirmed_spec = None
+    if not step:
+        session.confirmed_spec = None
     yield run.stage(roles.SUPERVISOR, supervisor.model, "start")
     messages = [{"role": "system", "content": session.role_prompt(roles.SUPERVISOR, build_role_prompt)},
                 {"role": "user", "content": roles.supervisor_message(spec, execution, task.retries,
@@ -797,23 +839,47 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
         yield frame
     verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution, chinese=chinese),
                             execution, task.retries, chinese=chinese)
+    if step:
+        if isinstance(step.evidence_id, str):
+            session.reported_evidence.add(step.evidence_id)
+        plan.confirmed = False
+        plan.reporting = False
+        plan.proposed = None
+        plan.token_digest = None
+        plan.receipt = None
+        session.confirmed_spec = None
+        session.spec = None
+        failed = execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution)
+        step.status = {roles.DONE: "done", roles.RETRY: "pending", roles.ASK: "failed" if failed else "pending"}[verdict.verdict]
     if verdict.forced:
         _log.info("the supervisor's verdict became %s (%s) in session %s", verdict.verdict, verdict.forced,
                   session.session_id)
     yield run.stage(roles.SUPERVISOR, supervisor.model, "end")
+    if step:
+        yield format_sse_event("plan", plan.event())
     reply = verdict.reply()
     if verdict.verdict != roles.RETRY:
         yield format_sse(verdict.report)
         session.pending_verdict = verdict.note()
         if verdict.verdict == roles.DONE:
             session.role_task = None
+            if step and plan.current:
+                session.pending_verdict = None
+                session.role_task = roles.RoleTask(route=roles.TOOL)
+                session.add_message("user", f"Continue the plan with step {plan.current.id} {roles.FROM_HOST}.")
+                out = LoopResult()
+                async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
+                    yield frame
+                session.role_task.last = out.text
         else:
             task.last = reply
             question = verdict.question or ("接下来要怎么做？" if chinese else "How would you like to proceed?")
+            options = [{"value": "revise", "label": "调整任务要求" if chinese else "Revise the task"},
+                       {"value": "stop", "label": "结束此任务" if chinese else "End this task"}]
+            if step:
+                options.insert(0, {"value": "continue", "label": "跳过这一步并继续" if chinese else "Skip this step and continue"})
             form = DesignerForm(questions=[{"id": "next_step", "text": question[:500],
-                                "allow_other": True, "options": [
-                                    {"value": "revise", "label": "调整任务要求" if chinese else "Revise the task"},
-                                    {"value": "stop", "label": "结束此任务" if chinese else "End this task"}]}])
+                                           "allow_other": True, "options": options}])
             session.pending_form = form.event()
             session.form_routing = roles.FALLBACK_ROUTING
             session.form_stop_reply = "此任务已结束。" if chinese else "This task has ended."
@@ -821,6 +887,8 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
         return
     yield format_sse(reply + "\n\n")
     task.retries += 1
+    if step:
+        step.retries = task.retries
     task.route = roles.TOOL
     session.pending_verdict = None                # the planner gets this verdict now, as the retry
     session.add({"role": "user", "content": roles.retry_message(verdict, task.retries)})
@@ -892,7 +960,9 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
              responses={200: {"content": {"text/event-stream": {}},
                               "description": "SSE conversation. The questions event carries ask_id and "
                                              "1-4 questions with id, text, options, allow_other and multiple. "
-                                             "Reply with a message and optional answers."}})
+                                             "Reply with a message and optional answers. The plan event carries "
+                                             "plan_id and steps with id, title, status and optional evidence_id. "
+                                             "A new planner stage can propose the next step in the same stream."}})
 async def chat(req: ChatRequest, request: Request,
                x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
     if (req.message is None) == (req.execution is None):
@@ -926,6 +996,14 @@ async def chat(req: ChatRequest, request: Request,
     with_roles = mode != MODE_SINGLE
     targets = {}
     session = get_session_store().get_or_create(req.session_id)
+    if req.bridge and session.bridge_turn.locked():
+        raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
+    plan = session.plan if req.bridge else None
+    step = plan.current if plan else None
+    if step and plan.scope != current_scope():
+        raise ApiError(422, "invalid_step", "This plan belongs to another device.")
+    if step and plan.reporting:
+        raise ApiError(409, "step_in_progress", "The current execution report is already being reviewed.")
     pending = session.pending_form
     verified = req.answers.verified_items(pending) if req.answers else None
     if req.answers and verified is None:
@@ -933,6 +1011,7 @@ async def chat(req: ChatRequest, request: Request,
     form_routing = session.form_routing if verified else None
     stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
                   and not verified[0].get("other") else None)
+    decision = verified[0]["value"] if verified and session.form_stop_reply and not verified[0].get("other") else None
     if not stop_reply:
         try:
             target = await resolve_model(ROLE, request.headers)
@@ -954,6 +1033,9 @@ async def chat(req: ChatRequest, request: Request,
                 raise HTTPException(exc.status, str(exc)) from None
             if not targets[first].llm.configured:
                 raise no_model(targets[first], first)
+    elif not with_roles and step and req.execution is not None:
+        # Single-model mode uses the same target to review this step, then to plan the next.
+        targets[roles.SUPERVISOR] = target
 
     text = req.message if req.message is not None else execution_message(req.execution)
     if req.message and has_host_marker(text):
@@ -981,12 +1063,46 @@ async def chat(req: ChatRequest, request: Request,
                       "mention:element#<id>[,<id>...] with the same IDs.")
         if block:
             text = f"{text}\n\n{block}"
-    if req.execution is not None and req.execution.get("evidence_id"):
-        session.evidence_id = str(req.execution["evidence_id"])
     # A device read can yield. Consume the form only after preflight succeeds
     # and only if another request has not already answered that form.
     if req.bridge and req.message and session.pending_form is not pending:
         raise ApiError(422, "invalid_answers", "the form was already answered or replaced")
+    if req.bridge and (session.plan is not plan or (step and plan.current is not step)):
+        raise ApiError(409, "plan_changed", "The plan changed while checking this request.")
+    if req.execution is not None:
+        evidence = req.execution.get("evidence_id")
+        if isinstance(evidence, str) and evidence in session.reported_evidence:
+            raise ApiError(422, "invalid_step", "This execution report has already been used.")
+        if step:
+            if (session.plan is not plan or plan.current is not step or not plan.confirmed or plan.reporting
+                    or plan.running or not plan.matches_report(req.execution)):
+                raise ApiError(422, "invalid_step", "The report does not match this step's confirmed execution.")
+            req.execution = plan.receipt
+            text = execution_message(req.execution)
+        if evidence:
+            session.evidence_id = str(evidence)
+    if req.bridge and not session.bridge_turn.acquire(blocking=False):
+        raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
+    if step and req.execution is not None:
+        plan.reporting = True
+    changed_plan = None
+    if req.bridge and req.message:
+        if not step and pending is None and session.clarification is None:
+            session.request_text = req.message
+            session.request_answers = []
+            session.proposed_in_request = False
+        elif not step and pending is None and session.clarification:
+            session.request_answers.append({"question": session.clarification, "answer": req.message})
+        session.clarification = None
+        if pending and (verified or req.message):
+            answer = {"ask_id": pending["ask_id"], "questions": [q["text"] for q in pending["questions"]],
+                      "answers": verified if verified else req.message}
+            (plan.answers if step else session.request_answers).append(answer)
+        if step and decision in ("revise", "continue"):
+            step.status = "skipped" if decision == "continue" else "pending"
+            changed_plan = plan.event()
+            if not plan.current:
+                stop_reply = "计划已结束。" if prefers_chinese(request.headers.get("accept-language", "")) else "The plan has ended."
     if req.bridge:
         session.pending_form = None
         session.form_routing = None
@@ -1000,18 +1116,28 @@ async def chat(req: ChatRequest, request: Request,
         session.pending_verdict = None
         session.spec = None
         session.confirmed_spec = None
+        session.clarification = None
+        session.request_text = ""
+        session.request_answers = []
+        if step:
+            plan.stop()
+            changed_plan = plan.event()
         session.add({"role": "user", "content": text})
         session.add({"role": "assistant", "content": stop_reply})
 
         async def generate() -> AsyncGenerator[str, None]:
+            if changed_plan:
+                yield format_sse_event("plan", changed_plan)
             if picks is not None:
                 yield format_sse_event("mentions", picks)
             yield format_sse(stop_reply)
             yield SSE_DONE
-    elif with_roles:
+    elif with_roles or (step and req.execution is not None):
         log_model = lambda: run.models_ran() or llm.model
         scope = current_scope()                   # the device this request drives
         async def generate() -> AsyncGenerator[str, None]:
+            if changed_plan:
+                yield format_sse_event("plan", changed_plan)
             if req.execution is not None:
                 yield format_sse_event("execution", req.execution)
             if picks is not None:
@@ -1042,6 +1168,8 @@ async def chat(req: ChatRequest, request: Request,
         messages.extend(session.window(HISTORY_WINDOW))
 
         async def generate() -> AsyncGenerator[str, None]:
+            if changed_plan:
+                yield format_sse_event("plan", changed_plan)
             if req.execution is not None:
                 yield format_sse_event("execution", req.execution)
             if picks is not None:
@@ -1064,17 +1192,23 @@ async def chat(req: ChatRequest, request: Request,
             yield run.stage(ROLE, llm.model, "end")
             yield SSE_DONE
 
+    async def session_stream():
+        try:
+            async with aclosing(generate()) as events:
+                logged = log_and_stream(events, module="chat", session_id=session.session_id,
+                                        client_ip=get_client_ip(request), user_agent=request.headers.get("user-agent", ""),
+                                        user_input=text, model=log_model)
+                async with aclosing(logged):
+                    async for event in logged:
+                        yield event
+        finally:
+            if step and req.execution is not None:
+                plan.reporting = False
+            if req.bridge:
+                session.bridge_turn.release()
+
     return StreamingResponse(
-        log_and_stream(
-            generate(),
-            module="chat",
-            session_id=session.session_id,
-            client_ip=get_client_ip(request),
-            user_agent=request.headers.get("user-agent", ""),
-            user_input=text,
-            # The one loop: the planner's model, as before; the roles: each role that ran and its model.
-            model=log_model,
-        ),
+        session_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Session-Id": session.session_id},
     )

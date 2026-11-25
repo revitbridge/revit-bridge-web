@@ -542,7 +542,7 @@ def test_the_supervisor_answers_after_its_query_rounds(revit, client, model):
 def test_role_definitions_are_constant_and_follow_the_table():
     assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query", "ask_designer"),
                                  "tool": ("get_project_snapshot", "query", "list_tools", "get_tool_choices",
-                                          "missing_params", "reconcile", "propose_spec", "ask_designer")}
+                                          "missing_params", "reconcile", "propose_spec", "ask_designer", "set_plan")}
     assert roles.SUPERVISOR_TOOLS == ("query",)
     assert roles.ROUTE_DEFINITIONS["tool"] == TOOL_DEFINITIONS
     assert all(d in TOOL_DEFINITIONS for d in roles.ROUTE_DEFINITIONS["query"] + roles.SUPERVISOR_DEFINITIONS)
