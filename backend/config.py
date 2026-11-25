@@ -325,6 +325,7 @@ class WebSettings:
                 # and the device counts are 0 there (nothing to unlock, no relay).
                 "mode": self.mode,
                 "byoModel": True,
+                "authoring": not self.cloud or admin,
                 "serverModel": self.server_model_configured,
                 "admin": bool(self.admin_password),
                 "maxDevices": self.max_devices,

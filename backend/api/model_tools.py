@@ -59,7 +59,7 @@ PROPOSE_SPEC = "propose_spec"
 # The workbench page, where a person tries code and saves it as a tool. The host's
 # line in the system prompt (backend.api.chat.WORKBENCH_LINE) and the code_not_offered
 # verdict both name it.
-WORKBENCH_PATH = "/capabilities/workbench"
+WORKBENCH_PATH = "/capabilities/authoring"
 WORKBENCH_LINK = f"[workbench]({WORKBENCH_PATH})"
 CODE_NOT_OFFERED = "code_not_offered"
 CODE_NOT_OFFERED_MESSAGE = (

@@ -85,6 +85,7 @@ from revit_bridge import checking
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
+from revit_bridge.capabilities.store import SolidifiedTool, normalize_pack
 from revit_bridge.revit.capabilities import discover
 from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
@@ -627,6 +628,29 @@ async def list_tools():
     return list_packs(directory=not get_settings().cloud, catalog=True)
 
 
+class DraftToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(min_length=1, max_length=16000)
+    name: str | None = None
+    based_on: str | None = None
+
+
+@router.post("/tools/draft", dependencies=[Depends(require_admin)], responses=admin_responses(403, 404, 422, 502, 503))
+async def draft_tool(req: DraftToolRequest, request: Request):
+    """Generate an in-memory v1 pack. Return its validation problems alongside the editable pack."""
+    from backend.authoring import generate
+    description = req.description.strip()
+    if not description:
+        raise ApiError(422, "invalid_args", "Describe the tool to draft.")
+    name = require_tool_name(req.name) if req.name is not None else None
+    reference = None
+    if req.based_on is not None:
+        reference = ToolStore().load(require_tool_name(req.based_on))
+        if reference is None:
+            raise unknown_tool(req.based_on)
+    return await generate(description, name, reference, request)
+
+
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
     """The full pack, including its declared ``read_only`` flag."""
@@ -1077,33 +1101,23 @@ def workbench_rate_limit(request: Request) -> None:
 RENDER_FAILED = "render_failed"
 
 
+class DraftStore(ToolStore):
+    """Use the package's renderer with one transient pack and no filesystem lookups."""
+
+    def __init__(self, pack):
+        self.tool = SolidifiedTool(**normalize_pack(pack))
+
+    def load(self, name):
+        return self.tool if self.tool.name == name else None
+
+
 def render_draft(pack: dict, values: dict) -> str:
-    """The draft pack's template filled with ``values`` by the package itself: the draft is
-    checked with ``validate_pack`` (422 ``invalid_pack``) and its name with
-    ``require_tool_name``, then saved with ``ToolStore.solidify`` in a store whose user and
-    built-in directories are both fresh temporary directories (never the real ones,
-    removed afterwards), and ``ToolStore.render(name, values)`` fills it - defaults,
-    escaping, leftover placeholders, all the package's. A render it refuses is 422
-    ``render_failed`` with the package's messages in ``errors``."""
+    """Validate, normalize and render the supplied v1 pack entirely in memory."""
     problems = pack_problems(pack)
     if problems:
         raise ApiError(422, "invalid_pack", problems=problems)
     name = require_tool_name(pack["name"])
-    with tempfile.TemporaryDirectory(prefix="rbw-draft-") as scratch:
-        root = Path(scratch)
-        (root / "builtin").mkdir()
-        store = ToolStore(user_dir=root / "user", builtin_dir=root / "builtin")
-        try:
-            store.solidify(
-                name=name, code=pack["code_template"], description=pack.get("description") or "",
-                display_name=pack.get("display_name") or "", parameters=pack.get("parameters") or [],
-                source_query=pack.get("source_query") or "", preconditions=pack.get("preconditions") or [],
-                applies_when=pack.get("applies_when") or [], not_for=pack.get("not_for") or [],
-                validator=pack.get("validator"),
-            )
-        except ValueError as exc:
-            raise _invalid_pack(exc) from None
-        code, errors = store.render(name, values)
+    code, errors = DraftStore(pack).render(name, values)
     if code is None:
         raise ApiError(422, RENDER_FAILED, "The package could not fill the draft's template with these values",
                        errors=errors)
@@ -1143,6 +1157,12 @@ async def check_code(req: CheckCodeRequest):
     return await checking.check_code(client, code, parameters, library=guidance_library)
 
 
+class DraftLedger:
+    def append(self, record):
+        # Retain the rollback evidence and code hash while the source is an unsaved draft.
+        return get_ledger().append({k: v for k, v in record.items() if k != "code_head"})
+
+
 @router.post("/dry-run", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
 async def dry_run_code(req: DryRunRequest):
     """``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group
@@ -1161,7 +1181,8 @@ async def dry_run_code(req: DryRunRequest):
     if refused is not None:
         return refused
     client = await get_revit_client()
-    return await package_dry_run.dry_run_code(client, code, parameters, ledger=get_ledger(),
+    ledger = DraftLedger() if req.pack is not None else get_ledger()
+    return await package_dry_run.dry_run_code(client, code, parameters, ledger=ledger,
                                               host=HOST, scope=current_scope())
 
 

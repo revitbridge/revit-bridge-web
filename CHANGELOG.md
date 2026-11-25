@@ -6,6 +6,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+The tool authoring page can generate an editable v1 draft from a description and a reference
+pack. Compilation and a successful rolled-back trial unlock saving. Cloud hosts restrict
+authoring to verified administrators.
+
 The searchable tool catalog beside the task input works while Revit is disconnected. Open a
 pack to inspect its parameters and limits, then insert its example into the current brief.
 
