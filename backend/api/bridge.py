@@ -826,8 +826,11 @@ async def run_tool(name: str, req: RunToolRequest):
     """``run_pack``: the confirmed pack under its token - health, render, sandbox, preconditions,
     validator, evidence, all in the package. An unknown pack is 404 and a missing token
     400 ``confirmation_required`` before anything else is looked at."""
+    return await execute_pack(name, req, ToolStore())
+
+
+async def execute_pack(name, req, store):
     require_tool_name(name)
-    store = ToolStore()
     if not req.token.strip() and store.load(name) is None:
         raise unknown_tool(name)
     token = _require_token(req.token)
@@ -986,11 +989,17 @@ async def confirm_spec(req: ConfirmRequest):
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
     needs no Revit here. The token belongs to the browser session and never enters the model
     context."""
+    if req.confirmed_by.strip() == "designer:auto-run":
+        raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
+    return await issue_spec(req, ToolStore())
+
+
+async def issue_spec(req, store):
     try:
         spec = TaskSpec.model_validate(req.spec)
     except ValidationError as exc:
         raise ApiError(422, "invalid_spec", errors=[{"code": "invalid_spec", "param": None, "message": str(exc)}]) from None
-    pack = pack_for(spec, ToolStore())
+    pack = pack_for(spec, store)
     errors = validate_spec(spec, pack) + mention_errors(spec, pack, session_picks(req.session_id))
     if errors:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])

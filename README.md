@@ -7,6 +7,18 @@ query, execution and capability pack goes through the `revit_bridge` package.
 
 设计师与 AI 之间的意图桥演示站：连接 Revit、用自带模型从已保存的工具里选工具并填参数、确认后执行；对话里模型不写代码，新工具在工具台里检查、试跑、存成工具。
 
+## Execution mode
+
+Chat starts in **Confirm each step**. With **Run automatically**, verified built-in tools may run
+as soon as their cards are ready. Use **Stop** to let the active operation finish and pause the
+plan. After reconnecting, continue the conversation to review its saved result.
+Local hosts offer this choice by default. Cloud hosts require both an administrator and
+`AUTO_RUN=on`. Set `AUTO_RUN_MAX_STEPS` to limit automatic operations per message (default 8).
+`AUTO_RUN_EXCLUDE` takes a comma-separated list and defaults to the three deletion tools.
+User packs and local overrides always require a click. A batch copy or type change can affect
+multiple elements in one operation. Include `copy_elements` or `change_type` in the exclusion
+list when those batches need individual review. The usage page identifies automatic runs.
+
 ## Start on your machine
 
 By default the host runs in **local mode** (`DEPLOY_MODE=local`): it is reachable from this machine only,

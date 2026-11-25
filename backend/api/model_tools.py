@@ -382,6 +382,7 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
                 session.spec = plan.proposed = None
                 plan_event = plan.event()
                 if step.status == "failed":
+                    plan.auto_paused = True
                     question = DesignerForm(questions=[{
                         "id": "next_step", "text": "读取失败，接下来怎么做？" if spec.language == "zh" else "The read failed. How should we proceed?",
                         "options": [{"value": "revise", "label": "修改" if spec.language == "zh" else "Revise"},

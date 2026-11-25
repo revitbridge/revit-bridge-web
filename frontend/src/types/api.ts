@@ -310,6 +310,7 @@ export interface DesignerAnswers {
 }
 
 export interface HostRequest {
+  run?: 'confirm' | 'auto'
   answers?: DesignerAnswers
   message?: string
   execution?: ExecutionResult
@@ -326,7 +327,7 @@ export type HostEvent =
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
-      reconcile_error?: { error: string; message?: string } }
+      run?: 'confirm' | 'auto'; run_reason?: string; reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
   | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
   | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
@@ -445,5 +446,6 @@ export interface UsageRun {
   first_at: string
   last_at: string
   by_role?: UsagePart[]
+  run?: string | null
   mode?: string | null     // the chat mode the run's calls ran in; 'mixed' for more than one; null or absent: not recorded
 }

@@ -12,7 +12,7 @@ from backend.mention_check import mention_errors
 MAX_READS = 10
 
 
-class BuiltinReaderStore(ToolStore):
+class BuiltinStore(ToolStore):
     """Keep every package lookup on the selected built-in, including render after validation."""
 
     def path_of(self, name):
@@ -25,7 +25,7 @@ async def try_read(spec, session, store, *, step=None):
     pack = store.load(name)
     if getattr(pack, "read_only", False) is not True or bridge.pack_origin(store, name)[0] != "builtin":
         return None
-    readers = BuiltinReaderStore(user_dir=store.user_dir, builtin_dir=store.builtin_dir)
+    readers = BuiltinStore(user_dir=store.user_dir, builtin_dir=store.builtin_dir)
     pack = readers.load(name)
     if getattr(pack, "read_only", False) is not True:
         return None
