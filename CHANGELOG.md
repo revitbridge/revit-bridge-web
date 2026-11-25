@@ -6,6 +6,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+The searchable tool catalog beside the task input works while Revit is disconnected. Open a
+pack to inspect its parameters and limits, then insert its example into the current brief.
+
 Task chat now offers opt-in automatic execution for verified built-in tools. Each automatic
 step has a confirmation identity and a usage record. Stop finishes only the active operation.
 

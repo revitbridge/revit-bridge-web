@@ -101,7 +101,7 @@ def test_tools_listing_has_the_mcp_list_tools_shape(client):
     wall =next(t for t in tools if t["name"] == "create_wall")
     # The MCP shape plus where the pack comes from (no directory on a cloud host).
     assert set(wall) == {"name", "description", "version", "parameters", "preconditions", "validator", "used",
-                         "builtin", "origin"}
+                         "builtin", "origin", "display_name", "applies_when", "not_for", "revit_versions"}
     assert all(t["builtin"] is True and t["origin"] == "builtin" for t in tools)
     assert wall["version"] == "1.0.0" and wall["validator"] == "count_delta" and wall["used"] == 0
     assert wall["preconditions"][0] == {"kind": "levels_min", "value": 1}

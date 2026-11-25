@@ -1192,7 +1192,7 @@
           "bridge"
         ],
         "summary": "List Tools",
-        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and\n``origin`` (and, on a local host, ``directory``: where the file was read). Read from\ndisk on every call.",
+        "description": "``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and\n``origin`` (and, on a local host, ``directory``: where the file was read). Read from\ndisk on every call. Catalog metadata includes display_name, applies_when, not_for and revit_versions.",
         "operationId": "list_tools_api_v1_bridge_tools_get",
         "responses": {
           "200": {
@@ -2624,7 +2624,7 @@
           "bridge"
         ],
         "summary": "Revit Health",
-        "description": "Is a Revit reachable: the selected device, else the local TCP add-in.",
+        "description": "Whether the selected Revit is reachable. A connected add-in can report user_tools_allowed.",
         "operationId": "revit_health_api_v1_bridge_revit_health_get",
         "responses": {
           "200": {

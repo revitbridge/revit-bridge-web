@@ -4,6 +4,7 @@ import type { Mention, MentionItem, StageEvent, ToolEvent, TraceEvent, UsageEven
 
 export interface RevitHealthResponse {
   revit_connected: boolean
+  user_tools_allowed?: boolean | null
   latency_ms: number | null
   detail: string
   mode: string
@@ -85,6 +86,11 @@ export interface ToolParam {
    directory only on a local host. */
 export interface ToolInfo {
   name: string
+  display_name?: string
+  applies_when?: string[]
+  not_for?: string[]
+  revit_versions?: string[]
+  read_only?: boolean
   description: string
   version: string
   parameters: ToolParam[]

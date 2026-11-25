@@ -17,6 +17,7 @@ import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import PlanChecklist from './PlanChecklist'
+import ToolDrawer from './ToolDrawer'
 import { browserLanguage } from '../../utils/language'
 import QuestionForm from './QuestionForm'
 import type { Transcript } from './flow'
@@ -154,6 +155,7 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             {controls}
+            {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
             {onReset && <button className="btn-ghost" onClick={onReset} disabled={disabled || transcript.streaming}>New session</button>}
           </div>
