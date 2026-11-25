@@ -274,6 +274,10 @@ def test_run_tool_needs_a_token_then_runs_validates_and_records(revit, client, t
     # A token is redeemed once.
     again = client.post(f"{B}/tools/create_wall/run", json={"params": WALL, "token": token}).json()
     assert again == {"success": False, "error": "confirmation_invalid", "reason": "used", "message": again["message"]}
+    requests = len(revit.requests)
+    edited = client.post(f"{B}/tools/create_wall/run", json={"params": {**WALL, "height": 4000}, "token": token})
+    assert edited.json() == again
+    assert len(revit.requests) == requests
 
 
 def test_run_tool_refuses_a_tampered_projection_and_keeps_the_token(revit, client):

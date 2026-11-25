@@ -19,7 +19,7 @@ def test_the_wheel_s_skills_are_listed_and_stay_out_of_the_prompt(make_client, e
     writes no code, and the skills are guidance for writing it."""
     import shutil
 
-    from revit_bridge import host_instructions, skills_dir
+    from revit_bridge import skills_dir
 
     client = make_client()
     listing = client.get("/api/skills").json()["skills"]
@@ -43,7 +43,7 @@ def test_the_wheel_s_skills_are_listed_and_stay_out_of_the_prompt(make_client, e
     assert get_skill_store().update("builtin:revit-bridge/SKILL", content="x") is None
     assert get_skill_store().delete("builtin:revit-bridge/SKILL") is False
 
-    expected = host_instructions(code=False, mentions=True).rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
+    expected = chat_module.inline_card_instructions(code=False, mentions=True).rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
     prompt = chat_module.build_system_prompt()
     assert prompt == expected
     for skill in (core, protocol, addin):

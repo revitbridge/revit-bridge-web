@@ -45,11 +45,9 @@
         },
         "responses": {
           "200": {
-            "description": "Successful Response",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers.",
             "content": {
-              "application/json": {
-                "schema": {}
-              }
+              "text/event-stream": {}
             }
           },
           "422": {
@@ -3010,6 +3008,49 @@
   },
   "components": {
     "schemas": {
+      "AnswerItem": {
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500,
+                "minLength": 1
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Value"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "value",
+          "label",
+          "id"
+        ],
+        "title": "AnswerItem"
+      },
       "CallRow": {
         "properties": {
           "session_id": {
@@ -3171,6 +3212,16 @@
       },
       "ChatRequest": {
         "properties": {
+          "answers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignerAnswers"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "message": {
             "anyOf": [
               {
@@ -3350,6 +3401,32 @@
           "spec"
         ],
         "title": "ConfirmRequest"
+      },
+      "DesignerAnswers": {
+        "properties": {
+          "ask_id": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Ask Id"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerItem"
+            },
+            "type": "array",
+            "maxItems": 28,
+            "minItems": 1,
+            "title": "Items"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ask_id",
+          "items"
+        ],
+        "title": "DesignerAnswers"
       },
       "DryRunRequest": {
         "properties": {

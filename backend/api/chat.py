@@ -103,9 +103,9 @@ same from call to call.
 
 The system prompt of the one loop is the package's host instructions for a host
 whose model writes no code, with the rule for the designer's selections
-(``host_instructions(code=False, mentions=True)``), and one line of this host's
-own, ``WORKBENCH_LINE``: when no saved tool fits, point to the workbench. The roles'
-are the package's role texts (``host_instructions(role=..., code=False)``), the
+(``host_instructions(code=False, mentions=True)``), adapted by the pinned 0.9.1
+inline-card shim. The host adds ``WORKBENCH_LINE`` for the workbench, forms and
+card actions. The roles use the same shim on the package's role texts, the
 planner's with ``WORKBENCH_LINE`` and the analyst's with ``roles.ANALYST_WORKBENCH_LINE``.
 Skills are not part of any prompt (the Skills page still lists and edits them), and
 there is no ``get_guidance``.
@@ -128,6 +128,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -145,7 +146,7 @@ from backend import roles
 from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
-    TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
+    CARD_GUIDANCE, TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
 )
 from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
 from backend import llm as llm_client
@@ -157,6 +158,7 @@ from backend.log_store import get_client_ip, get_log_store, log_and_stream
 from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import Session, get_session_store
+from backend.questions import DesignerAnswers, DesignerForm
 
 router = APIRouter(prefix="/api", tags=["chat"])
 _log = logging.getLogger("backend.chat")
@@ -191,7 +193,9 @@ INSTRUCTIONS = {"code": False, "mentions": True}
 WORKBENCH_LINE = (
     "- When no tool fits, describe in one sentence the tool the designer would need and point "
     f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
-    "tried and saved there, then it is in list_tools."
+    "tried and saved there, then it is in list_tools. When choices are known, use ask_designer. "
+    "In forms, other: true marks the designer's own words. "
+    f"{CARD_GUIDANCE}"
 )
 
 # bridge: false - the comparison baseline: no bridge instructions, no tools, no skills.
@@ -270,6 +274,7 @@ class ChatMention(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    answers: DesignerAnswers | None = None
     message: str | None = Field(default=None, max_length=8000)
     execution: dict | None = None      # an ExecutionResult the page got from /run or /execute
     session_id: str | None = None
@@ -295,19 +300,37 @@ def rate_limit(request: Request) -> None:
         raise HTTPException(429, "Too many requests")
 
 
+def inline_card_instructions(**kwargs) -> str:
+    """Adapt the pinned 0.9.1 prompt until the package ships inline-card guidance."""
+    text = host_instructions(**kwargs)
+    role = kwargs.get("role")
+    replacements = []
+    if role is None:
+        replacements.append(("Show the spec card; wait for an explicit yes.",
+                             "Summarize the ready spec and propose it in this reply."))
+    if role != roles.ANALYST:
+        location = "on the card in this chat" if role == roles.SUPERVISOR else "on the card in this chat reply"
+        replacements.append(("in this host's interface", location))
+    for old, new in replacements:
+        if old not in text:
+            raise RuntimeError(f"Review the 0.9.1 inline-card shim: expected {old!r} in {role or 'single'} prompt")
+        text = text.replace(old, new)
+    return text
+
+
 def build_system_prompt(bridge: bool = True) -> str:
     """The package's host instructions without code and with the selections rule, then
     ``WORKBENCH_LINE``; the base prompt without the bridge. No skills, no lessons."""
     if not bridge:
         return BASE_PROMPT
-    return host_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
+    return inline_card_instructions(**INSTRUCTIONS).rstrip("\n") + "\n" + WORKBENCH_LINE
 
 
 def build_role_prompt(role: str) -> str:
     """A role's system prompt: the package's text for it and at most one host line - the
     planner's notes end with ``WORKBENCH_LINE``, the analyst's text with
     ``roles.ANALYST_WORKBENCH_LINE`` as a paragraph of its own; the supervisor's as it is."""
-    text = host_instructions(role=role, **ROLE_INSTRUCTIONS)
+    text = inline_card_instructions(role=role, **ROLE_INSTRUCTIONS)
     if role == roles.PLANNER:
         return text.rstrip("\n") + "\n" + WORKBENCH_LINE
     if role == roles.ANALYST:
@@ -481,6 +504,7 @@ class Turn:
         self.run_label = run_label
         self.bridge = bridge
         self.mode = mode
+        self.routing = roles.FALLBACK_ROUTING
         self.mode_sent = False
         self.execution = execution                      # the run this turn reports, if it reports one
         # The last spec card this turn sent the page: "ready" (accepted: it can be confirmed),
@@ -621,6 +645,7 @@ class Turn:
             if keep is not None:
                 keep(assistant)
             messages.append(assistant)
+            questions = None
             for index, call in enumerate(calls, start=1):
                 event_id = f"{self.turn}.{this_round}.{index}"     # unique in the session
                 args = parse_arguments(call.arguments)
@@ -628,7 +653,9 @@ class Turn:
                 yield self.tool_event(role, event_id, call.name, shown_args, "running")
                 tool_started = time.monotonic()
                 try:
-                    if args is None:
+                    if questions is not None:
+                        outcome = ToolOutcome({"error": "awaiting_designer"})
+                    elif args is None:
                         outcome = ToolOutcome({"error": "invalid_args",
                                                "message": "arguments must be a JSON object"})
                     elif offered is not None and call.name not in offered:
@@ -664,6 +691,14 @@ class Turn:
                 if keep is not None:
                     keep(kept_tool_message(reply))
                 messages.append(reply)
+                if outcome.questions_event is not None:
+                    questions = outcome.questions_event
+            if questions is not None:
+                self.session.pending_form = questions
+                self.session.form_routing = self.routing
+                self.session.form_stop_reply = None
+                yield format_sse_event("questions", questions)
+                return
 
     async def answer_json(self, role: str, target: ModelTarget, messages: list[dict], parse, *,
                           parsed: list, tools: list[dict] | None = None, offered: tuple[str, ...] | None = None,
@@ -697,13 +732,13 @@ class Turn:
 
     async def planner(self, target: ModelTarget, route: str, out: LoopResult) -> AsyncGenerator[str, None]:
         """The planner's segment: the session's conversation (the caller added its user message)
-        under the planner's prompt, with the route's tools - or all seven on every route with
+        under the planner's prompt, with the route's tools - or all eight on every route with
         ``ROLES_PLANNER_TOOLS=all``, every one of them offered and run."""
         session = self.session
         messages = [{"role": "system", "content": session.role_prompt(roles.PLANNER, build_role_prompt)}]
         messages.extend(session.window(HISTORY_WINDOW))
         if get_settings().roles_planner_tools == "all":
-            route = roles.TOOL                    # the tool route has all seven
+            route = roles.TOOL                    # the tool route has all eight
         yield self.stage(roles.PLANNER, target.model, "start")
         async for frame in self.loop(roles.PLANNER, target, messages, roles.ROUTE_DEFINITIONS[route],
                                      max_rounds=MAX_TOOL_ROUNDS, stream=True, keep=session.add,
@@ -712,13 +747,16 @@ class Turn:
         yield self.stage(roles.PLANNER, target.model, "end")
 
 
-async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str) -> AsyncGenerator[str, None]:
+async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str,
+                        *, form_routing: roles.Routing | None = None) -> AsyncGenerator[str, None]:
     """A message with the roles: in mode ``roles_analyst`` the analyst routes it (``scope``: the
     device the request drives, whose digest it reads); chat and none end with its note, query and
     tool go on to the planner, the routing after the message. In mode ``roles`` the message goes
     straight to the planner with route tool."""
     session = run.session
-    if run.mode == MODE_ROLES_ANALYST:
+    if form_routing is not None:
+        routing = form_routing
+    elif run.mode == MODE_ROLES_ANALYST:
         analyst = targets[roles.ANALYST]
         yield run.stage(roles.ANALYST, analyst.model, "start")
         packs = await asyncio.to_thread(list_packs)
@@ -738,6 +776,7 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
             return
     else:
         routing = roles.FALLBACK_ROUTING
+    run.routing = routing
     # Only a tool routing opens or continues the open task (roles.next_task).
     task = roles.next_task(session.role_task, routing) if routing.route == roles.TOOL else None
     if task is not None:
@@ -752,7 +791,7 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
 
 
 async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution: dict,
-                          scope: str) -> AsyncGenerator[str, None]:
+                          scope: str, *, chinese: bool) -> AsyncGenerator[str, None]:
     """An execution report with the roles: the supervisor's verdict, held to the package's
     (``roles.enforce`` reads the raw result; the supervisor and the session get capped
     copies); retry runs the planner again with the supervisor's fix."""
@@ -777,19 +816,29 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
                                        tools=roles.SUPERVISOR_DEFINITIONS, offered=roles.SUPERVISOR_TOOLS,
                                        max_rounds=roles.SUPERVISOR_TOOL_ROUNDS):
         yield frame
-    verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution), execution, task.retries)
+    verdict = roles.enforce(parsed[0] or roles.fallback_verdict(execution, chinese=chinese),
+                            execution, task.retries, chinese=chinese)
     if verdict.forced:
         _log.info("the supervisor's verdict became %s (%s) in session %s", verdict.verdict, verdict.forced,
                   session.session_id)
     yield run.stage(roles.SUPERVISOR, supervisor.model, "end")
     reply = verdict.reply()
     if verdict.verdict != roles.RETRY:
-        yield format_sse(reply)
+        yield format_sse(verdict.report)
         session.pending_verdict = verdict.note()
         if verdict.verdict == roles.DONE:
             session.role_task = None
         else:
             task.last = reply
+            question = verdict.question or ("接下来要怎么做？" if chinese else "How would you like to proceed?")
+            form = DesignerForm(questions=[{"id": "next_step", "text": question[:500],
+                                "allow_other": True, "options": [
+                                    {"value": "revise", "label": "调整任务要求" if chinese else "Revise the task"},
+                                    {"value": "stop", "label": "结束此任务" if chinese else "End this task"}]}])
+            session.pending_form = form.event()
+            session.form_routing = roles.FALLBACK_ROUTING
+            session.form_stop_reply = "此任务已结束。" if chinese else "This task has ended."
+            yield format_sse_event("questions", session.pending_form)
         return
     yield format_sse(reply + "\n\n")
     task.retries += 1
@@ -800,6 +849,35 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
         yield frame
     task.last = f"{reply}\n\n{out.text}".strip()
+
+
+def has_host_marker(text: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", text)
+    visible = "".join(c for c in normalized if unicodedata.category(c) != "Cf").casefold()
+    return any(marker.casefold() in visible for marker in (roles.FROM_HOST, roles.FORM_MARKER))
+
+
+def quote_marked_json(value: object) -> str:
+    """Keep a marker in designer data inside one quoted JSON value, including lookalikes."""
+    return json.dumps(value, ensure_ascii=True).replace("(", r"\u0028")
+
+
+def prefers_chinese(accept_language: str) -> bool:
+    """Negotiate the two sets of host labels using the browser's language preferences."""
+    best = 0.0
+    preferred = "en"
+    for entry in accept_language.lower().split(","):
+        tag, _, weight = entry.strip().partition(";")
+        lang = tag.split("-")[0]
+        if lang not in ("zh", "en"):
+            continue
+        try:
+            quality = float(weight.strip().removeprefix("q=")) if weight else 1.0
+        except ValueError:
+            continue
+        if best < quality <= 1:
+            best, preferred = quality, lang
+    return preferred == "zh"
 
 
 def no_model(target: ModelTarget, role: str) -> HTTPException:
@@ -816,13 +894,19 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
                               f"model settings replace the planner's entry only.")
 
 
-@router.post("/chat", dependencies=[Depends(rate_limit)])
+@router.post("/chat", dependencies=[Depends(rate_limit)], response_class=StreamingResponse,
+             responses={200: {"content": {"text/event-stream": {}},
+                              "description": "SSE conversation. The questions event carries ask_id and "
+                                             "1-4 questions with id, text, options, allow_other and multiple. "
+                                             "Reply with a message and optional answers."}})
 async def chat(req: ChatRequest, request: Request,
                x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
     if (req.message is None) == (req.execution is None):
         raise ApiError(422, "invalid_args", "send exactly one of message and execution")
     if req.message is not None and not req.message.strip():
         raise ApiError(422, "invalid_args", "message is empty")
+    if req.answers and not (req.bridge and req.message and req.session_id):
+        raise ApiError(422, "invalid_answers", "answers require a bridge message and its session")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
     if req.mentions and req.execution is not None:
@@ -840,27 +924,35 @@ async def chat(req: ChatRequest, request: Request,
         # checks as the bridge routes (403 on a wrong or revoked device key).
         await set_device_context(request)
 
-    try:
-        # The planner's model: LLM_* and the headers, or its entry in the models file
-        # (the headers then replace that entry, as they replace LLM_* without it).
-        target = await resolve_model(ROLE, request.headers)
-    except LLMError as exc:
-        raise HTTPException(exc.status, str(exc)) from None
-    llm = target.llm
-    if not llm.configured:
-        raise no_model(target, ROLE)
     # The mode: the request's when this caller may pick it (a cloud host: an admin), else the
     # host's default; without the bridge the one loop.
     settings = get_settings()
     admin = settings.admin_token_ok(request.headers.get("x-admin-token"))
     mode = settings.resolve_chat_mode(req.mode, admin) if req.bridge else MODE_SINGLE
     with_roles = mode != MODE_SINGLE
-    targets = {ROLE: target}
-    if with_roles:
+    targets = {}
+    session = get_session_store().get_or_create(req.session_id)
+    pending = session.pending_form
+    verified = req.answers.verified_items(pending) if req.answers else None
+    if req.answers and verified is None:
+        raise ApiError(422, "invalid_answers", "answers must match this session's open form")
+    form_routing = session.form_routing if verified else None
+    stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
+                  and not verified[0].get("other") else None)
+    if not stop_reply:
+        try:
+            target = await resolve_model(ROLE, request.headers)
+        except LLMError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        llm = target.llm
+        if not llm.configured:
+            raise no_model(target, ROLE)
+        targets[ROLE] = target
+    if with_roles and not stop_reply:
         # The role that opens this turn: the analyst (a message, in mode roles_analyst) or the
         # supervisor (a report); the planner may follow either.
         first = (roles.SUPERVISOR if req.execution is not None
-                 else roles.ANALYST if mode == MODE_ROLES_ANALYST else None)
+                 else roles.ANALYST if mode == MODE_ROLES_ANALYST and form_routing is None else None)
         if first is not None:
             try:
                 targets[first] = await resolve_model(first, request.headers)
@@ -869,9 +961,15 @@ async def chat(req: ChatRequest, request: Request,
             if not targets[first].llm.configured:
                 raise no_model(targets[first], first)
 
-    session = get_session_store().get_or_create(req.session_id)
-    turn = session.next_turn()
     text = req.message if req.message is not None else execution_message(req.execution)
+    if req.message and has_host_marker(text):
+        text = "Designer wrote: " + quote_marked_json(text)
+    if verified:
+        block = {"ask_id": pending["ask_id"], "items": verified}
+        serialized = json.dumps(block, ensure_ascii=False)
+        if has_host_marker(serialized):
+            serialized = quote_marked_json(block)
+        text += f"\n\n{roles.ANSWERS_PREFIX} {serialized}"
     picks = None
     if req.mentions:
         # Checked before any model is called, in the model of the device this request drives.
@@ -888,17 +986,42 @@ async def chat(req: ChatRequest, request: Request,
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
+    # A device read can yield. Consume the form only after preflight succeeds
+    # and only if another request has not already answered that form.
+    if req.bridge and req.message and session.pending_form is not pending:
+        raise ApiError(422, "invalid_answers", "the form was already answered or replaced")
+    if req.bridge:
+        session.pending_form = None
+        session.form_routing = None
+        session.form_stop_reply = None
+    turn = session.next_turn()
     run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
 
-    if with_roles:
+    if stop_reply:
+        log_model = None
+        session.role_task = None
+        session.pending_verdict = None
+        session.spec = None
+        session.confirmed_spec = None
+        session.add({"role": "user", "content": text})
+        session.add({"role": "assistant", "content": stop_reply})
+
+        async def generate() -> AsyncGenerator[str, None]:
+            if picks is not None:
+                yield format_sse_event("mentions", picks)
+            yield format_sse(stop_reply)
+            yield SSE_DONE
+    elif with_roles:
+        log_model = lambda: run.models_ran() or llm.model
         scope = current_scope()                   # the device this request drives
         async def generate() -> AsyncGenerator[str, None]:
             if req.execution is not None:
                 yield format_sse_event("execution", req.execution)
             if picks is not None:
                 yield format_sse_event("mentions", picks)
-            segments = (message_roles(run, targets, text, scope) if req.execution is None
-                        else execution_roles(run, targets, req.execution, scope))
+            segments = (message_roles(run, targets, text, scope, form_routing=form_routing) if req.execution is None
+                        else execution_roles(run, targets, req.execution, scope,
+                                             chinese=prefers_chinese(request.headers.get("accept-language", ""))))
             try:
                 async for frame in segments:
                     yield frame
@@ -914,6 +1037,7 @@ async def chat(req: ChatRequest, request: Request,
                 raise
             yield SSE_DONE
     else:
+        log_model = llm.model
         session.add({"role": "user", "content": text})
         tools = TOOL_DEFINITIONS if req.bridge else None
         # The first turn's prompt for the whole session: the cached prefix stays the same.
@@ -952,7 +1076,7 @@ async def chat(req: ChatRequest, request: Request,
             user_agent=request.headers.get("user-agent", ""),
             user_input=text,
             # The one loop: the planner's model, as before; the roles: each role that ran and its model.
-            model=(lambda: run.models_ran() or llm.model) if with_roles else llm.model,
+            model=log_model,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Session-Id": session.session_id},

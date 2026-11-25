@@ -81,6 +81,90 @@ const conflicted: ReconcileResult = {
 }
 
 describe('the task flow', () => {
+  it('retires a superseded form and marks only the submitted form invalid on a 422 invalid_answers', async () => {
+    const questions = [{ id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false }]
+    const events = async function* (request: HostRequest): AsyncGenerator<HostEvent> {
+      if (request.answers) throw new BridgeApiError(422, JSON.stringify({ error: 'invalid_answers' }))
+      yield { type: 'questions', ask_id: 'old', questions }
+      yield { type: 'questions', ask_id: 'new', questions }
+      yield { type: 'done' }
+    }
+    const flow = createTaskFlow({ events, api: fakeApi() })
+    await flow.send('ask')
+    await flow.send('L1', [], { ask_id: 'new', items: [{ id: 'level', ...levelQuestion.options[0] }] })
+    expect(flow.store.getState().bridge.messages.filter(m => m.form).map(m => m.answered)).toEqual(['replaced', 'invalid'])
+  })
+
+  it('consumes a form when a typed reply is accepted', async () => {
+    const host = scriptedHost([{ type: 'questions', ask_id: 'old', questions: [
+      { id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false },
+    ] }], [{ type: 'done' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('ask')
+    await flow.send('Change the task')
+    expect(flow.store.getState().bridge.messages[1].answered).toBe('text')
+    expect(host.requests[1].answers).toBeUndefined()
+  })
+
+  it('closes the failed card after a supervisor stop and keeps its execution visible', async () => {
+    const stop = { value: 'stop', label: 'End this task' }
+    const host = scriptedHost([{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }], [
+      { type: 'stage', role: 'supervisor', model: 'm', status: 'end' },
+      { type: 'questions', ask_id: 'next', questions: [{ id: 'next_step', text: 'What next?',
+        options: [stop, { value: 'revise', label: 'Revise' }], allow_other: true, multiple: false }] },
+    ], [{ type: 'token', text: 'This task has ended.' }])
+    const execution = { success: false, error: 'validation_failed' }
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool: vi.fn().mockResolvedValue(execution) }) })
+    await flow.send('create a wall')
+    await flow.confirmAndRun()
+    await flow.send(stop.label, [], { ask_id: 'next', items: [{ id: 'next_step', ...stop }] })
+    expect(flow.store.getState().execution).toEqual(execution)
+    expect(canConfirm(flow.store.getState())).toBe(false)
+  })
+
+  it.each([false, true])('retires the previous supervisor question on retry (new form: %s)', async newForm => {
+    const questions = [{ id: 'next_step', text: 'What next?', multiple: false, allow_other: true,
+      options: [{ value: 'revise', label: 'Revise' }, { value: 'stop', label: 'Stop' }] }]
+    const host = scriptedHost([{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }], [
+      { type: 'questions', ask_id: 'first', questions },
+    ], newForm ? [{ type: 'questions', ask_id: 'second', questions }] : [{ type: 'done' }])
+    const failed = { success: false, error: 'validation_failed' }
+    const runTool = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(newForm ? failed : success)
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool }) })
+    await flow.send('wall')
+    await flow.confirmAndRun()
+    expect(flow.store.getState().bridge.messages.find(m => m.form)?.answered).toBeUndefined()
+    await flow.confirmAndRun()
+    const forms = flow.store.getState().bridge.messages.filter(m => m.form)
+    expect(forms.map(m => m.answered)).toEqual(newForm ? ['replaced', undefined] : ['execution'])
+    await flow.send('Stop', [], { ask_id: 'first', items: [{ id: 'next_step', value: 'stop', label: 'Stop' }] })
+    expect(host.requests).toHaveLength(3)
+  })
+  it('accepts a click once, retries an expired token with a new confirmation and keeps the execution with its reply', async () => {
+    const host = scriptedHost(
+      [{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }],
+      [{ type: 'token', text: 'Done.' }],
+      [{ ...specEvent, card: 'another', reconcile: ready }],
+    )
+    const confirm = vi.fn()
+      .mockResolvedValueOnce({ token: 'expired', card: 'one' })
+      .mockResolvedValueOnce({ token: 'fresh', card: 'two' })
+    const runTool = vi.fn().mockResolvedValueOnce({ success: false, error: 'confirmation_invalid', reason: 'expired' })
+      .mockResolvedValueOnce(success)
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ confirm, runTool }) })
+    await flow.send('wall')
+    await flow.send('yes')
+    expect(flow.store.getState().highlight).toBe(1)
+    expect(confirm).not.toHaveBeenCalled()
+    await Promise.all([flow.confirmAndRun(), flow.confirmAndRun()])
+    expect(runTool.mock.calls.map(call => call[2])).toEqual(['expired'])
+    await flow.confirmAndRun()
+    await flow.confirmAndRun()
+    expect(runTool.mock.calls.map(call => call[2])).toEqual(['expired', 'fresh'])
+    await flow.send('another wall')
+    expect(flow.store.getState().archived[0]).toMatchObject({ message: 1, execution: success })
+    expect(flow.store.getState().proposal?.card).toBe('another')
+  })
   it('folds a turn into the transcript: session, tokens, then the spec card', async () => {
     const host = scriptedHost([
       { type: 'session', id: 's1' },
@@ -203,7 +287,6 @@ describe('the task flow', () => {
     s = flow.store.getState()
     expect(api.calls[1]).toEqual(['runTool', ['create_structural_column', { type_name: 'UC305x305x97', level_name: 'L1', x: 3000, y: 3000 }, 'tok_abcdef0123456789']])
     expect(s.execution).toEqual(success)
-    expect(s.executionKind).toBe('genuine')
     expect(s.confirmation?.used).toBe(true)
     // the report: POST /api/chat {session_id, execution} without a message
     expect(host.requests[1]).toEqual({ execution: success, session_id: 's1' })
@@ -247,10 +330,10 @@ describe('the task flow', () => {
     expect(reply?.content).toBe('No level L9.\n\nNew card below.')
     expect(reply?.trace?.filter(e => e.type === 'stage').map(e => e.role)).toEqual(['supervisor', 'supervisor', 'planner', 'planner'])
     // What the page received from the run stays, as the previous attempt above the new card.
-    expect(s.previous).toEqual({ execution: failed, executionKind: 'genuine' })
+    expect(s.archived[0].execution).toEqual(failed)
   })
 
-  it('the previous attempt goes when the new card runs, and a card that answers a message has none', async () => {
+  it('each earlier execution stays with the card it ran', async () => {
     const failed: ExecutionResult = { success: false, error: 'boom', tool: 'create_structural_column', evidence_id: 'ev_1' }
     const host = scriptedHost(
       [{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }],
@@ -263,16 +346,16 @@ describe('the task flow', () => {
     await flow.send('brief')
     await flow.confirm()
     await flow.run()
-    expect(flow.store.getState().previous?.execution).toEqual(failed)
+    expect(flow.store.getState().archived[0].execution).toEqual(failed)
     await flow.confirm()
     await flow.run()
     let s = flow.store.getState()
-    expect(s.previous).toBeNull()
+    expect(s.archived.map(c => c.execution)).toEqual([failed])
     expect(s.execution).toEqual(success)
     await flow.send('another column')
     s = flow.store.getState()
     expect(s.proposal?.card).toBe('c3')
-    expect(s.previous).toBeNull()
+    expect(s.archived.map(c => c.execution)).toEqual([failed, success])
   })
 
   it('a run the tool refused in Revit (revit-bridge 0.9.1) spent the token and goes to the model like any run', async () => {
@@ -299,20 +382,20 @@ describe('the task flow', () => {
   })
 
   it('tamper demo: an edited value under the same token is refused and nothing is reported', async () => {
-    const refusal: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'mismatch', message: 'projection hash differs' }
+    const refusal: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'used',
+      message: 'confirmation already redeemed at 2026-09-22T09:02:00Z' }
     const host = scriptedHost([{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
-    const api = fakeApi({ runTool: vi.fn().mockResolvedValue(refusal) })
+    const api = fakeApi({ runTool: vi.fn().mockResolvedValueOnce(success).mockResolvedValueOnce(refusal) })
     const flow = createTaskFlow({ events: host.events, api })
     await flow.send('brief')
     await flow.confirm()
-    await flow.runTampered({ param: 'x', value: '3001' })
+    await flow.run()
+    expect(await flow.demoTamper({ param: 'x', value: '3001' })).toEqual(refusal)
     const s = flow.store.getState()
     expect(api.runTool).toHaveBeenCalledWith('create_structural_column', { type_name: 'UC305x305x97', level_name: 'L1', x: 3001, y: 3000 }, 'tok_abcdef0123456789')
-    expect(s.execution).toEqual(refusal)
-    expect(s.executionKind).toBe('tampered')
-    expect(s.confirmation?.used).toBe(false)     // a mismatch consumes nothing
-    expect(s.reported).toBe(false)
-    expect(host.requests).toHaveLength(1)        // no report went to the model
+    expect(s.execution).toEqual(success)
+    expect(s.confirmation?.used).toBe(true)
+    expect(host.requests).toHaveLength(2)        // only the real execution is reported
   })
 
   it('a spec that is not a saved tool is neither confirmed nor run', async () => {
@@ -323,7 +406,7 @@ describe('the task flow', () => {
     await flow.send('brief')
     await flow.confirm()
     await flow.run()
-    await flow.runTampered({ param: 'x', value: '1' })
+    await flow.demoTamper({ param: 'x', value: '1' })
     const s = flow.store.getState()
     expect(api.calls).toEqual([])                                   // no /spec/confirm, no /tools//run
     expect(s.confirmation).toBeNull()
@@ -342,6 +425,8 @@ describe('the task flow', () => {
     let s = flow.store.getState()
     expect(s.confirmation).toBeNull()
     expect(s.confirmErrors).toEqual([{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }])
+    await flow.send('yes')
+    expect(flow.store.getState().bridge.messages.at(-1)?.content).toContain('重试执行')
 
     api.confirm = fakeApi().confirm
     api.runTool = vi.fn().mockRejectedValue(new BridgeApiError(400, JSON.stringify({ success: false, error: 'confirmation_required', hint: 'confirm first' })))

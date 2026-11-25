@@ -6,6 +6,22 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Task chat now shows proposals and questions inside the reply that produced them. One click on
+`确认并执行` confirms the displayed draft and runs it. Typed assent highlights the card.
+`POST /api/chat` accepts optional structured `answers` with the message and session.
+The `questions` SSE event carries the form ID, questions and choices. Submitting a form resumes
+its route. Typing a new request follows ordinary routing. Older cards keep their execution results.
+The host sends the model the `ask_designer` tool, rewrites the inline-card prompts, and updates
+the `propose_spec` description. Answers that do not match the open form return HTTP 422
+(`invalid_answers`). The supervisor's question appears once in the `questions` event, with its
+report in the reply text. Choosing "End this task" closes the task without calling a model.
+Reporting an execution result closes the previous unanswered form.
+
+Host-generated questions and option labels follow the browser language.
+Text entered in Other matches an offered label first, then an offered value.
+Typing `stop` or the displayed "End this task" label ("结束此任务" in Chinese)
+in the supervisor form therefore closes the task without a model call.
+
 Upgrading: **a host that other machines reach must set `DEPLOY_MODE=cloud` in its `.env` before it
 is upgraded**, and keep `ADMIN_PASSWORD` (a cloud host now refuses to start without it). That
 includes a host published on loopback behind a reverse proxy or a tunnel on the same machine. The
@@ -21,8 +37,8 @@ that ran without it does not. See *Added* and *Changed* (deploy modes).
 The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image); `uv.lock` pins
 0.9.1, whose 22 built-in tools the pages, the model and the bench now see (see *Changed*). The
 system prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
-`reconcile` cannot find now also comes as a question. The chat has one new event, `mentions`,
-sent only for a message that carries picks (see *Added*); the other events are unchanged.
+`reconcile` cannot find now also comes as a question. The `mentions` event is sent only for
+a message that carries picks (see *Added*).
 Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Security*). If your
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).

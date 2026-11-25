@@ -12,7 +12,7 @@ segments and one execution report in up to two:
   host shows ``note`` (``none`` with the workbench link, added by the host when the note
   lacks it) and the turn ends.
 - **planner** (``host_instructions(role="planner", code=False)`` plus
-  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all seven on every
+  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all eight on every
   route with ``ROLES_PLANNER_TOOLS=all``), the session's conversation, and this turn's
   message with the analyst's routing after it (``planner_message``) - not the analyst's
   prompt, digest or tool list. With ``ROLES_ANALYST=off`` every message comes to it with
@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from backend.api.model_tools import TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
+from backend.api.model_tools import CARD_GUIDANCE, TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
 
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
@@ -92,7 +92,7 @@ def clip_list(values, limit: int = LIST_MAX, each: int = ITEM_MAX) -> list[str]:
     return items
 
 # The tools of each role and route, by name, in the order of TOOL_DEFINITIONS.
-QUERY_TOOLS = ("get_project_snapshot", "query")
+QUERY_TOOLS = ("get_project_snapshot", "query", "ask_designer")
 ALL_TOOLS = tuple(t["function"]["name"] for t in TOOL_DEFINITIONS)
 ROUTE_TOOLS = {QUERY: QUERY_TOOLS, TOOL: ALL_TOOLS}
 SUPERVISOR_TOOLS = ("query",)
@@ -111,7 +111,7 @@ SUPERVISOR_DEFINITIONS = definitions(SUPERVISOR_TOOLS)
 # ends with its never-list): where a tool that does not exist yet is made.
 ANALYST_WORKBENCH_LINE = (
     "With route none, end `note` with exactly this Markdown link to where a new tool is tried "
-    f"and saved: {WORKBENCH_LINK}"
+    f"and saved: {WORKBENCH_LINK}. When a card is pending confirmation: {CARD_GUIDANCE}"
 )
 
 REPAIR_INSTRUCTION = (
@@ -121,6 +121,8 @@ REPAIR_INSTRUCTION = (
 
 # What the host adds to a role's user message, each on its own line: the designer did not write it.
 FROM_HOST = "(from the host; the designer did not write this)"
+FORM_MARKER = "(checked by the host against the choices on the form)"
+ANSWERS_PREFIX = f"Designer's form answers {FORM_MARKER}, with other: true for the designer's own words:"
 SUPERVISOR_PREFIX = f"Execution to report {FROM_HOST}:"
 ROUTING_PREFIX = f"Analyst's routing {FROM_HOST}:"
 VERDICT_PREFIX = f"Supervisor's verdict on the last execution {FROM_HOST}:"
@@ -413,7 +415,7 @@ FORCED_RETRIES = "retries_spent"
 DEFAULT_QUESTION = "How would you like to go on?"
 
 
-def enforce(verdict: Verdict, execution: dict, retries: int) -> Verdict:
+def enforce(verdict: Verdict, execution: dict, retries: int, *, chinese: bool = False) -> Verdict:
     """The supervisor's verdict held to the package's, read from the raw execution result.
     A refusal by nature (``refusal_kind``) is never sent back or called done; ``done`` needs
     Revit's success and a validator that did not fail; a run that succeeded with a validator
@@ -423,33 +425,36 @@ def enforce(verdict: Verdict, execution: dict, retries: int) -> Verdict:
     succeeded = execution.get("success") is True
     failed_validator = validator_failed(execution)
     kind = refusal_kind(execution)
+    default_question = "接下来要怎么做？" if chinese else DEFAULT_QUESTION
     if verdict.verdict == DONE and failed_validator:
         checks = checks_of(execution)
         failed = [c for c in checks if c.get("passed") is not True] or checks
         lines = "\n".join(_check_lines(failed)) or "- (the result lists no checks)"
         return Verdict(ASK, f"The validator did not pass, so this is not done:\n{lines}",
-                       question="What should change?", forced=FORCED_VALIDATOR)
+                       question="需要调整什么？" if chinese else "What should change?", forced=FORCED_VALIDATOR)
     if kind is not None and verdict.verdict != ASK:
         return Verdict(ASK, f"This run is not sent back: {kind}. {_error_text(execution)}",
-                       question=DEFAULT_QUESTION, forced=FORCED_REFUSED)
+                       question=default_question, forced=FORCED_REFUSED)
     if verdict.verdict == DONE and not succeeded:
         return Verdict(ASK, f"Revit did not report success, so this is not done: {_error_text(execution)}",
-                       question=DEFAULT_QUESTION, forced=FORCED_FAILED)
+                       question=default_question, forced=FORCED_FAILED)
     if verdict.verdict == RETRY and succeeded and not failed_validator:
         return Verdict(ASK, f"{clip(verdict.report)}\n\nRevit reported success and the validator did not fail, so "
                             "the host does not send this run back; you decide whether anything should change.",
-                       question=f"Should anything change? (the supervisor suggested: {clip(verdict.fix)})"
-                       if verdict.fix else DEFAULT_QUESTION, forced=FORCED_SUCCEEDED)
+                       question=(f"需要调整吗？监督员建议：{clip(verdict.fix)}" if chinese else
+                                 f"Should anything change? (the supervisor suggested: {clip(verdict.fix)})")
+                       if verdict.fix else default_question, forced=FORCED_SUCCEEDED)
     if verdict.verdict == RETRY and retries >= MAX_RETRIES:
         how = " and still did not succeed" if not succeeded else ""
         return Verdict(ASK, f"{clip(verdict.report)}\n\nThe task was sent back {MAX_RETRIES} times{how}; the host "
                             f"does not send it back again.",
-                       question=f"What should change? (last suggestion: {clip(verdict.fix)})" if verdict.fix
-                       else DEFAULT_QUESTION, forced=FORCED_RETRIES)
+                       question=(f"需要调整什么？上次建议：{clip(verdict.fix)}" if chinese else
+                                 f"What should change? (last suggestion: {clip(verdict.fix)})") if verdict.fix
+                       else default_question, forced=FORCED_RETRIES)
     return verdict
 
 
-def fallback_verdict(execution: dict) -> Verdict:
+def fallback_verdict(execution: dict, *, chinese: bool = False) -> Verdict:
     """The supervisor's reply could not be read: the host reports the raw outcome and asks."""
     lines = [f"success: {json.dumps(execution.get('success'))}"]
     if execution.get("error"):
@@ -464,7 +469,8 @@ def fallback_verdict(execution: dict) -> Verdict:
     if execution.get("evidence_id"):
         lines.append(f"evidence: {clip(execution['evidence_id'], NAME_MAX)}")
     return Verdict(ASK, "The execution result, as the host received it (the supervisor's reply could not "
-                        "be read):\n" + "\n".join(lines), question=DEFAULT_QUESTION, forced="supervisor_unreadable")
+                        "be read):\n" + "\n".join(lines), question="接下来要怎么做？" if chinese else DEFAULT_QUESTION,
+                   forced="supervisor_unreadable")
 
 
 def execution_summary(execution: dict) -> dict:

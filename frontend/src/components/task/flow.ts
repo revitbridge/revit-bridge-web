@@ -9,7 +9,7 @@
 
 import { createStore } from 'zustand/vanilla'
 import type {
-  ChatMessage, ConfirmResponse, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
+  ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   SpecError, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
@@ -45,6 +45,7 @@ export interface Transcript {
 
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
 export interface Proposal {
+  ended?: boolean
   spec: TaskSpec
   card: string
   errors: SpecError[]
@@ -62,15 +63,10 @@ export interface Confirmation extends ConfirmResponse {
 /* The tamper demo: one parameter value changed after confirmation. */
 export type Tamper = { param: string; value: string }
 
-/* A run whose report came back with a new card (the supervisor sent the task back): what the
-   page itself received from that run, kept above the new card - the model's report is not the
-   only record of what happened. */
-export interface PreviousAttempt {
-  execution: ExecutionResult
-  executionKind: 'genuine' | 'tampered' | null
-}
-
 export interface TaskState {
+  cardMessage: number
+  highlight: number
+  archived: { message: number; proposal: Proposal; execution: ExecutionResult | null; confirmation: Confirmation | null }[]
   bridge: Transcript
   baseline: Transcript          // the same brief with bridge=false
   compare: boolean
@@ -79,15 +75,14 @@ export interface TaskState {
   confirming: boolean
   confirmErrors: SpecError[]
   execution: ExecutionResult | null
-  executionKind: 'genuine' | 'tampered' | null
   running: boolean
   reported: boolean             // the execution went back to the model
-  previous: PreviousAttempt | null
 }
 
 const emptyTranscript = (): Transcript => ({ messages: [], sessionId: null, streaming: false })
 
 export const initialState = (): TaskState => ({
+  cardMessage: -1, highlight: 0, archived: [],
   bridge: emptyTranscript(),
   baseline: emptyTranscript(),
   compare: false,
@@ -96,10 +91,8 @@ export const initialState = (): TaskState => ({
   confirming: false,
   confirmErrors: [],
   execution: null,
-  executionKind: null,
   running: false,
   reported: false,
-  previous: null,
 })
 
 export const SPEC_ONLY_REPLY = '(the model proposed a spec: see the card below)'
@@ -112,7 +105,7 @@ export const NOT_OFFERED: SpecError = {
 }
 const GATE_REFUSALS: readonly string[] = ['confirmation_required', 'confirmation_invalid']
 
-/* A gate refusal: nothing reached Revit and the token is still whole. A pack that refused its
+/* A gate refusal: this request did not reach Revit. A pack that refused its
    input in Revit (refused: true) is never one, whatever its text says: it reached Revit and
    spent the token. */
 export function isGateRefusal(result: ExecutionResult | null): boolean {
@@ -161,7 +154,12 @@ export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEven
 const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
 
 export function canConfirm(s: TaskState): boolean {
-  return !!s.proposal && s.proposal.reconcile?.ready === true && !s.proposal.reconciling && !s.confirming && !s.bridge.streaming
+  return !!s.proposal && !s.proposal.ended && s.proposal.reconcile?.ready === true && !s.proposal.reconcileError
+    && !s.proposal.reconciling && !s.confirming && !s.running && !s.bridge.streaming && !s.execution?.success
+}
+
+export function confirmLabel(execution?: ExecutionResult | null, errors: SpecError[] = []): string {
+  return execution || errors.length ? '重试执行' : '确认并执行'
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>
@@ -197,10 +195,19 @@ export function createTaskFlow(deps: FlowDeps) {
 
   /* One stream into one transcript; a spec event is handed to onSpec. The stage, tool and
      usage events stay with the assistant message of their turn (its trace), in order. */
-  async function consume(side: Side, request: HostRequest, onSpec?: (e: SpecEvent) => void) {
+  async function consume(side: Side, request: HostRequest, onSpec?: (e: SpecEvent) => void,
+    onAccepted?: () => void) {
+    // An accepted execution report retires the previous question even if the supervisor ends the task.
+    const previousForm = request.execution && getState()[side].messages.findLast(m => m.form && !m.answered)?.form
+    if (previousForm) {
+      onAccepted = () => patch(side, t => ({ ...t, messages: t.messages.map(m =>
+        m.form?.ask_id === previousForm.ask_id ? { ...m, answered: 'execution' } : m) }))
+    }
     patch(side, t => ({ ...t, streaming: true, messages: [...t.messages, { role: 'assistant', content: '' }] }))
     let reply = ''
     let sawSpec = false
+    let sawForm = false
+    let supervisor = false
     const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
       messages[messages.length - 1] = fn(messages[messages.length - 1])
@@ -209,10 +216,28 @@ export function createTaskFlow(deps: FlowDeps) {
     const show = (text: string) => update(m => ({ ...m, content: text }))
     try {
       for await (const evt of deps.events(request, controller?.signal)) {
+        if (onAccepted) { onAccepted(); onAccepted = undefined }
         if (evt.type === 'session') { patch(side, t => ({ ...t, sessionId: evt.id })); continue }
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
-        if (isTraceEvent(evt)) { update(m => ({ ...m, trace: [...(m.trace ?? []), evt] })); continue }
+        if (isTraceEvent(evt)) {
+          if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
+          update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
+          continue
+        }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
+        if (evt.type === 'questions') {
+          sawForm = true
+          patch(side, t => {
+            const messages = t.messages.map(m => m.form && (!m.answered || m.form.ask_id === previousForm?.ask_id)
+              ? { ...m, answered: 'replaced' as const } : m)
+            const form = { ask_id: evt.ask_id, questions: evt.questions }
+            const last = messages.length - 1
+            if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })
+            else messages[last] = { ...messages[last], form, supervisorForm: supervisor }
+            return { ...t, messages }
+          })
+          continue
+        }
         if (evt.type === 'execution') continue          // the echo of what the page sent
         if (evt.type === 'mentions') { patch(side, t => reportPicks(t, evt)); continue }
         if (evt.type === 'error') {
@@ -223,12 +248,17 @@ export function createTaskFlow(deps: FlowDeps) {
         break                                             // done
       }
     } catch (e: unknown) {
+      const askId = request.answers?.ask_id
+      if (askId && e instanceof BridgeApiError && e.status === 422 && e.code === 'invalid_answers') {
+        patch(side, t => ({ ...t, messages: t.messages.map(m =>
+          m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
+      }
       if (!isAbortError(e)) {
         reply += `${reply ? '\n\n' : ''}**Model error:** ${getErrorMessage(e)}`
         show(reply)
       }
     }
-    if (!reply) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
+    if (!reply && !sawForm) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
     // However the stream ended (done, error, abort, broken off): a tool or stage still open
     // will never be closed by the server now - mark it interrupted.
     patch(side, t => {
@@ -239,7 +269,10 @@ export function createTaskFlow(deps: FlowDeps) {
     })
   }
 
-  const onSpec = (evt: SpecEvent) => setState({
+  const onSpec = (evt: SpecEvent) => setState(s => ({
+    cardMessage: s.bridge.messages.length - 1,
+    archived: s.proposal ? [...s.archived, { message: s.cardMessage, proposal: s.proposal,
+      execution: s.execution, confirmation: s.confirmation }] : s.archived,
     proposal: {
       spec: evt.spec,
       card: evt.card,
@@ -252,23 +285,38 @@ export function createTaskFlow(deps: FlowDeps) {
     confirmation: null,     // a new proposal supersedes the confirmed one
     confirmErrors: [],
     execution: null,
-    executionKind: null,
     reported: false,
-    previous: null,         // a card that answers a message: no earlier attempt to show
-  })
+  }))
 
   /* The designer's message, with the model items picked in it (bridge side only: the
      comparison has no model to check them against, and gets the text as typed). */
-  async function send(text: string, mentions: Mention[] = []) {
+  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers) {
     const s = getState()
     const message = text.trim()
-    if (!message || s.bridge.streaming || s.baseline.streaming) return
+    if (!message || s.bridge.streaming || s.baseline.streaming || s.confirming || s.running) return
+    const open = s.bridge.messages.findLastIndex(m => !!m.form && !m.answered)
+    if (answers && (open < 0 || s.bridge.messages[open].form?.ask_id !== answers.ask_id)) return
+    const closeForm = open < 0 ? undefined : () => {
+      patch('bridge', t => ({ ...t, messages: t.messages.map((m, i) =>
+        i === open ? { ...m, answered: answers ? 'form' : 'text' } : m) }))
+      if (s.bridge.messages[open].supervisorForm && answers?.items[0]?.value === 'stop' && s.proposal) {
+        setState({ proposal: { ...s.proposal, ended: true } })
+      }
+    }
+    if (open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
+      push('bridge', { role: 'user', content: message })
+      push('bridge', { role: 'assistant',
+        content: `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。` })
+      setState({ highlight: s.highlight + 1 })
+      return
+    }
     controller = new AbortController()
     const picked = mentions.length > 0
     push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}) })
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
+    if (answers) request.answers = answers
     if (picked) request.mentions = mentionRefs(mentions)
-    const jobs = [consume('bridge', withMode(request), onSpec)]
+    const jobs = [consume('bridge', withMode(request), onSpec, closeForm)]
     if (s.compare) {
       push('baseline', { role: 'user', content: message })
       jobs.push(consume('baseline', { message, session_id: s.baseline.sessionId, bridge: false }))
@@ -283,7 +331,7 @@ export function createTaskFlow(deps: FlowDeps) {
   /* Ticking an interpretation changes the draft, and the draft is reconciled again. */
   async function toggleInterpretation(text: string, confirmed: boolean) {
     const p = getState().proposal
-    if (!p) return
+    if (!p || p.ended || getState().confirming || getState().running || getState().execution?.success) return
     const list = [...(p.draft.interpretations ?? [])]
     const at = list.findIndex(it => it.text === text)
     if (at >= 0) list[at] = { ...list[at], confirmed }
@@ -314,13 +362,15 @@ export function createTaskFlow(deps: FlowDeps) {
       setState({ confirmErrors: [NOT_OFFERED] })
       return
     }
-    setState({ confirming: true, confirmErrors: [] })
+    setState({ confirming: true, confirmation: null, confirmErrors: [] })
     try {
       const issued = await deps.api.confirm(spec, s.bridge.sessionId)
+      if (getState().proposal !== s.proposal) return
       setState({
         confirmation: { ...issued, spec, used: false },
-        confirming: false, execution: null, executionKind: null, reported: false,
+        confirming: false, execution: null, reported: false,
       })
+      return issued
     } catch (e: unknown) {
       const errors = e instanceof BridgeApiError && e.body?.errors?.length
         ? e.body.errors
@@ -329,16 +379,15 @@ export function createTaskFlow(deps: FlowDeps) {
     }
   }
 
-  async function runProjection(kind: 'genuine' | 'tampered', tamper?: Tamper): Promise<ExecutionResult | null> {
+  async function runConfirmed(): Promise<ExecutionResult | null> {
     const c = getState().confirmation
-    if (!c || getState().running || c.spec.action.kind !== 'run_tool') return null
+    if (!c || getState().running || c.spec.action.kind !== 'run_tool' || c.used) return null
     setState({ running: true })
     try {
       const params = paramsOf(c.spec)
-      if (tamper) params[tamper.param] = coerceLike(tamper.value, params[tamper.param])
       const result = await deps.api.runTool(c.spec.action.tool ?? '', params, c.token)
       setState(s => ({
-        execution: result, executionKind: kind, reported: false, running: false, previous: null,
+        execution: result, reported: false, running: false,
         // a gate refusal consumed nothing; anything else reached Revit and the token is spent
         confirmation: s.confirmation && !isGateRefusal(result) ? { ...s.confirmation, used: true } : s.confirmation,
       }))
@@ -351,9 +400,10 @@ export function createTaskFlow(deps: FlowDeps) {
           success: false,
           error: body?.error ?? 'request_failed',
           message: body?.message ?? getErrorMessage(e),
+          ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}),
           ...(typeof body?.hint === 'string' ? { hint: body.hint } : {}),
         },
-        executionKind: kind, reported: false, running: false, previous: null,
+        reported: false, running: false,
       })
       return null
     }
@@ -370,19 +420,33 @@ export function createTaskFlow(deps: FlowDeps) {
     const label = s.execution.evidence_id ? `evidence ${s.execution.evidence_id}` : s.execution.error ?? 'result'
     push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
     controller = new AbortController()
-    const attempt: PreviousAttempt = { execution: s.execution, executionKind: s.executionKind }
-    await consume('bridge', withMode({ execution: s.execution, session_id: s.bridge.sessionId }), evt => {
-      onSpec(evt)
-      setState({ previous: attempt })
-    })
+    await consume('bridge', withMode({ execution: s.execution, session_id: s.bridge.sessionId }), onSpec)
   }
 
   async function run() {
-    const result = await runProjection('genuine')
+    const result = await runConfirmed()
     if (result && !isGateRefusal(result)) await report()
   }
 
-  const runTampered = (tamper: Tamper) => runProjection('tampered', tamper)
+  async function demoTamper(tamper: Tamper): Promise<ExecutionResult | null> {
+    const c = getState().confirmation
+    if (!c?.used || !c.spec.action.tool) return null
+    const params = paramsOf(c.spec)
+    const value = coerceLike(tamper.value, params[tamper.param])
+    if (value === params[tamper.param]) return { success: false, error: 'Choose a different value.' }
+    try {
+      return await deps.api.runTool(c.spec.action.tool, { ...params, [tamper.param]: value }, c.token)
+    } catch (e: unknown) {
+      const body = e instanceof BridgeApiError ? e.body : null
+      return { success: false, error: body?.error ?? 'request_failed', message: body?.message ?? getErrorMessage(e),
+        ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}) }
+    }
+  }
+
+  async function confirmAndRun() {
+    const issued = await confirm()
+    if (issued && getState().confirmation?.token === issued.token) await run()
+  }
 
   const setCompare = (compare: boolean) => setState({ compare })
 
@@ -392,11 +456,12 @@ export function createTaskFlow(deps: FlowDeps) {
   }
 
   function reset() {
+    if (getState().confirming || getState().running) return
     abort()
     setState({ ...initialState(), compare: getState().compare })
   }
 
-  return { store, send, answer, toggleInterpretation, confirm, run, runTampered, report, setCompare, abort, reset }
+  return { store, send, answer, toggleInterpretation, confirm, run, confirmAndRun, demoTamper, report, setCompare, abort, reset }
 }
 
 export type TaskFlow = ReturnType<typeof createTaskFlow>

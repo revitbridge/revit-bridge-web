@@ -442,6 +442,15 @@ select {
 }
 
 /* Chat */
+.chat-bubble:has(.spec-card, .inline-form) { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+.chat-bubble .spec-card, .inline-form { width: 100%; min-width: 0; margin: 8px 0; padding: 12px; box-sizing: border-box; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.chat-bubble .spec-card table { width: 100%; table-layout: fixed; overflow-wrap: anywhere; }
+.chat-bubble .spec-card pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
+.chat-bubble .spec-card .btn-primary, .inline-form .btn-primary { width: 100%; margin-top: 10px; }
+.inline-form fieldset { min-width: 0; border: 0; padding: 0; margin: 0 0 12px; }
+.inline-form legend { font-weight: 600; }
+.inline-form label { display: flex; align-items: baseline; gap: 8px; padding: 4px; }
+.inline-form input { max-width: 100%; }
 .chat-card {
   display: flex;
   flex-direction: column;

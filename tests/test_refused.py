@@ -139,7 +139,9 @@ def test_the_roles_never_send_it_back(roles_env, role_model):
                                      headers=HEADERS).text)
             assert len(role_model.requests) == calls + 1 and role_model.roles[-1] == "supervisor"   # no planner
             assert tokens(frames) == (f"This run is not sent back: the tool refused the input in Revit; nothing was "
-                                      f"kept. {REFUSAL_TEXT}\n\n{roles.DEFAULT_QUESTION}")
+                                      f"kept. {REFUSAL_TEXT}")
+            form, = events(frames, "questions")
+            assert form["questions"][0]["text"] == roles.DEFAULT_QUESTION
             assert [s["role"] for s in events(frames, "stage")] == ["supervisor", "supervisor"]
             assert get_session_store().get(session_id).role_task.retries == 0
             # The supervisor saw refused: true and the pack's text, no hint.

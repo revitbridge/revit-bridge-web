@@ -4,8 +4,7 @@ tool fits."""
 from __future__ import annotations
 
 import json
-
-from revit_bridge import host_instructions
+import pytest
 
 from backend.api import chat as chat_module
 from backend.api import model_tools
@@ -17,7 +16,7 @@ from tests.test_api_v1 import code_spec, spec_for
 from tests.test_host_loop import HEADERS, events, model, sse, tokens  # noqa: F401 - the model fixture
 
 TOOLS = ["get_project_snapshot", "query", "list_tools", "get_tool_choices", "missing_params", "reconcile",
-         "propose_spec"]
+         "propose_spec", "ask_designer"]
 
 
 def test_the_tools_array_has_no_get_guidance_and_does_not_change(client, model):
@@ -47,9 +46,20 @@ def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     assert reply["error"] == "unknown_tool" and "get_guidance" not in reply["known"]
 
 
+@pytest.mark.parametrize("role,missing", [(None, "Show the spec card; wait for an explicit yes."),
+                                          ("planner", "in this host's interface"),
+                                          ("supervisor", "in this host's interface")])
+def test_inline_shim_detects_replaced_package_wording(monkeypatch, role, missing):
+    original = chat_module.host_instructions
+    monkeypatch.setattr(chat_module, "host_instructions",
+                        lambda **kwargs: original(**kwargs).replace(missing, "inline card"))
+    with pytest.raises(RuntimeError, match="inline-card shim"):
+        chat_module.inline_card_instructions(role=role, code=False)
+
+
 def test_the_system_prompt_is_the_package_text_without_code_and_one_host_line(client, model):
     system = chat_module.build_system_prompt(True)
-    package = host_instructions(code=False, mentions=True)
+    package = chat_module.inline_card_instructions(code=False, mentions=True)
     assert system == package.rstrip("\n") + "\n" + chat_module.WORKBENCH_LINE
     # The package's text is the no-code one, with the selections rule; nothing of the code variant.
     assert "## Designer's selections" in package and "- Write code:" in package
@@ -74,7 +84,8 @@ def test_the_system_prompt_is_the_package_text_without_code_and_one_host_line(cl
     assert "{kind: run_tool, tool}" in system and "propose_spec" in system
     for words in ("When no tool fits", "list_tools", f"[workbench]({WORKBENCH_PATH})"):
         assert words in chat_module.WORKBENCH_LINE, words
-    assert chat_module.WORKBENCH_LINE.isascii()
+    assert "ask_designer" in system and "确认并执行" in system
+    assert "wait for an explicit yes" not in system and "in this host\'s interface" not in system
     model.turns.append(text_turn("hi"))
     client.post("/api/chat", json={"message": "hi"}, headers=HEADERS)
     assert model.requests[0]["messages"][0] == {"role": "system", "content": system}

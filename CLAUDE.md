@@ -44,16 +44,19 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   first `stage` event and every `llm_calls` row. With the roles the turn runs in role segments (`Turn.loop`,
   one per role; `message_roles`: the analyst (mode `roles_analyst`), then the planner for `query` / `tool`;
   `execution_roles`: the supervisor, then the planner on `retry`), each role with the package's
-  `host_instructions(role=..., code=False)` (`build_role_prompt`: the planner's plus
-  `WORKBENCH_LINE`, the analyst's plus `roles.ANALYST_WORKBENCH_LINE`), its own tools and the model
+  `host_instructions(role=..., code=False)` through `inline_card_instructions`. This temporary
+  0.9.1 shim checks and replaces old card wording. Remove it when upgrading to the package with
+  native inline-card instructions. The planner adds `WORKBENCH_LINE` with `CARD_GUIDANCE`,
+  the analyst adds `roles.ANALYST_WORKBENCH_LINE` with conditional guidance for a pending card,
+  and the supervisor uses only the adapted package text. Each role has its own tools and the model
   `models_file.resolve(role, headers)` gives it; the analyst's digest is the package's
   `snapshot_digest` (`model_digest`: one snapshot per session and device scope, again after a
   reported run; a failed read waits a minute). `ROLES_PLANNER_TOOLS` (`route` / `all`) is a
   variant of the roles for measuring, `ROLES_ANALYST` (`off` / `on`) the default mode (`WebSettings`);
   `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
-  prompt the package's `host_instructions(code=False, mentions=True)` plus `WORKBENCH_LINE`, every
-  tool - and so is `bridge: false`; no skills in any prompt;
+  prompt from the same shim with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all eight
+  tools. A request with `bridge: false` uses the baseline prompt and no tools;
   `backend/roles.py` the role table, the route -> tools map (`ROUTE_TOOLS`, `SUPERVISOR_TOOLS`; a call
   outside it is `tool_not_offered`, never run), the hand-offs (`analyst_message`, `planner_message`,
   `retry_message`, `supervisor_message`), the parsing of the analyst's and the supervisor's JSON
@@ -64,8 +67,10 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   everything a model or the session gets of a result (`clip`, `execution_summary`,
   `supervisor_message`: `MESSAGE_KEEP` = the one loop's `EXECUTION_KEEP`) and the session's open
   task (`RoleTask`, `next_task`: only a `tool` routing opens one);
-  `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
-  refuses `execute_code` with `code_not_offered`; no `get_guidance`);
+  `backend/api/model_tools.py` the six read-only tools, `propose_spec` (saved tools only) and
+  `ask_designer`. The last tool ends the turn with an inline `questions` event. An optional
+  `answers` field in the next chat request submits the active form. The host validates and labels
+  these answers before handing them to the planner. Typed messages follow ordinary routing;
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
   (`parse_usage`: the provider shapes; a count not reported is `None`, never 0), the provider
   options a models file entry sets (`api: responses` -> `stream_responses`, not streamed, the same
@@ -81,8 +86,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   run, the untold planner after the supervisor's limit - and `limit_advice`, which depends on
   `ModelTarget.browser_model` / `entry_max_tokens`) - every role, no repair, no fallback. Without
   a models file the requests and streams are byte for byte the record in
-  `tests/default_path_golden.json` (`tests/test_default_path.py`: section `max_tokens_16384`, and
-  `max_tokens_4096` - taken from aa5556c, never regenerated - with the default forced back to 4096);
+  `tests/default_path_golden.json` (`tests/test_default_path.py`). The V3 request hashes live in
+  `inline_forms_16384` and `inline_forms_4096`. The existing scenarios' SSE streams must also
+  match the frozen `max_tokens_4096` stream hashes from aa5556c;
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
   pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
@@ -91,6 +97,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, the run's chat `mode` (`mixed` for more than one), and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
+  Its optional `mention_cache_scope` identifies the live connection for the package's picker cache.
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render (`features.chatModes` / `chatModeDefault` feed `components/task/chatMode.ts` and the task page's `ChatModeSelect`: the pick in `localStorage`, sent as `mode` by `flow.ts`); pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
@@ -166,10 +173,10 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   on every call and come first; anything that varies belongs in later messages. With the roles this
   holds per role (and per route for the planner): roles pass structured hand-offs, never each
   other's prompts or transcripts, and a role's messages are only ever appended to.
-- The roles' texts, the digest, the selections block and the validator's verdict come from the
-  package; the host only routes, parses the two JSON answers and holds the supervisor's verdict to
-  the package's. `LLM_SINGLE_MODEL=1` must stay request for request and frame for frame what the
-  chat was before the roles.
+- The package supplies role texts, model digests, selections and validator verdicts. The host
+  adapts card instructions, routes turns, validates form answers and enforces the supervisor's verdict.
+  The single-loop and role-based modes share the inline card and form protocol. Keep the existing
+  golden scenarios' streams identical to aa5556c and compare requests against the V3 sections.
 - Tests never touch the machine's real package data root: `tests/conftest.py` `env` points
   `REVIT_BRIDGE_DATA_DIR` at the test's own directory; a test that unsets it sets `LOCALAPPDATA` and
   `XDG_DATA_HOME` to a temporary directory first.
@@ -179,6 +186,12 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 - `.env`, `.secrets/`, `*.token` never enter the repository.
 
 ## Dependency on the package
+
+Runtime attribute lookup across the host/package boundary:
+
+- `WebSocketRevitClient.mention_cache_scope` returns (device ID, connection identity), or
+  `None` when disconnected. The 0.9.1 package does not read it. The updated picker looks up
+  this exact name to keep cached inventories separate across devices and reconnects.
 
 `pyproject.toml` requires `revit-bridge>=0.9,<0.10` from PyPI; `uv.lock` pins the exact
 release (0.9.1: 22 built-in packs). When the host needs something newer, bump the constraint and

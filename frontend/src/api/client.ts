@@ -3,6 +3,7 @@
 
 import { getConfig } from '../config'
 import { adminHeaders, deviceHeaders } from '../store'
+import type { ApiErrorBody } from '../types/api'
 
 function url(path: string): string {
   return `${getConfig().apiBase}${path}`
@@ -31,9 +32,27 @@ export function describeFailure(status: number, raw: string, contentType = ''): 
   return `${status}: ${detail}`
 }
 
+export class BridgeApiError extends Error {
+  readonly status: number
+  readonly body: ApiErrorBody | null
+
+  constructor(status: number, raw: string, contentType = '') {
+    super(describeFailure(status, raw, contentType))
+    this.name = 'BridgeApiError'
+    this.status = status
+    let parsed
+    try { parsed = JSON.parse(raw) } catch { /* Non-JSON response. */ }
+    this.body = typeof parsed?.error === 'string' ? parsed : null
+  }
+
+  get code(): string | null {
+    return this.body?.error ?? null
+  }
+}
+
 async function fail(resp: Response): Promise<never> {
   const raw = await resp.text().catch(() => '')
-  throw new Error(describeFailure(resp.status, raw, resp.headers.get('content-type') || ''))
+  throw new BridgeApiError(resp.status, raw, resp.headers.get('content-type') || '')
 }
 
 export async function apiFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {

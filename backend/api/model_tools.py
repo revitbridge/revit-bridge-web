@@ -1,5 +1,5 @@
 """The tools the model may call from the chat: the package's read-only tools plus
-``propose_spec``, the host's one addition.
+``propose_spec`` and ``ask_designer``, the host's card and form tools.
 
 Same names, arguments and result JSON as the MCP server's tools; the
 implementations call the package directly through the helpers the v1 routes use
@@ -48,6 +48,7 @@ from backend.api.bridge import (
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
 from backend.session import Session
+from backend.questions import DesignerForm
 
 PROPOSE_SPEC = "propose_spec"
 
@@ -56,6 +57,10 @@ PROPOSE_SPEC = "propose_spec"
 # verdict both name it.
 WORKBENCH_PATH = "/capabilities/workbench"
 WORKBENCH_LINK = f"[workbench]({WORKBENCH_PATH})"
+CARD_GUIDANCE = (
+    'Point to "确认并执行" on the card in this reply. If missing, say "卡片在我上一条提交它的回复里" '
+    'in their language. Never resubmit for that. Typed assent only highlights it.'
+)
 
 CODE_NOT_OFFERED = "code_not_offered"
 CODE_NOT_OFFERED_MESSAGE = (
@@ -142,8 +147,30 @@ TOOL_DEFINITIONS: list[dict] = [
                        "shows the spec card in its interface and answers {accepted, errors, "
                        "reconcile}. accepted is true only with no errors and reconcile.ready; "
                        "otherwise fix the spec or ask the designer, then propose again. "
-                       "Confirmation and execution happen in the host's interface, not here.",
+                       "Ask the designer to click the card in this reply to confirm and run.",
         "parameters": {"type": "object", "properties": {"spec": {"type": "object"}}, "required": ["spec"]},
+    }},
+    {"type": "function", "function": {
+        "name": "ask_designer",
+        "description": "End this turn with questions in this reply. Use choices grounded in facts "
+                       "already read. Ask all outstanding questions together.",
+        "parameters": {"type": "object", "required": ["questions"],
+                       "properties": {"questions": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
+                           "type": "object", "required": ["id", "text", "options"],
+                           "properties": {
+                               "id": {"type": "string", "minLength": 1, "maxLength": 100},
+                               "text": {"type": "string", "minLength": 1, "maxLength": 500},
+                               "allow_other": {"type": "boolean"},
+                               "multiple": {"type": "boolean"},
+                               "options": {"type": "array", "minItems": 2, "maxItems": 6, "items": {
+                                   "type": "object", "required": ["value", "label"],
+                                   "properties": {
+                                       "value": {"type": "string", "minLength": 1, "maxLength": 500},
+                                       "label": {"type": "string", "minLength": 1, "maxLength": 500},
+                                   },
+                               }},
+                           },
+                       }}}},
     }},
 ]
 
@@ -156,6 +183,7 @@ class ToolOutcome:
     the payload of the ``spec`` event for the page."""
     result: object
     spec_event: dict | None = None
+    questions_event: dict | None = None
 
 
 def parse_arguments(raw: str) -> dict | None:
@@ -181,6 +209,14 @@ async def call_tool(name: str, arguments: dict, session: Session) -> ToolOutcome
 
 
 # -- the package's read-only tools ---------------------------------------------------
+
+async def _ask_designer(args: dict, session: Session) -> ToolOutcome:
+    try:
+        event = DesignerForm.model_validate(args).event()
+    except ValidationError as exc:
+        return ToolOutcome({"error": "invalid_questions", "message": str(exc)})
+    return ToolOutcome(event, questions_event=event)
+
 
 async def _get_project_snapshot(args: dict, session: Session) -> ToolOutcome:
     try:
@@ -318,4 +354,5 @@ _HANDLERS = {
     "missing_params": _missing_params,
     "reconcile": _reconcile,
     PROPOSE_SPEC: _propose_spec,
+    "ask_designer": _ask_designer,
 }

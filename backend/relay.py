@@ -52,6 +52,7 @@ class DeviceConnection:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending: asyncio.Future | None = field(default=None, repr=False)
     connected_at: float = field(default_factory=time.time)
+    cache_identity: object = field(default_factory=object, repr=False)
     request_count: int = 0
     waiting: int = 0                     # requests waiting for the lock right now
 
@@ -277,6 +278,12 @@ class WebSocketRevitClient:
     @property
     def connected(self) -> bool:
         return self._relay.get_connection(self._device_id) is not None
+
+    @property
+    def mention_cache_scope(self) -> tuple[str, object] | None:
+        """Share picker inventories across requests only while this device connection is live."""
+        conn = self._relay.get_connection(self._device_id)
+        return (self._device_id, conn.cache_identity) if conn else None
 
     async def ensure_connected(self) -> None:
         """The package calls this before its timed probes: a device with no add-in is a
