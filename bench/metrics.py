@@ -94,7 +94,8 @@ def equal_value(actual: object, expected: object) -> bool:
     return actual == expected
 
 
-def evaluate(task: dict, specs: list[dict], tools: list[dict], text: str, turns: int) -> dict:
+def evaluate(task: dict, specs: list[dict], tools: list[dict], text: str, turns: int,
+             *, mentions: list[dict] | None = None) -> dict:
     """Score one task from what the host streamed.
 
     - tool (and ask with expect.tool): the last accepted spec runs expect.tool and every
@@ -110,15 +111,22 @@ def evaluate(task: dict, specs: list[dict], tools: list[dict], text: str, turns:
     action = chosen.get("action", {}) if chosen else {}
     expected_tool = expect.get("tool")
     actual_tool = action.get("tool")
-    actual_params = {
-        item["name"]: item.get("value")
-        for item in (chosen.get("parameters", []) if chosen else [])
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
+    bindings = {item["name"]: item for item in (chosen.get("parameters", []) if chosen else [])
+                if isinstance(item, dict) and isinstance(item.get("name"), str)}
+    actual_params = {name: item.get("value") for name, item in bindings.items()}
     checks = {
         name: name in actual_params and equal_value(actual_params[name], value)
         for name, value in expect.get("params", {}).items()
     }
+    # An accepted spec has passed the host's kind, value and evidence checks. Require it
+    # to bind the particular pick sent for this task, including for same-named types.
+    for name, index in expect.get("pick_params", {}).items():
+        ref = mentions[index] if mentions and index < len(mentions) else None
+        binding = bindings.get(name, {})
+        matches = bool(ref and binding.get("evidence") == f"mention:{ref['kind']}#{ref['id']}")
+        if ref and ref["kind"] == "element":
+            matches = matches and binding.get("value") == str(ref["id"])
+        checks[name] = checks.get(name, True) and matches
     params_correct = all(checks.values())
     replied = bool(text.strip())
     if expected_tool is not None:

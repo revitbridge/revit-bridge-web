@@ -84,8 +84,9 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `ModelTarget.browser_model` / `entry_max_tokens`) - every role, no repair, no fallback. Without
   a models file the requests and streams are byte for byte the record in
   `tests/default_path_golden.json` (`tests/test_default_path.py`). The V3 request hashes live in
-  `inline_forms_16384` and `inline_forms_4096`. The existing scenarios' SSE streams must also
-  match the frozen `max_tokens_4096` stream hashes from aa5556c;
+  `mention_picker_16384` and `mention_picker_4096`. Streams are also compared to the frozen
+  `max_tokens_4096` record from aa5556c, allowing only the 0.10 tool catalogue size and preview
+  in the single-loop listing;
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
   pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
@@ -104,6 +105,8 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   (`feedback_policy`) and confirmed ready proposals (`confirm_policy`; `--confirm once`, the
   unattended mode: one "yes" when the host's tool events show a ready `reconcile` and no
   `propose_spec`, `runner.waits_for_confirmation`; `compare` notes a difference in either).
+  `bench/tasks.yml` compares static values in `expect.params` and verified mention evidence in
+  `expect.pick_params` (parameter name to zero-based mention index).
   `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's own
   `execution`), to measure the report step and the supervisor's send-backs.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.
@@ -190,7 +193,7 @@ Runtime attribute lookup across the host/package boundary:
   `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge>=0.10,<0.11` from PyPI; `uv.lock` pins the exact
+`pyproject.toml` requires `revit-bridge==0.10.0` from PyPI; `uv.lock` pins the exact
 release (0.10.0). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in

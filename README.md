@@ -264,6 +264,14 @@ above 300) - so a long non-streamed call the host is still waiting for is not co
 connecting to a host that does not answer fails after 15 s. Example: `python -m bench run --label
 nightly --repeat 3 --confirm once`.
 
+The default task set includes a wall of a picked type on a picked level, a perpendicular wall
+and a window 1500 mm from a host wall's start. The bench checks each proposed binding against
+the item picked for that run. A missing pick skips the task. To execute these cases in a test
+model, the first wall type must be a uniquely named basic wall type and the first window type
+a uniquely named wall-hosted type. Preselect one straight basic wall with zero base offset.
+At the window centre, leave more than half its width to either end, and enough wall height for
+the 900 mm sill and the entire window.
+
 The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
 `roles_analyst` - each with its own prompt (see *Chat modes* and *The chat's roles* under
 *Configure*): the analyst's is 1.8 KB, the planner's 3.5 KB with up to seven tool definitions

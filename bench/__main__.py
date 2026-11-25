@@ -118,6 +118,12 @@ def load_tasks(path: Path) -> list[dict]:
         expect = task.get("expect", {})
         if not isinstance(expect, dict) or not isinstance(expect.get("params", {}), dict):
             raise ValueError(f"{task_id}: expect and params must be objects")
+        pick_params = expect.get("pick_params", {})
+        if not isinstance(pick_params, dict) or any(
+            not isinstance(name, str) or not name or type(index) is not int or not 0 <= index < len(mentions)
+            for name, index in pick_params.items()
+        ):
+            raise ValueError(f"{task_id}: expect.pick_params maps parameter names to valid mention indexes")
         maximum = expect.get("max_turns", 3)
         if type(maximum) is not int or maximum < 1:
             raise ValueError(f"{task_id}: max_turns must be a positive integer")
@@ -133,9 +139,9 @@ OST_CATEGORY = re.compile(r"OST_[A-Za-z0-9_]+")
 def mention_problem(item: object) -> str | None:
     """What is wrong with one task mention, or None: ``{kind, id}`` (an integer id) or
     ``{kind, pick: {name | first: true, category?}}`` (category: the OST_* name, for a type
-    only and needed there)."""
-    if not isinstance(item, dict) or item.get("kind") not in ("level", "type", "link"):
-        return "kind is level, type or link"
+    or selected element; required for types)."""
+    if not isinstance(item, dict) or item.get("kind") not in ("level", "type", "link", "element"):
+        return "kind is level, type, link or element"
     if "pick" not in item:
         return None if type(item.get("id")) is int else "an id is an integer"
     pick = item["pick"]
@@ -147,11 +153,11 @@ def mention_problem(item: object) -> str | None:
         return "a pick's name is nonempty text"
     if "first" in pick and pick["first"] is not True:
         return "first is true"
-    if item["kind"] == "type":
+    if item["kind"] == "type" or "category" in pick:
+        if item["kind"] not in ("type", "element"):
+            return "only type and element picks take a category"
         if not isinstance(pick.get("category"), str) or not OST_CATEGORY.fullmatch(pick["category"]):
-            return "a type pick needs category, an OST_* name"
-    elif "category" in pick:
-        return "only a type pick takes a category"
+            return "category must be an OST_* name"
     return None
 
 

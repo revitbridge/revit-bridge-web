@@ -191,7 +191,7 @@ INSTRUCTIONS = {"code": False, "mentions": True}
 # link, which the chat renders as a link.
 WORKBENCH_LINE = (
     f"- When no tool fits, describe it and link to {WORKBENCH_LINK} to try and save it for list_tools. "
-    "Use ask_designer for known choices; other: true marks the designer's own words."
+    "In form answers, other: true marks the designer's own words."
 )
 
 

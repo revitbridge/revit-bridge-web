@@ -10,6 +10,8 @@ The chat picker can insert multiple elements from the current Revit selection wi
 Type searches accept partial words, spelling variants and category aliases across categories.
 Category filters show counts, and scrolling loads more results. Each message accepts up to 20
 distinct picks. Confirmation rechecks bound elements in the open document, even after deselection.
+The benchmark covers walls of a chosen type, walls from selected elements and windows positioned
+along a wall. It checks each proposed binding against the model item picked for that run.
 
 Task chat now shows proposals and questions inside the reply that produced them. One click on
 `确认并执行` confirms the displayed draft and runs it. Typed assent highlights the card.
@@ -39,7 +41,7 @@ protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal o
 finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
 that ran without it does not. See *Added* and *Changed* (deploy modes).
 
-The host needs `revit-bridge>=0.10,<0.11` (`uv sync`, or rebuild the image). The lock pins
+The host needs `revit-bridge==0.10.0` (`uv sync`, or rebuild the image). The lock pins
 0.10.0 for the paged picker, element verification and inline-card instructions. The
 system prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. The `mentions` event is sent only for
