@@ -250,7 +250,7 @@ export function createTaskFlow(deps: FlowDeps) {
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
         if (evt.type === 'plan') {
           sawPlan = true
-          const plan = { plan_id: evt.plan_id, steps: evt.steps }
+          const plan = { plan_id: evt.plan_id, steps: evt.steps, ...(evt.workflow ? { workflow: evt.workflow } : {}) }
           const current = getState().proposal?.planStep
           if (side === 'bridge' && current?.planId === plan.plan_id) {
             const step = plan.steps.find(s => s.id === current.stepId)
@@ -263,12 +263,14 @@ export function createTaskFlow(deps: FlowDeps) {
           patch(side, t => updatePlan(t, plan, receipt))
           continue
         }
-        if (isTraceEvent(evt)) {
-          if (startNextReply && evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start') {
+        if (startNextReply && ((evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start')
+          || (evt.type === 'spec' && getState()[side].messages.findLast(m => m.plan)?.plan?.workflow))) {
             push(side, { role: 'assistant', content: '', continuesTurn: true })
             reply = ''
             sawSpec = sawForm = sawPlan = sawImage = startNextReply = false
-          }
+            supervisor = false
+        }
+        if (isTraceEvent(evt)) {
           if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
           update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
           continue
@@ -288,7 +290,7 @@ export function createTaskFlow(deps: FlowDeps) {
           patch(side, t => {
             const messages = t.messages.map(m => m.form && (!m.answered || m.form.ask_id === previousForm?.ask_id)
               ? { ...m, answered: 'replaced' as const } : m)
-            const form = evt.type === 'questions' ? { ask_id: evt.ask_id, questions: evt.questions }
+            const form = evt.type === 'questions' ? { ask_id: evt.ask_id, questions: evt.questions, workflow_preview: evt.workflow_preview }
               : { ask_id: evt.ask_id, questions: [], selection: evt.selection }
             const last = messages.length - 1
             if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })

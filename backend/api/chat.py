@@ -152,8 +152,10 @@ from backend.api.auto_run import AutoRun
 from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
-    TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
+    TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments, workflow_card,
 )
+from backend.api.direct_reads import SELECTION_WRITERS, selection_record
+from backend.workflow_run import catalogue as workflow_catalogue
 from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
 from backend import llm as llm_client
 from backend.llm import (
@@ -643,6 +645,99 @@ class Turn:
             ]}
         return context
 
+    async def execute_auto_card(self, spec):
+        if await self.auto.request.is_disconnected():
+            return
+        worker = self.auto.start(spec)
+        if self.run_label is None:
+            self.run_label = f"auto-{self.session.session_id}-{self.turn}"
+        await asyncio.to_thread(self.calls_log.mark_auto, self.session.session_id, self.turn, self.run_label)
+        self.auto.receipt = await asyncio.shield(worker)
+        yield format_sse_event("execution", self.auto.receipt)
+
+    async def check_auto_card(self, outcome, repropose):
+        reason, detail = self.auto.inspect(outcome.spec_event)
+        if reason == "apply_approval":
+            outcome = await repropose(detail)
+            if outcome.spec_event is None:
+                return outcome
+            reason, detail = self.auto.inspect(outcome.spec_event)
+        outcome.spec_event["run"] = "confirm" if reason else "auto"
+        if reason:
+            outcome.spec_event["run_reason"] = reason
+        if reason == "unconfirmed_interpretation" and detail:
+            outcome.questions_event = detail
+        return outcome
+
+    def show_form(self, form, *, workflow_plan=None):
+        self.session.pending_form = {**form, "workflow_plan_id": workflow_plan.id} if workflow_plan else form
+        self.session.form_routing = roles.FALLBACK_ROUTING
+        return format_sse_event("questions", form)
+
+    def next_step_question(self, question, *, chinese, allow_skip, workflow_plan=None):
+        options = [{"value": "revise", "label": "调整任务要求" if chinese else "Revise the task"},
+                   {"value": "stop", "label": "结束此任务" if chinese else "End this task"}]
+        if allow_skip:
+            options.insert(0, {"value": "continue", "label": "跳过这一步并继续" if chinese else "Skip this step and continue"})
+        elif workflow_plan and workflow_plan.current:
+            options.insert(0, {"value": "next", "label": "继续工作流" if chinese else "Continue the workflow"})
+        self.session.form_stop_reply = "此任务已结束。" if chinese else "This task has ended."
+        form = DesignerForm(questions=[{"id": "next_step", "text": question[:500],
+                                       "allow_other": True, "options": options}])
+        return self.show_form(form.event(), workflow_plan=workflow_plan)
+
+    async def workflow_step(self):
+        session = self.session
+        pending = session.pending_workflow
+        try:
+            if pending:
+                pending.fresh(check_bindings=True)
+                if pending.chat_input:
+                    yield format_sse("请填写 " + pending.chat_input if session.chinese else "Enter " + pending.chat_input)
+                    return
+                form = pending.next_form(session.chinese, automatic=self.auto is not None)
+                if form:
+                    yield self.show_form(form)
+                    return
+                try:
+                    session.plan = pending.plan(session)
+                except ApiError as exc:
+                    # A typed answer of the wrong scalar type can be corrected on the form.
+                    form = pending.next_form(session.chinese, automatic=self.auto is not None)
+                    if not form:
+                        raise
+                    yield format_sse(str(exc))
+                    yield self.show_form(form)
+                    return
+                session.pending_workflow = None
+                yield format_sse_event("plan", session.plan.event())
+            outcome = await workflow_card(session)
+            if self.auto and outcome.spec_event:
+                outcome = await self.check_auto_card(outcome, lambda items: workflow_card(session, items))
+            event = outcome.spec_event
+            if event is None:
+                yield format_sse(json.dumps(outcome.result, ensure_ascii=False))
+                return
+            self.card = "ready" if outcome.result["accepted"] else "not_ready"
+            yield format_sse_event("plan", outcome.plan_event)
+            yield format_sse_event("spec", event)
+            if outcome.questions_event:
+                yield self.show_form(outcome.questions_event, workflow_plan=session.plan)
+            if event.get("run") == "auto":
+                async for frame in self.execute_auto_card(event["spec"]):
+                    yield frame
+        except (ApiError, ValueError) as exc:
+            yield format_sse(str(exc))
+            if session.pending_workflow:
+                session.pending_workflow = None
+            elif session.plan and session.plan.current:
+                session.plan.current.status = "failed"
+                session.spec = session.plan.proposed = None
+                session.auto_pause_reason = "previous_failure"
+                yield format_sse_event("plan", session.plan.event())
+                prompt = "接下来要怎么做？" if session.chinese else "How would you like to proceed?"
+                yield self.next_step_question(prompt, chinese=session.chinese, allow_skip=True, workflow_plan=session.plan)
+
     async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
                    max_rounds: int, stream: bool, keep: Callable[[dict], None] | None,
                    offered: tuple[str, ...] | None, out: LoopResult) -> AsyncGenerator[str, None]:
@@ -730,18 +825,13 @@ class Turn:
                         outcome = await call_tool(call.name, args, self.session)
                     auto_card = bool(self.auto and outcome.spec_event is not None)
                     if auto_card:
-                        reason, detail = self.auto.inspect(outcome.spec_event)
-                        if reason == "apply_approval":
-                            updated = {**args, "spec": {**args["spec"], "interpretations": detail}}
-                            outcome = await call_tool(call.name, updated, self.session)
-                            reason, detail = self.auto.inspect(outcome.spec_event) if outcome.spec_event else ("not_ready", None)
-                        if outcome.spec_event:
-                            outcome.spec_event["run"] = "confirm" if reason else "auto"
-                            if reason:
-                                outcome.spec_event["run_reason"] = reason
-                            if reason == "unconfirmed_interpretation" and detail:
-                                outcome.questions_event = detail
+                        def repropose(items):
+                            return call_tool(call.name, {**args, "spec": {**args["spec"], "interpretations": items}},
+                                             self.session)
+                        outcome = await self.check_auto_card(outcome, repropose)
                     reply = tool_message(call, outcome.result)
+                    if call.name == "list_tools" and has_host_marker(reply["content"]):
+                        reply["content"] = quote_marked_json(outcome.result)
                 except Exception as exc:
                     # The turn fails as before; the row still closes. The browser gets the
                     # exception's type only - its text (paths, internals) goes to the log.
@@ -781,7 +871,9 @@ class Turn:
                 if outcome.questions_event is not None:
                     questions = outcome.questions_event
                     stop_reply = outcome.stop_reply
-                if auto_card:
+                workflow_call = call.name == "use_workflow" and (offered is None or call.name in offered)
+                revised_workflow = (call.name == "set_plan" and outcome.plan_event and self.session.plan.workflow)
+                if auto_card or workflow_call or revised_workflow:
                     # Close every call ID in this assistant message before handing off.
                     for remaining in calls[index:]:
                         skipped = tool_message(remaining, {"error": "card_pending"})
@@ -789,14 +881,20 @@ class Turn:
                         if keep is not None:
                             keep(kept_tool_message(skipped))
                     if outcome.spec_event and outcome.spec_event.get("run") == "auto":
-                        if await self.auto.request.is_disconnected():
-                            return
-                        worker = self.auto.start(outcome.spec_event["spec"])
-                        if self.run_label is None:
-                            self.run_label = f"auto-{self.session.session_id}-{self.turn}"
-                        await asyncio.to_thread(self.calls_log.mark_auto, self.session.session_id, self.turn, self.run_label)
-                        self.auto.receipt = await asyncio.shield(worker)
-                        yield format_sse_event("execution", self.auto.receipt)
+                        async for frame in self.execute_auto_card(outcome.spec_event["spec"]):
+                            yield frame
+                    if workflow_call and not questions:
+                        if self.session.pending_workflow:
+                            async for frame in self.workflow_step():
+                                yield frame
+                        else:
+                            yield format_sse(outcome.result.get("message") or str(outcome.result))
+                        return
+                    if revised_workflow:
+                        if self.session.plan.current:
+                            async for frame in self.workflow_step():
+                                yield frame
+                        return
                     break
             if questions is not None:
                 self.session.pending_form = questions
@@ -865,6 +963,7 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
     tool go on to the planner, the routing after the message. In mode ``roles`` the message goes
     straight to the planner with route tool."""
     session = run.session
+    candidates = []
     if form_routing is not None:
         routing = form_routing
     elif run.mode == MODE_ROLES_ANALYST:
@@ -872,6 +971,8 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
         yield run.stage(roles.ANALYST, analyst.model, "start")
         packs = await asyncio.to_thread(list_packs)
         packs.extend(list_host_functions())
+        candidates = await asyncio.to_thread(workflow_catalogue)
+        packs.extend(candidates)
         names = [p["name"] for p in packs if isinstance(p, dict) and isinstance(p.get("name"), str)]
         digest = await model_digest(session, scope)
         messages = [{"role": "system", "content": session.role_prompt(roles.ANALYST, build_role_prompt)},
@@ -893,7 +994,11 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
     task = roles.next_task(session.role_task, routing) if routing.route == roles.TOOL else None
     if task is not None:
         session.role_task = task
-    run.add_designer_message(roles.planner_message(text, routing, session.pending_verdict))
+    message = roles.planner_message(text, routing, session.pending_verdict)
+    selected = next((w for w in candidates if w["name"] == routing.tool), None)
+    if selected:
+        message += f"\n\nSaved workflow candidate for use_workflow {roles.FROM_HOST}: " + roles.clip(quote_marked_json(selected), 4000)
+    run.add_designer_message(message)
     session.pending_verdict = None
     out = LoopResult()
     async for frame in run.planner(targets[roles.PLANNER], routing.route, out):
@@ -917,11 +1022,15 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     step = plan.current if plan else None
     if step:
         if execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution):
-            session.auto_paused = True
+            session.auto_pause_reason = "previous_failure"
         task.retries = step.retries
         step.evidence_id = execution.get("evidence_id")
         step.result = roles.step_result(execution)
         step.recorded_result = execution.get("result")
+        if plan.workflow and step.tool in SELECTION_WRITERS and execution.get("success") and session.confirmed_spec:
+            from revit_bridge.spec.models import TaskSpec
+            params = TaskSpec.model_validate(session.confirmed_spec).execution_projection()["params"]
+            session.assistant_selections[scope] = selection_record(step.tool, params, step.recorded_result)
     supervisor = targets[roles.SUPERVISOR]
     # The spec the page confirmed with this session, once: a report without one (the page did
     # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
@@ -952,7 +1061,10 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
         session.confirmed_spec = None
         session.spec = None
         failed = execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution)
-        step.status = {roles.DONE: "done", roles.RETRY: "pending", roles.ASK: "failed" if failed else "pending"}[verdict.verdict]
+        if plan.workflow and not failed:
+            step.status = "done"
+        else:
+            step.status = {roles.DONE: "done", roles.RETRY: "pending", roles.ASK: "failed" if failed else "pending"}[verdict.verdict]
     if verdict.forced:
         _log.info("the supervisor's verdict became %s (%s) in session %s", verdict.verdict, verdict.forced,
                   session.session_id)
@@ -970,22 +1082,16 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
                 session.role_task = roles.RoleTask(route=roles.TOOL)
                 session.add_message("user", f"Continue the plan with step {plan.current.id} {roles.FROM_HOST}.")
                 out = LoopResult()
-                async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
+                continuation = run.workflow_step() if plan.workflow else run.planner(targets[roles.PLANNER], roles.TOOL, out)
+                async for frame in continuation:
                     yield frame
                 session.role_task.last = out.text
         else:
             task.last = reply
             question = verdict.question or ("接下来要怎么做？" if chinese else "How would you like to proceed?")
-            options = [{"value": "revise", "label": "调整任务要求" if chinese else "Revise the task"},
-                       {"value": "stop", "label": "结束此任务" if chinese else "End this task"}]
-            if step:
-                options.insert(0, {"value": "continue", "label": "跳过这一步并继续" if chinese else "Skip this step and continue"})
-            form = DesignerForm(questions=[{"id": "next_step", "text": question[:500],
-                                           "allow_other": True, "options": options}])
-            session.pending_form = form.event()
-            session.form_routing = roles.FALLBACK_ROUTING
-            session.form_stop_reply = "此任务已结束。" if chinese else "This task has ended."
-            yield format_sse_event("questions", session.pending_form)
+            completed = step and plan.workflow and step.status == "done"
+            yield run.next_step_question(question, chinese=chinese, allow_skip=bool(step and not completed),
+                                         workflow_plan=plan if step and plan.workflow else None)
         return
     yield format_sse(reply + "\n\n")
     task.retries += 1
@@ -995,7 +1101,8 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     session.pending_verdict = None                # the planner gets this verdict now, as the retry
     session.add({"role": "user", "content": roles.retry_message(verdict, task.retries)})
     out = LoopResult()
-    async for frame in run.planner(targets[roles.PLANNER], roles.TOOL, out):
+    continuation = run.workflow_step() if step and plan.workflow else run.planner(targets[roles.PLANNER], roles.TOOL, out)
+    async for frame in continuation:
         yield frame
     task.last = f"{reply}\n\n{out.text}".strip()
 
@@ -1062,8 +1169,10 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
              responses={200: {"content": {"text/event-stream": {}},
                               "description": "SSE conversation. The questions event carries ask_id and "
                                              "1-4 questions with id, text, options, allow_other and multiple. "
+                                             "A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). "
                                              "Reply with a message and optional answers. The plan event carries "
                                              "plan_id and steps with id, title, status and optional evidence_id. "
+                                             "A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. "
                                              "A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. "
                                              "ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. "
                                              "view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. "
@@ -1131,6 +1240,9 @@ async def chat(req: ChatRequest, request: Request,
         req.message = None
         req.run = "confirm"
     pending = session.pending_form
+    workflow = session.pending_workflow if req.bridge else None
+    if workflow and workflow.scope != current_scope():
+        raise ApiError(422, "invalid_step", "This workflow belongs to another device.")
     selection = (pending or {}).get("selection")
     if req.selection_answer and (not selection or req.selection_answer != pending["ask_id"]
                                 or pending["scope"] != current_scope() or not req.mentions
@@ -1144,7 +1256,12 @@ async def chat(req: ChatRequest, request: Request,
         form_routing = roles.FALLBACK_ROUTING  # An attachment addresses the planner.
     stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
                   and not verified[0].get("other") else None)
-    decision = verified[0]["value"] if verified and session.form_stop_reply and not verified[0].get("other") else None
+    workflow_form = bool(pending and plan and pending.get("workflow_plan_id") == plan.id)
+    decision = (verified[0]["value"] if verified and (session.form_stop_reply or workflow_form)
+                and not verified[0].get("other") else None)
+    revise_workflow = workflow_form and decision == "revise"
+    if workflow_form and plan.scope != current_scope():
+        raise ApiError(422, "invalid_step", "This workflow belongs to another device.")
     if not stop_reply:
         try:
             target = await resolve_model(ROLE, request.headers)
@@ -1208,6 +1325,8 @@ async def chat(req: ChatRequest, request: Request,
     # and only if another request has not already answered that form.
     if req.bridge and req.message and session.pending_form is not pending:
         raise ApiError(422, "invalid_answers", "the form was already answered or replaced")
+    if req.bridge and session.pending_workflow is not workflow:
+        raise ApiError(409, "plan_changed", "The workflow changed while checking this request.")
     if req.bridge and (session.plan is not plan or (step and plan.current is not step)):
         raise ApiError(409, "plan_changed", "The plan changed while checking this request.")
     if req.bridge and (session.pending_auto_receipt is not single_receipt or session.auto_worker is not None):
@@ -1231,14 +1350,16 @@ async def chat(req: ChatRequest, request: Request,
         if resume_message:
             plan.answers.append({"question": "After reconnecting", "answer": resume_message})
     changed_plan = None
+    if req.bridge:
+        session.designer_message = req.message if req.message and not verified else ""
     if req.bridge and req.message:
         if picks and any(item["kind"] == "element" for item in picks["resolved"]):
             session.assistant_selections.pop(current_scope(), None)
         session.direct_reads = 0
         session.read_results.clear()
         session.auto_count = 0
-        if not step and pending is None and session.clarification is None:
-            session.auto_paused = False
+        if not step and not workflow and pending is None and session.clarification is None:
+            session.auto_pause_reason = None
             session.assistant_selections.clear()
             session.request_text = req.message
             session.request_answers = []
@@ -1250,8 +1371,16 @@ async def chat(req: ChatRequest, request: Request,
         if pending and (verified or req.message):
             answer = {"ask_id": pending["ask_id"], "questions": [selection["prompt"]] if selection else [q["text"] for q in pending["questions"]],
                       "answers": verified if verified else req.message}
-            (plan.answers if step else session.request_answers).append(answer)
-        if step and decision in ("revise", "continue"):
+            (plan.answers if step or revise_workflow else session.request_answers).append(answer)
+        if revise_workflow:
+            plan.stop()
+            changed_plan = plan.event()
+            session.auto_pause_reason = "workflow_changed"
+            session.proposed_in_request = False
+            session.spec = None
+            text += (f"\n\nThe designer requested a revision. Workflow {plan.workflow.name} has ended {roles.FROM_HOST}. "
+                     "Use its completed results when revising the task.\n" + quote_marked_json(plan.context()))
+        elif step and decision in ("revise", "continue"):
             step.status = "skipped" if decision == "continue" else "pending"
             changed_plan = plan.event()
             if not plan.current:
@@ -1281,6 +1410,18 @@ async def chat(req: ChatRequest, request: Request,
         run.auto = AutoRun(session, request, settings, prefers_chinese(request.headers.get("accept-language", "")),
                            None if verified else req.message, approved)
 
+    resume_workflow = bool(step and plan.workflow and req.message and (approved or decision in ("next", "continue")))
+    if workflow and req.message:
+        if workflow.chat_input or (pending and workflow.form_id == pending["ask_id"] and verified):
+            resume_workflow = workflow.answer(verified, req.message)
+            if not resume_workflow:
+                session.pending_workflow = None
+                stop_reply = "工作流已取消。" if session.chinese else "Workflow cancelled."
+        else:
+            # An unrelated message replaces an unanswered invocation/input form.
+            session.pending_workflow = None
+            session.request_text, session.request_answers = req.message, []
+
     if stop_reply:
         log_model = None
         session.role_task = None
@@ -1302,6 +1443,15 @@ async def chat(req: ChatRequest, request: Request,
             if picks is not None:
                 yield format_sse_event("mentions", picks)
             yield format_sse(stop_reply)
+            yield SSE_DONE
+    elif resume_workflow:
+        log_model = None
+        session.add_message("user", text)
+        async def generate() -> AsyncGenerator[str, None]:
+            if changed_plan:
+                yield format_sse_event("plan", changed_plan)
+            async for frame in run.workflow_step():
+                yield frame
             yield SSE_DONE
     elif with_roles or ((step or single_receipt) and req.execution is not None):
         log_model = lambda: run.models_ran() or llm.model

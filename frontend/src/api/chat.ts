@@ -112,7 +112,8 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (!isRecord(parsed) || typeof parsed.plan_id !== 'string' || !parsed.plan_id || !Array.isArray(parsed.steps)
       || !parsed.steps.length || !parsed.steps.every(isPlanStep)
       || new Set(parsed.steps.map(step => step.id)).size !== parsed.steps.length) return null
-    return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps }
+    return { type: 'plan', plan_id: parsed.plan_id, steps: parsed.steps,
+      ...(typeof parsed.workflow === 'string' ? { workflow: parsed.workflow } : {}) }
   }
   if (event === 'mentions') return mentionsEvent(parsed)
   if (event === 'ask_selection' && isRecord(parsed) && typeof parsed.ask_id === 'string' && isRecord(parsed.selection)) {
@@ -137,7 +138,12 @@ export function parseSseFrame(frame: string): HostEvent | null {
         && Array.isArray(q.options) && q.options.length >= 2 && q.options.length <= 6
         && q.options.every(o => isRecord(o) && typeof o.label === 'string'
           && ['string', 'number', 'boolean'].includes(typeof o.value)))) return null
-    return { type: 'questions', ask_id: parsed.ask_id, questions: parsed.questions as DesignerForm['questions'] }
+    const preview = parsed.workflow_preview
+    if (preview !== undefined && !(isRecord(preview) && typeof preview.summary === 'string'
+      && Array.isArray(preview.steps) && preview.steps.every(s => isRecord(s)
+        && typeof s.title === 'string' && typeof s.tool === 'string'))) return null
+    return { type: 'questions', ask_id: parsed.ask_id, questions: parsed.questions as DesignerForm['questions'],
+      workflow_preview: preview as DesignerForm['workflow_preview'] }
   }
   if (event === 'stage' || event === 'tool' || event === 'usage') return traceEvent(event, parsed)
   if (event === '' && typeof parsed === 'string') return { type: 'token', text: parsed }

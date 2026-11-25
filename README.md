@@ -26,6 +26,23 @@ designer message (`DIRECT_RUN_LIMIT`). A UI-only call appears as **Done in Revit
 and records `host:ui-only` in the evidence ledger. A supporting call advances a
 plan step only when that step names the tool and the planner identifies the step.
 
+## Saved workflows
+
+Open **Workflows** to add two to eight packs, drag them into order or use **Move up** and
+**Move down**. Give each parameter a fixed value, a named designer input, or a path into an
+earlier result (for example `ElementId` or `created_ids.0`). The editor offers paths shown
+in a pack's fixture expectations or a simple returned object. Validation uses the installed package and current tool store.
+Local users and cloud administrators can save, replace, import and delete workflow YAML.
+
+Choose a workflow in the chat tool drawer or type **Run** followed by its saved name.
+The host asks for missing inputs. In automatic mode it confirms the workflow name when routing alone selected it.
+Each step has its own plan card, evidence and confirmation decision. Automatic execution
+checks fixed values against the invoked definition and resolves result references from completed steps.
+The target pack must accept the binding's source and scalar type. A missing result path stops the plan.
+
+工作流页支持拖放和键盘排序。参数可以固定、在运行时询问，或引用先前步骤的结果。
+在对话中输入“运行 工作流名称”，即可按计划逐步执行。
+
 ## Selection and view images
 
 Beside the composer, choose **Single**, **Multiple**, or **Box**, optionally enter

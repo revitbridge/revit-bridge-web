@@ -204,6 +204,10 @@ The `selection_capture_4096` and `selection_capture_16384` golden sections recor
 changed hashes relative to the tool-authoring records. The historical catalogue
 replay continues to check those original records.
 
+`backend/api/workflows.py` exposes the package workflow store. `backend/workflow_run.py`
+binds a designer invocation to a plan and resolves its cards. The `workflows_4096` and
+`workflows_16384` golden deltas cover the additional planner function `use_workflow`.
+
 Runtime attribute lookup across the host/package boundary:
 
 - `WebSocketRevitClient.mention_cache_scope` returns (device ID, connection identity), or

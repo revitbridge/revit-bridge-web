@@ -6,6 +6,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Saved workflows can now be composed, validated and exchanged as YAML in the Workflows tab.
+Chat retrieves them by summary and description. Each step receives a host-built card with
+evidence for saved values, designer inputs and earlier results. Workflow cards use the existing
+confirmation, automatic execution and ledger paths.
 Settings → Remote MCP connects Codex CLI and Claude Code over Streamable HTTP.
 Local mode shares the default web tool directory. Cloud mode can enable the endpoint
 with `REMOTE_MCP=on` and issue revocable tokens for individual paired devices.

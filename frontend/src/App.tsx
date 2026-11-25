@@ -9,10 +9,11 @@ import CapabilitiesPage from './components/pages/CapabilitiesPage'
 import EvidencePage from './components/pages/EvidencePage'
 import TokenPage from './components/pages/TokenPage'
 import ModelSettings from './components/pages/ModelSettings'
+import WorkflowsPage from './components/workflows/WorkflowsPage'
 import RemoteMcpSettings from './components/pages/RemoteMcpSettings'
 import { currentPath, showPath, TABS, viewOf, type SettingsView, type View } from './route'
 
-const tabsZh = { Chat: '对话', Tools: '工具', Evidence: '证据', Settings: '设置' }
+const tabsZh = { Chat: '对话', Tools: '工具', Workflows: '工作流', Evidence: '证据', Settings: '设置' }
 
 function ConnectionStatus({ zh }: { zh: boolean }) {
   const device = useSessionStore(s => s.deviceId)
@@ -64,6 +65,7 @@ export default function App({ path }: { path?: string }) {
       </>}
       {active === 'Tools' && <CapabilitiesPage view={view.capabilities} onView={capabilities => setView({ ...view, capabilities })} />}
       {active === 'Evidence' && <EvidencePage />}
+      {active === 'Workflows' && <WorkflowsPage />}
       {active === 'Settings' && <>
         <div className="subtab-bar">{(Object.keys(sections) as SettingsView[]).map(s =>
           <button key={s} className={`subtab${s === settings ? ' is-active' : ''}`}

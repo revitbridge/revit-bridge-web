@@ -35,6 +35,7 @@ from revit_bridge.spec.gate import GateError
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
     from backend.roles import RoleTask, Routing
+    from backend.workflow_run import WorkflowRun
 
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
@@ -81,7 +82,9 @@ class Session:
     form_stop_reply: str | None = None
     confirmed_spec: dict | None = None
     plan: Plan | None = None
+    pending_workflow: WorkflowRun | None = None
     request_text: str = ""
+    designer_message: str = ""  # This turn's typed message, before host annotations.
     clarification: str | None = None
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
     proposed_in_request: bool = False
@@ -90,7 +93,7 @@ class Session:
     read_results: dict[tuple[str, str], object] = field(default_factory=dict)
     # Last direct selection change in this request, by device. Only the host sets this.
     assistant_selections: dict[str, dict] = field(default_factory=dict)
-    auto_paused: bool = False  # A plan failure lasts for the designer's request, including after set_plan([]).
+    auto_pause_reason: str | None = None  # Lasts through plan closure until a new designer request.
     auto_count: int = 0
     auto_assumptions: tuple | None = None
     pending_interpretations: dict = field(default_factory=dict)

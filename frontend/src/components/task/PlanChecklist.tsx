@@ -4,7 +4,8 @@ import { planStatus } from './plan'
 
 export default function PlanChecklist({ plan, results }: { plan: TaskPlan; results?: Record<string, ExecutionResult> }) {
   const zh = browserLanguage() === 'zh'
-  return <ol className="task-plan" aria-label={zh ? '任务计划' : 'Task plan'}>
+  return <>{plan.workflow && <strong>{zh ? '工作流' : 'Workflow'} · {plan.workflow}</strong>}
+    <ol className="task-plan" aria-label={zh ? '任务计划' : 'Task plan'}>
     {plan.steps.map(step => {
       const { icon, label } = planStatus(step.status, zh)
       const result = results && Object.prototype.hasOwnProperty.call(results, step.id) ? results[step.id] : undefined
@@ -18,5 +19,5 @@ export default function PlanChecklist({ plan, results }: { plan: TaskPlan; resul
         </details> : <div>{title}</div>}
       </li>
     })}
-  </ol>
+  </ol></>
 }

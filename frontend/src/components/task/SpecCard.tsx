@@ -159,6 +159,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       {proposal.runReason && <p role="status">{(zh ? '未自动执行：' : 'Manual confirmation: ') + (
         ({ excluded_tool: zh ? '此工具需要单独确认' : 'tool requires a separate confirmation',
            previous_failure: zh ? '此前步骤未成功' : 'a previous step failed',
+           workflow_changed: zh ? '工作流已调整' : 'the workflow was revised',
            step_limit: zh ? '已达到本条消息的步数上限' : 'step limit reached',
            unverified_evidence: zh ? '无法核实参数依据' : 'parameter evidence could not be verified',
            unconfirmed_interpretation: zh ? '请确认假设' : 'assumptions need confirmation',

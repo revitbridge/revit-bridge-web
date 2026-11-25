@@ -545,7 +545,7 @@ def test_role_definitions_are_constant_and_follow_the_table():
     assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query", "ask_designer", "ask_selection", "open_view", "capture_view_image"),
                                  "tool": ("get_project_snapshot", "query", "list_tools", "get_tool_choices",
                                           "missing_params", "reconcile", "propose_spec", "ask_designer", "set_plan",
-                                          "ask_selection", "open_view", "capture_view_image")}
+                                          "ask_selection", "open_view", "capture_view_image", "use_workflow")}
     assert roles.SUPERVISOR_TOOLS == ("query",)
     assert roles.ROUTE_DEFINITIONS["tool"] == TOOL_DEFINITIONS
     assert all(d in TOOL_DEFINITIONS for d in roles.ROUTE_DEFINITIONS["query"] + roles.SUPERVISOR_DEFINITIONS)

@@ -142,7 +142,8 @@ def test_the_model_has_no_door_to_the_packs(client, tmp_path, monkeypatch):
     from tests.fake_model import FakeModel, text_turn, tool_turn
 
     assert TOOL_NAMES == {"get_project_snapshot", "query", "list_tools", "get_tool_choices", "missing_params",
-                          "reconcile", "propose_spec", "ask_designer", "set_plan", "ask_selection", "open_view", "capture_view_image"}
+                          "reconcile", "propose_spec", "ask_designer", "set_plan", "ask_selection", "open_view",
+                          "capture_view_image", "use_workflow"}
     fake = FakeModel([tool_turn(("solidify", SOLIDIFY), ("delete_tool", {"name": "create_beam"}),
                                 ("import_tool", {"yaml": IMPORT_YAML})), text_turn("no")])
     real_client = httpx.AsyncClient

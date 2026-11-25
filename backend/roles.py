@@ -232,6 +232,8 @@ def tool_lines(packs: list[dict]) -> str:
                        key=lambda p: p["name"]):
         description = pack.get("description") if isinstance(pack.get("description"), str) else ""
         first = next((line.strip() for line in description.splitlines() if line.strip()), "")
+        if pack.get("kind") == "workflow":
+            first = f"[workflow] {pack['summary']} {' '.join(description.splitlines())}"
         if len(first) > TOOL_LINE_MAX:
             first = first[:TOOL_LINE_MAX - 3].rstrip() + "..."
         lines.append(f"- {pack['name']}: {first}" if first else f"- {pack['name']}")

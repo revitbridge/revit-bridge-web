@@ -56,6 +56,7 @@ from backend.mention_check import mention_errors
 from backend.session import Session
 from backend.questions import DesignerForm, SelectionQuestion
 from backend.plans import Plan
+from backend.workflow_run import WorkflowRun, catalogue
 
 
 PROPOSE_SPEC = "propose_spec"
@@ -206,6 +207,13 @@ for descriptor in list_host_functions():
                        "required": [p["name"] for p in params if p["required"]]},
     }})
 
+TOOL_DEFINITIONS.append({"type": "function", "function": {
+    "name": "use_workflow",
+    "description": "Use a saved workflow from list_tools. Supply only inputs the designer gave. "
+                   "The host asks for missing inputs and builds each card from the saved steps.",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["name", "inputs"],
+                   "properties": {"name": {"type": "string"}, "inputs": {"type": "object"}}},
+}})
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOL_DEFINITIONS)
 
 
@@ -312,7 +320,7 @@ def _direct_outcome(name, read, session, step, *, chinese, recorded):
         session.spec = session.plan.proposed = None
         outcome.plan_event = session.plan.event()
         if step.status == "failed":
-            session.auto_paused = True
+            session.auto_pause_reason = "previous_failure"
             question = ("读取失败，接下来怎么做？" if chinese else "The read failed. How should we proceed?")
             if read.get("ui_only"):
                 question = "Revit 操作失败，接下来怎么做？" if chinese else "The Revit action failed. How should we proceed?"
@@ -328,6 +336,12 @@ def _direct_outcome(name, read, session, step, *, chinese, recorded):
 
 async def _set_plan(args: dict, session: Session) -> ToolOutcome:
     plan = session.plan if session.plan and session.plan.current else None
+    if plan and plan.workflow:
+        # Ordinary plan revisions may skip saved steps, but cannot insert or rewrite one.
+        saved = [{k: s[k] for k in ("id", "title", "tool")} for s in plan.workflow.definition["steps"]]
+        steps = args.get("steps")
+        if not isinstance(steps, list) or steps != [s for s in saved if s in steps]:
+            return ToolOutcome({"error": "invalid_plan", "message": "A saved workflow's steps cannot be rewritten."})
     if plan is None:
         if session.proposed_in_request:
             return ToolOutcome({"error": "plan_after_card", "message": "Set the plan before proposing its first card."})
@@ -335,9 +349,12 @@ async def _set_plan(args: dict, session: Session) -> ToolOutcome:
     try:
         if args.keys() != {"steps"}:
             raise ValueError("Supply the steps array.")
+        previously_active = {s.id for s in plan.steps if s.status != "skipped"} if plan.workflow else set()
         plan.revise(args["steps"])
     except ValueError as exc:
         return ToolOutcome({"error": "invalid_plan", "message": str(exc)})
+    if any(s.status == "skipped" and s.id in previously_active for s in plan.steps):
+        session.auto_pause_reason = "workflow_changed"
     session.plan = plan
     if not plan.proposed:
         session.spec = None
@@ -376,7 +393,7 @@ async def _list_tools(args: dict, session: Session) -> ToolOutcome:
             pack["description"] += " Propose this reader to get its result directly in this turn."
         if pack.get("ui_only") and pack["builtin"]:
             pack["description"] += " Propose this view or selection tool to run it directly in Revit."
-    return ToolOutcome(packs)
+    return ToolOutcome(packs + catalogue())
 
 
 async def _get_tool_choices(args: dict, session: Session) -> ToolOutcome:
@@ -440,12 +457,14 @@ def _refused(code: str, message: str) -> ToolOutcome:
                         "reconcile": None})
 
 
-async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
+async def _propose_spec(args: dict, session: Session, *, host_workflow=False) -> ToolOutcome:
     """validate_spec + reconcile; the page sees the card, the model the verdict. An
     ``execute_code`` spec and a ``run_tool`` spec whose tool is not a tool name are
     refused before anything else, with no card."""
     plan = session.plan
     step = plan.current if plan else None
+    if step and plan.workflow and not host_workflow:
+        return _refused("workflow_step", "The host builds this card from the saved workflow.")
     given = args.get("spec")
     try:
         spec = TaskSpec.model_validate(given)
@@ -465,7 +484,7 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     if step and (plan.confirmed or plan.reporting):
         return _refused("invalid_step", f"Step {step.id} is awaiting its execution report.")
     store = ToolStore()
-    if spec.action.tool:
+    if spec.action.tool and not host_workflow:
         read_step = step if "step_id" in args and step.tool == spec.action.tool else None
         read = await try_read(spec, session, store, step=read_step)
         if read is not None:
@@ -522,7 +541,23 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
                        plan_event=plan.event() if step else None)
 
 
+async def workflow_card(session, interpretations=None):
+    plan = session.plan
+    spec = plan.workflow.card(plan, session.chinese)
+    if interpretations:
+        spec["interpretations"] = interpretations
+    return await _propose_spec({"spec": spec, "step_id": plan.current.id}, session, host_workflow=True)
+
+
+async def _use_workflow(args, session):
+    if session.proposed_in_request or (session.plan and session.plan.current):
+        return ToolOutcome({"error": "plan_after_card", "message": "Finish the current task first."})
+    session.pending_workflow = WorkflowRun.start(args, session, current_scope())
+    return ToolOutcome({"workflow": session.pending_workflow.name})
+
+
 _HANDLERS = {
+    "use_workflow": _use_workflow,
     "set_plan": _set_plan,
     "get_project_snapshot": _get_project_snapshot,
     "query": _query,

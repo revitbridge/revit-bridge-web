@@ -170,8 +170,8 @@ class AutoRun:
         if (not pack or name != pack.name
                 or name.casefold() in {item.casefold() for item in self.settings.auto_run_exclude}):
             return "excluded_tool", None
-        if self.paused or session.auto_paused:
-            return "previous_failure", None
+        if self.paused or session.auto_pause_reason:
+            return session.auto_pause_reason or "previous_failure", None
         if session.auto_count >= self.settings.auto_run_max_steps:
             return "step_limit", None
         report = event.get("reconcile") or {}
@@ -214,14 +214,38 @@ class AutoRun:
                     break
                 if earlier.status == "done" and earlier.evidence_id:
                     results[earlier.evidence_id] = earlier.recorded_result
+        workflow = plan.workflow if plan and plan.current and plan.scope == scope else None
+        if workflow:
+            if not workflow.invoked or not plan.proposed or not same_json(event["spec"]["parameters"], plan.proposed["parameters"]):
+                return "unverified_evidence", None
+            try:
+                workflow.fresh()
+            except ApiError:
+                return "unverified_evidence", None
         for binding in spec.parameters:
             parameter = declared.get(binding.name, {})
+            if binding.evidence.startswith("workflow:"):
+                if not workflow or not workflow.fixed_matches(plan, name, binding):
+                    return "unverified_evidence", None
+                continue
             if binding.evidence.startswith("result:"):
                 if binding.source in (Source.designer, Source.answer) or not _result_supports(results, binding, parameter):
                     return "unverified_evidence", None
                 continue
             if "default" in parameter and same_json(binding.value, parameter["default"]):
                 continue
+            if workflow:
+                source = workflow.step(plan.current.id)["params"].get(binding.name)
+                if isinstance(source, dict) and (key := source.get("input")):
+                    # Compare the saved input's verified answer using its question name.
+                    item = binding.model_copy(update={"name": key})
+                    mapped = list(answers)
+                    if key in workflow.labels and workflow.evidence[key] == ("answer", binding.evidence):
+                        mapped.append({"answers": [{"id": key, "label": workflow.labels[key],
+                                                   "value": workflow.inputs[key]}]})
+                    if _supported(item, session, words + "\n" + workflow.designer_message, mapped,
+                                  parameter.get("type"), parameter.get("unit")):
+                        continue
             if _supported(binding, session, words, answers, parameter.get("type"), parameter.get("unit")):
                 continue
             return "unverified_evidence", None
@@ -258,6 +282,6 @@ class AutoRun:
             if not worker.cancelled() and worker.result().get("success") is not True:
                 self.paused = True
                 if not single_step:
-                    self.session.auto_paused = True
+                    self.session.auto_pause_reason = "previous_failure"
         task.add_done_callback(finished)
         return task
