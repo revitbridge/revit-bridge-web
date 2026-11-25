@@ -121,6 +121,7 @@ export function unavailableInInput(messages: ChatMessage[], inInput: Mention[]):
 }
 
 const zhReasons: Record<string, string> = {
+  document_changed: '文档已切换，请重新选择',
   not_found: '模型中找不到此项', not_loaded: '链接尚未加载', timeout: '读取超时',
   revit_unreachable: '无法连接 Revit', revit_error: 'Revit 读取失败', unresolved: '原因未知',
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ToolParam } from '../../types/api'
 import { BridgeApiError } from '../shared/http'
-import { confirmAndRun, describePreconditions, specFromForm, typedValue } from './directRun'
+import { confirmAndRun, describePreconditions, initialValues, specFromForm, typedValue } from './directRun'
 
 const params: ToolParam[] = [
   { name: 'type_name', type: 'string', source: 'tool:family_types', choices_from: 'family_types:OST_StructuralColumns', required: true },
@@ -15,6 +15,16 @@ const choices = {
   type_name: [{ label: 'UC305x305x97', value: 'UC305x305x97' }],
   level_name: [{ label: 'L1 (0mm)', value: 'L1' }, { label: 'L2 (4000mm)', value: 'L2' }],
 }
+
+it.each(['elements', 'elements:OST_Walls'])('keeps optional %s targets empty for the entire selection', source => {
+  const targets = { name: 'element_ids', type: 'string', source: 'designer', required: false, choices_from: source }
+  const options = [{ label: 'Wall A', value: '72' }, { label: 'Wall B', value: '73' }]
+  const all = [targets, { ...targets, name: 'host', required: true }, ...params]
+  const ch = { ...choices, element_ids: options, host: options }
+  const values = initialValues(all, ch)
+  expect(values).toEqual({ host: '72', type_name: 'UC305x305x97', level_name: 'L1', comment: 'none' })
+  expect(specFromForm({ name: 'move_elements' }, all, values, ch).parameters.map(p => p.name)).not.toContain('element_ids')
+})
 
 describe('specFromForm', () => {
   it('binds every filled value with a source the rules accept: picked = tool, typed = answer/designer, default = default', () => {

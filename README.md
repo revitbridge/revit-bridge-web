@@ -21,6 +21,9 @@ list when those batches need individual review. The usage page identifies automa
 
 ## Start on your machine
 
+Chat allows up to ten direct reads per designer message. The steps of a manually
+confirmed plan share that budget until the designer sends another message.
+
 By default the host runs in **local mode** (`DEPLOY_MODE=local`): it is reachable from this machine only,
 it talks to the Revit add-in on this machine over TCP (`127.0.0.1:18080`), and there is no pairing, no
 device list and no admin password - editing packs and skills and reading the logs just work.
