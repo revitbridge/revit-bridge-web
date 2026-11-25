@@ -44,6 +44,7 @@ COPY docker-entrypoint.sh /usr/local/bin/revit-bridge-web-entrypoint
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     DATA_DIR=/app/data \
+    REVIT_BRIDGE_WEB_HOME=/home/appuser/.config/revit-bridge-web \
     REVIT_BRIDGE_DATA_DIR=/app/data \
     HOST=0.0.0.0 \
     PORT=7860 \
@@ -53,10 +54,12 @@ ENV PATH="/opt/venv/bin:$PATH" \
 # The entrypoint starts as root only long enough to make the data volume
 # writable for appuser, then drops to it (uid 1000).
 RUN useradd -m -u 1000 appuser && \
+    install -d -m 0700 -o appuser -g appuser /home/appuser/.config/revit-bridge-web && \
     mkdir -p /app/data && \
     chown -R appuser:appuser /app && \
     chmod 0555 /usr/local/bin/revit-bridge-web-entrypoint
 
+VOLUME ["/home/appuser/.config/revit-bridge-web"]
 EXPOSE 7860
 
 # No proxy for the probe: HTTP_PROXY from .env is for outbound model calls, and a

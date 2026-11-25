@@ -76,19 +76,19 @@ describe('the workbench address', () => {
   it('opens the Capabilities page at its workbench; every other path opens the first tab', () => {
     expect(WORKBENCH_PATH).toBe('/capabilities/workbench')
     for (const path of ['/capabilities/workbench', '/capabilities/workbench/', '/Capabilities/Workbench']) {
-      expect(viewOf(path)).toEqual({ tab: 2, capabilities: 'workbench' })
+      expect(viewOf(path)).toEqual({ tab: 'Tools', capabilities: 'workbench' })
     }
     for (const path of ['/', '/task', '/capabilities', '/capabilities/packs', '/capabilities/workbench/x']) {
-      expect(viewOf(path)).toEqual({ tab: 0, capabilities: 'packs' })
+      expect(viewOf(path)).toEqual({ tab: 'Chat', capabilities: 'packs' })
     }
-    expect(pathOf({ tab: 2, capabilities: 'workbench' })).toBe(WORKBENCH_PATH)
-    expect(pathOf({ tab: 2, capabilities: 'packs' })).toBe('/')
-    expect(pathOf({ tab: 1, capabilities: 'workbench' })).toBe('/')
+    expect(pathOf({ tab: 'Tools', capabilities: 'workbench' })).toBe(WORKBENCH_PATH)
+    expect(pathOf({ tab: 'Tools', capabilities: 'packs' })).toBe('/tools')
+    expect(pathOf({ tab: 'Chat', capabilities: 'workbench' })).toBe('/')
   })
 
   it('renders the workbench there', () => {
     const html = renderToStaticMarkup(<App path="/capabilities/workbench" />)
-    expect(html).toContain('<button class="tab-button is-active">Capabilities</button>')
+    expect(html).toContain('<button class="tab-button is-active">Tools</button>')
     expect(html).toContain('<button class="subtab is-active">Workbench</button>')
     expect(html).toContain('<h2>Tool workbench</h2>')
     expect(html).not.toContain('being wired in')

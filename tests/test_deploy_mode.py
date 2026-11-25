@@ -37,7 +37,7 @@ def test_local_is_the_default_and_reports_no_admin_and_no_devices():
         "local", False, "127.0.0.1", 7860, 0, "")
     assert s.unused_variables == ()
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
-        "mode": "local", "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 0,
+        "mode": "local", "byoModel": False, "serverModel": False, "admin": False, "maxDevices": 0,
         "runModes": ["confirm", "auto"],
         "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
         "authoring": True,
@@ -290,7 +290,7 @@ def test_cloud_mode_only_wins_over_the_spa_fallback(local_env, tmp_path):
 def test_a_local_host_publishes_no_relay(make_client, local_env):
     client = make_client(**LOCAL)
     assert client.get("/config.json").json()["features"] == {
-        "mode": "local", "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 0,
+        "mode": "local", "byoModel": False, "serverModel": False, "admin": False, "maxDevices": 0,
         "runModes": ["confirm", "auto"],
         "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
         "authoring": True,

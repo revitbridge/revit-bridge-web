@@ -6,6 +6,12 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Settings → Models now saves shared or per-role credentials on the host with user-only file
+permissions. Rotation takes effect on the next request. Cloud administrators can manage masked
+settings, and local writes require loopback. Browser keys default to enabled in cloud mode and
+disabled locally. The UI clears obsolete tab keys and groups navigation under Chat, Tools,
+Workflows and Settings, with the connection status and current model in the header.
+
 The tool authoring page can generate an editable v1 draft from a description and a reference
 pack. Compilation and a successful rolled-back trial unlock saving. Cloud hosts restrict
 authoring to verified administrators.

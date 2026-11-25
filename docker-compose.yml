@@ -62,8 +62,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      - model-settings:/home/appuser/.config/revit-bridge-web
       - ./data:/app/data
       # - ${SHARED_CAPABILITIES_DIR:?set SHARED_CAPABILITIES_DIR in .env}:/shared/capabilities
       # - ./models.yml:/app/config/models.yml:ro
     mem_limit: 1g
     restart: unless-stopped
+
+volumes:
+  model-settings:

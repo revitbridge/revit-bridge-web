@@ -110,6 +110,11 @@ def install(app: FastAPI) -> None:
     async def _invalid_args(request: Request, exc: RequestValidationError) -> JSONResponse:
         """A body or query that does not fit a bridge route: the MCP tools call it
         invalid_args. Every other route keeps FastAPI's ``{detail: [...]}``."""
+        if request.url.path == "/api/v1/settings/models":
+            from backend.config import get_settings
+            if not get_settings().admin_token_ok(request.headers.get("x-admin-token")):
+                return JSONResponse(status_code=403, content={"detail": "Unauthorized"})
+            return JSONResponse(status_code=422, content={"detail": "Invalid model settings"})
         if not request.url.path.startswith(BRIDGE_PREFIX):
             return await request_validation_exception_handler(request, exc)
         errors = exc.errors()

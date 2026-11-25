@@ -2,6 +2,7 @@
    field, Validate re-runs its assertion against the model now. */
 
 import { useEffect, useState } from 'react'
+import { browserLanguage } from '../../utils/language'
 import { useStore } from 'zustand'
 import { taskApi } from '../task/api'
 import EvidenceDetails from '../evidence/EvidenceDetails'
@@ -16,6 +17,7 @@ function flowFor(api?: EvidenceApi): EvidenceFlow {
 }
 
 export default function EvidencePage({ api }: { api?: EvidenceApi }) {
+  const zh = browserLanguage() === 'zh'
   const [flow] = useState(() => flowFor(api))
   const state = useStore(flow.store)
 
@@ -38,7 +40,8 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
         </p>
         {state.notice && <div className="status-line">{state.notice}</div>}
         {!state.notice && state.records.length === 0 && !state.loading && (
-          <p className="section-copy small">No executions recorded yet.</p>
+          <p className="section-copy small">{zh ? '暂无执行记录。' : 'No executions recorded yet.'} {' '}
+            <a href="/">{zh ? '在对话中描述任务并完成执行，即可在此查看记录。' : 'Describe a task in Chat and run it to see its record here.'}</a></p>
         )}
         {state.records.length > 0 && (
           <div className="table-scroll">

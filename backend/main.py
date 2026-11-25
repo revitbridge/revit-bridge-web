@@ -16,16 +16,19 @@ import sys
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.requests import HTTPConnection
 
 from revit_bridge.capabilities import ToolStore
 
 from backend.api import bridge, chat, errors, logs, skills, usage
+from backend.api.settings import router as model_settings_router
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
 from backend.localguard import LocalModeGuard, host_names_for
+from backend.llm import BROWSER_KEYS_DISABLED, HEADER_KEY
 from backend.models_file import config_features, get_models, log_models
 from backend.upgrade import quarantine_legacy_packs
 
@@ -37,6 +40,11 @@ APP_VERSION = "0.1.0"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 _log = logging.getLogger("backend")
+
+
+async def reject_browser_key(request: HTTPConnection):
+    if HEADER_KEY in request.headers:
+        raise HTTPException(400, BROWSER_KEYS_DISABLED)
 
 
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
@@ -55,6 +63,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     _log.info("user tools (capability packs) are read from and saved to %s", user_dir)
     app = FastAPI(
         title="revit-bridge-web",
+        dependencies=[] if settings.allow_browser_keys else [Depends(reject_browser_key)],
         version=APP_VERSION,
         description="Demo host for revit-bridge: a thin HTTP surface over the package, "
                     "a WebSocket relay for remote add-ins and a bring-your-own-model chat.",
@@ -80,6 +89,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
     errors.install(app)
     app.include_router(chat.router)
+    app.include_router(model_settings_router)
     app.include_router(skills.router)
     app.include_router(logs.router)
     app.include_router(usage.router)
@@ -93,7 +103,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         return {"status": "ok", "version": APP_VERSION}
 
     @app.get("/config.json", tags=["meta"])
-    async def config_json(request: Request):
+    def config_json(request: Request):
         """Runtime configuration for the SPA (read once at startup). ``features.chatModes``
         lists the chat modes the caller may pick: on a cloud host every mode only with the
         right ``X-Admin-Token``, else ``auto`` alone."""

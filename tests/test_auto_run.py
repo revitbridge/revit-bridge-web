@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(local_env):
     from backend.main import create_app
+    local_env.setenv('ALLOW_BROWSER_KEYS', 'on')  # these tests supply the scripted model via headers
     local_env.delenv('LLM_SINGLE_MODEL')
     local_env.setenv('ROLES_ANALYST', 'on')
     get_settings.cache_clear()

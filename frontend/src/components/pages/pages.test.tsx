@@ -34,7 +34,7 @@ describe('the pages', () => {
     expect(html).toContain('Local add-in (TCP)')
     expect(html).toContain('No paired device in this browser tab yet.')
     expect(html).toContain('Check the connection')
-    expect(html).toContain('Bring your own model')
+    expect(html).not.toContain('Bring your own model')
     // nothing about slots or slot tokens survives
     expect(html.toLowerCase()).not.toContain('slot')
   })
@@ -58,6 +58,6 @@ describe('the pages', () => {
     const html = renderToStaticMarkup(<EvidencePage api={api} />)
     expect(html).toContain('Evidence')
     expect(html).toContain('filter by pack name')
-    expect(html).toContain('No executions recorded yet.')
+    expect(html).toMatch(/No executions recorded yet|暂无执行记录/)
   })
 })

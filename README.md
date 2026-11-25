@@ -139,7 +139,7 @@ host's origin. Either way the SPA must be served at the root of its origin: a pa
 (`https://example.com/revit/`) is not supported, because the built assets (`/assets/...`),
 `/config.json` and the API calls (`/api/...` after `apiBase`) are absolute paths.
 
-Connect a designer's Revit to the host in three steps: press **Pair a Revit** on the Connect page,
+Connect a designer's Revit to the host in three steps: press **Pair a Revit** in Settings → Connection,
 run the install command it shows on the designer's machine with Revit closed (it carries the pairing
 code, which is good for ten minutes), and watch the device come up as *online*. An add-in that is
 already installed can be paired by typing the same code into its settings window. A Revit running on
@@ -159,16 +159,10 @@ its connection.
 
 ## Use
 
-1. **Connect** - on a local host: check the add-in on this machine (*Check*: state, latency, project
-   units), see *Models by role* (the model name of the analyst, the planner and the supervisor, and
-   whether they come from the host's models file or from the environment and this browser; read-only)
-   and fill in *Model* (OpenAI-compatible base URL, model name, API key). On a cloud host
-   additionally: pair a Revit (the code, the install command, the countdown) and pick the one this
-   host talks to: a paired device or the local add-in over TCP. *My devices* lists what this browser
-   tab holds keys for, with each device's state, last activity, request count and *Revoke*; with the
-   admin password there is a list of every device on the host. Model settings and device keys stay in
-   the browser tab (`sessionStorage`) and travel as request headers; the server never stores them.
-2. **Task** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
+1. **Settings** – open *Models* to configure the host or *Connection* to check the local add-in,
+   pair a cloud device, select it or revoke its pairing. The header shows Revit connection status
+   and the planner's current model. Click the Revit status to check again.
+2. **Chat** - the demo sequence. The page opens with a snapshot of the model (units, levels, type
    summary, selection, fingerprint). Describe what you want in one sentence: the model works through
    the package's tools - it picks a saved tool (a capability pack) from the list, takes a snapshot,
    asks the questions the pack still has open (with the real levels and types, as buttons you can
@@ -229,7 +223,7 @@ its connection.
    total (the planner alone, with `LLM_SINGLE_MODEL=1`, has the total only). A number the provider
    did not report shows as `-` and makes every total it is part of unknown - never 0. No
    prices. The no-bridge comparison has its own panel.
-3. **Capabilities** - *Packs*: a saved pack with its version, validator and preconditions; load the
+3. **Tools** - *Packs*: a saved pack with its version, validator and preconditions; load the
    real choices from the model (levels, types, elements), fill the parameters, and *Confirm and run*
    takes the same route as the task page (a spec card, a token, the validator, the ledger); edit or
    delete your own (on a cloud host with the admin password). The built-in packs from the
@@ -259,11 +253,11 @@ its connection.
    references and lessons) and your own; list, read, add, upload or import from GitHub (a cloud host
    asks for the admin password). They are guidance for writing code and no longer enter the chat's
    prompt.
-4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
+4. **Workflows** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now. A run the tool refused in Revit
    is listed as *refused by the tool* with its reason; there is nothing to validate.
-5. **Token** (`/token`) - the measured runs: every chat sent with an `X-Run-Label` header (the token
+5. **Settings → Usage** (`/token`) - the measured runs: every chat sent with an `X-Run-Label` header (the token
    bench sends one per run) is counted under that label. One line per run - its chat mode, time,
    model calls, input, cache read, cache write, output, time - and one per role and model under it.
    Pick two runs to see them side by side with the difference (B - A) of each count, in total and
@@ -331,14 +325,43 @@ uv run pytest                            # backend tests, no Revit needed
 
 ## Configure
 
-Everything is an environment variable (`.env` for Docker), except the model of each role, which may
-come from one file, `models.yml` (see *Models by role* below). The browser gets what it needs from
-`/config.json`, so the same build runs on any address.
+### Server model settings
+
+Open **Settings → Models** to save an OpenAI-compatible endpoint, model name and key for all
+roles or for an individual role. Local writes require a loopback client. In cloud mode sign in
+with the host admin password to read details or make changes. Saving, rotating or clearing a
+group takes effect on the next request. Clearing a role restores its shared or deployment defaults.
+
+The host stores these credentials in `secrets.json` under `REVIT_BRIDGE_WEB_HOME`. Choose a
+private directory outside the checkout and web root for this override. The defaults are
+`%APPDATA%/revit-bridge-web` on Windows, `~/Library/Application Support/revit-bridge-web`
+on macOS, and `$XDG_CONFIG_HOME/revit-bridge-web` (or `~/.config/revit-bridge-web`) on Linux.
+POSIX creates files with mode 0600. Windows sets a protected DACL granting full control solely
+to the current user's SID at file creation. Writers lock across processes and replace the file
+atomically. Compose persists it in the named volume `model-settings`. Local Docker port
+forwarding can present a non-loopback peer. In that case configure the model via environment
+variables or provision the volume before starting the host.
+
+`GET /api/v1/settings/models?status_only=true` returns the public planner status
+`{"configured": true|false}`. The detailed GET returns effective `models` by role and `saved`
+groups. Each contains `base_url`, `model`, `key_set` and `key_tail` (last four characters,
+null for a key of four or fewer). PUT accepts `role` (default `shared`), `base_url`, `model`
+and optional write-only `api_key`. Omitting the key retains the saved credential at the same
+endpoint. DELETE with `?role=planner`, for example, clears that group. DELETE without a role
+clears the store, including a corrupt file. Responses carry masked summaries.
+Use `X-Admin-Token` for these operations on a cloud host.
+
+Visitors can enter a key in Settings when browser keys are enabled and the host has no configured
+planner. The next page load removes a legacy browser model key and displays a one-time notice
+when the host provides the model or disables browser keys.
+
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
-| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Environment settings take precedence over saved settings. Browser headers fill remaining fields. Credentials stay bound to the endpoint for which they were supplied. |
+| `REVIT_BRIDGE_WEB_HOME` | user config directory above | Dedicated directory for the host's credential store. |
+| `ALLOW_BROWSER_KEYS` | cloud `on`, local `off` | Allow guest-supplied model credentials. With `off`, sending `X-LLM-Key` to a model route returns 400. |
 | `LLM_MAX_TOKENS` | unset (16384) | The output limit (`max_tokens`, or `max_output_tokens` on the responses api) of every model call whose models file entry sets none: the server's model, a model the browser's settings chose, every call without a models file. A whole number from 256 to 65536; anything else refuses the start (the message names the variable, not the value). Lower it for a model whose output cap is below 16384; raise it for a thinking model that uses the limit up (see *Models by role*). Unset, the requests are as without it. |
 | `LLM_SINGLE_MODEL` | `0` | `1`: the chat's default mode is `single` - one model loop, the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the roles (see *The chat's roles* and *Chat modes*). `/config.json` reports it as `features.roles` (`false` with `1`) and in `features.chatModeDefault`. |
 | `ROLES_PLANNER_TOOLS` | `route` | With the roles: `route` - the planner gets, and may call, the tools of the analyst's route only; `all` - all seven on every route, every one runs (the tool definitions then stay the same for a provider's prompt cache). Any other value refuses the start. For measuring both. |
@@ -346,7 +369,7 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 | `MODELS_FILE` | `DATA_DIR/models.yml` | The models file: an endpoint, a model and the name of the key's variable per entry, an entry per role (see *Models by role*). No file at the default path: `LLM_*` and the headers, as before. Set it only to read another path; the host then refuses to start when there is no file there, as it does for any file that is not valid. `/config.json` reports each role's model name (`features.models`) and whether the file set them (`features.modelsFile`). |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. In the models file it lets an entry's `base_url` be `http://` to any host (`http://` to loopback is allowed there without it). The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
-| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered on the Connect page) for changing capability packs (edit, delete, solidify, import), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
+| `ADMIN_PASSWORD` | unset | Cloud only, and required there. Checked as `X-Admin-Token` (the password entered in Settings → Connection) for changing capability packs (edit, delete, solidify, import), skill edits, the list of every device and `/api/logs`. A local host refuses to start when it is set (that looks like a cloud host missing `DEPLOY_MODE=cloud`, which would otherwise run without any password): there all of these work without a password. |
 | `REVIT_BRIDGE_HOST`, `REVIT_BRIDGE_PORT`, `REVIT_BRIDGE_TOKEN`, `REVIT_BRIDGE_TIMEOUT` | `host.docker.internal`, `18080`, unset, `60` | Local add-in over TCP (read by the package). |
 | `REVIT_BRIDGE_CONFIRM_TTL` | `600` | Seconds a token from `POST /api/v1/bridge/spec/confirm` stays redeemable (read by the package). |
 | `MAX_DEVICES` | `20` | Cloud only (a local host logs it as unused). How many paired add-ins may be connected at once. Pairing creates the credentials; only their hashes are stored (`REVIT_BRIDGE_DATA_DIR/auth/devices.json`), so nothing is mounted. The 0.1 slot variables (`MAX_SLOTS`, `MCP_BRIDGE_REQUIRE_SLOT_TOKEN`, `MCP_BRIDGE_SLOT_TOKEN_*`) are gone and the host refuses to start if one is still set. |
@@ -460,7 +483,7 @@ gives the planner all seven tools on every route (to measure it). The interactio
 ### Models by role (`models.yml`)
 
 Without a models file every role uses `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` and the
-browser's model settings, exactly as before - "one model for everything". With one, each role has
+saved profiles and eligible browser settings - "one model for everything". With one, each role has
 its own entry:
 
 ```yaml
@@ -526,12 +549,12 @@ roles:
   timeout (it was 120 s).
 - **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
   the planner's entry.
-- **The browser's model settings** (`X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key`) keep their
-  meaning: they replace the planner's entry for that browser's requests, field by field as they
-  replace `LLM_*` without the file (a base URL of the browser's own needs its own key, and must be
-  https on a public address unless `LLM_ALLOW_HTTP=1`). A role on another entry is not affected.
-  An entry's `max_tokens` / `temperature` and provider options apply only while its own endpoint and
-  model are used: a browser's endpoint or model is called on the chat api with the defaults.
+- **Saved settings and browser headers.** A saved role group takes precedence over the shared
+  group. It can select an endpoint and model above the YAML entry. At the entry's endpoint the
+  named environment key takes precedence over the saved key. Provider options apply when both
+  the endpoint and model still match the entry. Eligible guest headers address only the planner
+  entry and the roles sharing it. A guest endpoint requires its own key and must pass the
+  browser endpoint checks. The host never edits the YAML file.
 - **Base URLs** in the file are the operator's settings, treated like `LLM_BASE_URL` (which the host
   never checks against private addresses); only a browser-supplied URL is. `http://` to another
   machine (a local model elsewhere on the network) needs `LLM_ALLOW_HTTP=1`, the same switch with the
@@ -765,7 +788,7 @@ role and model of the run; like `/api/logs`, they need no password on a local ho
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps
-hashes), and the model key comes only from request headers or the environment.
+hashes), and model credentials can also be configured in the private host settings store.
 
 ## License
 

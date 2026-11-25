@@ -71,6 +71,7 @@ _log = logging.getLogger("backend.llm")
 HEADER_BASE_URL = "x-llm-base-url"
 HEADER_MODEL = "x-llm-model"
 HEADER_KEY = "x-llm-key"
+BROWSER_KEYS_DISABLED = "X-LLM-Key is disabled (ALLOW_BROWSER_KEYS=off). Configure a model in Settings."
 
 # Seconds one read may wait (a models file entry's timeout_s replaces it for that entry):
 # a thinking model may be silent for minutes before its first token, and a responses call
@@ -89,6 +90,21 @@ CHAT_API, RESPONSES_API = "chat", "responses"
 APIS = (CHAT_API, RESPONSES_API)
 MAX_TOKENS_PARAMS = ("max_tokens", "max_completion_tokens")
 REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+
+
+def has_credential(value: str, key: str) -> bool:
+    return bool(key and key in value and (len(key) > 4 or re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", value)))
+
+
+def public_endpoint(value: str, key: str) -> str:
+    """Legacy environment URLs can include userinfo or query credentials."""
+    try:
+        url = httpx.URL(value)
+        if url.userinfo or url.query or url.fragment:
+            value = str(url.copy_with(userinfo=b"", query=None, fragment=None))
+    except (httpx.InvalidURL, ValueError, UnicodeError):
+        return ""
+    return "" if has_credential(value, key) else value
 
 
 class LLMError(Exception):
@@ -147,8 +163,8 @@ class LLMSettings:
     def describe(self) -> dict:
         """Safe to show or log: never the key itself."""
         return {
-            "base_url": self.base_url,
-            "model": self.model,
+            "base_url": public_endpoint(self.base_url, self.api_key),
+            "model": "" if has_credential(self.model, self.api_key) else self.model,
             "api_key": "set" if self.api_key else "not set",
             "source": self.source,
         }
@@ -322,6 +338,8 @@ async def resolve_llm(headers: Mapping[str, str], settings: WebSettings) -> LLMS
     points inside the network - which are what a visitor can type.
     """
     llm = LLMSettings.resolve(headers, settings)
+    if has_credential(llm.model, llm.api_key) or has_credential(llm.base_url, llm.api_key):
+        raise LLMError("Model names and endpoints must not contain the API key", status=400)
     if not llm.custom_endpoint or settings.llm_allow_http:
         return llm
     _, host, port = _endpoint(llm.base_url)
@@ -719,6 +737,53 @@ def _not_configured() -> LLMError:
     )
 
 
+def _check_reply(value, key: str) -> None:
+    """A provider can echo Authorization in content, errors or tool arguments."""
+    if isinstance(value, str):
+        # Short tokens also occur as ordinary substrings in model and tool names.
+        if has_credential(value, key):
+            raise LLMError("Model endpoint included a credential in its reply")
+    elif isinstance(value, list):
+        for item in value:
+            _check_reply(item, key)
+    elif isinstance(value, dict):
+        for name, item in value.items():
+            _check_reply(name, key)
+            _check_reply(item, key)
+
+
+def _safe_delta(pending: str, token: str, key: str, previous: str, *, final=False) -> tuple[str, str]:
+    text = pending + token
+    if len(key) > 4:
+        _check_reply(text, key)
+    else:
+        # A chunk boundary inside a word (e.g. "loo" + "k.") is not a
+        # word boundary. Look behind one emitted character and wait for the
+        # following character before deciding whether a short token was echoed.
+        sample = previous + text
+        pattern = re.compile(r"(?<!\w)" + re.escape(key) + r"(?!\w)")
+        if any(final or m.end() < len(sample) for m in pattern.finditer(sample, len(previous))):
+            raise LLMError("Model endpoint included a credential in its reply")
+    if final:
+        return text, ""
+    # A credential may straddle SSE chunks. Hold only a possible prefix.
+    index = text.find(key[0], max(0, len(text) - len(key)))
+    while index >= 0:
+        if key.startswith(text[index:]):
+            return text[:index], text[index:]
+        index = text.find(key[0], index + 1)
+    return text, ""
+
+
+def _provider_error(status: int, body: str, key: str) -> LLMError:
+    # Authentication diagnostics commonly quote Authorization. Keep other
+    # provider diagnostics (unsupported parameters, output limits) useful.
+    message = f"Model endpoint returned HTTP {status}"
+    if status not in (401, 403) and key not in body:
+        message += f": {body[:300]}"
+    return LLMError(message, status=502)
+
+
 async def stream_completion(
     llm: LLMSettings,
     messages: list[dict],
@@ -792,6 +857,8 @@ async def stream_completion(
     calls: dict[int, dict] = {}          # index -> {id, name, arguments, extra}
     finish: str | None = None
     wrote = False
+    pending = ""
+    previous = ""
     client_timeout = httpx.Timeout(timeout, connect=15.0)
     # httpx's timeouts are per read: an endpoint that sends a byte now and then would
     # hold the call forever. Every wait below also stops at this deadline.
@@ -819,8 +886,7 @@ async def stream_completion(
                             ask_usage = False
                             stats.retried = True
                             continue
-                        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {body[:300]}",
-                                       status=502)
+                        raise _provider_error(resp.status_code, body, llm.api_key)
                     stats.accepted = True
                     stats.asked_usage = ask_usage
                     if stats.retried:
@@ -860,7 +926,10 @@ async def stream_completion(
                         token = delta.get("content")
                         if token:
                             wrote = True
-                            yield token
+                            safe, pending = _safe_delta(pending, token, llm.api_key, previous)
+                            if safe:
+                                previous = safe[-1]
+                                yield safe
                         for fragment in delta.get("tool_calls") or []:
                             _merge_tool_call(calls, fragment)
                 break
@@ -872,6 +941,11 @@ async def stream_completion(
         # httpx error text names the URL, not the headers.
         _log.warning("model request failed (%s): %s", llm.model, type(exc).__name__)
         raise LLMError(f"Model endpoint unreachable: {type(exc).__name__}", status=502) from None
+    if pending:
+        safe, _ = _safe_delta(pending, "", llm.api_key, previous, final=True)
+        yield safe
+    for call in calls.values():
+        _check_reply(call, llm.api_key)
     assembled = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["arguments"], extra=c["extra"])
                  for i, c in sorted(calls.items()) if c["name"]]
     if finish == "length" and not wrote and not assembled:
@@ -1036,7 +1110,7 @@ async def stream_responses(
     if 300 <= resp.status_code < 400:
         raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed", status=502)
     if resp.status_code >= 400:
-        raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: {resp.text[:300]}", status=502)
+        raise _provider_error(resp.status_code, resp.text, llm.api_key)
     stats.accepted = True
     try:
         data = resp.json()
@@ -1047,10 +1121,13 @@ async def stream_responses(
     stats.usage = parse_responses_usage(data.get("usage"))
     if data.get("status") == "failed":
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
+        _check_reply(error.get("code"), llm.api_key)
         code = str(error.get("code") or "unknown")[:100]
         raise LLMError(f"Model endpoint reported the response failed ({code})", status=502)
     output = data.get("output") if isinstance(data.get("output"), list) else []
+    _check_reply(output, llm.api_key)
     text, calls = _reply_parts(output)
+    _check_reply(text, llm.api_key)
     incomplete = data.get("incomplete_details") if isinstance(data.get("incomplete_details"), dict) else {}
     if (data.get("status") == "incomplete" and incomplete.get("reason") == "max_output_tokens"
             and not text and not calls):

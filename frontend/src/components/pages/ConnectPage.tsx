@@ -82,7 +82,6 @@ function LocalConnectPage() {
 
       <HostModels />
 
-      <ModelSettings />
     </div>
   )
 }
@@ -138,7 +137,6 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
 
       <HostModels />
 
-      <ModelSettings />
 
       {config.features.admin && (
         <>
@@ -162,42 +160,4 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
 function HostModels() {
   const { models, modelsFile, roles, chatModeDefault } = getConfig().features
   return <RoleModels models={models} modelsFile={modelsFile} roles={roles} chatModeDefault={chatModeDefault} />
-}
-
-/* Bring your own model: the same on both kinds of host. */
-function ModelSettings() {
-  const config = getConfig()
-  const { llmBaseUrl, llmModel, llmKey, setLlm } = useSessionStore()
-
-  return (
-    <section className="card section">
-      <h3 className="heading-display section-title">Model</h3>
-      <p className="section-copy">
-        Bring your own model: any OpenAI-compatible endpoint. These values stay in this browser tab
-        (<code>sessionStorage</code>) and travel as request headers; the server never stores them.
-        {config.features.serverModel
-          ? ' Leave a field empty to use the server default for it; a base URL of your own needs your own key (the server\'s key only goes to its own endpoint).'
-          : ' This host has no server-side model configured, so a key is required.'}
-      </p>
-      <div className="form-grid">
-        <label>
-          <span className="label-text">Base URL</span>
-          <input className="input-field" value={llmBaseUrl} onChange={e => setLlm({ llmBaseUrl: e.target.value.trim() })}
-            placeholder="https://openrouter.ai/api/v1" autoComplete="off" />
-        </label>
-        <label>
-          <span className="label-text">Model</span>
-          <input className="input-field" value={llmModel} onChange={e => setLlm({ llmModel: e.target.value.trim() })}
-            placeholder="anthropic/claude-sonnet-4.6" autoComplete="off" />
-        </label>
-        <label className="form-wide">
-          <span className="label-text">API key</span>
-          <input type="password" className="input-field" value={llmKey} onChange={e => setLlm({ llmKey: e.target.value.trim() })}
-            placeholder={!config.features.serverModel ? 'Required on this host'
-              : llmBaseUrl ? 'Required with your own base URL' : 'Optional: server default is used when empty'} autoComplete="off" />
-        </label>
-      </div>
-      <button className="btn-ghost" onClick={() => setLlm({ llmBaseUrl: '', llmModel: '', llmKey: '' })}>Clear model settings</button>
-    </section>
-  )
 }

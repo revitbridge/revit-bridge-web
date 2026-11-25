@@ -72,8 +72,8 @@ describe('the Connect page of a local host', () => {
     expect(html).toContain('Check the connection')
     expect(html).toContain('Local add-in (TCP)')
     expect(html).toContain('This host runs in local mode')
-    expect(html).toContain('Bring your own model')
-    expect(html).toContain('Clear model settings')
+    expect(html).not.toContain('Bring your own model')
+    expect(html).not.toContain('Clear model settings')
     expect(html).not.toContain('Pair a Revit')
     expect(html).not.toContain('Name this device')
     expect(html).not.toContain('My devices')
@@ -91,9 +91,9 @@ describe('the Connect page of a local host', () => {
     expect(html).not.toContain('This host runs in local mode')
   })
 
-  it('the whole app renders the local Connect page first', () => {
-    const html = renderToStaticMarkup(<App />)
-    expect(html).toContain('This host runs in local mode')
+  it('the app opens Chat with a link to Settings', () => {
+    const html = renderToStaticMarkup(<App path="/" />)
+    expect(html).toContain('href="/settings"')
     expect(html).not.toContain('Pair a Revit')
   })
 })
@@ -148,6 +148,6 @@ describe('admin-only controls on a local host', () => {
     await host('cloud')
     const skills = renderToStaticMarkup(<SkillsView />)
     expect(skills).not.toContain('+ Add skill')
-    expect(skills).toContain('Enter the admin password on the Connect page to add or change skills.')
+    expect(skills).toContain('Enter the admin password in Settings to add or change skills.')
   })
 })

@@ -119,19 +119,18 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   does not expose, add it to the package (PR there), never reimplement it here.
 - The frontend reads `/config.json` (`apiBase`, `wsBase`, `features`) at runtime. No
   `VITE_API_BASE_URL` or any other build-time address.
-- Bring your own model: `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` first, then
-  `LLM_*` environment variables - except the key: `LLM_API_KEY` only ever goes to
-  `LLM_BASE_URL`, so a request with its own `X-LLM-Base-Url` must bring `X-LLM-Key`.
-  A browser-supplied endpoint must be https on a public address unless `LLM_ALLOW_HTTP=1`.
-  Keys are never written to disk, logs or error messages.
-- Configuration comes only from environment variables (see `.env.example`); no config files
-  except `models.yml` (`MODELS_FILE`, default `DATA_DIR/models.yml`; `models.example.yml`): the
+- Model credentials are resolved by `backend/models_file.py`. Environment variables take
+  precedence over the private `secrets.json` store, then eligible browser headers.
+  `backend/model_settings.py` atomically writes user-only files under `REVIT_BRIDGE_WEB_HOME`
+  or the per-user config directory. `backend/api/settings.py` exposes masked profiles.
+  Browser credentials require `ALLOW_BROWSER_KEYS` (cloud on, local off by default).
+  Browser endpoints require HTTPS on a public address unless `LLM_ALLOW_HTTP=1`.
+- The optional `models.yml` (`MODELS_FILE`, default `DATA_DIR/models.yml`) describes the
   model of each role (`analyst`, `planner`, `supervisor`), read and checked once at startup by
   `backend/models_file.py` - a file that is not valid, or missing where `MODELS_FILE` points,
   refuses the start with the file, field and problem, never a value. Keys never go in it: an
   entry names the environment variable (`api_key_env`), read on every call; any other field
-  (`api_key`, `token`, `extra_headers`...) is refused. No file at the default path: `LLM_*` and
-  the headers, byte for byte as before. With the file, the planner's entry stands where `LLM_*`
+  (`api_key`, `token`, `extra_headers`...) is refused. No YAML file at the default path: use `LLM_*`, saved groups and eligible headers. With the file, the planner's entry stands where `LLM_*`
   stood and the `X-LLM-*` headers replace that entry (and only that one) for the request;
   `/config.json` `features.models` carries model names only. Every model call goes through
   `models_file.resolve(role, headers)`.

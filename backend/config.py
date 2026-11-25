@@ -1,11 +1,8 @@
 """Host settings, read once from environment variables.
 
-Everything a deployment can change is an environment variable (see
-``.env.example``), except the model of each role, which may come from one file,
-``models.yml`` (``MODELS_FILE``, read and checked at startup by
-``backend.models_file``; keys stay in the environment, the file names their
-variables). ``/config.json`` republishes the subset the browser needs so one
-frontend build works on any address.
+Environment controls deployment. The optional models.yml selects role entries and
+provider options at startup. backend.model_settings reads saved credentials on
+demand. /config.json publishes the browser-facing subset.
 
     DEPLOY_MODE                 "local" (default) or "cloud". local: this machine
                                 only - the server must be reachable on loopback
@@ -33,11 +30,10 @@ frontend build works on any address.
                                 is enabled unless it says otherwise; an empty
                                 directory lists no built-in skills
     LLM_BASE_URL / LLM_MODEL / LLM_API_KEY
-                                server-side defaults for the model; request
-                                headers X-LLM-Base-Url / X-LLM-Model / X-LLM-Key
-                                take precedence and are never stored. LLM_API_KEY
-                                is only sent to LLM_BASE_URL: a request with its
-                                own X-LLM-Base-Url must bring X-LLM-Key
+                                server-side values with priority over saved profiles
+                                and eligible guest headers
+    REVIT_BRIDGE_WEB_HOME       directory holding secrets.json (default: per-user config)
+    ALLOW_BROWSER_KEYS          on/off; default on in cloud mode, off locally
     LLM_ALLOW_HTTP              "1" lets a browser-supplied base URL use plain http
                                 and a loopback or private address, and a models
                                 file entry use http to any host (not only loopback)
@@ -107,7 +103,7 @@ import hmac
 import ipaddress
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from revit_bridge.revit.settings import env_flag
@@ -162,7 +158,8 @@ class WebSettings:
     skills_dir: Path | None = None
     llm_base_url: str = ""
     llm_model: str = ""
-    llm_api_key: str = ""
+    llm_api_key: str = field(default="", repr=False)
+    allow_browser_keys: bool = False
     llm_allow_http: bool = False
     # LLM_MAX_TOKENS: the output limit of every call whose models file entry sets no max_tokens
     # (browser-set models included); None: backend.llm.DEFAULT_MAX_TOKENS.
@@ -231,6 +228,8 @@ class WebSettings:
             llm_base_url=env.get("LLM_BASE_URL", "").strip().rstrip("/"),
             llm_model=env.get("LLM_MODEL", "").strip(),
             llm_api_key=env.get("LLM_API_KEY", "").strip(),
+            allow_browser_keys=_choice(env.get("ALLOW_BROWSER_KEYS"), "ALLOW_BROWSER_KEYS",
+                                       ("on", "off") if cloud else ("off", "on")) == "on",
             llm_allow_http=env_flag("LLM_ALLOW_HTTP", env),
             llm_max_tokens=_max_tokens(env.get("LLM_MAX_TOKENS")),
             models_file=Path(models_file) if models_file else data_dir / MODELS_FILE_NAME,
@@ -324,7 +323,7 @@ class WebSettings:
                 # local: no pairing, no device list, no admin password; admin is false
                 # and the device counts are 0 there (nothing to unlock, no relay).
                 "mode": self.mode,
-                "byoModel": True,
+                "byoModel": self.allow_browser_keys,
                 "authoring": not self.cloud or admin,
                 "serverModel": self.server_model_configured,
                 "admin": bool(self.admin_password),

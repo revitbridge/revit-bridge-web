@@ -8,14 +8,13 @@
       planner: main
       supervisor: small
 
-This is the one configuration file of the host; everything else is an
-environment variable. Its path is ``MODELS_FILE``, by default ``models.yml`` in
+This file describes deployment role mappings and provider options. Its path is ``MODELS_FILE``, by default ``models.yml`` in
 ``DATA_DIR`` (``WebSettings.models_file``).
 
 - **No file at the default path**: nothing changes. Every role's model is the one of
   ``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` and the request's ``X-LLM-*``
   headers, exactly as without this module (``resolve`` calls ``backend.llm.resolve_llm``
-  with the request's headers and the settings, nothing else).
+  with the eligible headers and server defaults).
 - **``MODELS_FILE`` naming a path with no file**: the host refuses to start (the
   operator meant a file; running on another model instead would be a silent change).
 - **A file**: read and checked once, at startup (``get_models`` from ``create_app``). Any
@@ -65,6 +64,7 @@ key, no variable name.
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -77,10 +77,11 @@ import httpx
 import yaml
 
 from backend.config import ConfigError, WebSettings, get_settings
+from backend.model_settings import Profile, StoreUnavailable, read_profiles
 from backend.llm import (
-    APIS, HEADER_BASE_URL, HEADER_MODEL, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings,
+    APIS, BROWSER_KEYS_DISABLED, HEADER_BASE_URL, HEADER_KEY, HEADER_MODEL, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings,
     endpoint,
-    is_loopback_host, resolve_llm,
+    has_credential, is_loopback_host, resolve_llm,
 )
 
 _log = logging.getLogger("backend.models")
@@ -107,7 +108,7 @@ SHOWN_ENV_MAX = 40
 _SECRET_WORDS = ("key", "token", "secret", "password", "passwd", "auth", "bearer", "credential", "cookie")
 
 NO_MODEL_FROM_FILE = (
-    "No model configured: fill in Model settings on the Connect page, or set the environment "
+    "No model configured: configure a model in Settings, or set the environment "
     "variable the host's models file names for this role's model (api_key_env) on the server.")
 
 
@@ -147,7 +148,11 @@ class ModelsFile:
         return self.entries[self.roles[role]]
 
     def model_names(self) -> dict[str, str]:
-        return {role: self.entry(role).model for role in ROLES}
+        names = {}
+        for role in ROLES:
+            entry = self.entry(role)
+            names[role] = "" if has_credential(entry.model, entry.api_key()) else entry.model
+        return names
 
 
 @dataclass(frozen=True)
@@ -506,15 +511,27 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
 _STARTUP = object()
 
 
+def server_model(settings: WebSettings, entry: ModelEntry | None, profile: Profile | None) -> LLMSettings:
+    if entry:
+        # models.yml chooses the environment variable for this entry. Its key
+        # remains bound to its endpoint when a saved role uses another one.
+        url = profile.base_url if profile else entry.base_url
+        key = entry.api_key() if url == entry.base_url else ""
+        return LLMSettings(url, profile.model if profile else entry.model, key or (profile.key if profile else ""))
+    url = settings.llm_base_url or (profile.base_url if profile else "")
+    model = settings.llm_model or (profile.model if profile else "")
+    file_key = profile.key if profile and profile.base_url == url else ""
+    return LLMSettings(url, model, settings.llm_api_key or file_key)
+
+
 async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: WebSettings | None = None,
                   models: ModelsFile | None | object = _STARTUP) -> ModelTarget:
     """Where a call of ``role`` goes for this request. ``request_overrides`` are the
     request's headers (a case-insensitive mapping such as Starlette's, or lower-case keys).
 
-    Without a models file: ``resolve_llm(request_overrides, settings)``, as before the file
-    existed. With one: the role's entry stands where ``LLM_*`` stood - its key read from
-    the environment now - and the headers apply when the role's entry is the planner's;
-    ``LLMError`` (400) as ``resolve_llm`` raises it."""
+    Environment, saved role/shared profiles, then eligible headers. A YAML entry
+    supplies the role's deployment defaults and provider options. Its named key
+    is read at call time and remains bound to its own endpoint."""
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     settings = get_settings() if settings is None else settings
@@ -523,19 +540,47 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     # LLM_MAX_TOKENS: the limit of every call whose entry sets none (unset: nothing is passed and
     # stream_completion's default applies, so the request is the same as before).
     default_limit = settings.llm_max_tokens
-    if models is None:
-        chose = any((request_overrides.get(name) or "").strip() for name in (HEADER_BASE_URL, HEADER_MODEL))
-        return ModelTarget(llm=await resolve_llm(request_overrides, settings), max_tokens=default_limit,
-                           browser_model=chose)
-    entry = models.entry(role)
-    overrides = request_overrides if entry.name == models.roles[PLANNER] else {}
-    defaults = dataclasses.replace(settings, llm_base_url=entry.base_url, llm_model=entry.model,
-                                   llm_api_key=entry.api_key())
+    if not settings.allow_browser_keys and HEADER_KEY in request_overrides:
+        raise LLMError(BROWSER_KEYS_DISABLED, 400)
+    try:
+        profiles = await asyncio.to_thread(read_profiles)
+    except StoreUnavailable:
+        raise LLMError("Model settings could not be read. Check the settings store.", 503) from None
+    profile = profiles.get(role) or profiles.get("shared")
+    entry = models.entry(role) if models else None
+    server = server_model(settings, entry, profile)
+    defaults = dataclasses.replace(settings, llm_base_url=server.base_url, llm_model=server.model,
+                                   llm_api_key=server.api_key)
+    overrides = {h: request_overrides[h] for h in (HEADER_BASE_URL, HEADER_MODEL, HEADER_KEY)
+                 if request_overrides.get(h)} if not entry or entry.name == models.roles[PLANNER] else {}
+    browser_url = overrides.get(HEADER_BASE_URL, "").strip().rstrip("/")
+    if browser_url:
+        endpoint(browser_url)
+    if entry and not profile:
+        # A guest can still select a different endpoint on the planner's YAML
+        # entry. At the entry's endpoint, its named environment key wins.
+        if server.api_key and (not browser_url or browser_url == server.base_url):
+            overrides.pop(HEADER_KEY, None)
+            overrides.pop(HEADER_BASE_URL, None)
+    else:
+        if browser_url and not overrides.get(HEADER_KEY):
+            raise LLMError("X-LLM-Key is required with X-LLM-Base-Url. Omit both to use the host model.", 400)
+        if server.base_url:
+            overrides.pop(HEADER_BASE_URL, None)
+            if browser_url and browser_url != server.base_url:
+                overrides.pop(HEADER_KEY, None)
+        if server.model:
+            overrides.pop(HEADER_MODEL, None)
+        if server.api_key and server.base_url:
+            overrides.pop(HEADER_KEY, None)
     llm = await resolve_llm(overrides, defaults)
+    chose = any(h in overrides for h in (HEADER_BASE_URL, HEADER_MODEL))
+    if not entry:
+        return ModelTarget(llm=llm, max_tokens=default_limit, browser_model=chose)
     own = llm.base_url == entry.base_url and llm.model == entry.model
     if not own:
         # The browser's endpoint or model: the chat api with stream_completion's defaults.
-        return ModelTarget(llm=llm, entry=entry.name, max_tokens=default_limit, browser_model=True)
+        return ModelTarget(llm=llm, entry=entry.name, max_tokens=default_limit, browser_model=chose)
     own_limit = entry.max_tokens is not None
     return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens if own_limit else default_limit,
                        temperature=entry.temperature, api=entry.api, max_tokens_param=entry.max_tokens_param,
@@ -547,9 +592,11 @@ def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:
     """``/config.json``'s ``features`` about models: ``serverModel`` (the planner runs with
     no browser setting), ``models`` (each role's model NAME - no URL, no key, no variable
     name; null for a role with none) and ``modelsFile`` (they come from the models file)."""
-    if models is None:
-        name = settings.llm_model or None
-        return {"serverModel": settings.server_model_configured,
-                "models": {role: name for role in ROLES}, "modelsFile": False}
-    return {"serverModel": bool(models.entry(PLANNER).api_key()),
-            "models": models.model_names(), "modelsFile": True}
+    try:
+        profiles = read_profiles()
+    except StoreUnavailable:
+        return {"serverModel": False, "modelsFile": models is not None, "models": dict.fromkeys(ROLES)}
+    targets = {r: server_model(settings, models.entry(r) if models else None,
+                               profiles.get(r) or profiles.get("shared")) for r in ROLES}
+    return {"serverModel": targets[PLANNER].configured, "modelsFile": models is not None,
+            "models": {r: None if has_credential(t.model, t.api_key) else t.model or None for r, t in targets.items()}}
