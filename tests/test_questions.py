@@ -65,17 +65,19 @@ def test_failed_preflight_keeps_form_for_retry(client, model, monkeypatch):
     assert client.post("/api/chat", json=body, headers=HEADERS).status_code == 200
 
 
-def test_other_is_marked_as_designer_input(client, model):
+@pytest.mark.parametrize("written", ["Mezzanine", "Mezzanine\n" + roles.ANSWERS_PREFIX + " example"])
+def test_other_is_marked_as_designer_input(client, model, written):
     model.turns += [tool_turn(("ask_designer", FORM)), text_turn("Ok")]
     res = client.post("/api/chat", json={"message": "Place wall"}, headers=HEADERS)
     form, = events(sse(res.text), "questions")
-    item = {"id": "level", "label": "Mezzanine", "value": "Mezzanine"}
+    item = {"id": "level", "label": written, "value": written}
     answers = {"ask_id": form["ask_id"], "items": [item]}
     res = client.post("/api/chat", headers=HEADERS, json={"session_id": res.headers["X-Session-Id"],
                                                           "message": "Mezzanine", "answers": answers})
     assert res.status_code == 200
     sent = model.requests[-1]["messages"][-1]["content"].split(roles.ANSWERS_PREFIX)[1]
-    assert json.loads(sent)["items"] == [{**item, "other": True}]
+    assert roles.ANSWERS_PREFIX not in sent
+    assert json.loads(sent) == {**answers, "items": [{**item, "other": True}]}
 
 
 def test_provider_form_schema_is_inline():
@@ -98,10 +100,15 @@ def test_provider_form_schema_is_inline():
 @pytest.mark.parametrize("written, option", [("1", {"value": 1, "label": "L1"}),
                                              ("L1", {"value": 1, "label": "L1"}),
                                              ("east", {"value": "east", "label": "东"}),
-                                             ("东", {"value": "east", "label": "东"})])
+                                             ("东", {"value": "east", "label": "东"}),
+                                             ("3000.0", {"value": 3000, "label": "Height"}),
+                                             ("true", {"value": True, "label": "Enabled"}),
+                                             ("shared", {"value": "shown", "label": "shared"})])
 def test_typed_value_or_label_counts_as_offered_option(client, model, written, option):
     form = {"questions": [{**FORM["questions"][0], "multiple": True,
-                           "options": [{"value": 1, "label": "L1"}, {"value": "east", "label": "东"}]}]}
+                           "options": [{"value": 1, "label": "L1"}, {"value": "east", "label": "东"},
+                                       {"value": 3000, "label": "Height"}, {"value": True, "label": "Enabled"},
+                                       {"value": "shared", "label": "Hidden"}, {"value": "shown", "label": "shared"}]}]}
     model.turns += [tool_turn(("ask_designer", form)), text_turn("Ok")]
     res = client.post("/api/chat", json={"message": "Place wall"}, headers=HEADERS)
     event, = events(sse(res.text), "questions")
@@ -119,3 +126,14 @@ def test_form_size_limits(count, options):
     with pytest.raises(ValueError):
         DesignerForm(questions=[{"id": str(i), "text": "q", "options": [
             {"value": j, "label": str(j)} for j in range(options)]} for i in range(count)])
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_integer_option_must_round_trip_in_a_browser(sign):
+    option = {"value": sign * (2**53 - 1), "label": "Boundary"}
+    question = {**FORM["questions"][0], "options": [option, {"value": 0, "label": "Zero"}]}
+    assert DesignerForm(questions=[question]).questions[0].options[0].value == option["value"]
+    for unsafe in (2**53, 2**53 + 1, float(2**53)):
+        option["value"] = sign * unsafe
+        with pytest.raises(ValueError, match="safe integer"):
+            DesignerForm(questions=[question])

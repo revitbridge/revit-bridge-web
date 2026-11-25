@@ -17,7 +17,7 @@ const formText = {
 }
 
 function typedChoice(q: DesignerForm['questions'][number], text: string) {
-  const choice = q.options.find(o => o.value === text) ?? q.options.find(o => o.label === text)
+  const choice = q.options.find(o => o.label === text) ?? q.options.find(o => o.value === text)
   if (choice) return choice
   try {
     const scalar: unknown = JSON.parse(text)

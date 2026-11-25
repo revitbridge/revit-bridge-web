@@ -17,6 +17,11 @@ the `propose_spec` description. Answers that do not match the open form return H
 report in the reply text. Choosing "End this task" closes the task without calling a model.
 Reporting an execution result closes the previous unanswered form.
 
+Host-generated questions and option labels follow the browser language.
+Text entered in Other matches an offered label first, then an offered value.
+Typing `stop` or the displayed "End this task" label ("结束此任务" in Chinese)
+in the supervisor form therefore closes the task without a model call.
+
 Upgrading: **a host that other machines reach must set `DEPLOY_MODE=cloud` in its `.env` before it
 is upgraded**, and keep `ADMIN_PASSWORD` (a cloud host now refuses to start without it). That
 includes a host published on loopback behind a reverse proxy or a tunnel on the same machine. The

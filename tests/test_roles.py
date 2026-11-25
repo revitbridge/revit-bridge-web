@@ -553,7 +553,8 @@ def test_typed_change_after_query_form_is_routed_again(client, revit, model):
 
 @pytest.mark.parametrize("language,label,reply", [("zh-TW,en;q=0.5", "结束此任务", "此任务已结束。"),
                                                   ("zh;q=0.2,en-US", "End this task", "This task has ended.")])
-def test_supervisor_stop_closes_task_without_model_call(revit, client, model, language, label, reply):
+@pytest.mark.parametrize("entry", ["pick", "value", "label"])
+def test_supervisor_stop_closes_task_without_model_call(revit, client, model, language, label, reply, entry):
     sid = wall_turn(client, model)
     model.script("supervisor", json_turn({"verdict": "ask", "report": "Locked.", "question": "What next?"}))
     response = client.post("/api/chat", json={"session_id": sid, "execution": FAILED},
@@ -561,7 +562,10 @@ def test_supervisor_stop_closes_task_without_model_call(revit, client, model, la
     form, = events(sse(response.text), "questions")
     option = form["questions"][0]["options"][1]
     assert option == {"value": "stop", "label": label}
-    body = {"message": label, "session_id": sid,
+    if entry != "pick":
+        typed = option[entry]
+        option = {"value": typed, "label": typed}
+    body = {"message": option["label"], "session_id": sid,
             "answers": {"ask_id": form["ask_id"], "items": [{"id": "next_step", **option}]}}
     calls = len(model.requests)
     assert tokens(sse(client.post("/api/chat", json=body).text)) == reply

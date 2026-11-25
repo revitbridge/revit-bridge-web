@@ -5,7 +5,7 @@ import json
 from typing import Annotated
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
 Label = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
@@ -16,6 +16,13 @@ class Option(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
     value: Label | int | float | bool
     label: Label
+
+    @field_validator("value")
+    @classmethod
+    def browser_safe_integer(cls, value):
+        if type(value) in (int, float) and abs(value) > 2**53 - 1:
+            raise ValueError("integer option values must be in the browser's safe integer range")
+        return value
 
     @property
     def key(self):
@@ -82,7 +89,7 @@ class DesignerAnswers(BaseModel):
                     if not q["allow_other"] or not isinstance(item.value, str) or item.value != item.label:
                         return None
                     # An older client sends Other as text, including for a numeric option.
-                    option = option or next((o for o in q["options"] if o["label"] == item.value), None)
+                    option = next((o for o in q["options"] if o["label"] == item.value), option)
                     if option is None:
                         try:
                             scalar = json.loads(item.value)

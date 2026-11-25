@@ -72,7 +72,10 @@ it.each([['en-US', 'Other', 'Continue', 'L1'], ['zh-CN', '其他', '继续', '1'
   'uses %s form controls and submits a typed option only once', (language, other, button, typed) => {
     vi.stubGlobal('navigator', { languages: [language] })
     const submit = vi.fn()
-    act(() => root.render(<QuestionForm form={form} onAnswer={submit} />))
+    const withCollision = { ...form, questions: [form.questions[0], {
+      ...form.questions[1], options: [...levels, { label: 'Another level', value: 'L1' }],
+    }] }
+    act(() => root.render(<QuestionForm form={withCollision} onAnswer={submit} />))
     expect(container.querySelector('button')?.textContent).toBe(button)
     expect(container.querySelector('label:last-of-type input[type=checkbox]')?.parentElement?.textContent).toBe(other)
     for (const selector of ['input[type=radio]', 'input[type=checkbox]', 'label:last-of-type input[type=checkbox]']) {
