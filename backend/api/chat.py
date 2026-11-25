@@ -633,6 +633,11 @@ class Turn:
                     context = [dict(m) for m in context]
                     context[0]["content"] += ("\nThe host automatically runs eligible ready cards. Do not ask for a click "
                                               "unless the host requires manual confirmation. Ask whenever information is missing.")
+                    if role != roles.SUPERVISOR:
+                        context[0]["content"] += (
+                            " For a value from a read in this message or a completed step in this plan, cite "
+                            "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
+                            "value and source tool. Designer and answer need the designer's words or form answer.")
                 async for item in stream_completion(llm, context, tools=round_tools, stats=stats,
                                                     memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
@@ -875,7 +880,7 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     step = plan.current if plan else None
     if step:
         if execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution):
-            plan.auto_paused = True
+            session.auto_paused = True
         task.retries = step.retries
         step.evidence_id = execution.get("evidence_id")
         step.result = roles.step_result(execution)
@@ -1173,6 +1178,7 @@ async def chat(req: ChatRequest, request: Request,
         session.read_results.clear()
         session.auto_count = 0
         if not step and pending is None and session.clarification is None:
+            session.auto_paused = False
             session.request_text = req.message
             session.request_answers = []
             session.pending_interpretations.clear()

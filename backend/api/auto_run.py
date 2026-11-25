@@ -4,7 +4,8 @@ import json
 import re
 from decimal import Decimal, InvalidOperation
 
-from revit_bridge.spec.models import TaskSpec
+from revit_bridge.capabilities.schema import NUMERIC_TYPES
+from revit_bridge.spec.models import Source, TaskSpec
 
 from backend.api import bridge
 from backend.api.direct_reads import BuiltinStore
@@ -49,7 +50,7 @@ def _text_supports(binding, text, quote, parameter_type, unit, *, answer_label=F
     """Match the cited value in its original context, including the pack's units."""
     if not quote:
         return False
-    numeric = parameter_type in ("double", "number", "float", "int", "integer") or type(binding.value) in (float, int)
+    numeric = parameter_type in NUMERIC_TYPES or type(binding.value) in (float, int)
     if numeric:
         matches = _numeric_matches(text, binding.value)
     else:
@@ -107,21 +108,44 @@ def _supported(binding, session, words, answers, parameter_type=None, unit=None)
                for line in words.splitlines())
 
 
-def _result_contains(result, binding, parameter):
-    if same_json(result, binding.value):
-        return True
-    # The package accepts a decimal ID string on cards for integer element parameters.
-    if (parameter.get("type") in ("int", "integer") and (binding.name == "id" or binding.name.endswith("_id"))
-            and type(result) is int
-            and isinstance(binding.value, str) and binding.value == str(result)):
-        return True
-    if isinstance(result, dict):
-        children = result.values()
-    elif isinstance(result, list):
-        children = result
-    else:
+def _result_leaf(result, path):
+    leaf = result
+    for key in path.split("."):
+        if not key:
+            return None
+        if isinstance(leaf, dict) and key in leaf:
+            leaf = leaf[key]
+        elif (isinstance(leaf, list) and len(key) <= len(str(len(leaf)))
+              and re.fullmatch(r"0|[1-9][0-9]*", key) and int(key) < len(leaf)):
+            leaf = leaf[int(key)]
+        else:
+            return None
+    return None if isinstance(leaf, (dict, list)) else leaf
+
+
+def _result_supports(results, binding, parameter):
+    reference, separator, path = binding.evidence.removeprefix("result:").partition("#")
+    if not separator or not path or reference not in results:
         return False
-    return any(_result_contains(child, binding, parameter) for child in children)
+    leaf = _result_leaf(results[reference], path)
+    if leaf is None:
+        return False
+    value = binding.value
+    kind = parameter.get("type")
+    if kind in ("int", "integer") and (
+            binding.name == "id" or binding.name.endswith("_id") or
+            str(parameter.get("choices_from", "")).partition(":")[0] == "elements"):
+        # Revit IDs can be JSON integers or decimal strings. Never round a float to an ID.
+        return (bool(re.fullmatch(r"-?[0-9]+", str(leaf)) and re.fullmatch(r"-?[0-9]+", str(value)))
+                and Decimal(str(leaf)) == Decimal(str(value)))
+    if kind in NUMERIC_TYPES:
+        if type(leaf) not in (int, float):
+            return False
+        try:
+            return Decimal(str(leaf)) == Decimal(str(value))
+        except InvalidOperation:
+            return False
+    return same_json(leaf, value)
 
 
 class AutoRun:
@@ -146,7 +170,7 @@ class AutoRun:
         if (not pack or name != pack.name
                 or name.casefold() in {item.casefold() for item in self.settings.auto_run_exclude}):
             return "excluded_tool", None
-        if self.paused or (plan and plan.current and plan.auto_paused):
+        if self.paused or session.auto_paused:
             return "previous_failure", None
         if session.auto_count >= self.settings.auto_run_max_steps:
             return "step_limit", None
@@ -180,21 +204,25 @@ class AutoRun:
         words = (plan.original_request if plan and plan.current else session.request_text) + "\n" + self.user_message
         answers = plan.answers if plan and plan.current else session.request_answers
         declared = {p["name"]: p for p in pack.parameters}
-        results = [result for scope, result in session.read_results if scope == bridge.current_scope()]
-        if plan and plan.current:
+        scope = bridge.current_scope()
+        results = {ident: result for (device, ident), result in session.read_results.items() if device == scope}
+        if plan and plan.current and plan.scope == scope:
             for earlier in plan.steps:
                 if earlier is plan.current:
                     break
-                if earlier.status == "done" and earlier.recorded_result is not None:
-                    results.append(earlier.recorded_result)
+                if earlier.status == "done" and earlier.evidence_id:
+                    results[earlier.evidence_id] = earlier.recorded_result
         for binding in spec.parameters:
             parameter = declared.get(binding.name, {})
+            if binding.evidence.startswith("result:"):
+                if binding.source in (Source.designer, Source.answer) or not _result_supports(results, binding, parameter):
+                    return "unverified_evidence", None
+                continue
             if "default" in parameter and same_json(binding.value, parameter["default"]):
                 continue
             if _supported(binding, session, words, answers, parameter.get("type"), parameter.get("unit")):
                 continue
-            if not any(_result_contains(result, binding, parameter) for result in results):
-                return "unverified_evidence", None
+            return "unverified_evidence", None
         return None, None
 
     async def execute(self, spec):
@@ -227,7 +255,7 @@ class AutoRun:
                 plan.auto_receipt_pending = True
             if not worker.cancelled() and worker.result().get("success") is not True:
                 self.paused = True
-                if self.session.plan:
-                    self.session.plan.auto_paused = True
+                if not single_step:
+                    self.session.auto_paused = True
         task.add_done_callback(finished)
         return task
