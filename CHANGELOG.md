@@ -20,6 +20,8 @@ Multi-step task chat keeps a checklist, form answers and execution evidence acro
 one step completes, the planner can use its returned element IDs to prepare the next card in
 the same response. Each card requires its own confirmation. A failed step pauses for the
 designer. Usage records include the plan and step identifiers when available.
+With a claimed plan token, the tool run endpoint returns HTTP 200 and `success: false`
+for execution failures, including an unknown tool or an unreachable Revit device.
 
 The chat picker can insert multiple elements from the current Revit selection with stable IDs.
 Type searches accept partial words, spelling variants and category aliases across categories.

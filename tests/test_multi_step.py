@@ -149,6 +149,23 @@ def test_failed_first_step_pauses_for_a_designer_decision(client, model, revit, 
     assert not events(next_reply, "spec")
 
 
+@pytest.mark.parametrize("completed", [True, False], ids=["skip-second", "cancel-both"])
+def test_revision_can_close_a_two_step_plan(client, model, revit, completed):
+    sid, card = start(client, model)
+    if completed:
+        result = execute(client, sid, card)
+        model.script("supervisor", json_turn({"verdict": "done", "report": "Wall built."}))
+        model.script("planner", text_turn("Preparing the window."))
+        request(client, session_id=sid, execution=result)
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", tool_turn(("set_plan", {"steps": STEPS[:1] if completed else []})),
+                 text_turn("Task ended."))
+    _, frames = request(client, session_id=sid, message="Skip the remaining work.")
+    final, = events(frames, "plan")
+    assert [s["status"] for s in final["steps"]] == ["done" if completed else "skipped", "skipped"]
+    assert get_session_store().get(sid).plan.closed
+
+
 def test_interruption_can_revise_pending_steps_and_skip_an_omitted_step(client, model, revit):
     third = {"id": "door", "title": "Add a door", "tool": "create_door_on_wall"}
     model.script("analyst", json_turn(ROUTING_TOOL), json_turn(ROUTING_TOOL))
@@ -236,7 +253,8 @@ def test_plan_card_allows_the_designer_to_confirm_its_original_interpretation(cl
     confirm(client, sid, reviewed)
 
 
-@pytest.mark.parametrize("revision", [[], STEPS[:1], [{**STEPS[0], "status": "done"}, STEPS[1]]])
+@pytest.mark.parametrize("revision", [[STEPS[0], STEPS[0]], [{"id": "wall"}],
+                                      [{**STEPS[0], "status": "done"}, STEPS[1]]])
 def test_invalid_revision_keeps_the_existing_plan_and_card(client, model, revit, revision):
     sid, shown = start(client, model)
     model.script("analyst", json_turn(ROUTING_TOOL))

@@ -2,6 +2,8 @@
 import asyncio
 import json
 
+import pytest
+
 from revit_bridge.capabilities import ToolStore
 
 from backend.api import direct_reads
@@ -81,6 +83,23 @@ def test_explicit_reader_step_records_evidence_and_rejects_stale_ids(client, mod
     assert sum("read" in e for e in events(frames, "tool")) == 1
     steps = events(frames, "plan")[-1]["steps"]
     assert [step["status"] for step in steps] == ["done", "proposed"] and steps[0]["evidence_id"]
+
+
+@pytest.mark.parametrize("tool", [None, "create_wall"])
+def test_supporting_read_with_current_id_leaves_write_step_pending(client, model, revit, monkeypatch, tool):
+    declare_reader(monkeypatch)
+    first = {"id": "a", "title": "Build wall"}
+    if tool:
+        first["tool"] = tool
+    name, args = read_call()
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", tool_turn(("set_plan", {"steps": [first, {"id": "b", "title": "Add window"}]})),
+                 tool_turn((name, {**args, "step_id": "a"})), text_turn("Geometry read."))
+    _, frames = request(client, message="Build the wall and add a window.")
+    read, = [e["read"] for e in events(frames, "tool") if "read" in e]
+    assert read["result"]["success"]
+    created, = events(frames, "plan")
+    assert [s["status"] for s in created["steps"]] == ["pending", "pending"]
 
 
 def test_a_user_override_never_gets_direct_execution(client, model, revit, monkeypatch):

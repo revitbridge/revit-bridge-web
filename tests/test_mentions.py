@@ -718,6 +718,16 @@ PICKS = {"mention:element#901": {"kind": "element", "id": 901, "category": "OST_
          "mention:link#503": UNLABELLED, "mention:type#451": COLUMN, "mention:type#460": NO_CATEGORY}
 
 
+def test_user_pack_without_choices_keeps_element_id_picks():
+    user_pack = SimpleNamespace(name="inspect_reference", read_only=False, parameters=[
+        {"name": "reference_id", "type": "integer", "source": "designer"},
+        {"name": "element_ids", "type": "string", "source": "designer"},
+    ])
+    for name, ids in [("reference_id", "901"), ("element_ids", "901,902")]:
+        spec = bound(name, ids, "designer", "mention:element#" + ids)
+        assert not mention_errors(spec, user_pack, PICKS)
+
+
 def bound(name: str, value, source: str, evidence: str) -> TaskSpec:
     return TaskSpec.model_validate({"task": "t", "action": {"kind": "run_tool", "tool": "x"}, "parameters": [
         {"name": name, "value": value, "source": source, "evidence": evidence}]})

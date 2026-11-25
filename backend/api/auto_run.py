@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 from revit_bridge.spec.models import TaskSpec
 
@@ -22,7 +23,68 @@ def _value_pattern(value):
     return re.compile(r"(?<![a-zA-Z0-9_.+-])" + re.escape(text) + r"(?![a-zA-Z0-9_.])", re.I)
 
 
-def _supported(binding, session, words, answers, parameter_type=None):
+_NUMBER = re.compile(r"(?<![a-zA-Z0-9_.+-])[+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?![\d_]|\.\d)")
+_UNIT = re.compile(r"\s*(毫米|厘米|公分|公尺|米|英尺|英寸|度|[a-zA-Z]+|[°%'\"])", re.I)
+_UNIT_NAMES = {"毫米": "mm", "厘米": "cm", "公分": "cm", "米": "m", "公尺": "m",
+               "英寸": "in", "英尺": "ft", "度": "deg", "°": "deg", "'": "ft", '"': "in"}
+_FIELD_NAMES = {"height": ("墙高", "高度"), "width": ("宽度",), "length": ("长度",),
+                "sill_height": ("窗台高度", "窗台高")}
+
+
+def _numeric_matches(text, value):
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return
+    for match in _NUMBER.finditer(text):
+        try:
+            if Decimal(match[0]) == number:
+                yield match
+        except InvalidOperation:
+            continue
+
+
+def _text_supports(binding, text, quote, parameter_type, unit, *, answer_label=False):
+    """Match the cited value in its original context, including the pack's units."""
+    if not quote:
+        return False
+    numeric = parameter_type in ("double", "number", "float", "int", "integer") or type(binding.value) in (float, int)
+    if numeric:
+        matches = _numeric_matches(text, binding.value)
+    else:
+        pattern = _value_pattern(binding.value)
+        if pattern is None:
+            return False
+        matches = pattern.finditer(text)
+    citations = list(re.finditer(re.escape(quote), text, re.I))
+    for match in matches:
+        if not any(c.start() <= match.start() and match.end() <= c.end() for c in citations):
+            continue
+        prefix = text[:match.start()]
+        if numeric:
+            suffix = text[match.end():]
+            stated = _UNIT.match(suffix)
+            if stated:
+                symbol = stated[1].casefold()
+                if _UNIT_NAMES.get(symbol, symbol) != (unit or "").casefold():
+                    continue
+                suffix = suffix[stated.end():]
+            if suffix and not re.match(r"[\s,，。;；.!?、)\]]", suffix):
+                continue
+            if not prefix.strip() and not suffix.strip() and (answer_label or stated):
+                return True
+            names = [r"(?<!\w)" + re.escape(binding.name).replace("_", "[ _]")]
+            names.extend(_FIELD_NAMES.get(binding.name, ()))
+            if re.search(r"(?:" + "|".join(names) + r")\s*(?:[=:：]|is\b|of\b|为)?\s*['\"]?$", prefix, re.I):
+                return True
+        else:
+            assignment = re.search(r"([a-zA-Z_]\w*)\s*[=:：]\s*['\"]?$", prefix, re.I)
+            if assignment is None or assignment[1].casefold() == binding.name.casefold():
+                return True
+    return False
+
+
+def _supported(binding, session, words, answers, parameter_type=None, unit=None):
     keys = evidence_keys(binding.evidence)
     if keys:
         picks = session.picks_for(bridge.current_scope())
@@ -31,32 +93,33 @@ def _supported(binding, session, words, answers, parameter_type=None):
         items = entry.get("answers")
         if isinstance(items, list):
             for item in items:
-                if item.get("id") == binding.name and same_json(item.get("value"), binding.value):
+                label = item.get("label", "")
+                if (item.get("id") == binding.name and same_json(item.get("value"), binding.value)
+                        and _text_supports(binding, label, label, parameter_type, unit, answer_label=True)):
                     return True
         elif isinstance(items, str):
             words += "\n" + items
         if isinstance(entry.get("answer"), str):
             words += "\n" + entry["answer"]
-    quote = binding.evidence.strip()
-    value_pattern = _value_pattern(binding.value)
-    if not quote or value_pattern is None:
+    return any(_text_supports(binding, line, binding.evidence.strip(), parameter_type, unit)
+               for line in words.splitlines())
+
+
+def _result_contains(result, binding, parameter):
+    if same_json(result, binding.value):
+        return True
+    # The package accepts a decimal ID string on cards for integer element parameters.
+    if (parameter.get("type") in ("int", "integer") and (binding.name == "id" or binding.name.endswith("_id"))
+            and type(result) is int
+            and isinstance(binding.value, str) and binding.value == str(result)):
+        return True
+    if isinstance(result, dict):
+        children = result.values()
+    elif isinstance(result, list):
+        children = result
+    else:
         return False
-    citations = list(re.finditer(re.escape(quote), words, re.I))
-    for value in value_pattern.finditer(words):
-        if not any(c.start() <= value.start() and value.end() <= c.end() for c in citations):
-            continue
-        prefix = words[:value.start()]
-        if parameter_type in ("double", "number", "float", "int", "integer") or (
-            isinstance(binding.value, (int, float)) and not isinstance(binding.value, bool)
-        ):
-            field = re.escape(binding.name).replace("_", "[ _]")
-            if re.search(r"(?<!\w)" + field + r"\s*(?:[=:：]|is\b|of\b)?\s*['\"]?$", prefix, re.I):
-                return True
-            continue
-        assignment = re.search(r"([a-zA-Z_]\w*)\s*[=:：]\s*['\"]?$", prefix, re.I)
-        if assignment is None or assignment[1].casefold() == binding.name.casefold():
-            return True
-    return False
+    return any(_result_contains(child, binding, parameter) for child in children)
 
 
 class AutoRun:
@@ -115,15 +178,21 @@ class AutoRun:
         words = (plan.original_request if plan and plan.current else session.request_text) + "\n" + self.user_message
         answers = plan.answers if plan and plan.current else session.request_answers
         declared = {p["name"]: p for p in pack.parameters}
+        results = [result for scope, result in session.read_results if scope == bridge.current_scope()]
+        if plan and plan.current:
+            for earlier in plan.steps:
+                if earlier is plan.current:
+                    break
+                if earlier.status == "done" and earlier.recorded_result is not None:
+                    results.append(earlier.recorded_result)
         for binding in spec.parameters:
             parameter = declared.get(binding.name, {})
-            if binding.source.value == "default" and (
-                "default" not in parameter or not same_json(binding.value, parameter["default"])
-            ):
+            if "default" in parameter and same_json(binding.value, parameter["default"]):
+                continue
+            if _supported(binding, session, words, answers, parameter.get("type"), parameter.get("unit")):
+                continue
+            if not any(_result_contains(result, binding, parameter) for result in results):
                 return "unverified_evidence", None
-            if binding.source.value in ("designer", "answer") or parameter.get("source") in ("designer", "answer"):
-                if not _supported(binding, session, words, answers, parameter.get("type")):
-                    return "unverified_evidence", None
         return None, None
 
     async def execute(self, spec):
@@ -146,9 +215,13 @@ class AutoRun:
         task = asyncio.create_task(self.execute(spec))
         self.session.auto_worker = task
         plan = self.session.plan
+        single_step = not (plan and plan.current)
+        scope = bridge.current_scope()
         def finished(worker):
             self.session.auto_worker = None
-            if plan and plan.confirmed and plan.receipt is not None:
+            if single_step and not worker.cancelled():
+                self.session.pending_auto_receipt = (scope, worker.result())
+            elif plan and plan.confirmed and plan.receipt is not None:
                 plan.auto_receipt_pending = True
             if not worker.cancelled() and worker.result().get("success") is not True:
                 self.paused = True
