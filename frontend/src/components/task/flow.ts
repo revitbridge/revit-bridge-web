@@ -290,7 +290,7 @@ export function createTaskFlow(deps: FlowDeps) {
           patch(side, t => {
             const messages = t.messages.map(m => m.form && (!m.answered || m.form.ask_id === previousForm?.ask_id)
               ? { ...m, answered: 'replaced' as const } : m)
-            const form = evt.type === 'questions' ? { ask_id: evt.ask_id, questions: evt.questions }
+            const form = evt.type === 'questions' ? { ask_id: evt.ask_id, questions: evt.questions, workflow_preview: evt.workflow_preview }
               : { ask_id: evt.ask_id, questions: [], selection: evt.selection }
             const last = messages.length - 1
             if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })

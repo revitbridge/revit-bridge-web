@@ -6,45 +6,47 @@ import re
 from dataclasses import dataclass, field
 
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.spec.models import ParamBinding, TaskSpec
-from revit_bridge.spec.rules import validate_spec
+from revit_bridge.spec.models import ParamBinding
 from revit_bridge.workflows import resolve_step_params
 
 from backend.api.workflows import invalid, list_workflows, saved_workflow
 from backend.plans import Plan, Step, same_json
 from backend.questions import DesignerForm
+from backend.workflow_validation import binding_errors
 
 
 def catalogue():
-    return [{"kind": "workflow", "name": w["name"], "summary": w["summary"],
-             "description": w["description"], "inputs": w["inputs"]} for w in list_workflows()]
+    return [{"kind": "workflow", "origin": "user", "name": w["name"], "summary": w["summary"],
+             "description": w["description"][:600],
+             "inputs": [{**i, "description": i["description"][:120]}
+                        for i in w["inputs"][:12]]} for w in list_workflows()]
+
+
+def _invocation_match(text, definition):
+    names = "|".join(re.escape(definition[k]) for k in ("name", "display_name"))
+    return re.fullmatch(r"(?:(?:please\s+)?(?:run|use|execute)\s+(?:the\s+)?(?:workflow\s+)?|"
+                        r"(?:请)?(?:运行|执行|使用)\s*(?:工作流)?\s*)"
+                        rf"(?:{names})(?:\s+workflow)?(?:\s+with\s+(?P<arguments>.+?))?[.!。！]?", text.strip(), re.I)
 
 
 def invocation(text, definition, supplied):
-    # A model's choice (including the analyst's routing) is not designer authorization.
-    # For less explicit wording, show the saved name in the existing question form.
-    match = re.fullmatch(r"(?:(?:please\s+)?(?:run|use|execute)\s+(?:the\s+)?(?:workflow\s+)?|"
-                         r"(?:请)?(?:运行|执行|使用)(?:工作流)?\s*)?(?P<name>" +
-                         "|".join(re.escape(definition[k]) for k in ("name", "display_name")) +
-                         r")(?:\s+workflow)?(?:\s+with\s+(?P<arguments>.+?))?[.!。！]?", text.strip(), re.I)
-    if not match:
-        return False
-    if match["name"].casefold() != definition["name"].casefold():
-        # Display names need not be unique. An ambiguous label goes to the form.
-        if any(w["name"] != definition["name"] and match["name"].casefold() in
-               (w["name"].casefold(), w["display_name"].casefold()) for w in list_workflows()):
-            return False
+    """Return the explicitly named inputs, or None when the Run form is needed."""
+    match = _invocation_match(text, definition)
+    if not match or any(w["name"] != definition["name"] and _invocation_match(text, w) for w in list_workflows()):
+        return None
+    named = set()
     if not match["arguments"]:
-        return True
+        return named
     for assignment in match["arguments"].split(","):
         name, equals, literal = assignment.strip().partition("=")
         value = supplied.get(name.strip())
         if not equals or type(value) not in (str, bool, int, float):
-            return False
+            return None
         shown = json.dumps(value, ensure_ascii=False)
         if literal.strip() != shown and not (isinstance(value, str) and literal.strip() == value and value.isalnum()):
-            return False
-    return True
+            return None
+        named.add(name.strip())
+    return named
 
 
 @dataclass
@@ -52,6 +54,7 @@ class WorkflowRun:
     definition: dict
     scope: str
     invoked: bool
+    designer_message: str
     inputs: dict = field(default_factory=dict)
     evidence: dict = field(default_factory=dict)
     labels: dict = field(default_factory=dict)
@@ -72,10 +75,12 @@ class WorkflowRun:
         supplied = args.get("inputs", {})
         if supplied.keys() - {i["name"] for i in definition["inputs"]}:
             raise invalid(["inputs: unknown workflow input"])
-        run = cls(definition, scope, invocation(session.request_text, definition, supplied))
+        message = session.designer_message
+        named = invocation(message, definition, supplied)
+        run = cls(definition, scope, named is not None, message)
         for item in definition["inputs"]:
             name = item["name"]
-            if name not in supplied:
+            if name not in supplied or (item["ask"] and (named is None or name not in named)):
                 continue
             value = supplied[name]
             if type(value) not in (int, float, bool, str):
@@ -84,19 +89,22 @@ class WorkflowRun:
             # any model-supplied value (also in click-to-confirm mode).
             quote = str(value).lower() if isinstance(value, bool) else str(value)
             binding = ParamBinding(name=name, value=value, evidence=quote, source="designer")
-            params = run.uses(name)
+            params = run.uses(name) or [item]
+            words = message if item["ask"] else session.request_text + "\n" + message
+            if all(_supported(binding, session, words, [], p["type"], p.get("unit")) for p in params):
+                run.inputs[name] = value
+                run.evidence[name] = ("answer", quote)
+                continue
+            if item["ask"]:
+                continue
             for entry in reversed(session.request_answers):
                 answers = entry.get("answers")
                 if not isinstance(answers, list) or not entry.get("ask_id"):
                     continue
-                if params and all(_supported(binding, session, "", [entry], p["type"], p.get("unit")) for p in params):
+                if all(_supported(binding, session, "", [entry], p["type"], p.get("unit")) for p in params):
                     run.inputs[name] = value
                     run.evidence[name] = ("answer", entry["ask_id"] + "#" + name)
                     break
-            if name not in run.inputs and params and all(_supported(binding, session, session.request_text, [],
-                                                                    p["type"], p.get("unit")) for p in params):
-                run.inputs[name] = value
-                run.evidence[name] = ("answer", quote)
         return run
 
     def uses(self, name):
@@ -111,21 +119,23 @@ class WorkflowRun:
             raise invalid([f"step {step['id']}: unknown tool {step['tool']}"])
         return pack
 
-    def fresh(self):
+    def fresh(self, *, check_bindings=False):
         if not same_json(saved_workflow(self.name), self.definition):
             raise invalid(["The saved workflow changed. Start a new run to use the new definition."])
+        if check_bindings and (errors := binding_errors(self.definition, ToolStore())):
+            raise invalid(errors)
 
     def next_form(self, zh, *, automatic):
         self.questions = {}
-        has_fixed = any(not isinstance(v, dict) for s in self.definition["steps"] for v in s["params"].values())
-        if automatic and has_fixed and not self.invoked:
+        confirm_invocation = automatic and not self.invoked
+        if confirm_invocation:
             questions = [{"id": "invoke", "text": (f"运行 {self.name}？" if zh else f"Run {self.name}?"),
                           "options": [{"value": "run", "label": "运行" if zh else "Run workflow"},
                                       {"value": "cancel", "label": "取消" if zh else "Cancel"}]}]
         else:
             used = {s["input"] for step in self.definition["steps"] for s in step["params"].values()
                     if isinstance(s, dict) and "input" in s}
-            missing = [i for i in self.definition["inputs"] if i["name"] in used and i["name"] not in self.inputs]
+            missing = [i for i in self.definition["inputs"] if (i["ask"] or i["name"] in used) and i["name"] not in self.inputs]
             if not missing:
                 return None
             # One question allows a typed chat reply to be bound unambiguously too.
@@ -138,6 +148,9 @@ class WorkflowRun:
             questions = [{"id": "input", "text": f"{item['name']} - {item['description']}"[:500],
                           "allow_other": True, "options": options}]
         event = DesignerForm(questions=questions).event()
+        if confirm_invocation:
+            event["workflow_preview"] = {"summary": self.definition["summary"], "steps": [
+                {"title": s["title"], "tool": s["tool"]} for s in self.definition["steps"]]}
         self.form_id = event["ask_id"]
         return event
 
@@ -174,22 +187,16 @@ class WorkflowRun:
         errors = []
         for step in self.definition["steps"]:
             tool = self.pack(store, step)
-            known = {}
-            # A future result is unknown, but a bad fixed/answered value in the last
-            # step must be caught before the first step can run.
+            # Check the actual answers before the first card. An invalid answer
+            # reopens that input's form for correction.
             for key, source in step["params"].items():
-                if isinstance(source, dict) and "from" in source:
+                if not isinstance(source, dict) or "input" not in source:
                     continue
                 try:
-                    known.update(resolve_step_params({**step, "params": {key: source}}, self.inputs, {}, tool))
+                    resolve_step_params({**step, "params": {key: source}}, self.inputs, {}, tool)
                 except ValueError as exc:
                     errors.append(str(exc))
-                    if isinstance(source, dict):
-                        self.inputs.pop(source["input"], None)
-            # The package can check the declared origins before any result exists.
-            # This draft never becomes a proposal or a confirmation.
-            draft = self.spec(step, tool, known, {}, session.chinese)
-            errors.extend(f"step {step['id']}: {e.message}" for e in validate_spec(TaskSpec.model_validate(draft), tool))
+                    self.inputs.pop(source["input"], None)
         if errors:
             raise invalid(errors)
         return Plan(session.request_text, list(session.request_answers), self.scope, workflow=self,

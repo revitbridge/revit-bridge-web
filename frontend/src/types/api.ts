@@ -311,6 +311,7 @@ export interface DesignerOption {
 
 export interface DesignerForm {
   selection?: SelectionQuestion
+  workflow_preview?: { summary: string; steps: { title: string; tool: string }[] }
   ask_id: string
   questions: { id: string; text: string; options: DesignerOption[]; allow_other?: boolean; multiple?: boolean }[]
 }

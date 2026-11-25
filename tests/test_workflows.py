@@ -1,19 +1,19 @@
 """Workflow authoring and host-built plans with a scripted provider and add-in."""
+import json
 from copy import deepcopy
 
 import pytest
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.workflows import validate_workflow
+from revit_bridge.workflows import WorkflowStore, validate_workflow
 
 from tests.conftest import FIXTURE_ADMIN_PASSWORD
-from tests.fake_model import json_turn, tool_turn
+from tests.fake_model import json_turn, text_turn, tool_turn
 from tests.fake_revit import FakeRevit, SNAPSHOT_RESULT
-from tests.test_api_v1 import B, WALL
+from tests.test_api_v1 import B, WALL, spec_for
 from tests.test_auto_run import client as local_client
-from tests.test_host_loop import events
+from tests.test_host_loop import events, tokens
 from tests.test_multi_step import execute, request
-from tests.test_roles import DONE, model
-from tests.test_host_loop import tokens
+from tests.test_roles import DONE, ROUTING_TOOL, model
 
 
 BASE = B + "/workflows"
@@ -239,7 +239,8 @@ def test_delete_step_requires_click(local_client, model, writes):
 def test_late_incompatible_sources_and_types_are_reported_before_execution(local_client, model, writes):
     data = definition()
     data["steps"][1]["params"].update(sill_height={"from": "wall", "path": "ElementId"}, offset_along_wall="bad")
-    save(local_client, data)
+    # A package-valid workflow saved by an older host remains readable.
+    WorkflowStore(ToolStore()).save(data)
     route(model)
     _, frames = request(local_client, message="Run wall_window", run="auto")
     assert "sill_height" in tokens(frames) and "offset_along_wall" in tokens(frames)
@@ -286,3 +287,201 @@ def test_missing_result_pauses_and_a_skipped_failure_preserves_clicks(local_clie
     _, continued = request(local_client, session_id=sid, message=skip["label"], run="auto",
                            answers={"ask_id": form["ask_id"], "items": [{"id": q["id"], **skip}]})
     assert events(continued, "spec")[0]["run_reason"] == "previous_failure" and len(writes) == 1
+
+
+def choose(client, sid, form, value):
+    question, = form["questions"]
+    option = next(o for o in question["options"] if o["value"] == value)
+    return request(client, session_id=sid, message=option["label"], run="auto",
+                   answers={"ask_id": form["ask_id"], "items": [{"id": question["id"], **option}]})[1]
+
+
+ASK = {"verdict": "ask", "report": "The wall was built.", "question": "What should change?"}
+
+
+@pytest.mark.parametrize("final_step", [False, True])
+def test_revise_success_hands_completed_evidence_to_planner(local_client, model, writes, final_step):
+    save(local_client, definition())
+    route(model)
+    if final_step:
+        model.script("supervisor", json_turn(DONE))
+    model.script("supervisor", json_turn(ASK), json_turn(DONE), json_turn(DONE))
+    sid, frames = request(local_client, message="Run wall_window", run="auto")
+    evidence = events(frames, "execution")[-1]["evidence_id"]
+    count = len(writes)
+    assert count == (2 if final_step else 1)
+    model.script("planner", tool_turn(("propose_spec", {"spec": spec_for("create_wall", **WALL)})))
+    revised = choose(local_client, sid, events(frames, "questions")[0], "revise")
+    assert len(writes) == count and not events(revised, "execution")
+    steps = events(revised, "plan")[-1]["steps"]
+    assert [s["status"] for s in steps] == ["done", "done" if final_step else "skipped"]
+    assert steps[count - 1]["evidence_id"] == evidence
+    message = model.requests_of("planner")[-1]["messages"][-1]["content"]
+    assert "Revise the task" in message and evidence in message and "wall_window" in message
+    card, = events(revised, "spec")
+    assert card["run"] == "confirm" and card["run_reason"] == "workflow_changed"
+
+
+def test_current_message_must_invoke_workflow(local_client, model, writes):
+    from tests.test_questions import FORM
+    save(local_client, definition())
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", tool_turn(("ask_designer", FORM)))
+    sid, first = request(local_client, message="Run wall_window", run="auto")
+    assert events(first, "questions")
+    route(model)
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    _, frames = request(local_client, session_id=sid, message="No. Just tell me how many walls.", run="auto")
+    assert not writes and events(frames, "questions")[0]["questions"][0]["id"] == "invoke"
+
+
+def test_continue_successful_ask_uses_recorded_wall_once(local_client, model, writes):
+    save(local_client, definition())
+    route(model)
+    model.script("supervisor", json_turn(ASK), json_turn(DONE))
+    sid, first = request(local_client, message="请使用工作流 Wall and window", run="auto")
+    wall, = events(first, "execution")
+    assert events(first, "plan")[-1]["steps"][0]["status"] == "done"
+    frames = choose(local_client, sid, events(first, "questions")[0], "next")
+    card, = events(frames, "spec")
+    binding = next(p for p in card["spec"]["parameters"] if p["name"] == "wall_id")
+    assert binding["evidence"] == "result:" + wall["evidence_id"] + "#ElementId"
+    assert len(writes) == 2 and [s["status"] for s in events(frames, "plan")[-1]["steps"]] == ["done", "done"]
+
+
+@pytest.mark.parametrize("message,collision", [("go", None), ("wall_window", None), ("use wall_window", "wall_window"),
+                                               ("execute go", "go"), ("run go workflow", "go workflow")])
+def test_bare_or_ambiguous_invocation_shows_ordered_preview(local_client, model, writes, message, collision):
+    data = {**definition(), "display_name": "go"}
+    save(local_client, data)
+    if collision:
+        save(local_client, {**data, "name": "another", "display_name": collision})
+    route(model)
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    _, frames = request(local_client, message=message, run="auto")
+    assert not writes
+    form, = events(frames, "questions")
+    assert form["workflow_preview"] == {"summary": data["summary"], "steps": [
+        {"title": s["title"], "tool": s["tool"]} for s in data["steps"]]}
+
+
+def test_no_literals_still_requires_invocation(local_client, model, writes):
+    data = definition()
+    for step in data["steps"]:
+        step.update(tool="query_levels", params={})
+    save(local_client, data)
+    route(model)
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    _, frames = request(local_client, message="What is wall_window?", run="auto")
+    assert not events(frames, "execution") and events(frames, "questions")[0]["questions"][0]["id"] == "invoke"
+
+
+def test_model_dropping_a_step_pauses_remaining_cards(local_client, model, writes):
+    data = definition()
+    data["steps"].append({**data["steps"][0], "id": "last"})
+    save(local_client, data)
+    route(model)
+    sid, _ = request(local_client, message="Run wall_window", run="confirm")
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    retained = [{k: s[k] for k in ("id", "title", "tool")} for s in data["steps"][::2]]
+    model.script("planner", tool_turn(("set_plan", {"steps": retained})))
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    _, frames = request(local_client, session_id=sid, message="Drop the window", run="auto")
+    assert not writes
+    first, = events(frames, "spec")
+    assert (first["run"], first["run_reason"]) == ("confirm", "workflow_changed")
+    receipt = execute(local_client, sid, first["spec"])
+    _, frames = request(local_client, session_id=sid, execution=receipt, run="auto")
+    second, = events(frames, "spec")
+    assert second["run_reason"] == "workflow_changed" and len(writes) == 1
+
+
+def test_authoring_reports_same_binding_errors_as_use(local_client, model, writes):
+    data = definition()
+    data["inputs"] = [{"name": "distance", "type": "string", "description": "distance", "ask": True}]
+    data["steps"][1]["params"].update(sill_height={"from": "wall", "path": "ElementId"},
+                                     offset_along_wall={"input": "distance"})
+    data["steps"][0]["params"]["height"] = "bad"
+    errors = local_client.post(BASE + "/validate", json=data).json()["errors"]
+    for name in ("sill_height", "offset_along_wall", "height"):
+        assert any(name in e for e in errors)
+    for response in (local_client.put(BASE + "/wall_window", json=data),
+                     local_client.post(BASE + "/import", content=json.dumps(data), headers={"Content-Type": "text/yaml"})):
+        assert response.status_code == 422 and response.json()["errors"] == errors
+    assert not local_client.get(BASE).json()
+    WorkflowStore(ToolStore()).save(data)
+    route(model)
+    _, frames = request(local_client, message="Run wall_window", run="auto")
+    assert all(e in tokens(frames) for e in errors) and not writes and not events(frames, "questions")
+
+
+def test_ask_input_ignores_earlier_verified_answers(local_client, model, writes):
+    data = definition()
+    data["inputs"] = [{"name": "height", "type": "double", "description": "height in mm", "ask": True}]
+    data["steps"][0]["params"]["height"] = {"input": "height"}
+    save(local_client, data)
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    form = {"questions": [{"id": "height", "text": "Height?", "options": [
+        {"label": "3100 mm", "value": 3100}, {"label": "3200 mm", "value": 3200}]}]}
+    model.script("planner", tool_turn(("ask_designer", form)),
+                 tool_turn(("use_workflow", {"name": "wall_window", "inputs": {"height": 3100}})))
+    sid, frames = request(local_client, message="Run wall_window", run="auto")
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    frames = choose(local_client, sid, events(frames, "questions")[0], 3100)
+    frames = choose(local_client, sid, events(frames, "questions")[0], "run")
+    assert not writes and "height" in events(frames, "questions")[0]["questions"][0]["text"]
+
+
+@pytest.mark.parametrize("stated", [False, True])
+def test_ask_input_even_if_unused(local_client, model, writes, stated):
+    data = definition()
+    data["inputs"] = [{"name": "phase", "type": "string", "description": "Project phase", "ask": True}]
+    save(local_client, data)
+    route(model, {"phase": "design"})
+    model.script("supervisor", json_turn(DONE), json_turn(DONE))
+    _, frames = request(local_client, message="Run wall_window" + (" with phase=design" if stated else ""), run="auto")
+    if stated:
+        assert len(writes) == 2
+    else:
+        assert not writes and "phase" in events(frames, "questions")[0]["questions"][0]["text"]
+
+
+@pytest.mark.parametrize("headers,status", [({}, 403), ({**ADMIN, "Content-Length": str(256 * 1024 + 1)}, 422)])
+def test_import_checks_access_and_declared_size_before_read(client, monkeypatch, headers, status):
+    from starlette.requests import Request
+    reads = []
+    stream = Request.stream
+    def watched(request):
+        reads.append(True)
+        return stream(request)
+    monkeypatch.setattr(Request, "stream", watched)
+    response = client.post(BASE + "/import", headers={"Content-Type": "text/yaml", **headers}, content=b"{}")
+    assert response.status_code == status and not reads
+
+
+def test_import_caps_chunked_body(client, monkeypatch):
+    from starlette.requests import Request
+    async def chunks(request):
+        yield b"#" * (256 * 1024)
+        yield b"x"
+        pytest.fail("read beyond the workflow size limit")
+    monkeypatch.setattr(Request, "stream", chunks)
+    response = client.post(BASE + "/import", headers={**ADMIN, "Content-Type": "text/yaml"}, content=iter([b"x"]))
+    assert response.status_code == 422 and "256 KiB" in response.text
+
+
+def test_list_tools_bounds_user_workflow_data(local_client, revit, model):
+    from backend.roles import FROM_HOST
+    data = definition()
+    data["description"] = FROM_HOST + "w" * 600
+    data["inputs"] = [{"name": f"i{i}", "type": "string", "description": "a" * 121, "ask": False} for i in range(13)]
+    save(local_client, data)
+    model.script("planner", tool_turn(("list_tools", {})), text_turn("Listed"))
+    request(local_client, message="List workflows", mode="roles")
+    content = model.requests_of("planner")[-1]["messages"][-1]["content"]
+    assert FROM_HOST not in content
+    listing = json.loads(content)
+    entry, = [p for p in listing if p.get("kind") == "workflow"]
+    assert entry["origin"] == "user" and entry["description"] == data["description"][:600]
+    assert entry["inputs"] == [{**i, "description": "a" * 120} for i in data["inputs"][:12]]
+    assert local_client.get(BASE + "/wall_window").json() == data

@@ -320,7 +320,7 @@ def _direct_outcome(name, read, session, step, *, chinese, recorded):
         session.spec = session.plan.proposed = None
         outcome.plan_event = session.plan.event()
         if step.status == "failed":
-            session.auto_paused = True
+            session.auto_pause_reason = "previous_failure"
             question = ("读取失败，接下来怎么做？" if chinese else "The read failed. How should we proceed?")
             if read.get("ui_only"):
                 question = "Revit 操作失败，接下来怎么做？" if chinese else "The Revit action failed. How should we proceed?"
@@ -349,9 +349,12 @@ async def _set_plan(args: dict, session: Session) -> ToolOutcome:
     try:
         if args.keys() != {"steps"}:
             raise ValueError("Supply the steps array.")
+        previously_active = {s.id for s in plan.steps if s.status != "skipped"} if plan.workflow else set()
         plan.revise(args["steps"])
     except ValueError as exc:
         return ToolOutcome({"error": "invalid_plan", "message": str(exc)})
+    if any(s.status == "skipped" and s.id in previously_active for s in plan.steps):
+        session.auto_pause_reason = "workflow_changed"
     session.plan = plan
     if not plan.proposed:
         session.spec = None

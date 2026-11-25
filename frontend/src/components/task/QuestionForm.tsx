@@ -57,6 +57,10 @@ export default function QuestionForm({ form, answered, disabled, onAnswer }: Pro
     e.preventDefault()
     if (complete && !disabled && !answered) onAnswer(lines.join('\n').slice(0, 8000), answers)
   }}>
+    {form.workflow_preview && <>
+      <p>{form.workflow_preview.summary}</p>
+      <ol>{form.workflow_preview.steps.map((step, i) => <li key={i}>{step.title} (<code>{step.tool}</code>)</li>)}</ol>
+    </>}
     {form.questions.map((q, i) => <fieldset key={q.id} disabled={!!answered || disabled}>
       <legend>{i + 1}. {q.text}</legend>
       {[...q.options.map((o, index) => ({ label: o.label, index })),

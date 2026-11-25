@@ -45,7 +45,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. A new planner stage can propose the next step in the same stream.",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. A new planner stage can propose the next step in the same stream.",
             "content": {
               "text/event-stream": {}
             }
@@ -3311,18 +3311,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "text/yaml": {
-              "schema": {
-                "type": "string",
-                "contentMediaType": "application/octet-stream",
-                "title": "Yaml"
-              }
-            }
-          }
-        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3373,6 +3361,19 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorBody"
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "UTF-8 workflow YAML, at most 256 KiB.",
+          "content": {
+            "text/yaml": {
+              "schema": {
+                "type": "string",
+                "contentMediaType": "application/octet-stream",
+                "title": "Yaml"
               }
             }
           }

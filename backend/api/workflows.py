@@ -2,16 +2,19 @@
 import re
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Response
+from fastapi import APIRouter, Body, Depends, Request, Response
+from starlette.concurrency import run_in_threadpool
 from revit_bridge.capabilities import ToolStore
 from revit_bridge.workflows import WorkflowError, WorkflowStore, parse_workflow_yaml, validate_workflow
 
 from backend.api.bridge import require_admin, require_tool_name, set_device_context
 from backend.api.errors import ApiError, admin_responses, responses
+from backend.workflow_validation import binding_errors
 
 
 router = APIRouter(prefix="/api/v1/bridge/workflows", tags=["bridge"], dependencies=[Depends(set_device_context)])
 WRITE = [Depends(require_admin)]
+MAX_WORKFLOW_BYTES = 256 * 1024
 
 
 def invalid(errors):
@@ -36,12 +39,19 @@ def list_workflows() -> list[dict]:
 
 @router.post("/validate", responses=responses(403, 422))
 def validate(definition: Any = Body(None)) -> dict[str, list[str]]:
-    return {"errors": validate_workflow(definition, ToolStore())}
+    return {"errors": definition_errors(definition, ToolStore())}
+
+
+def definition_errors(definition, store):
+    return validate_workflow(definition, store) or binding_errors(definition, store)
 
 
 def save(definition, overwrite):
+    store = ToolStore()
+    if errors := definition_errors(definition, store):
+        raise invalid(errors)
     try:
-        WorkflowStore(ToolStore()).save(definition, overwrite=overwrite)
+        WorkflowStore(store).save(definition, overwrite=overwrite)
     except WorkflowError as exc:
         raise invalid(exc.problems) from None
     except FileExistsError:
@@ -49,8 +59,29 @@ def save(definition, overwrite):
     return definition
 
 
-@router.post("/import", dependencies=WRITE, responses=admin_responses(409, 422))
-def import_workflow(yaml: bytes = Body(media_type="text/yaml"), overwrite: bool = False) -> dict:
+@router.post("/import", dependencies=WRITE, responses=admin_responses(409, 422), openapi_extra={
+    "requestBody": {"required": True, "description": "UTF-8 workflow YAML, at most 256 KiB.",
+                    "content": {"text/yaml": {"schema": {"type": "string", "contentMediaType": "application/octet-stream",
+                                                         "title": "Yaml"}}}}
+})
+async def import_workflow(request: Request, overwrite: bool = False) -> dict:
+    try:
+        declared = int(request.headers.get("content-length", "0"))
+    except ValueError:
+        raise invalid(["invalid Content-Length"]) from None
+    if declared < 0:
+        raise invalid(["invalid Content-Length"])
+    if declared > MAX_WORKFLOW_BYTES:
+        raise invalid(["workflow YAML exceeds 256 KiB"])
+    yaml = bytearray()
+    async for chunk in request.stream():
+        if len(yaml) + len(chunk) > MAX_WORKFLOW_BYTES:
+            raise invalid(["workflow YAML exceeds 256 KiB"])
+        yaml.extend(chunk)
+    return await run_in_threadpool(import_yaml, yaml, overwrite)
+
+
+def import_yaml(yaml, overwrite):
     try:
         definition = parse_workflow_yaml(yaml.decode("utf-8-sig"))
     except UnicodeDecodeError:

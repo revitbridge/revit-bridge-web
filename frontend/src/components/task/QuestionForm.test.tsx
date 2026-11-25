@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { DesignerForm } from '../../types/api'
+import { parseSseFrame } from '../../api/chat'
 import QuestionForm from './QuestionForm'
 
 const levels = [{ value: 1, label: 'L1' }, { value: 2, label: 'L2' }]
@@ -23,6 +24,21 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   vi.unstubAllGlobals()
+})
+
+it('shows the workflow summary and ordered tool steps before the Run choice', () => {
+  const preview = { summary: 'Build and glaze', steps: [
+    { title: 'Build wall', tool: 'create_wall' }, { title: 'Place window', tool: 'create_window_on_wall' },
+  ] }
+  const run = { ask_id: 'run', questions: [{ id: 'invoke', text: 'Run wall_window?',
+    options: [{ value: 'run', label: 'Run workflow' }, { value: 'cancel', label: 'Cancel' }] }], workflow_preview: preview }
+  const event = parseSseFrame(`event: questions\ndata: ${JSON.stringify(run)}`)
+  if (event?.type !== 'questions') throw new Error('Missing Run form')
+  act(() => root.render(<QuestionForm form={event} onAnswer={vi.fn()} />))
+  expect(container.textContent).toContain(preview.summary)
+  expect([...container.querySelectorAll('ol li')].map(li => li.textContent)).toEqual([
+    'Build wall (create_wall)', 'Place window (create_window_on_wall)',
+  ])
 })
 
 it.each(['Mezzanine', '"east"'])('requires each question and preserves unmatched text %s', freeText => {

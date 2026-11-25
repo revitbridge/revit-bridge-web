@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { bridgeApi } from '../../api/bridge'
 import { workflowApi } from '../../api/workflows'
+import * as config from '../../config'
 import type { ToolInfo } from '../../types/api'
 import WorkflowsPage from './WorkflowsPage'
 
@@ -93,4 +94,23 @@ it('drags packs into the step list and reorders by stable step id', async () => 
   drag(steps()[1].querySelector('[draggable]')!, steps()[0])
   const after = (await validate()).steps
   expect(after).toEqual([before[1], before[0]])
+})
+
+it('shows host binding errors and keeps Save disabled until the edited draft passes', async () => {
+  const runtime = config.getConfig()
+  vi.spyOn(config, 'getConfig').mockReturnValue({ ...runtime, features: { ...runtime.features, mode: 'local' } })
+  await mount()
+  click(buttons('Add')[0]); click(buttons('Add')[1])
+  const errors = ["step wall, parameter height: input distance has type string, expected double",
+    "step window: sill_height must be the designer's words, answer or a preference, not tool"]
+  vi.mocked(workflowApi.validate).mockResolvedValueOnce({ errors })
+  await validate()
+  for (const error of errors) expect(box.textContent).toContain(error)
+  expect(buttons('Save workflow')[0].disabled).toBe(true)
+  vi.mocked(workflowApi.validate).mockResolvedValueOnce({ errors: [] })
+  select(steps()[0].querySelector('select')!, 'fixed')
+  type(steps()[0].querySelector('input[type=number]')!, '3000')
+  expect(buttons('Save workflow')[0].disabled).toBe(true)
+  await validate()
+  expect(buttons('Save workflow')[0].disabled).toBe(false)
 })

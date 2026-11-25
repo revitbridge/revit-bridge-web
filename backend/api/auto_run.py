@@ -170,8 +170,8 @@ class AutoRun:
         if (not pack or name != pack.name
                 or name.casefold() in {item.casefold() for item in self.settings.auto_run_exclude}):
             return "excluded_tool", None
-        if self.paused or session.auto_paused:
-            return "previous_failure", None
+        if self.paused or session.auto_pause_reason:
+            return session.auto_pause_reason or "previous_failure", None
         if session.auto_count >= self.settings.auto_run_max_steps:
             return "step_limit", None
         report = event.get("reconcile") or {}
@@ -216,7 +216,7 @@ class AutoRun:
                     results[earlier.evidence_id] = earlier.recorded_result
         workflow = plan.workflow if plan and plan.current and plan.scope == scope else None
         if workflow:
-            if not plan.proposed or not same_json(event["spec"]["parameters"], plan.proposed["parameters"]):
+            if not workflow.invoked or not plan.proposed or not same_json(event["spec"]["parameters"], plan.proposed["parameters"]):
                 return "unverified_evidence", None
             try:
                 workflow.fresh()
@@ -243,7 +243,8 @@ class AutoRun:
                     if key in workflow.labels and workflow.evidence[key] == ("answer", binding.evidence):
                         mapped.append({"answers": [{"id": key, "label": workflow.labels[key],
                                                    "value": workflow.inputs[key]}]})
-                    if _supported(item, session, words, mapped, parameter.get("type"), parameter.get("unit")):
+                    if _supported(item, session, words + "\n" + workflow.designer_message, mapped,
+                                  parameter.get("type"), parameter.get("unit")):
                         continue
             if _supported(binding, session, words, answers, parameter.get("type"), parameter.get("unit")):
                 continue
@@ -281,6 +282,6 @@ class AutoRun:
             if not worker.cancelled() and worker.result().get("success") is not True:
                 self.paused = True
                 if not single_step:
-                    self.session.auto_paused = True
+                    self.session.auto_pause_reason = "previous_failure"
         task.add_done_callback(finished)
         return task
