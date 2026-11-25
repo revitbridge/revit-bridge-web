@@ -6,12 +6,17 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+The chat picker can insert multiple elements from the current Revit selection with stable IDs.
+Type searches accept partial words, spelling variants and category aliases across categories.
+Category filters show counts, and scrolling loads more results. Each message accepts up to 20
+distinct picks. Confirmation rechecks bound elements in the open document, even after deselection.
+
 Task chat now shows proposals and questions inside the reply that produced them. One click on
 `确认并执行` confirms the displayed draft and runs it. Typed assent highlights the card.
 `POST /api/chat` accepts optional structured `answers` with the message and session.
 The `questions` SSE event carries the form ID, questions and choices. Submitting a form resumes
 its route. Typing a new request follows ordinary routing. Older cards keep their execution results.
-The host sends the model the `ask_designer` tool, rewrites the inline-card prompts, and updates
+The host sends the model the `ask_designer` tool, uses the package's native inline-card prompts, and updates
 the `propose_spec` description. Answers that do not match the open form return HTTP 422
 (`invalid_answers`). The supervisor's question appears once in the `questions` event, with its
 report in the reply text. Choosing "End this task" closes the task without calling a model.
@@ -34,8 +39,8 @@ protections on upgrade are setting `DEPLOY_MODE=cloud` and the startup refusal o
 finds `ADMIN_PASSWORD` (or `CORS_ORIGINS`) set: a site that ran with a password fails closed, one
 that ran without it does not. See *Added* and *Changed* (deploy modes).
 
-The host needs `revit-bridge>=0.9,<0.10` (`uv sync`, or rebuild the image); `uv.lock` pins
-0.9.1, whose 22 built-in tools the pages, the model and the bench now see (see *Changed*). The
+The host needs `revit-bridge>=0.10,<0.11` (`uv sync`, or rebuild the image). The lock pins
+0.10.0 for the paged picker, element verification and inline-card instructions. The
 system prompt changes (below); questions in the `spec` event may carry `kind` and `blocks`, and a value
 `reconcile` cannot find now also comes as a question. The `mentions` event is sent only for
 a message that carries picks (see *Added*).

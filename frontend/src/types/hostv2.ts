@@ -39,26 +39,36 @@ export interface UsageEvent {
 export type TraceEvent = StageEvent | ToolEvent | UsageEvent
 
 // X3c: mention input contract. The other hostv2 packages append their own types.
-export type MentionKind = 'level' | 'type' | 'link'
+export type MentionKind = 'level' | 'type' | 'link' | 'element'
+export const MAX_PICKS = 20
+export interface MentionOptions { category?: string; q?: string; offset?: number; source?: 'selection' }
+export interface MentionFacet { category: string; label: string; count: number }
 export interface MentionItem {
   kind: string
   id: number | string
-  name: string
+  name: string | null
   label: string
   detail: string
-  category?: string
-  family?: string
+  category?: string | null
+  family?: string | null
+  category_label?: string | null
+  summary?: string | null
   disabled?: boolean
 }
 export interface MentionCandidates {
   kind: string
   items: MentionItem[]
+  facets?: MentionFacet[]
+  category_matched?: string[]
+  facets_partial?: boolean
+  warnings?: string[]
+  offset?: number
   total: number
   truncated: boolean
 }
 export interface Mention { kind: MentionKind; id: number; name: string }
 export type FetchCandidates =
-  (kind: MentionKind, opts: { category?: string; q?: string }) => Promise<MentionCandidates>
+  (kind: MentionKind, opts: MentionOptions) => Promise<MentionCandidates>
 
 /* -- the tool workbench (components/hostv2/workbench; its client is api/workbench.ts) -- */
 

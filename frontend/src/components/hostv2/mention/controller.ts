@@ -1,3 +1,4 @@
+import { MAX_PICKS } from '../../../types/hostv2'
 import type { FetchCandidates, Mention, MentionCandidates, MentionItem, MentionKind } from '../../../types/hostv2'
 import {
   applyKnownNativeEdit, hasLineBreak, indexSpans, matchingKinds, mentionLabel, mentionSpans, mentionStartAt, menuAt,
@@ -17,6 +18,10 @@ export interface MentionState {
   selection: TextSelection
   menu: MentionMenu | null
   candidates: MentionCandidates | null
+  nextOffset: number | null
+  loadingMore: boolean
+  checked: Mention[]
+  elementCategory: string | null
   status: 'idle' | 'loading' | 'ready' | 'error'
   error: string
   active: number
@@ -46,7 +51,7 @@ function bindExternal(text: string, mentions: Mention[]) {
 export function elementId(item: MentionItem): number | null {
   if (typeof item.id === 'string' && !/^\d+$/.test(item.id)) return null
   const id = Number(item.id)
-  return Number.isSafeInteger(id) && id >= 0 ? id : null
+  return Number.isSafeInteger(id) && id > 0 ? id : null
 }
 
 // The same controller powers the DOM adapter and the no-browser interaction
@@ -70,8 +75,8 @@ export class MentionController {
     text = normalizeNewlines(text)
     const { spans, bound, dropped } = bindExternal(text, mentions)
     this.state = {
-      text, spans, mentions: bound, selection: at(text.length), menu: null, candidates: null,
-      status: 'idle', error: '', active: 0, composing: false, disabled, dropped,
+      text, spans, mentions: bound, selection: at(text.length), menu: null, candidates: null, nextOffset: null,
+      loadingMore: false, checked: [], elementCategory: null, status: 'idle', error: '', active: 0, composing: false, disabled, dropped,
     }
   }
 
@@ -100,7 +105,7 @@ export class MentionController {
       this.dismissed = null
       this.publish({ text, spans, mentions: bound,
         selection: normalizeKnownSelection(text, spans, at(Math.min(this.state.selection.end, text.length))),
-        menu: null, candidates: null, status: 'idle', error: '',
+        menu: null, candidates: null, checked: [], elementCategory: null, loadingMore: false, nextOffset: null, status: 'idle', error: '',
         dropped: dropped.length || text !== this.state.text ? dropped : this.state.dropped })
     } else if (dropped.length && !sameMentions(dropped, this.state.dropped)) this.publish({ dropped })
     this.reportDifference(value, mentions)
@@ -133,7 +138,7 @@ export class MentionController {
   close() {
     this.cancel()
     if (this.state.menu || this.state.status !== 'idle')
-      this.publish({ menu: null, candidates: null, status: 'idle', error: '', active: 0 })
+      this.publish({ menu: null, candidates: null, checked: [], elementCategory: null, loadingMore: false, nextOffset: null, status: 'idle', error: '', active: 0 })
   }
   // Escape closes the picker for this '@' only; it does not come back while the
   // caret stays after it, so the next key and Enter behave as plain text.
@@ -151,7 +156,10 @@ export class MentionController {
     }
     if (sameMenu(menu, this.state.menu)) return
     this.cancel()
-    this.publish({ menu, active: 0, candidates: null, status: 'idle', error: '' })
+    const keepChecks = menu?.mode === 'items' && menu.kind === 'element' &&
+      previous?.mode === 'items' && previous.kind === 'element' && previous.start === menu.start
+    this.publish({ menu, active: 0, candidates: null, status: 'idle', error: '', nextOffset: null, loadingMore: false,
+      checked: keepChecks ? this.state.checked : [], elementCategory: keepChecks ? this.state.elementCategory : null })
     if (menu?.mode === 'items') this.schedule()
   }
   private schedule() {
@@ -160,19 +168,35 @@ export class MentionController {
     if (menu?.mode !== 'items' || this.state.disabled || this.state.composing) return
     const generation = this.request
     this.publish({ status: 'loading', candidates: null, error: '', active: 0 })
-    this.timer = setTimeout(async () => {
-      try {
-        const candidates = await this.callbacks.fetchCandidates(menu.kind, {
-          ...(menu.category ? { category: menu.category } : {}), q: menu.query,
-        })
-        if (generation !== this.request) return
-        this.publish({ status: 'ready', candidates, active: Math.max(0, candidates.items.findIndex(item => this.selectable(item))) })
-      } catch (error) {
-        if (generation !== this.request) return
-        this.publish({ status: 'error', candidates: null,
-          error: error instanceof Error ? error.message : String(error) })
-      }
-    }, 200)
+    this.timer = setTimeout(() => void this.fetchPage(menu, generation, 0), 200)
+  }
+  private async fetchPage(menu: Extract<MentionMenu, { mode: 'items' }>, generation: number, offset: number) {
+    try {
+      const page = await this.callbacks.fetchCandidates(menu.kind, {
+        ...(menu.category ? { category: menu.category } : {}), q: menu.query,
+        ...(menu.kind === 'element' ? { source: 'selection' as const } : {}), ...(offset ? { offset } : {}),
+      })
+      if (generation !== this.request) return
+      const prior = offset ? this.state.candidates?.items ?? [] : []
+      const known = new Set(prior.map(item => item.kind + '#' + item.id))
+      const items = [...prior, ...page.items.filter(item => !known.has(item.kind + '#' + item.id))]
+      // A partial selection page can omit unreadable rows. Its slot in the selection is still 50 IDs wide.
+      const end = offset + (page.facets_partial ? 50 : page.items.length)
+      const nextOffset = page.truncated && page.items.length > 0 && end > offset && end < page.total ? end : null
+      const active = offset ? this.state.active : Math.max(0, items.findIndex(item =>
+        (!this.state.elementCategory || item.category === this.state.elementCategory) && this.selectable(item)))
+      this.publish({ status: 'ready', candidates: { ...page, items }, nextOffset, loadingMore: false, error: '', active })
+    } catch (error) {
+      if (generation !== this.request) return
+      this.publish({ status: offset ? 'ready' : 'error', loadingMore: false,
+        error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  loadMore() {
+    const { menu, nextOffset, loadingMore } = this.state
+    if (menu?.mode !== 'items' || nextOffset === null || loadingMore) return
+    this.publish({ loadingMore: true, error: '' })
+    void this.fetchPage(menu, this.request, nextOffset)
   }
   select(selection: TextSelection) {
     if (this.state.disabled || this.state.composing) return
@@ -242,12 +266,16 @@ export class MentionController {
     } else this.editNative(text, selection)
   }
   selectable(item: MentionItem): boolean {
-    if (item.disabled || (item.kind !== 'category' && hasLineBreak(item.name))) return false
+    if (item.disabled || (item.kind !== 'category' && hasLineBreak(item.name ?? ''))) return false
     const menu = this.state.menu
     if (menu?.mode !== 'items') return false
-    return menu.kind === 'type' && !menu.category
-      ? item.kind === 'category' && typeof item.id === 'string' && item.id.length > 0
-      : item.kind === menu.kind && elementId(item) !== null
+    if (menu.kind === 'type' && !menu.category && !menu.query.trim())
+      return item.kind === 'category' && typeof item.id === 'string' && item.id.length > 0
+    if (item.kind !== menu.kind || elementId(item) === null) return false
+    if (menu.kind !== 'element') return true
+    const id = elementId(item)!
+    if (this.state.mentions.some(m => m.kind === 'element' && m.id === id)) return false
+    return this.state.checked.some(m => m.id === id) || this.availableSlots() > this.state.checked.length
   }
   choose(index: number) {
     if (this.state.disabled || this.state.composing) return
@@ -264,21 +292,65 @@ export class MentionController {
       const category = String(item.id)
       const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, '@type:')
       this.commit(edited.text, edited.spans, edited.caret,
-        { ...menu, category, categoryLabel: item.label || item.name })
+        { ...menu, category, categoryLabel: item.label || item.name || category })
       return
     }
-    const mention: Mention = { kind: menu.kind, id: elementId(item)!, name: item.name }
+    const mention: Mention = { kind: menu.kind, id: elementId(item)!, name: item.name ?? '' }
+    if (menu.kind === 'element') {
+      const checked = this.state.checked.some(m => m.id === mention.id)
+        ? this.state.checked.filter(m => m.id !== mention.id) : [...this.state.checked, mention]
+      this.publish({ checked, active: index })
+      return
+    }
     const label = mentionLabel(mention)
     const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, label)
     this.commit(edited.text, [...edited.spans, { start: edited.caret - label.length, end: edited.caret, index: -1, mention }], edited.caret)
     this.close()
   }
-  private pickKind(kind: MentionKind) {
+  availableSlots() {
+    return MAX_PICKS - new Set(this.state.mentions.map(m => m.kind + '#' + m.id)).size
+  }
+  insertChecked() {
+    const { menu, checked, disabled } = this.state
+    if (disabled || menu?.mode !== 'items' || menu.kind !== 'element' || !checked.length || checked.length > this.availableSlots()) return
+    const labels = checked.map(mentionLabel)
+    const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, labels.join(' '))
+    let start = menu.start
+    const spans = checked.map((mention, i) => {
+      const span = { start, end: start + labels[i].length, index: -1, mention }
+      start = span.end + 1
+      return span
+    })
+    this.commit(edited.text, [...edited.spans, ...spans], edited.caret)
+    this.close()
+  }
+  filterCategory(category: string, label: string) {
+    const menu = this.state.menu
+    if (menu?.mode !== 'items') return
+    if (menu.kind === 'element') {
+      this.publish({ elementCategory: category || null })
+      this.publish({ active: this.choices()[0] ?? 0 })
+    } else if (menu.kind === 'type') {
+      this.refreshMenu({ ...menu, category: category || undefined, categoryLabel: label || undefined })
+    }
+  }
+  readSelection() {
+    const menu = this.state.menu
+    if (menu?.mode === 'items' && menu.kind === 'element' && !menu.query) {
+      this.publish({ checked: [], elementCategory: null, nextOffset: null, loadingMore: false })
+      this.schedule()
+    } else this.pickKind('element')
+  }
+  pickKind(kind: MentionKind) {
     const menu = this.state.menu
     if (!menu) return
     const prefix = `@${kind}:`
     const edited = replaceKnownRange(this.state.text, this.state.spans, menu.start, menu.end, prefix)
     this.commit(edited.text, edited.spans, edited.caret, null)
+  }
+  clearMatched() {
+    // The package inferred the categories from this search text; clear it to browse all categories.
+    this.pickKind('type')
   }
   backToCategories() {
     if (this.state.menu?.mode !== 'items' || this.state.menu.kind !== 'type' || this.state.composing || this.state.disabled) return
@@ -290,15 +362,34 @@ export class MentionController {
     if (!menu) return []
     return menu.mode === 'kinds' ? matchingKinds(menu.query).map((_, i) => i)
       : this.state.status !== 'ready' ? []
-        : (this.state.candidates?.items ?? []).flatMap((item, i) => this.selectable(item) ? [i] : [])
+        : this.groups().flatMap(group => group.indices.filter(i => this.selectable(this.state.candidates!.items[i])))
+  }
+  groups() {
+    const byCategory = new Map<string, number[]>()
+    const candidates = this.state.candidates
+    for (const [i, item] of (candidates?.items ?? []).entries()) {
+      const key = item.kind === 'type' || item.kind === 'element' ? item.category ?? '' : ''
+      if (this.state.elementCategory && this.state.elementCategory !== key) continue
+      if (!byCategory.has(key)) byCategory.set(key, [])
+      byCategory.get(key)!.push(i)
+    }
+    return Array.from(byCategory, ([category, indices]) => {
+      const facet = candidates?.facets?.find(f => f.category === category)
+      return { category, label: facet?.label ?? category, count: facet?.count ?? indices.length, indices }
+    })
   }
   key(key: string, shift = false, modified = false, nativeComposing = false): boolean {
     const { disabled, composing, menu, text, spans, selection } = this.state
     if (disabled || composing || nativeComposing) return false
     if (key === 'Escape' && menu) { this.dismiss(); return true }
     if (key === 'Enter' && shift) return false
+    if (key === 'Tab' && menu?.mode === 'items' && menu.kind === 'element') return false
     if (menu && (key === 'Enter' || key === 'Tab')) {
       if (this.choices().includes(this.state.active)) { this.choose(this.state.active); return true }
+      if (menu.mode === 'items' && menu.kind === 'element' && this.state.checked.length) {
+        this.insertChecked()
+        return true
+      }
       // Still loading: Enter or Tab here most likely means "pick it", so wait
       // instead of sending the half-typed label as plain text.
       if (menu.mode === 'items' && (this.state.status === 'loading' || this.state.status === 'idle')) return true

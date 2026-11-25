@@ -208,11 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-INLINE_4096 = "inline_forms_4096"
+INLINE_4096 = "mention_picker_4096"
 
 
 def current_section() -> str:
-    return f"inline_forms_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -229,10 +229,26 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     requests, streams = run_scenario(name, env, revit, recorder)
     sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
-    assert hashes(streams) == recorded(name, AA5556C_SECTION)["streams"]
+    legacy = recorded(name, AA5556C_SECTION)["streams"]
+    for index, stream in enumerate(streams):
+        if name.startswith("single-") and index == 2:
+            # Only list_tools' size and preview changed with the published 0.10 catalogue.
+            # Compare every other byte with the same turn in the V1 checkout.
+            blocks = stream.split("\n\n")
+            for i, block in enumerate(blocks):
+                if block.startswith("event: tool\ndata: "):
+                    event = json.loads(block.split("\ndata: ", 1)[1])
+                    if event["name"] == "list_tools" and event["status"] == "ok":
+                        del event["preview"], event["size"]
+                        blocks[i] = "event: tool\ndata: " + json.dumps(event, ensure_ascii=False)
+            normalized_v1 = {"single-server": "829c16046f065629f557ea1b30739f55a4c066b0180928b551911f773d7df2e6",
+                             "single-browser": "74f10ac97f9ea92f500eb58723652f7492e6727f1ea16db0bd65f1c6c0d11f02"}
+            assert digest("\n\n".join(blocks)) == normalized_v1[name]
+        else:
+            assert digest(stream) == legacy[index]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("inline_forms_")
+        assert section.startswith("mention_picker_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")

@@ -139,7 +139,7 @@ def test_builtin_packs_are_read_from_the_wheel_not_copied(client, env, tmp_path)
 
     detail = client.get("/api/v1/bridge/tools/create_wall").json()
     assert detail["code_template"].strip()
-    assert [p["name"] for p in detail["parameters"] if p.get("choices_from")] == ["level_name"]
+    assert [p["name"] for p in detail["parameters"] if p.get("choices_from")] == ["level_name", "type_name", "top_level_name"]
 
     assert client.get("/api/v1/bridge/tools/nope").status_code == 404
 

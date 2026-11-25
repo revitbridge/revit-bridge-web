@@ -337,12 +337,11 @@ def test_ask_shows_the_report_and_the_question(revit, client, model):
     for role in ("analyst", "planner", "supervisor"):
         prompt = model.requests_of(role)[0]["messages"][0]["content"]
         if role == "supervisor":
-            assert chat_module.CARD_GUIDANCE not in prompt
-            assert "on the card in this chat" in prompt and "on the card in this chat reply" not in prompt
+            assert "on the card in the chat reply" in prompt
         else:
             assert "确认并执行" in prompt and "卡片在我上一条提交它的回复里" in prompt
         if role == "analyst":
-            assert "When a card is pending confirmation" in prompt
+            assert "With a pending card, route plain assent" in prompt
         if role == "planner":
             assert "other: true marks the designer's own words" in prompt
         assert "wait for an explicit yes" not in prompt and "in this host\'s interface" not in prompt
@@ -630,14 +629,14 @@ def test_each_role_prompt_is_the_packages_text_and_stays_the_same(revit, client,
     assert built == ["analyst", "planner"]
     analysts = model.requests_of("analyst")
     assert len({json.dumps(b["messages"][0]) for b in analysts}) == 1
-    assert analysts[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="analyst", code=False).rstrip("\n")
+    assert analysts[0]["messages"][0]["content"] == (chat_module.host_instructions(role="analyst", code=False).rstrip("\n")
                                                      + "\n\n" + roles.ANALYST_WORKBENCH_LINE)
     # The analyst's message opens with the same tools and digest every turn.
     heads = {user_text(b).split("\n\nDesigner's message:")[0].split("\n\nOpen task")[0] for b in analysts}
     assert len(heads) == 1
     planners = model.requests_of("planner")
     assert len({json.dumps(b["messages"][0]) for b in planners}) == 1
-    assert planners[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="planner", code=False).rstrip("\n")
+    assert planners[0]["messages"][0]["content"] == (chat_module.host_instructions(role="planner", code=False).rstrip("\n")
                                                      + "\n" + chat_module.WORKBENCH_LINE)
     # Append, never rewrite: every planner request starts with the whole previous one.
     for earlier, later in zip(planners, planners[1:]):

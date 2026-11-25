@@ -153,7 +153,9 @@ def test_tool_detail_update_and_delete_of_a_user_pack(make_client, env, tmp_path
 
 def test_tool_choices_come_from_revit(revit, client):
     choices = client.get(f"{B}/tools/create_wall/choices").json()
-    assert choices == {"level_name": [{"label": "L1 (0.0mm)", "value": "L1"}, {"label": "L2 (3500.0mm)", "value": "L2"}]}
+    levels = [{"label": "L1 (0.0mm)", "value": "L1"}, {"label": "L2 (3500.0mm)", "value": "L2"}]
+    assert choices == {"level_name": levels, "top_level_name": levels,
+                       "type_name": [{"label": "OST_Walls-TypeA", "value": "OST_Walls-TypeA"}]}
     assert client.get(f"{B}/tools/query_levels/choices").json() == {}      # no dynamic parameters
     assert client.get(f"{B}/tools/nope/choices").status_code == 404
 

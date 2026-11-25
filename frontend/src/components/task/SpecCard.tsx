@@ -4,6 +4,7 @@
 import { useEffect, useRef } from 'react'
 import type { ExecutionResult, SpecError, TaskSpec } from '../../types/api'
 import { confirmLabel, interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
+import { browserLanguage } from '../../utils/language'
 import { showValue, tokenPrefix } from './format'
 import { ExecutionView, TamperDemo } from './ExecutionPanel'
 
@@ -59,6 +60,7 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
 
 export default function SpecCard({ proposal, canConfirm, confirming, confirmErrors, onToggleInterpretation, onConfirm,
   execution, confirmation, running, archived, onTamper }: Props) {
+  const zh = browserLanguage() === 'zh'
   const card = useRef<HTMLElement>(null)
   useEffect(() => {
     if (!archived) card.current?.scrollIntoView?.({ block: 'nearest' })
@@ -127,7 +129,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       )}
 
       <details className="spec-details">
-        <summary>详情</summary>
+        <summary>{zh ? '详情' : 'Details'}</summary>
         {spec.snapshot_fingerprint && <p>Snapshot <code>{spec.snapshot_fingerprint}</code></p>}
         {confirmation && <p>Token <code>{tokenPrefix(confirmation.token)}</code> · {confirmation.expires_at}</p>}
         <pre className="spec-text">{proposal.card}</pre>
@@ -141,9 +143,9 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
         </ul>
       )}
       {execution && <ExecutionView execution={execution} />}
-      {proposal.ended ? <p role="status">任务已结束</p> : execution?.success ? <p role="status">已执行</p> : archived ? <p>已被新卡替换</p> :
+      {proposal.ended ? <p role="status">{zh ? '任务已结束' : 'Task ended'}</p> : execution?.success ? <p role="status">{zh ? '已执行' : 'Executed'}</p> : archived ? <p>{zh ? '已被新卡替换' : 'Replaced by a new card'}</p> :
         <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
-          {confirming ? '正在确认…' : running ? '正在执行…' : confirmLabel(execution, confirmErrors)}
+          {confirming ? (zh ? '正在确认…' : 'Confirming…') : running ? (zh ? '正在执行…' : 'Running…') : confirmLabel(execution, confirmErrors)}
         </button>}
     </section>
   )

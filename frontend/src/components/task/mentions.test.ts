@@ -46,10 +46,12 @@ describe('the picker asks the host', () => {
     expect(await fetchMentionCandidates('level', { q: 'F' })).toEqual(levels)
     await fetchMentionCandidates('type', { category: 'OST_Walls', q: '200 mm' })
     await fetchMentionCandidates('type', {})
+    await fetchMentionCandidates('element', { source: 'selection', offset: 50 })
     expect(calls.map(c => c.url)).toEqual([
       '/api/v1/bridge/mentions?kind=level&q=F',
       '/api/v1/bridge/mentions?kind=type&category=OST_Walls&q=200+mm',
       '/api/v1/bridge/mentions?kind=type',
+      '/api/v1/bridge/mentions?kind=element&offset=50&source=selection',
     ])
     expect(calls[0].init.method).toBeUndefined()
     expect(calls[0].init.signal).toBeInstanceOf(AbortSignal)

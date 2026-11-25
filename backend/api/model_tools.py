@@ -57,11 +57,6 @@ PROPOSE_SPEC = "propose_spec"
 # verdict both name it.
 WORKBENCH_PATH = "/capabilities/workbench"
 WORKBENCH_LINK = f"[workbench]({WORKBENCH_PATH})"
-CARD_GUIDANCE = (
-    'Point to "确认并执行" on the card in this reply. If missing, say "卡片在我上一条提交它的回复里" '
-    'in their language. Never resubmit for that. Typed assent only highlights it.'
-)
-
 CODE_NOT_OFFERED = "code_not_offered"
 CODE_NOT_OFFERED_MESSAGE = (
     "This host runs only saved tools: it never runs code the model writes, so an execute_code "

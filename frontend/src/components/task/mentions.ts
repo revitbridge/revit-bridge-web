@@ -5,7 +5,8 @@
    here decides what an item is or what the model gets: the host and the package do. */
 
 import type { ChatMessage, MentionRef, MentionReport, SentMention } from '../../types/api'
-import type { FetchCandidates, Mention, MentionCandidates, MentionKind } from '../../types/hostv2'
+import type { FetchCandidates, Mention, MentionCandidates, MentionKind, MentionOptions } from '../../types/hostv2'
+import { MAX_PICKS } from '../../types/hostv2'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError, request } from '../shared/http'
 
@@ -20,10 +21,12 @@ export const TIMEOUT_MESSAGE = 'Revit did not answer within 10 seconds. Keep typ
 /* The candidates for one kind: the host's reply as it is. A reply that carries the
    package's `error` (Revit said no) fails with its message, as a refused request does
    (503: Revit is not connected). */
-export async function fetchMentionCandidates(kind: MentionKind, opts: { category?: string; q?: string },
+export async function fetchMentionCandidates(kind: MentionKind, opts: MentionOptions,
   timeoutMs = MENTION_TIMEOUT_MS): Promise<MentionCandidates> {
   const params = new URLSearchParams({ kind })
   if (opts.category) params.set('category', opts.category)
+  if (opts.offset) params.set('offset', String(opts.offset))
+  if (opts.source) params.set('source', opts.source)
   if (opts.q) params.set('q', opts.q)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -46,7 +49,7 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: { category
 export const fetchCandidates: FetchCandidates = (kind, opts) => fetchMentionCandidates(kind, opts)
 
 /* The most picks one message may carry (the host refuses more). */
-export const MAX_PICKS = 20
+export { MAX_PICKS } from '../../types/hostv2'
 
 /* Each model item once (by kind and id), in the order first picked. */
 export function distinctMentions(mentions: Mention[]): Mention[] {

@@ -578,24 +578,25 @@ async def query_model(req: QueryRequest):
 
 @router.get("/mentions", responses=responses(403, 422, 500, 503))
 async def mention_items(
-    kind: str = Query(..., max_length=32, description="level, type or link"),
+    kind: str = Query(..., max_length=32, description="level, type, link or element"),
     category: str | None = Query(None, max_length=200,
-                                 description="type only: an OST_* category; without it the categories are listed"),
-    q: str | None = Query(None, max_length=500, description="keep the items whose name, label, family or "
-                                                            "category contains this (case-insensitive)"),
+                                 description="type only: filter by OST_* category"),
+    q: str | None = Query(None, max_length=500, description="rank matches for the search terms"),
     limit: int | None = Query(None, description="at most this many items (1-200, default 50)"),
+    offset: int = Query(0, ge=0, description="number of matching items to skip"),
+    source: str | None = Query(None, max_length=32, description="element requires selection"),
 ):
-    """What the designer can pick after ``@level``, ``@type`` or ``@link``: the package's
+    """Items the designer can pick in chat: the package's
     ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
-    category?, family?, disabled?, reason?}], total, truncated, warnings?}``. ``type`` without
-    ``category`` lists the categories (items of kind ``category`` whose ``id`` is the OST_*
-    name); a link that is not loaded is listed with ``disabled: true`` and its ``reason``. A
+    category?, family?, disabled?, reason?}], total, truncated, offset, facets, category_matched,
+    warnings?}``. An empty type query offers categories. A type search offers matching types;
+    element lists the current selection. A disconnected link is disabled. A
     kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
     reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
     is 503 ``revit_unreachable``. The same device rules as every route here."""
     try:
         client = await get_revit_client()
-        answer = await mention_candidates(RevitQueryExecutor(client), kind, category, q, limit)
+        answer = await mention_candidates(RevitQueryExecutor(client), kind, category, q, limit, offset, source)
     except ApiError as exc:
         exc.payload.setdefault("kind", kind)
         raise
@@ -934,6 +935,7 @@ async def confirm_spec(req: ConfirmRequest):
     changed = await recheck_picks(spec, req.session_id)
     if changed:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in changed])
+    refuse_unknown_mentions(spec, pack, req.session_id)
     # issue() writes pending/<id>.json and globs the directory: not on the loop that drives the relay
     conf = await run_in_threadpool(get_gate().issue, spec, confirmed_by=req.confirmed_by.strip() or "designer",
                                    channel=CONFIRM_CHANNEL, scope=current_scope())

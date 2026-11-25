@@ -4,11 +4,12 @@
    reconcile.ready. With showTrace each reply has its tool activity above it
    (the trace of its turn: one row per tool call, expandable).
 
-   The input is the mention input: `@` offers @link, @type and @level, and a picked
+   The input is the mention input: `@` offers @link, @type, @level and @element, and a picked
    model item is one tag (components/hostv2/mention). A sent message shows its picks
    with what the host found for each (the turn's `mentions` event); a pick the host
    found gone or not valid is marked when it is in the input again. */
 
+import { mentionLabel } from '../hostv2/mention/model'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DesignerAnswers, Question, SentMention } from '../../types/api'
 import type { FetchCandidates, Mention } from '../../types/hostv2'
@@ -44,7 +45,7 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
     <div className="chat-mentions">
       {mentions.map((m, i) => (
         <span key={i} className={`chat-mention is-${m.status}`} title={mentionNote(m)}>
-          @{m.kind}:{m.name}<span className="chat-mention-note">{mentionNote(m)}</span>
+          {mentionLabel(m)}<span className="chat-mention-note">{mentionNote(m)}</span>
         </span>
       ))}
     </div>

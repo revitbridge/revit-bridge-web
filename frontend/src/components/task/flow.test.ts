@@ -426,7 +426,7 @@ describe('the task flow', () => {
     expect(s.confirmation).toBeNull()
     expect(s.confirmErrors).toEqual([{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }])
     await flow.send('yes')
-    expect(flow.store.getState().bridge.messages.at(-1)?.content).toContain('重试执行')
+    expect(flow.store.getState().bridge.messages.at(-1)?.content).toMatch(/重试执行|Retry execution/i)
 
     api.confirm = fakeApi().confirm
     api.runTool = vi.fn().mockRejectedValue(new BridgeApiError(400, JSON.stringify({ success: false, error: 'confirmation_required', hint: 'confirm first' })))

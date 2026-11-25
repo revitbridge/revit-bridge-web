@@ -1,7 +1,7 @@
 /* The spec card and the execution view, rendered from the events' shapes (no browser needed). */
 
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
 import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
@@ -37,6 +37,8 @@ function render(p: Proposal, canConfirm: boolean) {
 }
 
 describe('SpecCard', () => {
+  beforeEach(() => vi.stubGlobal('navigator', { languages: ['zh-CN'] }))
+  afterEach(() => vi.unstubAllGlobals())
   it('shows every parameter with its source and evidence, the interpretation as a checkbox, Confirm dark', () => {
     const html = render(proposalFrom({
       type: 'spec', spec, card: 'Task: ...\nConfirm? (yes / change something)', errors: [],
@@ -81,6 +83,8 @@ describe('SpecCard', () => {
     const html = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: { conflicts: [], questions: [], interpretations_required: [], ready: true } }), true)
     expect(html).toMatch(/<button class="btn-primary">确认并执行<\/button>/)
     expect(html).toContain('data-ready="true"')
+    vi.stubGlobal('navigator', { languages: ['en-US'] })
+    expect(render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null }), true)).toContain('Confirm and run')
   })
 
   it('a spec that is not a saved tool says it is not offered here and shows no code', () => {

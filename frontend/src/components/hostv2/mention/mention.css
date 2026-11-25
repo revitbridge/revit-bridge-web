@@ -73,6 +73,11 @@
 .mention-options button:disabled { color: var(--faint); cursor: not-allowed; }
 .mention-item-label, .mention-item-detail { display: block; }
 .mention-item-label { font-weight: 600; }
+.mention-facets { display: flex; gap: 4px; flex-wrap: wrap; max-height: 5.5rem; overflow: auto; }
+.mention-facets button, .mention-more { font: inherit; font-size: 12px; border: 1px solid var(--subtle); border-radius: var(--radius-sm); background: var(--panel); color: var(--dark); cursor: pointer; padding: 4px 8px; }
+.mention-facets button[aria-pressed="true"], .mention-options button.is-active { background: var(--bg2); }
+.mention-group-heading { padding: 8px 10px 2px; font-size: 12px; font-weight: 600; color: var(--mid); }
+.mention-more { margin-top: 6px; }
 .mention-item-detail { margin-top: 3px; color: var(--faint); font-size: 12px; }
 .mention-message, .mention-error, .mention-popup-heading { padding: 8px 10px; font-size: 12px; }
 .mention-popup-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px; color: var(--mid); }

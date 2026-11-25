@@ -67,6 +67,15 @@ def picker_handler(state: dict):
             return FakeRevit.ok(rid, {"Success": True, "Kind": params["kind"], "Items": rows, "Total": len(rows),
                                       "Truncated": False, "Warnings": [], "Error": None})
         code = params.get("code", "") if method == "send_code_to_revit" else ""
+        if "return new { view, total, members, page }" in code or "int memberBudget = 100;" in code:
+            rows = state.get("selection", [])
+            ids = [row["id"] for row in rows]
+            snap = {"view": "fake-view", "members": ids, "total": len(ids),
+                    "page": [ids[i] for i in params["parameters"] if i < len(ids)]}
+            return FakeRevit.code_result(rid, {**snap, "items": rows, "warnings": []})
+        if "bool names = true, details = true;" in code:
+            rows = [r for r in state.get("elements", []) if f"new ElementId({r['id']})" in code]
+            return FakeRevit.code_result(rid, {"view": "fake-view", "items": rows, "warnings": []})
         if "OfClass(typeof(Level))" in code and "return levels;" in code and "CategoryNames" not in code:
             return FakeRevit.code_result(rid, state["levels"])
         return base(request)
@@ -113,7 +122,7 @@ def chat(client, message: str, mentions=None, session_id: str | None = None, **e
 def test_levels_are_listed_as_the_package_lists_them(picker, client):
     resp = client.get(f"{B}/mentions", params={"kind": "level"})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"kind": "level", "total": 2, "truncated": False, "items": [
+    assert resp.json() == {"kind": "level", "total": 2, "truncated": False, "facets": [], "category_matched": [], "offset": 0, "items": [
         {"kind": "level", "id": 1, "name": "L1", "label": "L1", "detail": "0 mm"},
         {"kind": "level", "id": 2, "name": "L2", "label": "L2", "detail": "3500 mm"}]}
     # q filters (case-insensitive), limit cuts and says so.
@@ -137,6 +146,40 @@ def test_types_come_by_category_and_the_categories_first(picker, client):
     assert {"kind": "types", "category": "OST_Walls"} in picker["calls"]
 
 
+def test_current_selection_page_and_element_id_confirm(picker, client, model):
+    rows = [{"id": i, "name": "Basic", "category": "OST_Walls", "shown": "Walls",
+             "level": "L1", "length": 3000} for i in (900, 901)]
+    picker.update(selection=rows, elements=rows)
+    response = client.get(f"{B}/mentions", params={"kind": "element", "source": "selection", "offset": 1, "limit": 1})
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert page["offset"] == 1 and page["total"] == 2
+    assert [r["id"] for r in page["items"]] == [901] and "L1" in page["items"][0]["summary"]
+    assert page["facets"] == [{"category": "OST_Walls", "label": "Walls", "count": 2}]
+    assert client.get(f"{B}/mentions", params={"kind": "element"}).status_code == 422
+
+    model.turns.append(text_turn("ok"))
+    response = chat(client, "@element:Basic#901", [pick("element", 901)])
+    sid = response.headers["X-Session-Id"]
+    assert events(sse(response.text), "mentions")[0]["resolved"][0]["id"] == 901
+    spec = spec_for("create_wall_from_element", reference_id="901", anchor="mid", direction="normal_left", length=3000)
+    spec["parameters"][0].update(source="designer", evidence="mention:element#901")
+    picker["selection"] = []
+    body = {"spec": spec, "session_id": sid}
+    good = client.post(f"{B}/spec/confirm", json=body)
+    assert good.status_code == 200, good.text
+    constrained = spec_for("modify_wall_height", element_id="901", height=3500)
+    constrained["parameters"][0].update(source="tool", evidence="mention:element#901")
+    wall_only = {"spec": constrained, "session_id": sid}
+    assert client.post(f"{B}/spec/confirm", json=wall_only).status_code == 200
+    picker["elements"] = [dict(row, category="OST_Doors") for row in rows]
+    changed = client.post(f"{B}/spec/confirm", json=wall_only)
+    assert changed.status_code == 422 and changed.json()["errors"][0]["code"] == UNKNOWN_MENTION
+    picker["elements"] = []
+    refused = client.post(f"{B}/spec/confirm", json=body)
+    assert refused.status_code == 422 and refused.json()["errors"][0]["code"] == UNKNOWN_MENTION
+
+
 def test_a_link_that_is_not_loaded_is_listed_but_not_selectable(picker, client):
     links = client.get(f"{B}/mentions", params={"kind": "link"}).json()
     loaded, unloaded = links["items"]
@@ -157,7 +200,7 @@ def test_a_kind_or_category_the_package_refuses_is_422(picker, client, params, e
     resp = client.get(f"{B}/mentions", params=params)
     assert resp.status_code == 422 and resp.json()["error"] == error, resp.text
     if error == "unknown_kind":
-        assert resp.json()["kinds"] == ["level", "type", "link"]
+        assert resp.json()["kinds"] == ["level", "type", "link", "element"]
 
 
 def test_no_revit_is_503(client):
@@ -169,7 +212,7 @@ def test_no_revit_is_503(client):
 def test_the_route_is_in_the_contract(client):
     operation = client.get("/openapi.json").json()["paths"][f"{B}/mentions"]["get"]
     assert {"403", "422", "500", "503"} <= set(operation["responses"])
-    assert [p["name"] for p in operation["parameters"]] == ["kind", "category", "q", "limit"]
+    assert [p["name"] for p in operation["parameters"]] == ["kind", "category", "q", "limit", "offset", "source"]
 
 
 def test_a_cloud_host_applies_the_device_rules(client, device):
@@ -585,7 +628,9 @@ UNLABELLED = {"kind": "link", "id": 503, "name": "Arch.rvt : 1", "label": ""}
 COLUMN = {"kind": "type", "id": 451, "name": "300 x 450mm", "label": "Concrete: 300 x 450mm",
           "detail": "Structural Columns", "category": "OST_StructuralColumns", "family": "Concrete"}
 NO_CATEGORY = {"kind": "type", "id": 460, "name": "Thin", "label": "Thin", "detail": "Walls"}
-PICKS = {"mention:level#2": L2, "mention:type#401": GENERIC, "mention:link#501": LINK,
+PICKS = {"mention:element#901": {"kind": "element", "id": 901, "category": "OST_Walls", "name": "Wall"},
+         "mention:element#902": {"kind": "element", "id": 902, "category": "OST_Doors"},
+         "mention:level#2": L2, "mention:type#401": GENERIC, "mention:link#501": LINK,
          "mention:link#503": UNLABELLED, "mention:type#451": COLUMN, "mention:type#460": NO_CATEGORY}
 
 
@@ -624,8 +669,12 @@ def bound(name: str, value, source: str, evidence: str) -> TaskSpec:
     ("walls", "Generic - 200mm", "tool", "mention:type#401", True),           # family_types:OST_Walls
     ("walls", "300 x 450mm", "tool", "mention:type#451", False),              # a column type
     ("walls", "Thin", "tool", "mention:type#460", True),                      # no category known: not refused
-    ("host", "L2", "tool", "mention:level#2", True),                          # elements: the pack says nothing
-    ("host", "Structure.rvt", "tool", "mention:link#501", True),
+    ("host", "L2", "tool", "mention:level#2", False),
+    ("host", "Structure.rvt", "tool", "mention:link#501", False),
+    ("host", "901", "tool", "mention:element#901", True),
+    ("host", "902", "tool", "mention:element#902", False),  # wrong category
+    ("host", "Wall", "tool", "mention:element#901", False),
+    ("host", "901", "designer", "mention:element#901", False),
     # evidence that looks like a pick must be one exactly
     ("label", "L2", "designer", "mention: level#2", False),
     ("label", "L2", "designer", "mention:level#2 ", False),
