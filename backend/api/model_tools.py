@@ -149,7 +149,7 @@ TOOL_DEFINITIONS: list[dict] = [
                        "Ask the designer to click a write card. A declared built-in reader returns its result "
                        "here. Omit step_id for a supporting read and continue with its result.",
         "parameters": {"type": "object", "properties": {"spec": {"type": "object"},
-                       "step_id": {"type": "string", "description": "Required for the first unfinished step in a plan."}},
+                       "step_id": {"type": "string", "description": "Identify the first unfinished step. A reader completes it only when the step explicitly names that reader. Omit for supporting reads."}},
                        "required": ["spec"]},
     }},
     {"type": "function", "function": {
@@ -371,10 +371,11 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
         return _refused("invalid_step", f"Step {step.id} is awaiting its execution report.")
     store = ToolStore()
     if spec.action.tool:
-        read = await try_read(spec, session, store, step=step if "step_id" in args else None)
+        read_step = step if "step_id" in args and step.tool == spec.action.tool else None
+        read = await try_read(spec, session, store, step=read_step)
         if read is not None:
             plan_event = None
-            if step and "step_id" in args and "success" in read:
+            if read_step and "success" in read:
                 from backend.roles import step_result
                 step.status = "done" if read["success"] else "failed"
                 step.result = step_result(read)

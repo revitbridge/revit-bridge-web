@@ -10,6 +10,16 @@ import { paramsOf } from '../task/flow'
 const NUMERIC = ['double', 'number', 'float', 'int', 'integer']
 const EVIDENCE = 'capabilities page'
 
+export function initialValues(params: ToolParam[], choices: Record<string, ToolChoiceItem[]>) {
+  const values: Record<string, string> = {}
+  for (const p of params) {
+    if (!p.required && p.choices_from?.split(':')[0] === 'elements') continue
+    if (choices[p.name]?.length) values[p.name] = String(choices[p.name][0].value)
+    else if (p.default != null) values[p.name] = String(p.default)
+  }
+  return values
+}
+
 /* {kind: levels_min, value} / {kind: category_present, category} / {text} as one line. */
 export function describePreconditions(items: Array<Record<string, unknown>>): string {
   if (!items.length) return '-'
