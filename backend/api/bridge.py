@@ -548,7 +548,7 @@ def _invalid_pack(exc: ValueError) -> ApiError:
 
 # -- the model, read-only --------------------------------------------------------
 
-@router.get("/host-functions")
+@router.get("/host-functions", responses=responses(403, 422))
 def host_functions() -> list[dict]:
     """Native view functions available to the planner."""
     return list_host_functions()
@@ -603,8 +603,8 @@ async def watch_selection(req: WatchRequest, request: Request):
                 del watches[key]
 
 
-@router.delete("/watch-selection/{session_id}/{watch_id}")
-async def cancel_selection(session_id: str, watch_id: str, request: Request):
+@router.delete("/watch-selection/{session_id}/{watch_id}", responses=responses(403, 422))
+async def cancel_selection(session_id: Identifier, watch_id: Identifier, request: Request):
     """Cancel only the matching watch on the caller's device. Safe to retry."""
     active = request.app.state.selection_watches.get((current_scope(), session_id))
     if active and active[0] == watch_id:
