@@ -1,12 +1,18 @@
 /* Panel 4: the spec the model proposed, line by line with its source and evidence,
    the interpretations to tick, the conflicts, and Confirm - lit only when reconcile says ready. */
 
-import { useState } from 'react'
-import type { SpecError, TaskSpec } from '../../types/api'
-import { interpretationsOf, type Proposal } from './flow'
-import { showValue } from './format'
+import { useEffect, useRef } from 'react'
+import type { ExecutionResult, SpecError, TaskSpec } from '../../types/api'
+import { interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
+import { showValue, tokenPrefix } from './format'
+import { ExecutionView, TamperDemo } from './ExecutionPanel'
 
 interface Props {
+  execution?: ExecutionResult | null
+  confirmation?: Confirmation | null
+  running?: boolean
+  archived?: boolean
+  onTamper?: (value: Tamper) => Promise<ExecutionResult | null>
   proposal: Proposal
   canConfirm: boolean
   confirming: boolean
@@ -51,8 +57,12 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
   )
 }
 
-export default function SpecCard({ proposal, canConfirm, confirming, confirmErrors, onToggleInterpretation, onConfirm }: Props) {
-  const [showText, setShowText] = useState(false)
+export default function SpecCard({ proposal, canConfirm, confirming, confirmErrors, onToggleInterpretation, onConfirm,
+  execution, confirmation, running, archived, onTamper }: Props) {
+  const card = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!archived) card.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [archived, proposal.spec])
   const { spec, draft, reconcile, reconcileError, errors } = proposal
   const interpretations = interpretationsOf(proposal)
   const conflicts = reconcile?.conflicts ?? []
@@ -60,20 +70,18 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
   const ready = reconcile?.ready === true
 
   return (
-    <section className="card section spec-card" data-ready={ready}>
+    <section ref={card} className="card section spec-card" data-ready={ready} data-active-card={!archived}>
       <div className="panel-head">
-        <h3 className="heading-display section-title">4. Spec card</h3>
+        <h3 className="section-title">{draft.task}</h3>
         <span className={`readiness ${ready ? 'is-ready' : 'is-open'}`}>
           {proposal.reconciling ? 'reconciling...' : ready ? 'ready' : reconcile ? 'not ready' : 'not reconciled'}
         </span>
       </div>
 
-      <p className="spec-task">{draft.task}</p>
       <p className="section-copy small" style={{ margin: 0 }}>
         {spec.action.kind === 'run_tool'
           ? <>Pack <code>{spec.action.tool}</code> (run_tool)</>
           : <>{spec.action.kind}: not offered here - this host runs saved tools only</>}
-        {spec.snapshot_fingerprint && <> | snapshot <code>{spec.snapshot_fingerprint}</code></>}
       </p>
 
       <SpecTable spec={draft} conflicts={conflicts} />
@@ -83,7 +91,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
           <span className="label-text">Interpretations to confirm</span>
           {interpretations.map(it => (
             <label key={it.text} className="interpretation">
-              <input type="checkbox" checked={it.confirmed} disabled={proposal.reconciling}
+              <input type="checkbox" checked={it.confirmed} disabled={archived || !!execution?.success || confirming || running || proposal.reconciling}
                 onChange={e => onToggleInterpretation(it.text, e.target.checked)} />
               <span>{it.text}{it.param ? <span className="muted"> ({it.param})</span> : null}</span>
             </label>
@@ -118,20 +126,25 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
         </ul>
       )}
 
-      <div className="spec-actions">
-        <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
-          {confirming ? 'Confirming...' : 'Confirm'}
-        </button>
-        <button className="btn-ghost" onClick={() => setShowText(!showText)}>{showText ? 'Hide card text' : 'Card as text'}</button>
-        {!ready && !proposal.reconciling && <span className="muted small-mono">Confirm lights up when reconcile says ready.</span>}
-      </div>
-      {showText && <pre className="spec-text">{proposal.card}</pre>}
+      <details className="spec-details">
+        <summary>详情</summary>
+        {spec.snapshot_fingerprint && <p>Snapshot <code>{spec.snapshot_fingerprint}</code></p>}
+        {confirmation && <p>Token <code>{tokenPrefix(confirmation.token)}</code> · {confirmation.expires_at}</p>}
+        <pre className="spec-text">{proposal.card}</pre>
+        {confirmation?.used && onTamper && <TamperDemo key={confirmation.token} confirmation={confirmation}
+          running={!!running} onTamper={onTamper} />}
+      </details>
 
       {confirmErrors.length > 0 && (
         <ul className="spec-errors" data-testid="confirm-errors">
           {confirmErrors.map((e, i) => <li key={i}>Confirm refused: <code>{e.code}</code>{e.param ? <> on <code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
+      {execution && <ExecutionView execution={execution} />}
+      {execution?.success ? <p role="status">已执行</p> : archived ? <p>已被新卡替换</p> :
+        <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
+          {confirming ? '正在确认…' : running ? '正在执行…' : execution || confirmErrors.length ? '重试执行' : '确认并执行'}
+        </button>}
     </section>
   )
 }

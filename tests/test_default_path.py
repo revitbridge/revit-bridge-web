@@ -1,22 +1,11 @@
-"""The default path stays byte for byte what it was: without a models file and without its
-optional fields, every request the host sends to the model (URL, headers, body bytes) and every
-SSE stream it sends to the page match a record taken from the build before the provider options
-and chat modes existed (revit-bridge-web at aa5556c) - except for one value on purpose: the
-default output limit, ``max_tokens``, is 16384 now (``backend.llm.DEFAULT_MAX_TOKENS``; it was
-4096).
+"""Pin requests and SSE streams for the single loop and both roles modes.
 
-The record (``tests/default_path_golden.json``) holds one SHA-256 per request and per stream of
-four scripted conversations: the one loop with the server's model and with the browser's, the
-roles with the analyst and the roles without it. It has two sections: ``max_tokens_4096``, taken
-from aa5556c and never regenerated, and ``max_tokens_16384``, taken with the new default. With the
-default forced back to 4096 the requests and streams still match the aa5556c section: that proves
-the limit is the only difference (``test_the_default_path_is_byte_identical_to_the_record``,
-parametrised over both). What differs from run to run - the snapshot's clock, durations, the ms of
-a trace event - is fixed before hashing (``normalize``). The chat modes added one field to the
-streams, ``mode`` on a turn's first ``stage`` event: it is checked and taken off before the
-comparison (``without_mode``). The current section taken again on purpose (the package's texts
-changed with a new revit-bridge, say):
+The original records from host v2 stay in default_path_golden.json. Inline
+forms add one planner tool and new card directions, so v3 has its own
+request records at both output limits. These scripted conversations do not
+ask a question; their SSE streams must still match the original records.
 
+Regenerate the v3 request records after an intentional prompt or tool change:
     REGEN_DEFAULT_PATH_GOLDEN=1 uv run pytest tests/test_default_path.py
 """
 from __future__ import annotations
@@ -219,10 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
+INLINE_4096 = "inline_forms_4096"
 
 
 def current_section() -> str:
-    return f"max_tokens_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"inline_forms_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -232,19 +222,17 @@ def recorded(name: str, section: str | None = None) -> dict:
 @pytest.mark.parametrize("limit", [AA5556C_LIMIT, None], ids=["aa5556c-limit-4096", "current-default"])
 @pytest.mark.parametrize("name", list(SCENARIOS))
 def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revit, recorder, monkeypatch):
-    """The current default against its section; the default forced back to aa5556c's 4096 against
-    the record taken from aa5556c - the output limit is the only difference."""
+    """V3 requests at both limits and identical streams to the v2 conversations."""
     if limit is not None:
-        if REGENERATE:
-            pytest.skip("the aa5556c section is never regenerated")
         monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
-    section = AA5556C_SECTION if limit is not None else current_section()
+    section = current_section()
     requests, streams = run_scenario(name, env, revit, recorder)
     sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
+    assert hashes(streams) == recorded(name, AA5556C_SECTION)["streams"]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section != AA5556C_SECTION
+        assert section.startswith("inline_forms_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")
@@ -256,8 +244,8 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     for index, (text, expected) in enumerate(zip(streams, record["streams"])):
         assert digest(text) == expected, f"stream {index + 1} of {name} differs from the record"
     if limit is None:
-        # The same bytes as aa5556c's once the one value is written back: nothing else moved.
-        old = recorded(name, AA5556C_SECTION)
+        # The two v3 sets of request bytes differ only in their output limit.
+        old = recorded(name, INLINE_4096)
         written_back = [re.sub(r'("max_tokens":\s*)%d\b' % llm_module.DEFAULT_MAX_TOKENS, rf"\g<1>{AA5556C_LIMIT}",
                                text, count=1) for text in requests]
         assert hashes(written_back) == old["requests"] and hashes(streams) == old["streams"]
@@ -301,9 +289,9 @@ def test_a_requested_mode_sends_what_its_switch_sends(name, mode, env, revit, re
     assert hashes(streams) == record["streams"]
 
 
-@pytest.mark.parametrize("value, section", [("16384", None), ("4096", AA5556C_SECTION)])
+@pytest.mark.parametrize("value, section", [("16384", None), ("4096", INLINE_4096)])
 def test_llm_max_tokens_is_the_only_value_it_changes(value, section, env, revit, recorder):
-    """LLM_MAX_TOKENS=16384 sends what the default sends; 4096 sends exactly what aa5556c sent."""
+    """LLM_MAX_TOKENS=16384 sends what the default sends; 4096 sends the v3 requests for that limit."""
     if REGENERATE:
         pytest.skip("comparing against the record")
     requests, streams = run_scenario("single-server", env, revit, recorder, env_override={"LLM_MAX_TOKENS": value})

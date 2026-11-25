@@ -155,7 +155,7 @@ def test_route_query_runs_the_planner_with_the_read_tools_only(revit, client, mo
     assert [(t["id"], t["role"]) for t in events(frames, "tool")] == [("1.2.1", "planner"), ("1.2.1", "planner")]
     assert model.roles == ["analyst", "planner", "planner"]
     planner = model.requests_of("planner")[0]
-    assert tool_names(planner) == ["get_project_snapshot", "query"]
+    assert tool_names(planner) == ["get_project_snapshot", "query", "ask_designer"]
     assert planner["tools"] == roles.ROUTE_DEFINITIONS["query"]
     assert planner["messages"][0] == {"role": "system", "content": chat_module.build_role_prompt("planner")}
     # The planner's message: the designer's words, then the analyst's routing - not the
@@ -323,15 +323,21 @@ def test_ask_shows_the_report_and_the_question(revit, client, model):
                                           "question": "Unlock the view and run it again?"}))
     frames = report(client, session_id, FAILED)
     assert tokens(frames) == "Revit refused: the view is locked.\n\nUnlock the view and run it again?"
+    form, = events(frames, "questions")
+    question, = form["questions"]
+    assert form["ask_id"] and question["allow_other"] and question["text"] == "Unlock the view and run it again?"
     session = get_session_store().get(session_id)
     assert session.role_task.last == tokens(frames)
-    # The designer's answer: the analyst sees the open task and the question.
-    model.script("analyst", json_turn(ROUTING_TOOL))
+    # A typed answer resumes the planner with the supervisor's question.
     model.script("planner", text_turn("ok"))
     client.post("/api/chat", json={"message": "yes", "session_id": session_id}, headers=HEADERS)
-    sent = user_text(model.requests_of("analyst")[-1])
-    assert (f"Open task {roles.FROM_HOST}: route tool, tool create_wall. The last message to the designer:\n"
-            "Revit refused: the view is locked.\n\nUnlock the view and run it again?") in sent
+    sent = user_text(model.requests_of("planner")[-1])
+    assert sent.startswith("yes\n") and "Unlock the view and run it again?" in sent
+    for role in ("analyst", "planner", "supervisor"):
+        prompt = model.requests_of(role)[0]["messages"][0]["content"]
+        assert "确认并执行" in prompt and "卡片在我上一条提交它的回复里" in prompt
+        assert "wait for an explicit yes" not in prompt and "in this host\'s interface" not in prompt
+        assert "confirm in revit" not in prompt.lower() and "revit panel" not in prompt.lower()
 
 
 def test_a_failed_validator_is_never_done(revit, client, model):
@@ -469,7 +475,7 @@ def test_a_role_cannot_run_a_tool_outside_its_subset(revit, client, model, monke
     assert ran == ["query"] and events(frames, "spec") == []
     closing = events(frames, "tool")[1::2]
     assert [(t["name"], t["status"]) for t in closing] == [("propose_spec", "error"), ("query", "ok")]
-    assert closing[0]["error"] == "tool_not_offered: the planner has only: get_project_snapshot, query"
+    assert closing[0]["error"] == "tool_not_offered: the planner has only: get_project_snapshot, query, ask_designer"
     assert get_session_store().get(resp.headers["X-Session-Id"]).spec is None
 
     # The supervisor has query alone.
@@ -497,18 +503,31 @@ def test_the_supervisor_answers_after_its_query_rounds(revit, client, model):
 
 
 def test_role_definitions_are_constant_and_follow_the_table():
-    assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query"),
+    assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query", "ask_designer"),
                                  "tool": ("get_project_snapshot", "query", "list_tools", "get_tool_choices",
-                                          "missing_params", "reconcile", "propose_spec")}
+                                          "missing_params", "reconcile", "propose_spec", "ask_designer")}
     assert roles.SUPERVISOR_TOOLS == ("query",)
     assert roles.ROUTE_DEFINITIONS["tool"] == TOOL_DEFINITIONS
     assert all(d in TOOL_DEFINITIONS for d in roles.ROUTE_DEFINITIONS["query"] + roles.SUPERVISOR_DEFINITIONS)
 
 
+def test_analyst_routed_questions_send_structured_reply_to_planner(client, revit, model):
+    from tests.test_questions import FORM
+    model.script("analyst", json_turn(ROUTING_QUERY))
+    model.script("planner", tool_turn(("ask_designer", FORM)), text_turn("L2"))
+    res = client.post("/api/chat", json={"message": "Which level?"}, headers=HEADERS)
+    form, = events(sse(res.text), "questions")
+    answers = {"ask_id": form["ask_id"], "items": [{"id": "level", "label": "L2", "value": 2}]}
+    res = client.post("/api/chat", json={"session_id": res.headers["X-Session-Id"], "message": "L2",
+                                         "answers": answers}, headers=HEADERS)
+    assert tokens(sse(res.text)) == "L2"
+    assert tool_names(model.requests_of("planner")[-1]) == list(roles.QUERY_TOOLS)
+    assert "Designer selected these answers in the form" in user_text(model.requests_of("planner")[-1])
+
+
 # -- prompts, prefixes, the digest ------------------------------------------------------------
 
 def test_each_role_prompt_is_the_packages_text_and_stays_the_same(revit, client, model, monkeypatch):
-    from revit_bridge import host_instructions
     built: list[str] = []
     real = chat_module.build_role_prompt
 
@@ -525,14 +544,14 @@ def test_each_role_prompt_is_the_packages_text_and_stays_the_same(revit, client,
     assert built == ["analyst", "planner"]
     analysts = model.requests_of("analyst")
     assert len({json.dumps(b["messages"][0]) for b in analysts}) == 1
-    assert analysts[0]["messages"][0]["content"] == (host_instructions(role="analyst", code=False).rstrip("\n")
+    assert analysts[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="analyst", code=False).rstrip("\n")
                                                      + "\n\n" + roles.ANALYST_WORKBENCH_LINE)
     # The analyst's message opens with the same tools and digest every turn.
     heads = {user_text(b).split("\n\nDesigner's message:")[0].split("\n\nOpen task")[0] for b in analysts}
     assert len(heads) == 1
     planners = model.requests_of("planner")
     assert len({json.dumps(b["messages"][0]) for b in planners}) == 1
-    assert planners[0]["messages"][0]["content"] == (host_instructions(role="planner", code=False).rstrip("\n")
+    assert planners[0]["messages"][0]["content"] == (chat_module.inline_card_instructions(role="planner", code=False).rstrip("\n")
                                                      + "\n" + chat_module.WORKBENCH_LINE)
     # Append, never rewrite: every planner request starts with the whole previous one.
     for earlier, later in zip(planners, planners[1:]):

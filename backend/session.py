@@ -32,7 +32,7 @@ from backend.llm import ProviderMemory, call_keys
 from backend.mention_check import mention_evidence
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
-    from backend.roles import RoleTask
+    from backend.roles import RoleTask, Routing
 
 TTL_SECONDS = 2 * 60 * 60
 MAX_HISTORY = 60
@@ -73,6 +73,8 @@ class Session:
     digests: dict[str, str] = field(default_factory=dict)
     digest_failures: dict[str, tuple[float, str]] = field(default_factory=dict)
     pending_verdict: dict | None = None
+    pending_form: dict | None = None
+    form_routing: Routing | None = None
     confirmed_spec: dict | None = None
     # What a provider returned with a tool call that goes back with it in the next requests
     # (Gemini's thought signature, the responses api's reasoning items): by call, for the

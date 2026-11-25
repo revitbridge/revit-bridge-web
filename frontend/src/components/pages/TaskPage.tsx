@@ -11,14 +11,13 @@ import { flowApi } from '../task/api'
 import { currentRequestMode, useChatMode } from '../task/chatMode'
 import ChatModeSelect from '../task/ChatModeSelect'
 import ChatPanel from '../task/ChatPanel'
-import ExecutionPanel, { PreviousAttemptPanel } from '../task/ExecutionPanel'
 import { canConfirm, createTaskFlow, usageOf, type EventSource, type TaskFlow, type TaskState } from '../task/flow'
 import { TokenPanel } from '../hostv2/trace'
 import SnapshotPanel from '../task/SnapshotPanel'
 import SpecCard from '../task/SpecCard'
 import StepIndicator from '../shared/StepIndicator'
 
-const STEPS = ['Snapshot', 'Brief', 'Spec card', 'Confirm and run', 'Report']
+const STEPS = ['Snapshot', 'Conversation', 'Report']
 
 /* One flow for the tab's lifetime, so switching pages keeps the conversation. */
 let sharedFlow: TaskFlow | null = null
@@ -29,9 +28,7 @@ function flowFor(events?: EventSource): TaskFlow {
 }
 
 function stepOf(s: TaskState): number {
-  if (s.reported) return 5
-  if (s.confirmation) return 4
-  if (s.proposal) return 3
+  if (s.reported) return 3
   if (s.bridge.messages.length > 0) return 2
   return 1
 }
@@ -41,7 +38,7 @@ export default function TaskPage({ events }: { events?: EventSource }) {
   const state = useStore(flow.store)
   const chatMode = useChatMode(s => s.mode)
   const setChatMode = useChatMode(s => s.setMode)
-  const busy = state.bridge.streaming || state.baseline.streaming
+  const busy = state.bridge.streaming || state.baseline.streaming || state.confirming || state.running
   const questions = state.proposal?.reconcile?.questions ?? []
 
   return (
@@ -64,10 +61,22 @@ export default function TaskPage({ events }: { events?: EventSource }) {
           and cannot execute anything: it shows how the same brief would be filled in blindly.
         </p>
         <div className={`task-columns${state.compare ? ' two' : ''}`}>
-          <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions}
+          <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions} questionMessage={state.cardMessage}
+            highlight={state.highlight} onSubmitForm={(text, answers) => flow.send(text, [], answers)}
+            renderCards={index => <>
+              {state.archived.filter(c => c.message === index).map((c, i) => <SpecCard key={i} archived
+                proposal={c.proposal} confirmation={c.confirmation} execution={c.execution}
+                confirming={false} canConfirm={false} confirmErrors={[]}
+                onConfirm={() => {}} onToggleInterpretation={() => {}} />)}
+              {state.cardMessage === index && state.proposal && <SpecCard proposal={state.proposal}
+                canConfirm={canConfirm(state)} confirming={state.confirming} running={state.running}
+                execution={state.execution} confirmation={state.confirmation} confirmErrors={state.confirmErrors}
+                onConfirm={flow.confirmAndRun} onToggleInterpretation={flow.toggleInterpretation}
+                onTamper={flow.demoTamper} />}
+            </>}
             onSend={(t, picked) => flow.send(t, picked)} onAnswer={(q, o) => flow.answer(q, o)} onReset={() => flow.reset()} disabled={busy}
             placeholder="e.g. 在坐标 (3000, 3000) 放一根结构柱。"
-            hint="The model sees the snapshot and the packs. It asks what it cannot know, then proposes a spec card below. Type @ to pick a level, a type or a link from the open model: the model gets what you picked, checked against the model."
+            hint="The model sees the snapshot and the packs. It asks what it cannot know, then adds a spec card to its reply. Type @ to pick a level, a type or a link from the open model: the model gets what you picked, checked against the model."
             showTrace
             controls={<ChatModeSelect features={getConfig().features} mode={chatMode} onChange={setChatMode} disabled={busy} />} />
           {state.compare && (
@@ -83,20 +92,6 @@ export default function TaskPage({ events }: { events?: EventSource }) {
         )}
       </section>
 
-      {state.previous && <PreviousAttemptPanel previous={state.previous} />}
-
-      {state.proposal && (
-        <SpecCard proposal={state.proposal} canConfirm={canConfirm(state)} confirming={state.confirming}
-          confirmErrors={state.confirmErrors}
-          onToggleInterpretation={(text, confirmed) => flow.toggleInterpretation(text, confirmed)}
-          onConfirm={() => flow.confirm()} />
-      )}
-
-      {(state.confirmation || state.execution) && (
-        <ExecutionPanel confirmation={state.confirmation} execution={state.execution} executionKind={state.executionKind}
-          running={state.running} reported={state.reported} canReport={!!state.bridge.sessionId && !state.bridge.streaming}
-          onRun={() => flow.run()} onTamper={t => flow.runTampered(t)} onReport={() => flow.report()} />
-      )}
     </div>
   )
 }

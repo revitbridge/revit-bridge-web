@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { ExecutionResult, HostEvent, Question, TaskSpec } from '../../types/api'
 import type { TraceEvent } from '../../types/hostv2'
 import ChatPanel from './ChatPanel'
-import { ExecutionView, PreviousAttemptPanel } from './ExecutionPanel'
+import { ExecutionView } from './ExecutionPanel'
 import type { Proposal } from './flow'
 import { expiresIn, questionBadge, tokenPrefix } from './format'
 import SpecCard from './SpecCard'
@@ -47,7 +47,7 @@ describe('SpecCard', () => {
     }
     expect(html).toContain('type="checkbox"')
     expect(html).toContain('y 未标单位，按 mm 理解，请确认')
-    expect(html).toMatch(/<button class="btn-primary" disabled="">Confirm<\/button>/)
+    expect(html).toMatch(/<button class="btn-primary" disabled="">确认并执行<\/button>/)
     expect(html).toContain('not ready')
     expect(html).toContain('fp-1')
   })
@@ -70,7 +70,7 @@ describe('SpecCard', () => {
 
   it('lights Confirm when reconcile says ready', () => {
     const html = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: { conflicts: [], questions: [], interpretations_required: [], ready: true } }), true)
-    expect(html).toMatch(/<button class="btn-primary">Confirm<\/button>/)
+    expect(html).toMatch(/<button class="btn-primary">确认并执行<\/button>/)
     expect(html).toContain('data-ready="true"')
   })
 
@@ -138,26 +138,6 @@ describe('ExecutionView', () => {
   })
 })
 
-describe('PreviousAttemptPanel', () => {
-  it('shows the run the supervisor sent back as the page received it, labelled as the previous attempt', () => {
-    const failed: ExecutionResult = {
-      success: false, error: 'validation_failed', tool: 'create_wall',
-      validation: { validator: 'count_delta', passed: false, checks: [{ detail: 'expected +1 OST_Walls, got +0', passed: false }] },
-      evidence_id: 'ev_2',
-    }
-    const html = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: failed, executionKind: 'genuine' }} />)
-    expect(html).toContain('aria-label="Previous attempt"')
-    expect(html).toContain('>Previous attempt</h3>')
-    expect(html).toContain('VALIDATION FAILED')
-    expect(html).toContain('expected +1 OST_Walls, got +0')
-    expect(html).toContain('ev_2')
-    const error = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: { success: false, error: 'Level L9 not found' }, executionKind: 'genuine' }} />)
-    expect(error).toContain('Failed: <code>Level L9 not found</code>')
-    const ok = renderToStaticMarkup(<PreviousAttemptPanel previous={{ execution: { success: true, error: null, tool: 'create_wall' }, executionKind: 'genuine' }} />)
-    expect(ok).toContain('Executed - create_wall.')
-  })
-})
-
 describe('ChatPanel questions', () => {
   const questions: Question[] = [
     { id: 'q_level_name', param: 'level_name', text: 'Which level?', why: "level_name = 'L9' does not exist in the snapshot",
@@ -167,10 +147,10 @@ describe('ChatPanel questions', () => {
       allow_other: true, kind: 'user_intent', blocks: ['spec', 'execute'] },
     { id: 'q_height', param: 'height', text: 'Height?', options: [] },                       // a 0.3 server: no kind
   ]
-  const transcript = { messages: [], sessionId: null, streaming: false }
+  const transcript = { messages: [{ role: 'assistant' as const, content: 'Please choose.' }], sessionId: null, streaming: false }
 
   it('shows each kind as a badge with what it holds up, every question with its options', () => {
-    const html = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} questions={questions} onAnswer={noop} />)
+    const html = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} questions={questions} questionMessage={0} onAnswer={noop} />)
     expect(html).toContain('<span class="source-pill kind-pill kind-model_fact" title="not found in the model: check the model before answering; holds up: spec, execute">model fact</span>')
     expect(html).toContain('<span class="source-pill kind-pill kind-user_intent" title="only the designer can answer this; holds up: spec, execute">designer</span>')
     expect(html.match(/kind-pill/g)).toHaveLength(2)                    // no badge without a kind

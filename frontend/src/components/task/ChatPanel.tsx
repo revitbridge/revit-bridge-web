@@ -10,18 +10,23 @@
    found gone or not valid is marked when it is in the input again. */
 
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { Question, SentMention } from '../../types/api'
+import type { DesignerAnswers, Question, SentMention } from '../../types/api'
 import type { FetchCandidates, Mention } from '../../types/hostv2'
 import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
+import QuestionForm from './QuestionForm'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
 import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
+  renderCards?: (message: number) => ReactNode
+  onSubmitForm?: (text: string, answers: DesignerAnswers) => void
+  highlight?: number
   title: string
   transcript: Transcript
+  questionMessage?: number
   questions?: Question[]
   onSend?: (text: string, mentions: Mention[]) => void   // absent: a read-only mirror (the no-bridge side)
   onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
@@ -46,8 +51,8 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
   )
 }
 
-export default function ChatPanel({ title, transcript, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
-  showTrace, fetchCandidates = fetchFromHost, controls }: Props) {
+export default function ChatPanel({ title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
+  showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight }: Props) {
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
@@ -56,6 +61,13 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
   useEffect(() => {
     scroll.current?.scrollTo({ top: scroll.current.scrollHeight })
   }, [transcript.messages])
+
+  useEffect(() => {
+    if (!highlight) return
+    const card = scroll.current?.querySelector<HTMLElement>('[data-active-card="true"]')
+    card?.scrollIntoView?.({ block: 'nearest' })
+    card?.animate?.([{ outline: '3px solid currentColor' }, { outline: '3px solid transparent' }], 2200)
+  }, [highlight])
 
   /* A message with more picks than the host takes is not sent: the box keeps it and says why. */
   const send = (text: string, picked: Mention[]) => {
@@ -88,37 +100,41 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
             {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
             <div className={`chat-bubble ${m.role}`}>
               {m.role === 'assistant'
-                ? <div className="markdown-body"><Markdown>{m.content || '...'}</Markdown></div>
+                ? <div className="markdown-body"><Markdown>{m.content || (m.form ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
+              {m.role === 'assistant' && renderCards?.(i)}
+              {i === questionMessage && !m.form && questions.length > 0 && onAnswer && (
+                <div className="question-list">
+                  {questions.map(q => {
+                    const badge = questionBadge(q.kind, q.blocks)
+                    return (
+                      <div key={q.id} className="question">
+                        <div className="question-text">
+                          {badge && <span className={`source-pill kind-pill kind-${q.kind}`} title={badge.title}>{badge.label}</span>}
+                          {q.text}
+                        </div>
+                        {q.why && <div className="muted small-mono">{q.why}</div>}
+                        {q.options.length > 0
+                          ? <div className="option-row">
+                              {q.options.map((o, i) => (
+                                <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? `from ${o.source}` : undefined}>
+                                  {o.label}
+                                </button>
+                              ))}
+                            </div>
+                          : <div className="muted small-mono">no options from the model: answer in the box below</div>}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              {m.form && onSubmitForm && <QuestionForm key={m.form.ask_id} form={m.form} answered={m.answered}
+                disabled={disabled} onAnswer={onSubmitForm} />}
             </div>
           </Fragment>
         ))}
-        {questions.length > 0 && onAnswer && (
-          <div className="question-list">
-            {questions.map(q => {
-              const badge = questionBadge(q.kind, q.blocks)
-              return (
-                <div key={q.id} className="question">
-                  <div className="question-text">
-                    {badge && <span className={`source-pill kind-pill kind-${q.kind}`} title={badge.title}>{badge.label}</span>}
-                    {q.text}
-                  </div>
-                  {q.why && <div className="muted small-mono">{q.why}</div>}
-                  {q.options.length > 0
-                    ? <div className="option-row">
-                        {q.options.map((o, i) => (
-                          <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? `from ${o.source}` : undefined}>
-                            {o.label}
-                          </button>
-                        ))}
-                      </div>
-                    : <div className="muted small-mono">no options from the model: answer in the box below</div>}
-                </div>
-              )
-            })}
-          </div>
-        )}
+
       </div>
       {onSend && (
         <div className="chat-input-row">
@@ -129,7 +145,7 @@ export default function ChatPanel({ title, transcript, questions = [], onSend, o
           <div className="chat-buttons">
             {controls}
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
-            {onReset && <button className="btn-ghost" onClick={onReset} disabled={transcript.streaming}>New session</button>}
+            {onReset && <button className="btn-ghost" onClick={onReset} disabled={disabled || transcript.streaming}>New session</button>}
           </div>
         </div>
       )}

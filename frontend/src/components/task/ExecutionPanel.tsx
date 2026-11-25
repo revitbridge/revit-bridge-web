@@ -1,82 +1,20 @@
 /* Panel 5: the token, the run, the validator's checks - and the tamper demo:
    one value changed after confirmation is confirmation_invalid. */
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ExecutionResult } from '../../types/api'
 import ExecResult from '../shared/ExecResult'
-import { isGateRefusal, isToolRefusal, paramsOf, type Confirmation, type PreviousAttempt, type Tamper } from './flow'
-import { expiresIn, showValue, tokenPrefix } from './format'
+import { isGateRefusal, isToolRefusal, paramsOf, type Confirmation, type Tamper } from './flow'
+import { showValue } from './format'
 
-interface Props {
-  confirmation: Confirmation | null
-  execution: ExecutionResult | null
-  executionKind: 'genuine' | 'tampered' | null
-  running: boolean
-  reported: boolean
-  canReport: boolean
-  onRun: () => void
-  onTamper: (tamper: Tamper) => void
-  onReport: () => void
-}
-
-export default function ExecutionPanel({ confirmation, execution, executionKind, running, reported, canReport, onRun, onTamper, onReport }: Props) {
-  // the clock for "expires in ...": ticks once the panel is on screen, then every 15 s
-  const [now, setNow] = useState<number | null>(null)
-  useEffect(() => {
-    if (!confirmation) return
-    const tick = () => setNow(Date.now())
-    const first = setTimeout(tick, 0)
-    const timer = setInterval(tick, 15000)
-    return () => { clearTimeout(first); clearInterval(timer) }
-  }, [confirmation])
-
-  return (
-    <section className="card section">
-      <div className="panel-head">
-        <h3 className="heading-display section-title">5. Confirm and run</h3>
-        {confirmation && (
-          <span className="token-chip" title={`spec ${confirmation.spec_hash}`}>
-            token <code>{tokenPrefix(confirmation.token)}</code> | expires {now === null ? confirmation.expires_at : expiresIn(confirmation.expires_at, now)} | {confirmation.used ? 'used' : 'unused'}
-          </span>
-        )}
-      </div>
-
-      {!confirmation && <p className="section-copy small" style={{ margin: 0 }}>Confirm the spec card to get a one-time token; it stays in this page's memory only.</p>}
-
-      {confirmation && (
-        <>
-          <div className="flex gap-2 flex-wrap items-center">
-            <button className="btn-primary" onClick={onRun} disabled={running || confirmation.used}>
-              {running ? 'Running...' : `Run ${confirmation.spec.action.tool}`}
-            </button>
-            {confirmation.used && <span className="muted small-mono">token spent: confirm the card again for another run</span>}
-          </div>
-          <TamperDemo key={confirmation.token} confirmation={confirmation} running={running} onTamper={onTamper} />
-        </>
-      )}
-
-      {execution && (
-        <ExecutionView execution={execution} tampered={executionKind === 'tampered'} />
-      )}
-
-      {execution && !isGateRefusal(execution) && (
-        <div className="flex gap-2 items-center" style={{ marginTop: 10 }}>
-          <button className="btn-secondary" onClick={onReport} disabled={reported || !canReport}>
-            {reported ? 'Reported to the model' : 'Report to the model'}
-          </button>
-          {!canReport && !reported && <span className="muted small-mono">needs a chat session</span>}
-        </div>
-      )}
-    </section>
-  )
-}
-
-function TamperDemo({ confirmation, running, onTamper }: { confirmation: Confirmation; running: boolean; onTamper: (t: Tamper) => void }) {
+export function TamperDemo({ confirmation, running, onTamper }: { confirmation: Confirmation; running: boolean; onTamper: (t: Tamper) => Promise<ExecutionResult | null> }) {
   const params = paramsOf(confirmation.spec)
   const names = Object.keys(params)
   const [param, setParam] = useState(names[0] ?? '')   // keyed by the token: a new confirmation resets the demo
   const [value, setValue] = useState(names[0] ? showValue(params[names[0]]) : '')
 
+  const [result, setResult] = useState<ExecutionResult | null>(null)
+  const [pending, setPending] = useState(false)
   const pick = (name: string) => { setParam(name); setValue(showValue(params[name])) }
   const unchanged = showValue(params[param]) === value
 
@@ -90,25 +28,15 @@ function TamperDemo({ confirmation, running, onTamper }: { confirmation: Confirm
               {names.map(n => <option key={n} value={n}>{n}</option>)}
             </select>
             <input className="input-field" value={value} onChange={e => setValue(e.target.value)} style={{ maxWidth: 240 }} aria-label="Edited value" />
-            <button className="btn-secondary" onClick={() => onTamper({ param, value })} disabled={running || unchanged}>Run edited</button>
+            <button className="btn-secondary" onClick={async () => {
+              setPending(true)
+              try { setResult(await onTamper({ param, value })) }
+              finally { setPending(false) }
+            }} disabled={pending || running || unchanged}>Run edited</button>
           </div>}
+      {result && <ExecutionView execution={result} tampered />}
       <p className="section-copy small">The token is bound to the confirmed values: anything else is refused as <code>confirmation_invalid</code> and nothing reaches Revit.</p>
     </details>
-  )
-}
-
-/* The run the supervisor sent back, as the page itself received it: shown above the planner's
-   new card so the model's report is not the only record of what happened. */
-export function PreviousAttemptPanel({ previous }: { previous: PreviousAttempt }) {
-  return (
-    <section className="card section previous-attempt" aria-label="Previous attempt">
-      <h3 className="heading-display section-title">Previous attempt</h3>
-      <p className="section-copy small" style={{ marginTop: 0 }}>
-        The supervisor sent this task back; the card below is the planner's new proposal. This is what the page
-        received from the run before it:
-      </p>
-      <ExecutionView execution={previous.execution} tampered={previous.executionKind === 'tampered'} />
-    </section>
   )
 }
 

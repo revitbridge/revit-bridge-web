@@ -10,7 +10,7 @@
 import { apiStream } from './client'
 import { llmHeaders } from '../store'
 import type {
-  ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, ReconcileResult, SpecError, TaskSpec,
+  DesignerForm, ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, ReconcileResult, SpecError, TaskSpec,
 } from '../types/api'
 import type { Role, ToolEvent } from '../types/hostv2'
 
@@ -99,6 +99,15 @@ export function parseSseFrame(frame: string): HostEvent | null {
     return { type: 'execution', execution: parsed as unknown as ExecutionResult }
   }
   if (event === 'mentions') return mentionsEvent(parsed)
+  if (event === 'questions') {
+    if (!isRecord(parsed) || typeof parsed.ask_id !== 'string' || !Array.isArray(parsed.questions)
+      || !parsed.questions.length || parsed.questions.length > 4
+      || !parsed.questions.every(q => isRecord(q) && typeof q.id === 'string' && typeof q.text === 'string'
+        && Array.isArray(q.options) && q.options.length >= 2 && q.options.length <= 6
+        && q.options.every(o => isRecord(o) && typeof o.label === 'string'
+          && ['string', 'number', 'boolean'].includes(typeof o.value)))) return null
+    return { type: 'questions', ask_id: parsed.ask_id, questions: parsed.questions as DesignerForm['questions'] }
+  }
   if (event === 'stage' || event === 'tool' || event === 'usage') return traceEvent(event, parsed)
   if (event === '' && typeof parsed === 'string') return { type: 'token', text: parsed }
   return null
@@ -163,6 +172,7 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.execution !== undefined) body.execution = request.execution
   if (request.bridge !== undefined) body.bridge = request.bridge
   if (request.mentions?.length) body.mentions = request.mentions
+  if (request.answers) body.answers = request.answers
   if (request.mode !== undefined) body.mode = request.mode
   const resp = await apiStream('/api/chat', body, llmHeaders(), signal)
   const sid = resp.headers.get('X-Session-Id')

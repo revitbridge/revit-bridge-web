@@ -158,6 +158,8 @@ export interface Skill {
 }
 
 export interface ChatMessage {
+  form?: DesignerForm
+  answered?: 'form' | 'text'
   role: 'user' | 'assistant' | 'host'   // host: a note from the page itself, e.g. the execution result going to the model
   content: string
   trace?: TraceEvent[]                  // assistant: the stage / tool / usage events of its turn, in order
@@ -275,7 +277,23 @@ export interface ExecutionResult {
 
 /* One turn of the host loop: exactly one of message / execution; mentions only with a
    message and the bridge (at most 20). */
+export interface DesignerOption {
+  value: string | number | boolean
+  label: string
+}
+
+export interface DesignerForm {
+  ask_id: string
+  questions: { id: string; text: string; options: DesignerOption[]; allow_other?: boolean; multiple?: boolean }[]
+}
+
+export interface DesignerAnswers {
+  ask_id: string
+  items: (DesignerOption & { id: string })[]
+}
+
 export interface HostRequest {
+  answers?: DesignerAnswers
   message?: string
   execution?: ExecutionResult
   session_id: string | null
@@ -286,6 +304,7 @@ export interface HostRequest {
 
 /* The SSE events of one turn, as chatEvents() yields them. */
 export type HostEvent =
+  | ({ type: 'questions' } & DesignerForm)
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;

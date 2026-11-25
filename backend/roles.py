@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from backend.api.model_tools import TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
+from backend.api.model_tools import CARD_GUIDANCE, TOOL_DEFINITIONS, WORKBENCH_LINK, WORKBENCH_PATH
 
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
@@ -92,7 +92,7 @@ def clip_list(values, limit: int = LIST_MAX, each: int = ITEM_MAX) -> list[str]:
     return items
 
 # The tools of each role and route, by name, in the order of TOOL_DEFINITIONS.
-QUERY_TOOLS = ("get_project_snapshot", "query")
+QUERY_TOOLS = ("get_project_snapshot", "query", "ask_designer")
 ALL_TOOLS = tuple(t["function"]["name"] for t in TOOL_DEFINITIONS)
 ROUTE_TOOLS = {QUERY: QUERY_TOOLS, TOOL: ALL_TOOLS}
 SUPERVISOR_TOOLS = ("query",)
@@ -111,7 +111,7 @@ SUPERVISOR_DEFINITIONS = definitions(SUPERVISOR_TOOLS)
 # ends with its never-list): where a tool that does not exist yet is made.
 ANALYST_WORKBENCH_LINE = (
     "With route none, end `note` with exactly this Markdown link to where a new tool is tried "
-    f"and saved: {WORKBENCH_LINK}"
+    f"and saved: {WORKBENCH_LINK}. {CARD_GUIDANCE}"
 )
 
 REPAIR_INSTRUCTION = (

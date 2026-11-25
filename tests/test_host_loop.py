@@ -8,7 +8,6 @@ import logging
 import httpx
 import pytest
 
-from revit_bridge import host_instructions
 
 from backend import llm as llm_module
 from backend.api import chat as chat_module
@@ -80,7 +79,7 @@ def test_host_loop_walks_the_bridge_flow(revit, client, model):
     # What the model was shown: the bridge prompt without code and this host's line (no skills), the seven tools.
     first = model.requests[0]
     assert first["messages"][0]["role"] == "system"
-    assert first["messages"][0]["content"] == (host_instructions(code=False, mentions=True).rstrip("\n") + "\n"
+    assert first["messages"][0]["content"] == (chat_module.inline_card_instructions(code=False, mentions=True).rstrip("\n") + "\n"
                                                + chat_module.WORKBENCH_LINE)
     assert "## Skills" not in first["messages"][0]["content"] and "# revit-core" not in first["messages"][0]["content"]
     assert "# revit-bridge" not in first["messages"][0]["content"]       # the MCP host's protocol stays off
