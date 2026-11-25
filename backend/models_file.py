@@ -511,6 +511,17 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
 _STARTUP = object()
 
 
+def runtime_profiles(settings: WebSettings, models: ModelsFile | None) -> dict[str, Profile]:
+    """Load saved overrides only when they can affect a model request."""
+    if models is None and settings.server_model_configured:
+        return {}
+    try:
+        return read_profiles()
+    except StoreUnavailable:
+        # Settings reports the read failure. Other model sources remain usable.
+        return {}
+
+
 def server_model(settings: WebSettings, entry: ModelEntry | None, profile: Profile | None) -> LLMSettings:
     if entry:
         # models.yml chooses the environment variable for this entry. Its key
@@ -520,8 +531,11 @@ def server_model(settings: WebSettings, entry: ModelEntry | None, profile: Profi
         return LLMSettings(url, profile.model if profile else entry.model, key or (profile.key if profile else ""))
     url = settings.llm_base_url or (profile.base_url if profile else "")
     model = settings.llm_model or (profile.model if profile else "")
+    env_key = settings.llm_api_key if url and url == settings.llm_base_url else ""
     file_key = profile.key if profile and profile.base_url == url else ""
-    return LLMSettings(url, model, settings.llm_api_key or file_key)
+    if not env_key and has_credential(model, settings.llm_api_key):
+        model = ""  # A misplaced environment key cannot travel as a public model name either.
+    return LLMSettings(url, model, env_key or file_key)
 
 
 async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: WebSettings | None = None,
@@ -542,10 +556,7 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     default_limit = settings.llm_max_tokens
     if not settings.allow_browser_keys and HEADER_KEY in request_overrides:
         raise LLMError(BROWSER_KEYS_DISABLED, 400)
-    try:
-        profiles = await asyncio.to_thread(read_profiles)
-    except StoreUnavailable:
-        raise LLMError("Model settings could not be read. Check the settings store.", 503) from None
+    profiles = await asyncio.to_thread(runtime_profiles, settings, models)
     profile = profiles.get(role) or profiles.get("shared")
     entry = models.entry(role) if models else None
     server = server_model(settings, entry, profile)
@@ -592,10 +603,7 @@ def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:
     """``/config.json``'s ``features`` about models: ``serverModel`` (the planner runs with
     no browser setting), ``models`` (each role's model NAME - no URL, no key, no variable
     name; null for a role with none) and ``modelsFile`` (they come from the models file)."""
-    try:
-        profiles = read_profiles()
-    except StoreUnavailable:
-        return {"serverModel": False, "modelsFile": models is not None, "models": dict.fromkeys(ROLES)}
+    profiles = runtime_profiles(settings, models)
     targets = {r: server_model(settings, models.entry(r) if models else None,
                                profiles.get(r) or profiles.get("shared")) for r in ROLES}
     return {"serverModel": targets[PLANNER].configured, "modelsFile": models is not None,

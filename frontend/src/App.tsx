@@ -11,7 +11,7 @@ import TokenPage from './components/pages/TokenPage'
 import ModelSettings from './components/pages/ModelSettings'
 import { currentPath, showPath, TABS, viewOf, type SettingsView, type View } from './route'
 
-const tabsZh = { Chat: '对话', Tools: '工具', Workflows: '工作流', Settings: '设置' }
+const tabsZh = { Chat: '对话', Tools: '工具', Evidence: '证据', Settings: '设置' }
 
 function ConnectionStatus({ zh }: { zh: boolean }) {
   const device = useSessionStore(s => s.deviceId)
@@ -39,7 +39,7 @@ export default function App({ path }: { path?: string }) {
   const settings = view.settings || 'models'
   const model = features.models.planner || (features.byoModel && !features.serverModel ? guestModel : '') || (zh ? '未设置' : 'Not set')
   useEffect(() => { showPath(view) }, [view])
-  useEffect(() => { cleanBrowserKey() }, [features.serverModel, features.byoModel])
+  useEffect(() => { cleanBrowserKey() }, [features.serverModel])
   const sections: Record<SettingsView, string> = { models: zh ? '模型' : 'Models', connection: zh ? '连接' : 'Connection', usage: zh ? '用量' : 'Usage' }
 
   return <div className="app-shell flex flex-col h-screen">
@@ -61,7 +61,7 @@ export default function App({ path }: { path?: string }) {
         <TaskPage />
       </>}
       {active === 'Tools' && <CapabilitiesPage view={view.capabilities} onView={capabilities => setView({ ...view, capabilities })} />}
-      {active === 'Workflows' && <EvidencePage />}
+      {active === 'Evidence' && <EvidencePage />}
       {active === 'Settings' && <>
         <div className="subtab-bar">{(Object.keys(sections) as SettingsView[]).map(s =>
           <button key={s} className={`subtab${s === settings ? ' is-active' : ''}`}

@@ -145,7 +145,7 @@ export function canUseBrowserModel(): boolean {
 }
 
 export function cleanBrowserKey(): boolean {
-  if (canUseBrowserModel()) return false
+  if (!getConfig().features.serverModel) return false
   let removed = Boolean(read(KEYS.llmKey) || useSessionStore.getState().llmKey)
   try {
     removed ||= Boolean(localStorage.getItem(KEYS.llmKey))

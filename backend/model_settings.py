@@ -92,7 +92,7 @@ class ProfileWrite(Profile):
 def masked(base_url: str, model: str, key: str) -> dict:
     return {"base_url": public_endpoint(base_url, key), "model": "" if has_credential(model, key) else model,
             "key_set": bool(key),
-            "key_tail": key[-4:] if len(key) > 4 else None}
+            "key_tail": key[-4:] if len(key) >= 16 else None}
 
 
 def _check_public_fields(profiles: dict[str, Profile]):

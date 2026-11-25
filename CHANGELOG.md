@@ -7,10 +7,15 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 ## [Unreleased]
 
 Settings → Models now saves shared or per-role credentials on the host with user-only file
-permissions. Rotation takes effect on the next request. Cloud administrators can manage masked
-settings, and local writes require loopback. Browser keys default to enabled in cloud mode and
-disabled locally. The UI clears obsolete tab keys and groups navigation under Chat, Tools,
-Workflows and Settings, with the connection status and current model in the header.
+permissions. Rotation takes effect on the next request. Cloud administrators manage these
+settings. Local Docker users can edit them through the loopback-published port.
+
+When upgrading a local host that used a tab key, keep the tab open and enter the endpoint,
+model name and key in Settings → Models. Existing tab keys are retained until the host confirms
+a configured model, then the UI clears the old key and displays a notice. Browser keys are
+disabled by default locally and enabled by default in cloud mode (`ALLOW_BROWSER_KEYS`).
+The navigation now groups Chat, Tools, Evidence and Settings, with the connection status and
+current model in the header.
 
 The tool authoring page can generate an editable v1 draft from a description and a reference
 pack. Compilation and a successful rolled-back trial unlock saving. Cloud hosts restrict

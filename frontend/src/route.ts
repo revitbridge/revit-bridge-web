@@ -1,7 +1,7 @@
 export const WORKBENCH_PATH = '/capabilities/workbench'
 export const AUTHORING_PATH = '/capabilities/authoring'
 export const TOKEN_PATH = '/token'
-export const TABS = ['Chat', 'Tools', 'Workflows', 'Settings'] as const
+export const TABS = ['Chat', 'Tools', 'Evidence', 'Settings'] as const
 export type Tab = typeof TABS[number]
 export type CapabilitiesView = 'packs' | 'workbench' | 'authoring' | 'skills'
 export type SettingsView = 'models' | 'connection' | 'usage'
@@ -16,7 +16,7 @@ export function viewOf(pathname: string): View {
   if (path === WORKBENCH_PATH) return { tab: 'Tools', capabilities: 'workbench' }
   if (path === AUTHORING_PATH) return { tab: 'Tools', capabilities: 'authoring' }
   if (path === '/tools') return { tab: 'Tools', capabilities: 'packs' }
-  if (path === '/workflows') return { tab: 'Workflows', capabilities: 'packs' }
+  if (path === '/evidence') return { tab: 'Evidence', capabilities: 'packs' }
   if (path === TOKEN_PATH || path === '/settings' || path === '/settings/connection') {
     return { tab: 'Settings', capabilities: 'packs', settings: path === TOKEN_PATH ? 'usage' : path === '/settings' ? 'models' : 'connection' }
   }
@@ -26,7 +26,7 @@ export function viewOf(pathname: string): View {
 export function pathOf(view: View): string {
   switch (view.tab) {
     case 'Tools': return view.capabilities === 'workbench' ? WORKBENCH_PATH : view.capabilities === 'authoring' ? AUTHORING_PATH : '/tools'
-    case 'Workflows': return '/workflows'
+    case 'Evidence': return '/evidence'
     case 'Settings': return view.settings === 'usage' ? TOKEN_PATH : view.settings === 'connection' ? '/settings/connection' : '/settings'
     case 'Chat': return '/'
   }

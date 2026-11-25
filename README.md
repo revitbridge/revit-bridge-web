@@ -253,7 +253,7 @@ its connection.
    references and lessons) and your own; list, read, add, upload or import from GitHub (a cloud host
    asks for the admin password). They are guidance for writing code and no longer enter the chat's
    prompt.
-4. **Workflows** - the ledger of every execution through this host or the MCP server: who confirmed
+4. **Evidence** - the ledger of every execution through this host or the MCP server: who confirmed
    it, the token prefix, what ran, what the validator found. Expand a record for all of its fields;
    *Validate* re-runs its assertion against the model as it is now. A run the tool refused in Revit
    is listed as *refused by the tool* with its reason; there is nothing to validate.
@@ -328,7 +328,7 @@ uv run pytest                            # backend tests, no Revit needed
 ### Server model settings
 
 Open **Settings → Models** to save an OpenAI-compatible endpoint, model name and key for all
-roles or for an individual role. Local writes require a loopback client. In cloud mode sign in
+roles or for an individual role. Open the local host at its loopback address. In cloud mode sign in
 with the host admin password to read details or make changes. Saving, rotating or clearing a
 group takes effect on the next request. Clearing a role restores its shared or deployment defaults.
 
@@ -338,14 +338,14 @@ private directory outside the checkout and web root for this override. The defau
 on macOS, and `$XDG_CONFIG_HOME/revit-bridge-web` (or `~/.config/revit-bridge-web`) on Linux.
 POSIX creates files with mode 0600. Windows sets a protected DACL granting full control solely
 to the current user's SID at file creation. Writers lock across processes and replace the file
-atomically. Compose persists it in the named volume `model-settings`. Local Docker port
-forwarding can present a non-loopback peer. In that case configure the model via environment
-variables or provision the volume before starting the host.
+atomically. Compose persists it in the named volume `model-settings`. The local Docker host
+accepts settings writes through its loopback-published port and checks the host, origin,
+fetch site and forwarding headers.
 
 `GET /api/v1/settings/models?status_only=true` returns the public planner status
 `{"configured": true|false}`. The detailed GET returns effective `models` by role and `saved`
 groups. Each contains `base_url`, `model`, `key_set` and `key_tail` (last four characters,
-null for a key of four or fewer). PUT accepts `role` (default `shared`), `base_url`, `model`
+null for a key shorter than 16 characters). PUT accepts `role` (default `shared`), `base_url`, `model`
 and optional write-only `api_key`. Omitting the key retains the saved credential at the same
 endpoint. DELETE with `?role=planner`, for example, clears that group. DELETE without a role
 clears the store, including a corrupt file. Responses carry masked summaries.
@@ -353,7 +353,8 @@ Use `X-Admin-Token` for these operations on a cloud host.
 
 Visitors can enter a key in Settings when browser keys are enabled and the host has no configured
 planner. The next page load removes a legacy browser model key and displays a one-time notice
-when the host provides the model or disables browser keys.
+once the host confirms a configured planner. On a local upgrade, enter the endpoint, model
+name and key in Settings → Models while the original tab is open.
 
 
 | Variable | Default | Purpose |

@@ -101,6 +101,7 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
     wsBase: String(data.wsBase || '').replace(/\/+$/, ''),
     features: {
       ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
+      serverModel: features.serverModel === true,
       authoring: features.authoring === true,
       models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
       roles: features.roles === true,
@@ -118,6 +119,10 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
       if (current.apiBase) {
         // The static shell supplies the addresses. Model configuration and the
         // browser-key policy can change on its API host between page loads.
+        if (current.features.serverModel) {
+          // A stale static flag must neither clear the tab key nor start sending it.
+          current = { ...current, features: { ...current.features, serverModel: false, byoModel: false } }
+        }
         const live = await fetch(current.apiBase + '/config.json', {
           cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000),
         })

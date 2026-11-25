@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { apiFetch, BridgeApiError } from '../../api/client'
 import { getConfig, ROLES, updateModels, type RoleName } from '../../config'
 import { canUseBrowserModel, cleanBrowserKey, useSessionStore } from '../../store'
@@ -19,6 +19,7 @@ const labels = {
     admin: 'Admin password', unlock: 'Enter the admin password to manage host models.',
     guest: 'Bring your own model', guestHint: 'Guest credentials are kept in this tab until it closes.',
     reset: 'Clear model settings', error: 'Could not load or save model settings. Check the endpoint and settings directory.',
+    storeError: 'Could not read saved model settings. Check secrets.json and its permissions.',
     connected: 'The host model is configured.', unconfigured: 'Ask an administrator to configure a model.' },
   zh: { shared: '所有角色', planner: '规划员', analyst: '分析员', supervisor: '监督员',
     heading: '模型', scope: '应用到', url: '接口地址', model: '模型名', key: '密钥',
@@ -29,25 +30,33 @@ const labels = {
     admin: '管理员密码', unlock: '输入管理员密码可管理服务器模型。',
     guest: '使用自己的模型', guestHint: '访客密钥仅保留在当前标签页，关闭后清除。',
     reset: '清除标签页模型设置', error: '无法读取或保存模型设置，请检查接口地址和设置目录。',
+    storeError: '无法读取已保存的模型设置。请检查 secrets.json 及其访问权限。',
     connected: '服务器模型已配置。', unconfigured: '请联系管理员配置模型。' },
 } as const
 
+function ModelKeyInput({ value, onChange }: { value: string; onChange: (key: string) => void }) {
+  return <input className="input-field" type="password" autoComplete="off" data-1p-ignore data-lpignore="true"
+    value={value} onChange={e => onChange(e.target.value)} />
+}
+
 function GuestModel() {
   const t = labels[browserLanguage()]
-  const { llmBaseUrl, llmModel, llmKey, setLlm } = useSessionStore()
+  const { llmBaseUrl, llmModel, setLlm } = useSessionStore()
+  const [key, setKey] = useState('')
   return <section className="card section">
     <h3>{t.guest}</h3><p>{t.guestHint}</p>
     <div className="form-grid">
       <label>{t.url}<input className="input-field" value={llmBaseUrl} onChange={e => setLlm({ llmBaseUrl: e.target.value })} /></label>
       <label>{t.model}<input className="input-field" value={llmModel} onChange={e => setLlm({ llmModel: e.target.value })} /></label>
-      <label>{t.key}<input className="input-field" type="password" autoComplete="off" value={llmKey} onChange={e => setLlm({ llmKey: e.target.value })} /></label>
+      <label>{t.key}<ModelKeyInput value={key} onChange={value => { setKey(value); setLlm({ llmKey: value }) }} /></label>
     </div>
-    <button className="btn-ghost" onClick={() => setLlm({ llmBaseUrl: '', llmModel: '', llmKey: '' })}>{t.reset}</button>
+    <button className="btn-ghost" onClick={() => { setKey(''); setLlm({ llmBaseUrl: '', llmModel: '', llmKey: '' }) }}>{t.reset}</button>
   </section>
 }
 
 function Editor({ details, role, onChange }: { details: Details; role: Scope; onChange: (d: Details) => void }) {
   const t = labels[browserLanguage()]
+  const formId = useId()
   const saved = details.saved[role]
   const [url, setUrl] = useState(saved?.base_url || '')
   const [model, setModel] = useState(saved?.model || '')
@@ -68,18 +77,21 @@ function Editor({ details, role, onChange }: { details: Details; role: Scope; on
       onChange(result)
     } catch { setMessage(t.error) } finally { setBusy(false) }
   }
-  return <form onSubmit={e => { e.preventDefault(); void submit(false) }}>
+  return <>
+    <form id={formId} onSubmit={e => { e.preventDefault(); void submit(false) }}>
+      <fieldset disabled={busy} className="form-grid">
+        <label>{t.url}<input className="input-field" type="url" required value={url} onChange={e => setUrl(e.target.value)} /></label>
+        <label>{t.model}<input className="input-field" required value={model} onChange={e => setModel(e.target.value)} /></label>
+      </fieldset>
+    </form>
     <fieldset disabled={busy} className="form-grid">
-      <label>{t.url}<input className="input-field" type="url" required value={url} onChange={e => setUrl(e.target.value)} /></label>
-      <label>{t.model}<input className="input-field" required value={model} onChange={e => setModel(e.target.value)} /></label>
-      <label>{t.key}<input className="input-field" type="password" autoComplete="new-password" value={key}
-        onChange={e => setKey(e.target.value)} /></label>
+      <label>{t.key}<ModelKeyInput value={key} onChange={setKey} /></label>
     </fieldset>
     {saved?.key_set && <p>{t.present} {saved.key_tail && '••••' + saved.key_tail}. {t.keep}</p>}
-    <button className="btn-primary" disabled={busy}>{t.save}</button>{' '}
+    <button className="btn-primary" type="submit" form={formId} disabled={busy}>{t.save}</button>{' '}
     <button className="btn-ghost" type="button" disabled={busy || !saved} onClick={() => void submit(true)}>{t.clear}</button>
     <span role="status">{message}</span>
-  </form>
+  </>
 }
 
 function ServerModels({ token }: { token: string }) {
@@ -91,7 +103,11 @@ function ServerModels({ token }: { token: string }) {
     const controller = new AbortController()
     apiFetch<Details>(endpoint, { signal: controller.signal, redirect: 'error', cache: 'no-store' })
       .then(result => { if (!controller.signal.aborted) setDetails(result) })
-      .catch(e => { if (!controller.signal.aborted) setError(e instanceof BridgeApiError && e.status === 403 ? t.unlock : t.error) })
+      .catch(e => {
+        if (controller.signal.aborted) return
+        const status = e instanceof BridgeApiError ? e.status : null
+        setError(status === 503 ? t.storeError : status === 403 ? t.unlock : t.error)
+      })
     return () => controller.abort()
   }, [token, t])
   if (!details) return <p role="status">{error || t.loading}</p>

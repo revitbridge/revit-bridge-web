@@ -7,6 +7,7 @@ import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -14,7 +15,9 @@ import pytest
 from backend.log_store import get_log_store
 from backend.models_file import resolve
 from tests.conftest import FIXTURE_ADMIN_PASSWORD
+from tests.fake_model import text_turn
 from tests.test_deploy_mode import LOCAL
+from tests.test_models_file import recorder
 
 URL = "/api/v1/settings/models"
 ADMIN = {"X-Admin-Token": FIXTURE_ADMIN_PASSWORD}
@@ -47,6 +50,84 @@ def test_local_settings_guard(local_env, make_client):
     local = make_client(**LOCAL)
     assert local.put(URL, json=GROUP).status_code == 200
     assert local.delete(URL).json()["configured"] is False
+
+
+def test_local_container_settings_from_gateway(local_env, make_client):
+    local_env.setenv("REVIT_BRIDGE_WEB_CONTAINER", "1")
+    local_env.setenv("HOST", "0.0.0.0")
+    local_env.setenv("BIND_ADDRESS", "127.0.0.1")
+    client = make_client(**{**LOCAL, "client": ("172.17.0.1", 50000)})
+    assert client.get(URL).status_code == 200
+    assert client.put(URL, json=GROUP, headers={"Origin": LOCAL["base_url"]}).status_code == 200
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Origin": "https://foreign.example"},
+                    {"X-Forwarded-For": "127.0.0.1"}, {"Host": "foreign.example"}):
+        assert client.put(URL, json={**GROUP, "model": "other"}, headers=headers).status_code == 403
+    assert client.get(URL).json()["saved"]["shared"]["model"] == GROUP["model"]
+
+
+@pytest.mark.parametrize("body", [{**GROUP, "api_key": "fake invalid key"},
+                                  {**GROUP, "base_url": "http://remote.example/v1"}])
+def test_invalid_local_settings_are_masked_422(local_env, make_client, body):
+    response = make_client(**LOCAL).put(URL, json=body)
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Invalid model settings"}
+    assert body["api_key"] not in response.text
+
+
+@pytest.mark.parametrize("scope", ["shared", "planner"])
+@pytest.mark.parametrize("yaml", [False, True])
+def test_env_key_never_follows_saved_endpoint(env, make_client, recorder, tmp_path, scope, yaml):
+    from tests.test_models_file import ONE_MODEL, write_models
+    env.setenv("LLM_API_KEY", ENV_KEY)
+    if yaml:
+        write_models(tmp_path, ONE_MODEL.replace("W5A_FAKE_MAIN_KEY", "LLM_API_KEY"))
+    client = make_client()
+    saved = save(client, role=scope, api_key=None)
+    assert not saved.json()["models"]["planner"]["key_set"]
+    chat = {"message": "hi", "bridge": False}
+    assert client.post("/api/chat", json=chat).status_code == 400
+    assert recorder.sent == []
+    save(client, role=scope)
+    recorder.model.turns.append(text_turn("ready"))
+    reply = client.post("/api/chat", json=chat)
+    assert reply.status_code == 200 and "event: error" not in reply.text
+    assert [(r["url"], r["authorization"]) for r in recorder.sent] == [
+        (GROUP["base_url"] + "/chat/completions", "Bearer " + FILE_KEY)]
+
+
+def test_unbound_env_key_cannot_be_sent_as_the_model_name(env, make_client, recorder):
+    env.setenv("LLM_API_KEY", ENV_KEY)
+    env.setenv("LLM_MODEL", ENV_KEY)
+    client = make_client()
+    saved = save(client)
+    assert ENV_KEY not in saved.text + client.get("/config.json").text
+    assert client.post("/api/chat", json={"message": "hi", "bridge": False}).status_code == 400
+    assert recorder.sent == []
+
+
+@pytest.mark.parametrize("length", [5, 15, 16])
+def test_key_tail_requires_sixteen_characters(client, length):
+    key = "fake-key-for-test"[:length]
+    details = save(client, api_key=key).json()
+    for masked in (details["saved"]["shared"], details["models"]["planner"]):
+        assert masked["key_set"]
+        assert masked["key_tail"] == (key[-4:] if length >= 16 else None)
+
+
+@pytest.mark.parametrize("echo", ["json", "json-fragment", "url-fragment", "raw-fragment"])
+def test_provider_key_echo_drops_entire_sse_error_body(client, monkeypatch, echo):
+    key = "fake/probe/only/key-1234"
+    save(client, api_key=key)
+    fragment = key[5:17]
+    value = {"json": key.replace("/", r"\/"), "json-fragment": fragment.replace("/", r"\u002f"),
+             "url-fragment": quote(fragment, safe=""), "raw-fragment": fragment}[echo]
+    body = '{"error":"diagnostic-marker ' + value + '"}'
+    original = httpx.AsyncClient
+    transport = httpx.MockTransport(lambda _: httpx.Response(400, text=body))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: original(transport=transport, **kw))
+    response = client.post("/api/chat", json={"message": "hi", "bridge": False})
+    assert response.status_code == 200 and "event: error" in response.text and "HTTP 400" in response.text
+    assert "diagnostic-marker" not in response.text
 
 
 @pytest.mark.parametrize("mode,switch,allowed", [("cloud", None, True), ("local", None, False),
@@ -142,21 +223,48 @@ def test_concurrent_updates_and_permissions(client, tmp_path):
 
 
 @pytest.mark.parametrize("unreadable", [False, True])
-def test_bad_store_safe_at_startup(make_client, tmp_path, caplog, unreadable):
+@pytest.mark.parametrize("env_model", [False, True])
+def test_bad_store_safe_at_startup(env, make_client, recorder, tmp_path, caplog, unreadable, env_model):
     path = tmp_path / "web-home" / "secrets.json"
     path.parent.mkdir()
     if unreadable:
         path.mkdir()  # opening this path as a file fails even for root
     else:
         path.write_bytes(b"{" + FILE_KEY.encode())
+    if env_model:
+        env.setenv("LLM_BASE_URL", "https://env.example/v1")
+        env.setenv("LLM_MODEL", "env-model")
+        env.setenv("LLM_API_KEY", ENV_KEY)
     client = make_client()
     assert client.get("/health").status_code == 200
     config = client.get("/config.json")
-    assert config.status_code == 200 and not config.json()["features"]["serverModel"]
+    assert config.status_code == 200 and config.json()["features"]["serverModel"] is env_model
     detail = client.get(URL, headers=ADMIN)
     assert detail.status_code == 503
-    assert client.get(URL + "?status_only=true").json() == {"configured": False}
-    assert FILE_KEY not in detail.text + config.text + caplog.text
+    assert client.get(URL + "?status_only=true").json() == {"configured": env_model}
+    recorder.model.turns.append(text_turn("ready"))
+    chat = client.post("/api/chat", json={"message": "hi", "bridge": False}, headers={} if env_model else GUEST)
+    assert chat.status_code == 200 and "event: error" not in chat.text
+    assert [r["authorization"] for r in recorder.sent] == ["Bearer " + (ENV_KEY if env_model else GUEST_KEY)]
+    assert FILE_KEY not in detail.text + config.text + chat.text + caplog.text
+
+
+def test_complete_environment_skips_store_for_runtime_and_public_status(env, make_client, monkeypatch):
+    from backend import models_file
+    from backend.api import settings
+    env.setenv("LLM_BASE_URL", "https://env.example/v1")
+    env.setenv("LLM_MODEL", "env-model")
+    env.setenv("LLM_API_KEY", ENV_KEY)
+    client = make_client()
+
+    def unexpected_read():
+        pytest.fail("A complete environment must resolve without opening the settings store")
+
+    monkeypatch.setattr(models_file, "read_profiles", unexpected_read)
+    monkeypatch.setattr(settings, "read_profiles", unexpected_read)
+    assert client.get("/config.json").json()["features"]["serverModel"]
+    assert client.get(URL + "?status_only=true").json() == {"configured": True}
+    assert asyncio.run(resolve("planner", {})).api_key == ENV_KEY
 
 
 def test_location_and_checkout_exclusion(env, tmp_path, make_client):

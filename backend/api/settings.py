@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from backend.api.logs import verify_admin
 from backend.config import get_settings, is_loopback
 from backend.model_settings import ProfileWrite, Scope, StoreUnavailable, masked, read_profiles, update_profiles
-from backend.models_file import PLANNER, ROLES, get_models, server_model
+from backend.models_file import PLANNER, ROLES, get_models, runtime_profiles, server_model
 
 router = APIRouter(prefix="/api/v1/settings/models", tags=["settings"])
 
@@ -44,7 +44,8 @@ async def authorize_read(status_only: bool = False, x_admin_token: str | None = 
 
 
 async def authorize_write(request: Request, _=Depends(verify_admin)):
-    if not get_settings().cloud and not (request.client and is_loopback(request.client.host)):
+    settings = get_settings()
+    if not settings.cloud and not settings.in_container and not (request.client and is_loopback(request.client.host)):
         raise HTTPException(403, "Model settings can only be changed from loopback in local mode")
 
 
@@ -55,11 +56,11 @@ def unavailable():
 @router.get("", dependencies=[Depends(authorize_read)])
 def get_models_settings(response: Response, status_only: bool = False) -> ModelDetails | ModelStatus:
     response.headers["Cache-Control"] = "no-store"
+    if status_only:
+        return describe(runtime_profiles(get_settings(), get_models()), status_only=True)
     try:
-        return describe(read_profiles(), status_only)
+        return describe(read_profiles())
     except StoreUnavailable:
-        if status_only:
-            return ModelStatus(configured=False)
         raise unavailable() from None
 
 

@@ -61,6 +61,7 @@ import re
 import socket
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 import httpx
 
@@ -775,11 +776,29 @@ def _safe_delta(pending: str, token: str, key: str, previous: str, *, final=Fals
     return text, ""
 
 
+_JSON_ESCAPE = re.compile(r'\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})')
+
+
+def _error_echoes_key(body: str, key: str) -> bool:
+    if not key:
+        return False
+    # A provider can quote only the middle of a credential. Decode JSON string
+    # escapes even in a plain-text diagnostic or a malformed JSON envelope.
+    width = min(12, len(key))
+    pieces = {key[i:i + width] for i in range(len(key) - width + 1)}
+    for text in {body, unquote(body)}:
+        decoded = _JSON_ESCAPE.sub(lambda m: json.loads('"' + m[0] + '"'), text)
+        for candidate in {text, decoded, unquote(decoded)}:
+            if any(piece in candidate for piece in pieces):
+                return True
+    return False
+
+
 def _provider_error(status: int, body: str, key: str) -> LLMError:
     # Authentication diagnostics commonly quote Authorization. Keep other
     # provider diagnostics (unsupported parameters, output limits) useful.
     message = f"Model endpoint returned HTTP {status}"
-    if status not in (401, 403) and key not in body:
+    if status not in (401, 403) and not _error_echoes_key(body, key):
         message += f": {body[:300]}"
     return LLMError(message, status=502)
 

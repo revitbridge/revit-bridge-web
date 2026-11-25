@@ -32,6 +32,18 @@ describe('parseRuntimeConfig', () => {
     expect(cfg.features).toEqual({ mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 3, ...NO_MODELS })
   })
 
+  it('requires a live API report before treating a split host as configured', async () => {
+    vi.stubGlobal('fetch', async (url: string) => url === '/config.json'
+      ? Response.json({ apiBase: 'https://split.example', features: { serverModel: true, byoModel: false } })
+      : new Response(null, { status: 503 }))
+    try {
+      const cfg = await loadRuntimeConfig()
+      expect(cfg.features.serverModel).toBe(false)
+      expect(cfg.features.byoModel).toBe(false)
+      expect(parseRuntimeConfig('{"features":{"serverModel":"false"}}').features.serverModel).toBe(false)
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it('reads the deploy mode; a config that does not say local is a cloud host, as before modes', () => {
     const local = parseRuntimeConfig(JSON.stringify({ features: { mode: 'local', admin: false, maxDevices: 0 } }))
     expect(local.features).toEqual({ mode: 'local', byoModel: true, serverModel: false, admin: false, maxDevices: 0, ...NO_MODELS })
