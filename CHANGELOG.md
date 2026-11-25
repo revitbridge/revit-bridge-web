@@ -27,8 +27,16 @@ Set `ADMIN_PASSWORD` to keep changing capability packs from the web UI (see *Sec
 `.env` was copied from an older `.env.example`, delete its `FORWARDED_ALLOW_IPS=127.0.0.1` line
 when the port is published on loopback behind a proxy on the Docker host (see *Fixed*).
 
-**The chat now runs in three roles** - analyst, planner, supervisor - each with its own
-instructions, tools and model (see *Added*). The events keep their shapes; `role` now also takes
+**The chat's default is now planner + supervisor: the analyst is off** (`ROLES_ANALYST` defaults
+to `off`; it was `on`). Set `ROLES_ANALYST=on` to keep the analyst, or pick the mode per request
+(see *Added*, chat modes). A `.env` copied from an older `.env.example` still says
+`ROLES_ANALYST=on` and keeps the analyst. The first `stage` event of a turn has one new field,
+`mode`; `/config.json` has `features.chatModes` and `features.chatModeDefault`; `/api/chat` takes an
+optional `mode`; `/api/usage` rows and `/api/usage/runs` lines have `mode`.
+
+**The chat now runs in roles** - planner and supervisor by default, the analyst too in mode
+`roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`) - each with its own instructions,
+tools and model (see *Added*). The events keep their shapes; `role` now also takes
 `analyst` and `supervisor`, a turn has one `stage` pair per role, and a reported run may come back
 with a new `spec` (the supervisor sent the task back). `LLM_SINGLE_MODEL=1` keeps the chat as it was
 (one loop, the planner's model), request for request and event for event.
@@ -79,7 +87,72 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Added
 
-- **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*), the default. A
+- **Token bench: `--mode` and `--confirm`.** `--mode auto|single|roles|roles_analyst` (default
+  `auto`) goes as `mode` with every chat request of the run; the results record it (`chat_mode`)
+  with the host's default and the modes its turns ran in (`chat.host`, `chat.modes_seen`, each
+  task's `modes`), and the table header shows it. `chat.host` is the host's
+  `features.chatModeDefault`; a host from before the modes is `single` when it says `roles: false`
+  and `null` (shown as unknown) when it says `roles: true`, which there meant the analyst too unless
+  switched off - it was recorded as `roles` before. `compare` adds a NOTE when the two runs' hosts
+  ran different modes (`chat.modes_seen`). `--confirm never|once` (default `never`, as
+  before): with `once`, a tool or ask task whose turn ends with no accepted spec while the host's
+  tool events show a proposal ready for confirmation (its last `reconcile` came back `ready`, no
+  `propose_spec` was called) gets one more user message, "yes", and is scored on what follows; the
+  extra turn's tokens are counted and each task records `confirm_turns` (the results:
+  `confirm_policy`; `compare` notes two runs that differ in it, exit 3). This is the unattended
+  ("automatic") mode: `python -m bench run --label <name> --confirm once`. It runs nothing more in
+  Revit: without `--execute` the report step still gets the fixed result.
+- **Chat modes** (README, *Chat modes*): `single` (one model loop), `roles` (planner +
+  supervisor), `roles_analyst` (analyst + planner + supervisor) and `auto`, the host's default -
+  `single` with `LLM_SINGLE_MODEL=1`, else `roles_analyst` with `ROLES_ANALYST=on`, else `roles`.
+  `POST /api/chat` takes an optional `mode` (one of the four, anything else 422; absent or `null`
+  is `auto`); a local host honours it, a cloud host only for a request with the right
+  `X-Admin-Token` (anyone else's is ignored: the default runs); without the bridge a request runs
+  as `single`. `/config.json` gains `features.chatModes` (what the caller may pick: all four on a
+  local host and for an admin on a cloud host, `["auto"]` otherwise) and `features.chatModeDefault`
+  (what `auto` runs, never `auto`). The turn's first `stage` event gains `mode`, the mode it ran in;
+  every `llm_calls` row records it (an older table gains the column, its rows `null`), `GET
+  /api/usage` rows show it and `GET /api/usage/runs` reports it per run (`mixed` for more than one).
+  The task page has a *Mode* menu next to the chat input (Auto, Single model, Planner + supervisor,
+  Analyst + planner + supervisor; Auto names what it runs on the host), remembered in the browser
+  (`localStorage`) and sent with every chat request; it is not shown when the host offers fewer
+  than two modes. The Token page has a *Mode* column. In `docs/api-v1.json`: the chat request's
+  `mode`, `CallRow.mode` and `RunTotal.mode`.
+- **Provider options in the models file** (README, *Models by role*): an entry may set `api`
+  (`chat`, the default, or `responses` - `<base_url>/responses`, OpenAI's Responses API, for models
+  that take tools only there), `max_tokens_param` (`max_tokens` or `max_completion_tokens`, chat api
+  only), `reasoning_effort` (`low`, `medium`, `high`, `xhigh`) and `timeout_s` (10 to 900); each is
+  sent only when set, and unknown fields are still refused. A responses call is made whole, not
+  streamed, and its text and tool calls go to the page through the same events as a chat call;
+  it is stateless (`store: false`) and, with `reasoning_effort` set, asks for the encrypted
+  reasoning and sends it back with the function calls in the following calls. Its usage maps
+  `input_tokens` to input, `input_tokens_details.cached_tokens` to cache read (`cache_write_tokens`
+  to cache write when reported) and `output_tokens`, reasoning included, to output. The browser's
+  `X-LLM-*` settings still call the chat api with the defaults. On the chat api the provider's own
+  keys on a tool call - Gemini's `extra_content` with the thought signature Gemini 3 and later
+  require - now go back unchanged on that call in the following requests to the same endpoint and
+  model (kept in memory with the chat session; never on disk or in a log; at most 64 calls, none
+  whose data is over 64 KB, and forgotten with the history; two calls that share an id, name and
+  arguments - a provider that numbers its calls from `call_0` in every reply - get nothing back
+  rather than each other's). A reply that ends at
+  its output limit before it wrote anything or called a tool (a thinking model that spent the limit
+  thinking) now ends the turn - for the analyst, the planner and the supervisor alike, with no
+  repair request and no fallback - with an `error` event the chat shows as its reply: *Output limit
+  used up*, the role and its model, the limit as sent (`max_tokens 16384`), what is still there (the
+  last card the turn proposed - kept and confirmable when it was ready, otherwise not confirmable as
+  it stands; after a reported run, the run and its result as the page received them; when the
+  supervisor ran out, its report is missing and the planner has not been told of the run, so the
+  designer says what it did in the next message - nothing else carries it over; otherwise nothing
+  was proposed) and how to raise it (a larger `max_tokens` in the model's entry; `LLM_MAX_TOKENS`
+  for an entry without one and without a models file; for a model the browser's settings chose,
+  only the host can - `LLM_MAX_TOKENS`, or an entry used without those settings). Before, such a
+  reply was an empty message. Without a models file, and for an entry without these fields, every request and
+  every stream is byte for byte what it was, except the output limit (see *Changed*): a test
+  compares them with a record taken before the change, with the limit forced back to 4096 and
+  with the new one.
+- **The chat in three roles** (`backend/roles.py`; README, *The chat's roles*). This entry
+  describes mode `roles_analyst` (`ROLES_ANALYST=on`); the default mode is planner + supervisor -
+  no analyst, every message goes to the planner with route `tool` (see *Chat modes* above). A
   message goes to the **analyst** (the package's `host_instructions(role="analyst", code=False)`
   and one host line linking the workbench; no tools): it sees the message with its selections
   block, the package's `snapshot_digest` of the open model (one snapshot per session, read again
@@ -431,6 +504,25 @@ the host shares your tools with the package's MCP server (see *Changed*).
 
 ### Changed
 
+- **`ROLES_ANALYST` defaults to `off`**: the chat's default mode is planner + supervisor (it was
+  analyst + planner + supervisor): without the analyst the chat makes one model call less per
+  message. Turn it on with a strong model only (`ROLES_ANALYST=on`, or mode `roles_analyst`).
+  `.env.example` says `off`.
+- **The default output limit is 16384 tokens** (it was 4096): `max_tokens` in every request whose
+  models file entry sets none, and in every request without a models file (`max_output_tokens` on
+  the responses api). A thinking model's thinking counts toward it, and the old default was used up
+  by thinking. This is the one change to the default request body; an entry's `max_tokens` still
+  sets its own. The new optional **`LLM_MAX_TOKENS`** (256 to 65536; any other value refuses the
+  start) replaces the default for every call whose entry sets none - browser-chosen models and
+  calls without a models file included; a model whose output cap is below 16384 needs it (or an
+  entry `max_tokens`). Unset, the requests are as described here.
+- The token bench's HTTP read timeout (`--timeout`) defaults to 1260 seconds (it was 120) - longer
+  than the host's longest model call, 1200 s - so a long non-streamed model call the host is
+  waiting for is not counted as a failure; connecting to a host that does not answer fails after
+  15 s.
+- A model call's read timeout is 300 seconds (it was 120): a thinking model may be silent for
+  minutes before its first token. A models file entry's `timeout_s` sets its own; one above 300 also
+  lengthens the whole call's limit (600 s) by as much.
 - The token bench (`python -m bench`): a task's mention may pick an item by name, `{kind, pick:
   {name | first: true, category?}}`, looked up through `GET /api/v1/bridge/mentions` before the
   task's first message (nothing found, or two items of that name, fails the task before any chat);

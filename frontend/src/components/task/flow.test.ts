@@ -528,3 +528,55 @@ describe("the designer's picks", () => {
     expect(api.calls.map(([name, args]) => [name, args[1]])).toEqual([['reconcile', 's1']])
   })
 })
+
+/* A used-up output limit (backend: Turn.limit_notice) ends the turn with an error event whose
+   detail is the notice: it must reach the designer whole, in the chat, in every chat mode, and
+   leave what the turn already produced (a card, a reported run) as it was. */
+describe('the notice of a used-up output limit', () => {
+  const planner = 'Output limit used up: the planner (main-model) spent its whole output limit (max_tokens 16384) before ' +
+    'it wrote a reply or called a tool - most likely on thinking, which counts toward the limit. The spec card proposed ' +
+    'in this turn is kept: it can still be confirmed and run; only the text after it is missing. To raise it, set a ' +
+    "larger max_tokens in this model's entry in the host's models file."
+  const supervisor = 'Output limit used up: the supervisor (small-model) spent its whole output limit (max_tokens ' +
+    '16384) before it wrote a reply or called a tool - most likely on thinking, which counts toward the limit. The run ' +
+    "you reported and its result (evidence ev_9) stay as the page received them. The supervisor's report on it is " +
+    'missing, and the planner has not been told of this run: say what it did in your next message. To raise it, set ' +
+    "max_tokens in this model's entry in the host's models file (it sets none, so the host's default, 16384, " +
+    'applies), or LLM_MAX_TOKENS on the host for every entry without one.'
+  const readySpec: HostEvent = { ...specEvent, reconcile: ready } as HostEvent
+  const stageOf = (role: 'planner' | 'supervisor', status: 'start' | 'end'): HostEvent =>
+    ({ type: 'stage', role, model: role === 'planner' ? 'main-model' : 'small-model', status })
+
+  for (const mode of ['single', 'roles', 'roles_analyst'] as const) {
+    it(`is shown in the chat whole, and the card before it stays (mode ${mode})`, async () => {
+      const host = scriptedHost([{ type: 'session', id: 's1' }, stageOf('planner', 'start'), readySpec,
+        stageOf('planner', 'end'), { type: 'error', detail: planner }])
+      const flow = createTaskFlow({ events: host.events, api: fakeApi(), mode: () => mode })
+      await flow.send('a column at (3000, 3000)')
+      const s = flow.store.getState()
+      expect(host.requests[0].mode).toBe(mode)
+      expect(s.bridge.messages[1].content).toBe(`**Model error:** ${planner}`)
+      expect(s.bridge.streaming).toBe(false)
+      expect(s.proposal?.spec).toEqual(spec)                     // the card is still there to confirm
+      expect(canConfirm(s)).toBe(true)
+    })
+  }
+
+  it("after a reported run the supervisor's notice is shown and the run stays as the page received it", async () => {
+    const host = scriptedHost(
+      [{ type: 'session', id: 's1' }, readySpec, { type: 'done' }],
+      [{ type: 'execution', execution: { ...success, evidence_id: 'ev_9' } }, stageOf('supervisor', 'start'),
+        stageOf('supervisor', 'end'), { type: 'error', detail: supervisor }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool: async () => ({ ...success, evidence_id: 'ev_9' }) }),
+      mode: () => 'roles' })
+    await flow.send('a column')
+    await flow.confirm()
+    await flow.run()
+    const s = flow.store.getState()
+    expect(host.requests[1].execution?.evidence_id).toBe('ev_9')
+    expect(s.bridge.messages.at(-1)?.content).toBe(`**Model error:** ${supervisor}`)
+    expect(s.execution?.evidence_id).toBe('ev_9')                // the run's result stays on the page
+    expect(s.reported).toBe(true)
+    expect(s.bridge.streaming).toBe(false)
+  })
+})

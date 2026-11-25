@@ -7,10 +7,12 @@ this module. Execution evidence (what changed in Revit) is the package's
 
 ``llm_calls`` (same database) has one row per model call of the chat: session,
 turn, round, role, model name, the four token counts (``NULL`` where the
-provider reported none), duration and the optional run label of the request
-(``X-Run-Label``). No message text, no endpoint address, no key. The table is
-created on an existing database at startup like the first one; rows age out
-with the interaction logs (``RETENTION_DAYS``).
+provider reported none), duration, the optional run label of the request
+(``X-Run-Label``) and the chat mode the request ran in (``single``, ``roles``,
+``roles_analyst``; ``NULL`` in rows written before it was recorded). No message
+text, no endpoint address, no key. The table is created on an existing database
+at startup like the first one (an older table gains the ``mode`` column); rows
+age out with the interaction logs (``RETENTION_DAYS``).
 """
 from __future__ import annotations
 
@@ -46,7 +48,9 @@ def _token_count(value) -> int | None:
         value = int(value)
     return value if 0 <= value <= MAX_COUNT else None
 _CALL_COLUMNS = ("session_id, turn, round, role, model, input, output, cache_read, cache_write, "
-                 "ms, created_at, run_label")
+                 "ms, created_at, run_label, mode")
+# A run whose calls ran in more than one chat mode.
+MIXED_MODES = "mixed"
 # Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
 # first write after the interval: a container that runs for months stays bounded.
 PURGE_INTERVAL_SECONDS = 24 * 60 * 60
@@ -102,9 +106,14 @@ class InteractionLogStore:
                     cache_read  INTEGER,
                     cache_write INTEGER,
                     ms          INTEGER NOT NULL,
-                    run_label   TEXT
+                    run_label   TEXT,
+                    mode        TEXT
                 )
             """)
+            # A table created before the chat modes: the column is added, its old rows NULL.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)")}
+            if "mode" not in columns:
+                conn.execute("ALTER TABLE llm_calls ADD COLUMN mode TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_label ON llm_calls(run_label)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_ts ON llm_calls(created_at)")
@@ -225,10 +234,11 @@ class InteractionLogStore:
     # -- model calls -------------------------------------------------------------
 
     def record_call(self, *, session_id: str, turn: int, round: int, role: str, model: str | None,
-                    usage: dict, ms: int, run_label: str | None = None) -> None:
+                    usage: dict, ms: int, run_label: str | None = None, mode: str | None = None) -> None:
         """One model call; ``usage`` is ``{input, output, cache_read, cache_write}`` with
         ``None`` kept as ``NULL``; a value that is not a count from 0 to ``MAX_COUNT`` is
-        stored as ``NULL`` too, so the row is kept. A failed write is logged, never raised."""
+        stored as ``NULL`` too, so the row is kept. ``mode``: the chat mode of the request.
+        A failed write is logged, never raised."""
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         counts = [_token_count(usage.get(c)) for c in _TOKEN_COLUMNS]
         ms = _token_count(ms) or 0
@@ -238,10 +248,10 @@ class InteractionLogStore:
                     conn.execute(
                         """INSERT INTO llm_calls
                            (created_at, session_id, turn, round, role, model,
-                            input, output, cache_read, cache_write, ms, run_label)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            input, output, cache_read, cache_write, ms, run_label, mode)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (ts, session_id, turn, round, role, (model or "")[:MAX_MODEL_NAME] or None,
-                         *counts, ms, run_label),
+                         *counts, ms, run_label, mode),
                     )
             except Exception as exc:  # noqa: BLE001
                 _log.error("failed to write a model call: %s", exc)
@@ -258,15 +268,20 @@ class InteractionLogStore:
     def runs(self) -> list[dict]:
         """One line per run label: the number of calls, each token column's sum (``None``
         when any call of the run lacks that number, or when the sum passes ``MAX_COUNT``),
-        the total time, first and last call, and ``by_role``: the same sums per role and
-        model of the run, in the order of their first call. Summed with ``TOTAL`` (a float),
+        the total time, first and last call, the chat mode (the one its calls ran in;
+        ``MIXED_MODES`` for more than one, a row without a mode counting as one; ``None``
+        when none of its rows has one), and ``by_role``: the same sums per role and model
+        of the run, in the order of their first call. Summed with ``TOTAL`` (a float),
         which never raises SQLite's integer overflow the way ``SUM`` does."""
         sums = ", ".join(
             f"CASE WHEN COUNT({c}) = COUNT(*) THEN TOTAL({c}) END AS {c}" for c in _TOKEN_COLUMNS)
+        mode = (f"""CASE WHEN COUNT(mode) = 0 THEN NULL
+                         WHEN COUNT(mode) = COUNT(*) AND COUNT(DISTINCT mode) = 1 THEN MIN(mode)
+                         ELSE '{MIXED_MODES}' END AS mode""")
         with contextlib.closing(self._conn()) as conn:
             rows = conn.execute(
                 f"""SELECT run_label, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms,
-                           MIN(created_at) AS first_at, MAX(created_at) AS last_at
+                           MIN(created_at) AS first_at, MAX(created_at) AS last_at, {mode}
                     FROM llm_calls WHERE run_label IS NOT NULL
                     GROUP BY run_label ORDER BY MIN(id)"""
             ).fetchall()

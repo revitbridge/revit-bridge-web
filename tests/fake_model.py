@@ -169,11 +169,14 @@ class FakeModel:
             # {"raw": "..."} sends the argument text as is (a model that emits bad JSON)
             arguments = call["raw"] if "raw" in call else json.dumps(call["arguments"], ensure_ascii=False)
             fragments = _split(arguments, self.pieces)
-            chunks.append({"tool_calls": [{"index": index, "id": f"call_{index}", "type": "function",
-                                           "function": {"name": call["name"], "arguments": fragments[0]}}]})
+            # "extra": keys of the provider's own on the call's first fragment (Gemini's extra_content)
+            chunks.append({"tool_calls": [{"index": index, "id": call.get("id", f"call_{index}"), "type": "function",
+                                           "function": {"name": call["name"], "arguments": fragments[0]},
+                                           **call.get("extra", {})}]})
             for fragment in fragments[1:]:
                 chunks.append({"tool_calls": [{"index": index, "function": {"arguments": fragment}}]})
-        finish = "tool_calls" if turn.get("tool_calls") else "stop"
+        # "finish" overrides the finish_reason (e.g. "length": the output limit was used up).
+        finish = turn.get("finish") or ("tool_calls" if turn.get("tool_calls") else "stop")
         events = [{"choices": [{"delta": delta, "finish_reason": None}]} for delta in chunks]
         events.append({"choices": [{"delta": {}, "finish_reason": finish}]})
         usage = turn.get("usage")

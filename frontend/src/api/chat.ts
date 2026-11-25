@@ -163,6 +163,7 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.execution !== undefined) body.execution = request.execution
   if (request.bridge !== undefined) body.bridge = request.bridge
   if (request.mentions?.length) body.mentions = request.mentions
+  if (request.mode !== undefined) body.mode = request.mode
   const resp = await apiStream('/api/chat', body, llmHeaders(), signal)
   const sid = resp.headers.get('X-Session-Id')
   if (sid) yield { type: 'session', id: sid }

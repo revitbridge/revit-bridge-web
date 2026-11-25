@@ -191,7 +191,9 @@ def test_fragmented_stream_feedback_mentions_and_role_totals():
     assert result["models"] == {"planner": ["fixture-model"], "supervisor": ["small"]}
     assert host.requests[0][0]["mentions"] == [{"kind": "level", "id": 10}]
     assert host.requests[0][0]["bridge"] is True
-    assert host.requests[1][0] == {"execution": fixture, "session_id": "session-1"}
+    # every chat request carries the chat mode (auto, the host's default, unless --mode says otherwise)
+    assert host.requests[1][0] == {"execution": fixture, "session_id": "session-1", "mode": "auto"}
+    assert host.requests[0][0]["mode"] == "auto"
     assert host.requests[0][1]["X-Run-Label"] == "test-label"
     assert "x-llm-key" not in host.requests[0][1] and "x-llm-base-url" not in host.requests[0][1]
 
@@ -875,3 +877,158 @@ def test_execute_confirms_with_the_chat_session():
     confirm = host.other[0]
     assert json.loads(confirm.content) == {"spec": spec()["spec"], "confirmed_by": "token-bench",
                                            "session_id": "session-1"}
+
+
+# -- the chat mode and confirming a ready proposal ------------------------------------------------
+
+def tool_event(name, status, event_id, preview=None, size=None):
+    event = {"id": event_id, "role": "planner", "name": name, "args": {}, "status": status}
+    if preview is not None:
+        event.update(preview=preview, size=len(preview) if size is None else size)
+    return event
+
+
+READY = json.dumps({"conflicts": [], "questions": [], "interpretations_required": [], "ready": True})
+NOT_READY = json.dumps({"conflicts": [], "questions": [{"id": "q"}], "interpretations_required": [], "ready": False})
+
+
+def waiting(*tools):
+    """A turn whose model reconciled and stopped in text, asking for a yes."""
+    return response(*[("tool", t) for t in tools], ("", "Ready - reply yes to create it."), ("usage", usage()))
+
+
+def test_mode_goes_with_every_chat_request_and_is_recorded():
+    host = FakeHost([response(("stage", {"role": "planner", "model": "m", "status": "start", "mode": "roles"}),
+                              ("spec", spec()), ("usage", usage())),
+                     response(("stage", {"role": "supervisor", "model": "m", "status": "start", "mode": "roles"}),
+                              ("", "Done"))])
+    with host.client() as client:
+        result = run_bench(client, BASE, "md", [task()], mode="roles")
+    assert [payload["mode"] for payload, _ in host.requests] == ["roles", "roles"]
+    assert result["chat_mode"] == "roles" and result["confirm_policy"] == "never"
+    assert result["chat"]["modes_seen"] == ["roles"] and result["runs"][0]["tasks"][0]["modes"] == ["roles"]
+    with host.client() as client, pytest.raises(ValueError, match="mode must be one of"):
+        run_bench(client, BASE, "md2", [task()], mode="fast")
+    with host.client() as client, pytest.raises(ValueError, match="confirm must be one of"):
+        run_bench(client, BASE, "md3", [task()], confirm="always")
+
+
+def test_confirm_once_says_yes_to_a_ready_proposal_and_scores_what_follows():
+    host = FakeHost([waiting(tool_event("reconcile", "running", "1.1.1"), tool_event("reconcile", "ok", "1.1.1", READY)),
+                     response(("spec", spec()), ("usage", usage())),
+                     response(("", "Done"), ("usage", usage("supervisor")))])
+    result = host.run([task()], confirm="once")["tasks"][0]
+    assert result["correct"] and result["confirm_turns"] == 1 and result["feedback_turns"] == 1
+    assert result["turns"] == 1 and result["requests"] == 3
+    assert host.requests[1][0] == {"message": "yes", "session_id": "session-1", "bridge": True, "mode": "auto"}
+    assert result["usage"]["calls"] == 3                  # the extra turn's call is counted
+    # never (the default): the same turn ends the task, unscored as correct
+    host = FakeHost([waiting(tool_event("reconcile", "ok", "1.1.1", READY))])
+    result = host.run([task()])["tasks"][0]
+    assert not result["correct"] and result["confirm_turns"] == 0 and len(host.requests) == 1
+
+
+@pytest.mark.parametrize("tools", [
+    [tool_event("reconcile", "ok", "1.1.1", NOT_READY)],                          # not ready
+    [tool_event("reconcile", "error", "1.1.1", READY)],                           # failed
+    [tool_event("reconcile", "ok", "1.1.1", READY[:40], size=len(READY))],        # cut: cannot be read
+    [tool_event("reconcile", "ok", "1.1.1", READY), tool_event("propose_spec", "ok", "1.2.1", "{}")],
+    [tool_event("reconcile", "ok", "1.1.1", READY), tool_event("reconcile", "ok", "1.2.1", NOT_READY)],
+    [tool_event("query", "ok", "1.1.1", READY)],                                  # no reconcile at all
+])
+def test_confirm_once_needs_the_structural_sign(tools):
+    host = FakeHost([waiting(*tools)])
+    result = host.run([task()], confirm="once")["tasks"][0]
+    assert result["confirm_turns"] == 0 and len(host.requests) == 1
+
+
+def test_confirm_once_is_once_and_only_for_tool_and_ask_tasks():
+    ready = tool_event("reconcile", "ok", "1.1.1", READY)
+    # The yes did not bring a spec: no second yes, the task is scored as it stands.
+    host = FakeHost([waiting(ready), waiting(ready)])
+    result = host.run([task()], confirm="once")["tasks"][0]
+    assert result["confirm_turns"] == 1 and len(host.requests) == 2 and not result["correct"]
+    # A query task is never confirmed.
+    host = FakeHost([waiting(ready)])
+    result = host.run([task("q", kind="query", expect={})], confirm="once")["tasks"][0]
+    assert result["confirm_turns"] == 0 and len(host.requests) == 1
+
+
+def test_cli_mode_and_confirm(cli_host, tmp_path, capsys):
+    cli_host["host"].replies = [
+        waiting(tool_event("reconcile", "ok", "1.1.1", READY)),
+        response(("stage", {"role": "planner", "model": "m", "status": "start", "mode": "single"}), ("spec", spec())),
+        response(("", "ok"))]
+    assert main(["run", "--label", "auto1", "--mode", "single", "--confirm", "once",
+                 "--tasks", str(cli_host["tasks"])]) == 0
+    result = json.loads((tmp_path / "bench-results" / "auto1.json").read_text(encoding="utf-8"))
+    assert result["chat_mode"] == "single" and result["confirm_policy"] == "once"
+    assert [payload["mode"] for payload, _ in cli_host["host"].requests] == ["single"] * 3
+    assert result["summary"]["tasks"][0]["confirmed"] == 1
+    out = capsys.readouterr().out
+    assert "chat mode single  confirm once" in out.splitlines()[0]
+    assert 'a ready proposal confirmed with "yes" in 1 of 1 runs' in out
+    args = cli.build_parser().parse_args(["run", "--label", "x"])
+    assert (args.mode, args.confirm) == ("auto", "never")
+    # the read timeout outlasts the host's longest model call (1200 s); connecting fails fast
+    timeout = cli_host["options"][0]["timeout"]
+    assert args.timeout == 1260.0 and isinstance(timeout, httpx.Timeout)
+    assert (timeout.read, timeout.connect) == (1260.0, 15.0)
+    for wrong in (["--mode", "fast"], ["--confirm", "always"]):
+        with pytest.raises(SystemExit):
+            cli.build_parser().parse_args(["run", "--label", "x", *wrong])
+
+
+def test_compare_notes_a_different_confirm_policy(tmp_path, capsys):
+    host = FakeHost([response(("spec", spec())), response(("", "ok")), response(("spec", spec())), response(("", "ok"))])
+    paths = []
+    for name, confirm in (("a", "never"), ("b", "once")):
+        with host.client() as client:
+            result = run_bench(client, BASE, name, [task()], confirm=confirm)
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(result), encoding="utf-8")
+        paths.append(path)
+    assert main(["compare", *map(str, paths)]) == 3
+    assert "confirmed ready proposals differently" in capsys.readouterr().out
+
+
+def test_compare_notes_the_modes_the_host_ran(tmp_path, capsys):
+    """Two runs whose host ran different chat modes get a NOTE; the exit code is the comparison's."""
+    def started(mode):
+        return ("stage", {"role": "planner", "model": "m", "status": "start", "mode": mode})
+
+    host = FakeHost([response(started("roles"), ("spec", spec()), ("usage", usage())), response(("", "ok")),
+                     response(started("single"), ("spec", spec()), ("usage", usage())), response(("", "ok"))])
+    paths = []
+    for name in ("a", "b"):
+        with host.client() as client:
+            result = run_bench(client, BASE, name, [task()])
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps(result), encoding="utf-8")
+        paths.append(path)
+    assert main(["compare", *map(str, paths)]) == 0
+    out = capsys.readouterr().out
+    assert "NOTE: the host ran different chat modes: before roles, after single." in out
+    # the same modes: no NOTE
+    assert main(["compare", str(paths[0]), str(paths[0])]) == 0
+    assert "ran different chat modes" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("features, host", [
+    ({"chatModeDefault": "roles", "roles": True}, "roles"),
+    ({"chatModeDefault": "roles_analyst", "roles": True}, "roles_analyst"),
+    ({"roles": True}, None),                     # before the modes: the analyst was on unless switched off
+    ({"roles": False}, "single"),
+    ({}, None),
+    ({"chatModeDefault": "auto", "roles": True}, None),
+])
+def test_the_hosts_default_is_what_it_says_and_unknown_otherwise(features, host, capsys):
+    from bench.runner import chat_mode
+    assert chat_mode(features, [])["host"] == host
+    if host is None:
+        cli.print_results({"label": "x", "repeat": 1, "mode": "synthetic", "base_url": BASE,
+                           "chat": chat_mode(features, []), "runs": [],
+                           "summary": summarize([{"tasks": [], "totals": {f: None for f in
+                                                  ("calls", "input", "output", "cache_read", "cache_write", "ms")},
+                                                  "by_role": {}}])})
+        assert "host default unknown (not reported by the host)" in capsys.readouterr().out

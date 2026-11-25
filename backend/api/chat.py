@@ -37,7 +37,8 @@ change nothing else in it):
 
 - ``event: stage`` ``{role, model, status}``: ``start`` before a role's first model
   call (after the ``execution`` echo and the ``mentions`` report), ``end`` after its
-  last one (before ``error`` or ``done``); one pair per role segment of the turn.
+  last one (before ``error`` or ``done``); one pair per role segment of the turn. The
+  turn's first one also has ``mode``, the chat mode the turn runs in.
 - ``event: tool`` ``{id, role, name, args, status, ms?, size?, preview?, error?}``:
   ``running`` when a tool call starts, then ``ok`` or ``error`` with the same
   ``id`` when it ends (``error`` when the handler raised - ``error`` is then the
@@ -51,8 +52,17 @@ change nothing else in it):
   a number the provider did not report is ``null``. The same row goes to the
   ``llm_calls`` table with the request's ``X-Run-Label``.
 
-Three roles (the default; ``backend.roles`` has the table, the hand-offs and the
-parsing). A message with the bridge goes to the **analyst** first: no tools, one JSON
+The chat's mode (``mode`` in the body; absent or ``auto``: the host's default,
+``WebSettings.chat_mode_default`` - ``roles``, ``single`` with ``LLM_SINGLE_MODEL=1``,
+``roles_analyst`` with ``ROLES_ANALYST=on``): ``single`` is the one loop below,
+``roles`` the planner and the supervisor, ``roles_analyst`` the analyst too. A local
+host honours a request's mode; a cloud host only with the right ``X-Admin-Token``
+(else the default runs); without the bridge the request runs as ``single``. The mode
+run is a field of the turn's first ``stage`` event (``{role, model, status, mode}``)
+and of every ``llm_calls`` row.
+
+The roles (``backend.roles`` has the table, the hand-offs and the parsing). In mode
+``roles_analyst`` a message with the bridge goes to the **analyst** first: no tools, one JSON
 routing ``{route, tool?, facts_needed, note}`` from the tool list, the digest of the
 open model (the package's ``snapshot_digest``, taken by the host and kept with the
 session until the page reports an execution), the open task and the message. Route
@@ -63,15 +73,28 @@ goes to the **supervisor** (``query`` only): the confirmed spec, the result's su
 and the validator's checks in, one JSON verdict ``{verdict, report, fix?, question?}``
 out; the host streams ``report`` (and ``question``), holds the verdict to the
 package's (``roles.enforce``) and, on ``retry``, runs the planner again with ``fix``
-(at most ``roles.MAX_RETRIES`` times per task). A role's output that is not its JSON
-gets one repair call, then the host's fallback. ``LLM_SINGLE_MODEL=1`` instead runs the
-one loop of the planner as before the split, request for request and frame for frame.
+(at most ``roles.MAX_RETRIES`` times per task). In mode ``roles`` a message goes straight
+to the planner with route ``tool``. A role's output that is not its JSON gets one repair
+call, then the host's fallback. Mode ``single`` instead runs the one loop of the planner as
+before the split, request for request and frame for frame (the first ``stage`` event has
+the ``mode`` field).
 
 Each role's model is ``backend.models_file.resolve(role, headers)``: ``LLM_*`` and the
 ``X-LLM-*`` headers as before, or, with a models file, the role's entry there (the
-headers replace the planner's entry, and every role that shares it). Events and
-``llm_calls`` carry the role and the model the call actually went to; ``round`` counts
-the model calls of the turn across its roles.
+headers replace the planner's entry, and every role that shares it) with the entry's
+provider options (the responses api, the output limit's name, the reasoning effort, the
+read timeout: ``backend.llm``). What a provider returns with a tool call to have it back
+(a thought signature, encrypted reasoning) is kept with the session
+(``Session.provider_memory``). A reply that used up its output limit on thinking, with
+no text and no tool call, ends the turn - for every role, with no repair call and no
+fallback - with ``event: error`` whose detail is ``Turn.limit_notice``: the role and its
+model, the limit as it was sent, what of the task is still there (the last card this turn
+sent, the reported run - and, for the supervisor, that the planner has not been told of
+the run) and how to raise it (``limit_advice``: an entry's ``max_tokens``, or the host's
+default - ``LLM_MAX_TOKENS``, else ``backend.llm.DEFAULT_MAX_TOKENS`` - which is all a
+browser-chosen model gets). Events
+and ``llm_calls`` carry the role and the model the call actually went to; ``round``
+counts the model calls of the turn across its roles.
 
 Within one session each prompt is the one its first turn was sent with
 (``Session.system_prompt``, ``Session.role_prompt``) and the tool definitions of a
@@ -107,6 +130,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -123,10 +147,11 @@ from backend.api.errors import ApiError
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments,
 )
-from backend.config import get_settings
+from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
+from backend import llm as llm_client
 from backend.llm import (
-    SSE_DONE, CallStats, LLMError, assistant_message, format_sse, format_sse_event, stream_completion,
-    tool_message,
+    SSE_DONE, CallStats, LLMError, OutputLimitError, assistant_message, format_sse, format_sse_event,
+    stream_completion, tool_message,
 )
 from backend.log_store import get_client_ip, get_log_store, log_and_stream
 from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
@@ -254,6 +279,13 @@ class ChatRequest(BaseModel):
         description="The designer's picks in this message (with message and the bridge only), checked "
                     "against the open model before the model is called: the event mentions reports "
                     "each, and the verified ones reach the model as the package's selections block.")
+    mode: Literal["auto", "single", "roles", "roles_analyst"] | None = Field(
+        default=None,
+        description="How the chat runs this request: single (one model loop), roles (planner + supervisor), "
+                    "roles_analyst (analyst + planner + supervisor), or auto (absent or null too): the host's "
+                    "default, /config.json features.chatModeDefault. A local host honours it; a cloud host "
+                    "only with the right X-Admin-Token, else it runs the default. Without the bridge the "
+                    "request runs as single. The mode run is on the turn's first stage event.")
 
 
 # -- per-IP rate limit (protects a shared server-side key) ---------------------
@@ -413,28 +445,105 @@ class LoopResult:
     text: str = ""
 
 
-class Turn:
-    """One ``/api/chat`` request: the session, its turn number, the run label, and the model
-    calls made so far (``round`` numbers them across the roles of the turn, from 1). Every
-    ``stage``, ``tool`` and ``usage`` event and every ``llm_calls`` row names the role and the
-    model of the call."""
+def limit_advice(target: ModelTarget) -> str:
+    """How the output limit of ``target``'s calls can be raised - what is true for where the call
+    went: an entry's own ``max_tokens``; an entry without one, or no models file, takes the host's
+    default (``LLM_MAX_TOKENS``, else ``backend.llm.DEFAULT_MAX_TOKENS``); a model the browser's
+    settings chose gets no entry option, only the host's default."""
+    settings = get_settings()
+    default = settings.llm_max_tokens or llm_client.DEFAULT_MAX_TOKENS
+    if target.browser_model:
+        return (f"This model was chosen by the browser's model settings, so the host's default output limit "
+                f"({default}) applies to it, and only the host can raise it: with LLM_MAX_TOKENS, or with "
+                f"max_tokens in an entry of the host's models file for this model, used without the browser's "
+                f"model settings.")
+    if target.entry is not None and target.entry_max_tokens:
+        return "To raise it, set a larger max_tokens in this model's entry in the host's models file."
+    if target.entry is not None:
+        return (f"To raise it, set max_tokens in this model's entry in the host's models file (it sets none, so "
+                f"the host's default, {default}, applies), or LLM_MAX_TOKENS on the host for every entry "
+                f"without one.")
+    return (f"To raise it, set LLM_MAX_TOKENS on the host (the default now is {default}), or give this model an "
+            f"entry with max_tokens in the host's models file.")
 
-    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool):
+
+class Turn:
+    """One ``/api/chat`` request: the session, its turn number, the run label, the chat mode it
+    runs in, and the model calls made so far (``round`` numbers them across the roles of the
+    turn, from 1). Every ``stage``, ``tool`` and ``usage`` event and every ``llm_calls`` row
+    names the role and the model of the call; the turn's first ``stage`` event and every row
+    name the mode too."""
+
+    def __init__(self, session: Session, turn: int, run_label: str | None, bridge: bool, mode: str = MODE_SINGLE,
+                 execution: dict | None = None):
         self.session = session
         self.turn = turn
         self.run_label = run_label
         self.bridge = bridge
+        self.mode = mode
+        self.mode_sent = False
+        self.execution = execution                      # the run this turn reports, if it reports one
+        # The last spec card this turn sent the page: "ready" (accepted: it can be confirmed),
+        # "not_ready" (errors, or reconcile not ready), None (no spec event in this turn).
+        self.card: str | None = None
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
         self.ran: dict[str, str] = {}                   # role -> model, in the order the roles ran
+
+    def limit_notice(self, role: str, target: ModelTarget, exc: OutputLimitError) -> str:
+        """The ``error`` event's text when ``role``'s reply used up its output limit: who and which
+        model, the limit as it was sent, what of the task is still there (``limit_state``) and how
+        the limit can be raised (``limit_advice``). The turn ends there: no repair call, no
+        fallback."""
+        head = (f"Output limit used up: the {role} ({target.model}) spent its whole output limit ({exc.param} "
+                f"{exc.limit}) before it wrote a reply or called a tool - most likely on thinking, which "
+                f"counts toward the limit.")
+        return f"{head} {self.limit_state(role)} {limit_advice(target)}"
+
+    def limit_state(self, role: str) -> str:
+        """What the designer still has after a used-up limit, read from what this turn did: the last
+        card it sent (ready to confirm or not), the run it reports; the page keeps both as they are."""
+        cards = {"ready": "The spec card proposed in this turn is kept: it can still be confirmed and run; only "
+                          "the text after it is missing.",
+                 "not_ready": "The last spec card proposed in this turn cannot be confirmed as it stands (it has "
+                              "errors, or its reconcile is not ready)."}
+        card = cards.get(self.card or "", "")
+        if self.execution is not None:
+            evidence = self.execution.get("evidence_id")
+            where = f" (evidence {evidence})" if isinstance(evidence, str) and evidence else ""
+            run = f"The run you reported and its result{where} stay as the page received them."
+            if role == roles.SUPERVISOR:
+                # execution_roles: the confirmed spec is used up, no verdict is pending and the run
+                # is not in the planner's history - nothing of it reaches the planner.
+                return (f"{run} The supervisor's report on it is missing, and the planner has not been told "
+                        f"of this run: say what it did in your next message.")
+            if roles.SUPERVISOR in self.ran:
+                # The supervisor sent the task back (its report is above) and the planner ran again.
+                new = {"ready": "the planner's new card is kept: it can still be confirmed and run.",
+                       "not_ready": "the planner proposed a new card, but it cannot be confirmed as it stands (it "
+                                    "has errors, or its reconcile is not ready)."}
+                return f"{run} The supervisor's report is above; {new.get(self.card or '', 'the planner proposed no new card.')}"
+            return f"{run} Only the report on it is missing.{' ' + card if card else ''}"
+        if card:
+            return card
+        earlier = " Cards and results from earlier turns stay as they were." if self.session.spec else ""
+        if role == roles.ANALYST:
+            return (f"Your message was not passed on to the planner and nothing was proposed; send it again "
+                    f"once the limit is raised.{earlier}")
+        return f"No spec card was proposed in this turn.{earlier}"
 
     def stage(self, role: str, model: str, status: str) -> str:
         self.open = (role, model) if status == "start" else None
         if status == "start":
             self.ran.pop(role, None)
             self.ran[role] = model
-        return format_sse_event("stage", {"role": role, "model": model, "status": status})
+        payload = {"role": role, "model": model, "status": status}
+        if not self.mode_sent:
+            # The turn's first event with run metadata carries the mode it runs in.
+            payload["mode"] = self.mode
+            self.mode_sent = True
+        return format_sse_event("stage", payload)
 
     def models_ran(self) -> str | None:
         """The interaction log's model of a turn with the roles: each role that ran and its
@@ -455,7 +564,7 @@ class Turn:
         counts = stats.usage.as_dict()
         await asyncio.to_thread(self.calls_log.record_call, session_id=self.session.session_id, turn=self.turn,
                                 round=round_no, role=role, model=model, usage=counts, ms=ms,
-                                run_label=self.run_label)
+                                run_label=self.run_label, mode=self.mode)
         return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
 
     async def loop(self, role: str, target: ModelTarget, messages: list[dict], tools: list[dict] | None, *,
@@ -478,16 +587,20 @@ class Turn:
             stats = CallStats()
             started = time.monotonic()
             try:
-                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats, **target.options):
+                async for item in stream_completion(llm, messages, tools=round_tools, stats=stats,
+                                                    memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
                         parts.append(item)
                         if stream:
                             yield format_sse(item)
                     else:
                         calls = item
-            except LLMError:
+            except LLMError as exc:
                 if stats.accepted:          # the endpoint took the call: it may have cost tokens
                     yield await self.usage(role, llm.model, this_round, stats, started)
+                if isinstance(exc, OutputLimitError):
+                    # The turn ends with the designer's notice: no repair call, no fallback.
+                    raise LLMError(self.limit_notice(role, target, exc), status=exc.status) from None
                 raise
             yield await self.usage(role, llm.model, this_round, stats, started)
             content = "".join(parts)
@@ -542,6 +655,10 @@ class Turn:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
                 if outcome.spec_event is not None:
+                    # The page shows this card instead of any earlier one: the turn's card is the last.
+                    # A refusal that sends no card (no spec event) leaves it as it was.
+                    accepted = isinstance(outcome.result, dict) and outcome.result.get("accepted") is True
+                    self.card = "ready" if accepted else "not_ready"
                     yield format_sse_event("spec", outcome.spec_event)
                 # The session keeps at most the head; this turn sees all of it.
                 if keep is not None:
@@ -596,12 +713,12 @@ class Turn:
 
 
 async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, scope: str) -> AsyncGenerator[str, None]:
-    """A message with the roles: the analyst routes it (``scope``: the device the request drives,
-    whose digest it reads); chat and none end with its note, query and tool go on to the planner,
-    the routing after the message. With ``ROLES_ANALYST=off`` the message goes straight to the
-    planner with route tool."""
+    """A message with the roles: in mode ``roles_analyst`` the analyst routes it (``scope``: the
+    device the request drives, whose digest it reads); chat and none end with its note, query and
+    tool go on to the planner, the routing after the message. In mode ``roles`` the message goes
+    straight to the planner with route tool."""
     session = run.session
-    if get_settings().roles_analyst:
+    if run.mode == MODE_ROLES_ANALYST:
         analyst = targets[roles.ANALYST]
         yield run.stage(roles.ANALYST, analyst.model, "start")
         packs = await asyncio.to_thread(list_packs)
@@ -732,15 +849,18 @@ async def chat(req: ChatRequest, request: Request,
     llm = target.llm
     if not llm.configured:
         raise no_model(target, ROLE)
-    # The roles with the bridge, unless LLM_SINGLE_MODEL=1; without the bridge the one loop.
+    # The mode: the request's when this caller may pick it (a cloud host: an admin), else the
+    # host's default; without the bridge the one loop.
     settings = get_settings()
-    with_roles = req.bridge and not settings.single_model
+    admin = settings.admin_token_ok(request.headers.get("x-admin-token"))
+    mode = settings.resolve_chat_mode(req.mode, admin) if req.bridge else MODE_SINGLE
+    with_roles = mode != MODE_SINGLE
     targets = {ROLE: target}
     if with_roles:
-        # The role that opens this turn: the analyst (a message; none with ROLES_ANALYST=off) or
-        # the supervisor (a report); the planner may follow either.
+        # The role that opens this turn: the analyst (a message, in mode roles_analyst) or the
+        # supervisor (a report); the planner may follow either.
         first = (roles.SUPERVISOR if req.execution is not None
-                 else roles.ANALYST if settings.roles_analyst else None)
+                 else roles.ANALYST if mode == MODE_ROLES_ANALYST else None)
         if first is not None:
             try:
                 targets[first] = await resolve_model(first, request.headers)
@@ -768,7 +888,7 @@ async def chat(req: ChatRequest, request: Request,
             text = f"{text}\n\n{block}"
     if req.execution is not None and req.execution.get("evidence_id"):
         session.evidence_id = str(req.execution["evidence_id"])
-    run = Turn(session, turn, run_label, req.bridge)
+    run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
 
     if with_roles:
         scope = current_scope()                   # the device this request drives

@@ -25,7 +25,7 @@ function view(flow: TokenFlow, gate = usageGate('local', false, '')): string {
 
 const runA: UsageRun = {
   run_label: 'baseline-1', calls: 3, input: 1000, output: 120, cache_read: 800, cache_write: null, ms: 900,
-  first_at: '2026-11-23 10:00:00', last_at: '2026-11-23 10:00:09',
+  first_at: '2026-11-23 10:00:00', last_at: '2026-11-23 10:00:09', mode: 'single',
   by_role: [
     { role: 'planner', model: 'main-model', calls: 2, input: 900, output: 100, cache_read: 800, cache_write: null, ms: 700 },
     { role: 'planner', model: 'other-model', calls: 1, input: 100, output: 20, cache_read: 0, cache_write: null, ms: 200 },
@@ -34,7 +34,7 @@ const runA: UsageRun = {
 
 const runB: UsageRun = {
   run_label: 'roles-1', calls: 5, input: 1120, output: null, cache_read: 900, cache_write: 0, ms: 1100,
-  first_at: '2026-11-23 11:00:00', last_at: '2026-11-23 11:00:00',
+  first_at: '2026-11-23 11:00:00', last_at: '2026-11-23 11:00:00', mode: 'roles_analyst',
   by_role: [
     { role: 'analyst', model: 'small-model', calls: 2, input: 200, output: 10, cache_read: 0, cache_write: 0, ms: 300 },
     { role: 'planner', model: 'main-model', calls: 3, input: 920, output: null, cache_read: 900, cache_write: 0, ms: 800 },
@@ -161,11 +161,16 @@ describe('the Token page', () => {
     // The run's own line: unknown output and cache write are '-', not 0.
     expect(page).toMatch(/data-run="roles-1">.*?<td>5<\/td><td>1,120<\/td><td>900<\/td><td>0<\/td><td>-<\/td><td>1,100<\/td>/)
     expect(page).toMatch(/data-run="baseline-1">.*?<td>3<\/td><td>1,000<\/td><td>800<\/td><td>-<\/td><td>120<\/td>/)
-    expect(page).toMatch(/data-role="planner"><td><\/td><td colSpan="2">planner <span class="mono">\(main-model, other-model\)/i)
+    expect(page).toMatch(/data-role="planner"><td><\/td><td colSpan="3">planner <span class="mono">\(main-model, other-model\)/i)
     expect(page).toContain('data-run="old"')
     expect(page).not.toContain('Admin password')
+    // The chat mode of each run; '-' for a run the host recorded none for.
+    expect(page).toContain('<th>Run</th><th>Mode</th><th>Time</th>')
+    expect(page).toMatch(/data-run="baseline-1">.*?<td class="mono">baseline-1<\/td><td class="token-mode">Single model<\/td>/)
+    expect(page).toMatch(/data-run="roles-1">.*?<td class="token-mode">Analyst \+ planner \+ supervisor<\/td>/)
+    expect(page).toMatch(/data-run="old">.*?<td class="token-mode">-<\/td>/)
 
-    expect(page).toContain('A: baseline-1 - B: roles-1')
+    expect(page).toContain('A: baseline-1 (Single model) - B: roles-1 (Analyst + planner + supervisor)')
     expect(page).toMatch(/data-metric="input"><td>Input<\/td><td>1,000<\/td><td>1,120<\/td><td class="token-diff up">\+120 \(\+12\.0%\)/)
     expect(page).toMatch(/data-metric="output"><td>Output<\/td><td>120<\/td><td>-<\/td><td class="token-diff unknown">-<\/td>/)
     expect(page).toContain('data-role="analyst"')                           // the role only B has

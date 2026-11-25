@@ -29,6 +29,9 @@ class CallRow(BaseModel):
     ms: int
     created_at: str
     run_label: str | None
+    mode: str | None = Field(
+        default=None, description="The chat mode the request ran in: single, roles or roles_analyst "
+                                  "(null for a call recorded before modes were).")
 
 
 class SessionUsage(BaseModel):
@@ -63,6 +66,9 @@ class RunTotal(BaseModel):
     by_role: list[RolePart] = Field(
         default_factory=list,
         description="The same sums per role and model of the run, in the order of their first call.")
+    mode: str | None = Field(
+        default=None, description="The chat mode the run's calls ran in (single, roles, roles_analyst); "
+                                  "mixed when they ran in more than one; null when none was recorded.")
 
 
 class RunList(BaseModel):
@@ -79,6 +85,6 @@ async def session_usage(session_id: str = Query(..., min_length=1, max_length=12
 @router.get("/runs", dependencies=[Depends(verify_admin)], response_model=RunList)
 async def run_usage():
     """One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,
-    first and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), and the same per role and model
-    (``by_role``)."""
+    first and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), the chat mode (``mode``), and the same
+    per role and model (``by_role``)."""
     return {"items": get_log_store().runs()}

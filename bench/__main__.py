@@ -6,16 +6,21 @@ accepted, a fixed execution result (the task's execution, else the fixture) goes
 to the host so its report step is measured too, and again when the host sends the task
 back with a new card (at most 3 reports). --execute confirms and runs each accepted
 spec instead (it changes the open model), once. The host holds the model configuration
-(LLM_* or MODELS_FILE, read at its start: one host process per configuration) and how
-its chat runs (roles, or one loop with LLM_SINGLE_MODEL=1); the runner sends no model
-setting and no key, and records which (chat). Every request carries X-Run-Label
-<label>-<n>.
+(LLM_* or MODELS_FILE, read at its start: one host process per configuration); the
+runner sends no model setting and no key. --mode (default auto: the host's default)
+goes as the chat mode with every chat request - single, roles (planner + supervisor) or
+roles_analyst; a cloud host runs its default whatever is asked. The results record the
+mode asked for and the modes the host ran (chat). --confirm once (default never): when a
+tool or ask task's turn stops at a proposal ready for confirmation (the host's tool
+events: a ready reconcile, no propose_spec), one "yes" follows and the task is scored on
+what comes next - the unattended ("automatic") mode; it runs nothing more in Revit.
+Every request carries X-Run-Label <label>-<n>.
 
 compare: task by task, before against after. Exit 1 when a task got worse (fewer
 repeats correct, or as often correct and median input tokens up more than 5%), 3
 when nothing got worse but something could not be compared (an unknown token
-count, a task skipped after, or runs that fed execution results back differently -
-a NOTE says so), 0 otherwise.
+count, a task skipped after, or runs that fed execution results back, or confirmed
+ready proposals, differently - a NOTE says so), 0 otherwise.
 
 Unknown is never 0: a count the provider did not report is null, and so is every
 sum, difference, median, minimum and maximum that contains it.
@@ -34,7 +39,7 @@ import httpx
 import yaml
 
 from .metrics import TOKEN_FIELDS, compare_exit_code, compare_runs
-from .runner import FEEDBACK_ONCE, run_bench, run_labels
+from .runner import CHAT_MODES, CONFIRM_POLICIES, FEEDBACK_ONCE, run_bench, run_labels
 
 LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 REQUIRE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
@@ -43,6 +48,10 @@ DEVICE_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{i}" for i in range
                           *(f"lpt{i}" for i in range(1, 10))})
 DEFAULT_BASE_URL = "http://127.0.0.1:7860"
 DEFAULT_OUT = Path("bench-results")
+# The read timeout outlasts the host's longest model call: 600 s, plus up to 600 more for a
+# timeout_s of 900 (backend.llm.call_deadline) - 1200 s. Connecting gets CONNECT_TIMEOUT.
+DEFAULT_TIMEOUT = 1260.0
+CONNECT_TIMEOUT = 15.0
 EXECUTE_WARNING = (
     "WARNING: --execute confirms every accepted spec and RUNS it in the Revit model the host is\n"
     "connected to. Elements are created, changed or deleted, once per task and repeat.\n"
@@ -51,10 +60,16 @@ EXECUTE_WARNING = (
 EPILOG = """\
 examples:
   python -m bench run --base-url http://127.0.0.1:7860 --label baseline --repeat 3
+  python -m bench run --label nightly --repeat 3 --confirm once      (unattended: the automatic mode)
+  python -m bench run --label single-1 --mode single --confirm once
   python -m bench compare bench-results/baseline.json bench-results/roles.json
   python -m bench run --label failures --tasks bench/tasks-supervisor.yml
 
 notes:
+  Unattended runs use --confirm once: a model that stops at a ready proposal and asks for a
+  "yes" gets one, so the task is measured to propose_spec. Nothing runs in Revit without
+  --execute either way.
+  --mode is sent with every chat request; a local host runs it, a cloud host its default.
   The host's CHAT_RATE_LIMIT (default 30 per minute per address) counts the bench's
   requests too; raise it on the host for fast models or long task sets.
   Labels must be new on the host (GET /api/usage/runs): each label is one run.
@@ -197,14 +212,20 @@ METRIC_HEADERS = ["Calls", "Input", "Output", "Cache read", "Cache write", "Mode
 METRIC_FIELDS = ["calls", *TOKEN_FIELDS, "ms"]
 
 
+MODE_NAMES = {"single": "single (one loop)", "roles": "roles (planner + supervisor)",
+              "roles_analyst": "roles_analyst (analyst + planner + supervisor)"}
+
+
 def print_results(result: dict) -> None:
     summary = result["summary"]
     repeat = result["repeat"]
     chat = result.get("chat") or {}
-    how = {"roles": "roles", "single": "one loop (LLM_SINGLE_MODEL=1)"}.get(chat.get("host"), "not reported")
+    how = MODE_NAMES.get(chat.get("host"), "unknown (not reported by the host)")
     seen = ", ".join(chat.get("roles_seen") or []) or "none"
-    print(f"Label {result['label']}  repeats {repeat}  mode {result['mode']}  host {result['base_url']}")
-    print(f"Chat: {how}; roles in the events: {seen}")
+    ran = ", ".join(chat.get("modes_seen") or []) or "not reported"
+    print(f"Label {result['label']}  repeats {repeat}  mode {result['mode']}  chat mode {result.get('chat_mode', 'auto')}"
+          f"  confirm {result.get('confirm_policy', 'never')}  host {result['base_url']}")
+    print(f"Chat: host default {how}; ran in: {ran}; roles in the events: {seen}")
     if repeat > 1:
         print("Numbers: median (min-max) over the repeats.")
     rows = [["Task", "Kind", "Correct", "Role", *METRIC_HEADERS, "Tools"]]
@@ -224,6 +245,9 @@ def print_results(result: dict) -> None:
         for error in dict.fromkeys(task["errors"]):
             requires = f" (requires {', '.join(task['requires'])})" if task["requires"] else ""
             notes.append(f"{task['id']}: failed{requires}: {error}")
+        if task.get("confirmed"):
+            notes.append(f"{task['id']}: a ready proposal confirmed with \"yes\" in {task['confirmed']} of "
+                         f"{task['runs']} runs (--confirm once)")
     rows.append(["Total", "", show_stat(summary["correct"]) + "/" + show_stat(summary["scored"]), "all",
                  *[show_stat(summary["totals"][field]) for field in METRIC_FIELDS], ""])
     for role, numbers in summary["by_role"].items():
@@ -324,10 +348,13 @@ def command_run(args: argparse.Namespace) -> int:
         raise ValueError(f"{destination} exists; choose another --label or --out")
     if args.execute:
         print(EXECUTE_WARNING, file=sys.stderr)
-    # trust_env=False: no proxy from the environment between the bench and its host.
-    with httpx.Client(timeout=args.timeout, follow_redirects=False, trust_env=False) as client:
+    # trust_env=False: no proxy from the environment between the bench and its host. A host that
+    # cannot be reached fails within CONNECT_TIMEOUT; a long wait for the model does not.
+    timeout = httpx.Timeout(args.timeout, connect=CONNECT_TIMEOUT)
+    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         result = run_bench(client, base, args.label, tasks, fixture, repeat=args.repeat, skip_requires=skip,
-                           include_placeholder_ids=args.include_placeholder_ids, execute=args.execute)
+                           include_placeholder_ids=args.include_placeholder_ids, execute=args.execute,
+                           mode=args.mode, confirm=args.confirm)
     result["tasks_file"] = str(args.tasks)
     print_results(result)
     print("Saved: " + str(save(result, destination)))
@@ -342,6 +369,12 @@ def feedback_policy(result: dict) -> str:
     return policy if isinstance(policy, str) and policy else FEEDBACK_ONCE
 
 
+def confirm_policy(result: dict) -> str:
+    """How a results file answered a ready proposal; one written before the bench recorded it never did."""
+    policy = result.get("confirm_policy")
+    return policy if policy in CONFIRM_POLICIES else "never"
+
+
 def command_compare(args: argparse.Namespace) -> int:
     before = load_result(result_path(args.before, args.out))
     after = load_result(result_path(args.after, args.out))
@@ -354,7 +387,28 @@ def command_compare(args: argparse.Namespace) -> int:
         print(f"NOTE: the runs fed execution results back differently: before {policies[0]}, after "
               f"{policies[1]}; a task the host sent back is not comparable on its report step.")
         code = code or 3
+    confirms = confirm_policy(before), confirm_policy(after)
+    if confirms[0] != confirms[1]:
+        # A task that stopped at a ready proposal got one more turn in one of the two runs.
+        print(f"NOTE: the runs confirmed ready proposals differently: before --confirm {confirms[0]}, after "
+              f"--confirm {confirms[1]}; a task that stopped at a proposal is not comparable.")
+        code = code or 3
+    modes = before.get("chat_mode", "auto"), after.get("chat_mode", "auto")
+    if modes[0] != modes[1]:
+        print(f"NOTE: the runs asked for different chat modes: before {modes[0]}, after {modes[1]}.")
+    ran = modes_seen(before), modes_seen(after)
+    if ran[0] != ran[1]:
+        # What the host actually ran: a cloud host runs its default whatever is asked.
+        print(f"NOTE: the host ran different chat modes: before {', '.join(ran[0]) or 'not reported'}, after "
+              f"{', '.join(ran[1]) or 'not reported'}.")
     return code
+
+
+def modes_seen(result: dict) -> list[str]:
+    """The chat modes a results file's host said its turns ran in; none for a file without them."""
+    chat = result.get("chat") if isinstance(result.get("chat"), dict) else {}
+    seen = chat.get("modes_seen")
+    return [m for m in seen if isinstance(m, str)] if isinstance(seen, list) else []
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -378,9 +432,20 @@ def build_parser() -> argparse.ArgumentParser:
                      help="JSON execution result sent back after an accepted spec (default: a built-in one)")
     run.add_argument("--execute", action="store_true",
                      help="confirm and RUN each accepted spec in Revit (changes the model; off by default)")
+    run.add_argument("--mode", choices=CHAT_MODES, default="auto",
+                     help="the chat mode sent with every chat request: auto (the host's default, the default "
+                          "here), single, roles (planner + supervisor) or roles_analyst; a cloud host runs its "
+                          "default whatever is asked")
+    run.add_argument("--confirm", choices=CONFIRM_POLICIES, default="never",
+                     help="once: when a tool or ask task's turn stops at a proposal ready for confirmation (a "
+                          "ready reconcile and no propose_spec in the host's tool events), send one \"yes\" and "
+                          "score the task on what follows - the unattended mode; never (default): as before")
     run.add_argument("--out", type=Path, default=DEFAULT_OUT,
                      help="directory of <label>.json (default: ./bench-results)")
-    run.add_argument("--timeout", type=float, default=120.0, help="HTTP timeout in seconds (default 120)")
+    run.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
+                     help=f"HTTP read timeout in seconds (default {DEFAULT_TIMEOUT:g}: longer than the host's "
+                          f"longest model call, 1200 s, so a long non-streamed call is not a failure); "
+                          f"connecting to the host times out after {CONNECT_TIMEOUT:g} s")
     run.add_argument("--allow-remote", action="store_true",
                      help="allow a --base-url that is not this machine")
     compare = sub.add_parser("compare", help="compare two results files task by task")

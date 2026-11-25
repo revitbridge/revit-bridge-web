@@ -176,7 +176,7 @@ def test_without_a_file_the_requests_and_the_stream_are_the_same_as_before(revit
         frames, sent = now
         assert len(sent) == 7 and [e for e, _ in frames[0]][0] == "stage"
         for _, _, body in sent:
-            assert body["temperature"] == 0.3 and body["max_tokens"] == 4096
+            assert body["temperature"] == 0.3 and body["max_tokens"] == 16384
             assert set(body) <= {"model", "messages", "temperature", "max_tokens", "stream", "stream_options",
                                  "tools", "tool_choice"}
 
@@ -219,7 +219,7 @@ def test_a_mixed_file_is_read_and_the_planner_runs_on_its_entry(revit, make_clie
     assert resp.status_code == 200, resp.text
     assert [(s["url"], s["authorization"]) for s in recorder.sent] == [
         ("https://main.example/v1/chat/completions", f"Bearer {MAIN_KEY}")] * 2
-    assert all(s["body"]["model"] == "main-model" and s["body"]["max_tokens"] == 4096 for s in recorder.sent)
+    assert all(s["body"]["model"] == "main-model" and s["body"]["max_tokens"] == 16384 for s in recorder.sent)
     frames = sse(resp.text)
     assert {(s["role"], s["model"]) for s in events(frames, "stage")} == {("planner", "main-model")}
     assert [(u["role"], u["model"]) for u in events(frames, "usage")] == [("planner", "main-model")] * 2
@@ -254,7 +254,7 @@ def test_entry_options_reach_the_request(make_client, keys, recorder, tmp_path):
     recorder.model.turns += [text_turn("ok")]
     client.post("/api/chat", json={"message": "hi"}, headers={"X-LLM-Model": "visitor-model"})
     body = recorder.sent[1]["body"]
-    assert (body["model"], body["max_tokens"], body["temperature"]) == ("visitor-model", 4096, 0.3)
+    assert (body["model"], body["max_tokens"], body["temperature"]) == ("visitor-model", 16384, 0.3)
 
 
 def resolve_now(*args, **kwargs) -> ModelTarget:

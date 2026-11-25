@@ -811,7 +811,7 @@
           "usage"
         ],
         "summary": "Run Usage",
-        "description": "One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,\nfirst and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), and the same per role and model\n(``by_role``).",
+        "description": "One line per ``X-Run-Label`` that reached the chat: calls, token sums, total time,\nfirst and last call (UTC, ``YYYY-MM-DD HH:MM:SS``), the chat mode (``mode``), and the same\nper role and model (``by_role``).",
         "operationId": "run_usage_api_usage_runs_get",
         "parameters": [
           {
@@ -2993,7 +2993,7 @@
           "meta"
         ],
         "summary": "Config Json",
-        "description": "Runtime configuration for the SPA (read once at startup).",
+        "description": "Runtime configuration for the SPA (read once at startup). ``features.chatModes``\nlists the chat modes the caller may pick: on a cloud host every mode only with the\nright ``X-Admin-Token``, else ``auto`` alone.",
         "operationId": "config_json_config_json_get",
         "responses": {
           "200": {
@@ -3101,6 +3101,18 @@
               }
             ],
             "title": "Run Label"
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode",
+            "description": "The chat mode the request ran in: single, roles or roles_analyst (null for a call recorded before modes were)."
           }
         },
         "type": "object",
@@ -3214,6 +3226,24 @@
             ],
             "title": "Mentions",
             "description": "The designer's picks in this message (with message and the bridge only), checked against the open model before the model is called: the event mentions reports each, and the verified ones reach the model as the package's selections block."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "single",
+                  "roles",
+                  "roles_analyst"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode",
+            "description": "How the chat runs this request: single (one model loop), roles (planner + supervisor), roles_analyst (analyst + planner + supervisor), or auto (absent or null too): the host's default, /config.json features.chatModeDefault. A local host honours it; a cloud host only with the right X-Admin-Token, else it runs the default. Without the bridge the request runs as single. The mode run is on the turn's first stage event."
           }
         },
         "type": "object",
@@ -3757,6 +3787,18 @@
             "type": "array",
             "title": "By Role",
             "description": "The same sums per role and model of the run, in the order of their first call."
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode",
+            "description": "The chat mode the run's calls ran in (single, roles, roles_analyst); mixed when they ran in more than one; null when none was recorded."
           }
         },
         "type": "object",

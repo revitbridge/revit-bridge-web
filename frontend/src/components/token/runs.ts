@@ -132,6 +132,19 @@ export function toggleSelection(selected: readonly string[], label: string): str
   return [...selected, label].slice(-2)
 }
 
+const MODE_NAMES: Record<string, string> = {
+  single: 'Single model', roles: 'Planner + supervisor', roles_analyst: 'Analyst + planner + supervisor',
+  mixed: 'Mixed',
+}
+
+/* The chat mode a run ran in, as the page names it; '-' when the host did not record one (a
+   run from before modes, or an older host); a value the page does not know, as it came. */
+export function modeOf(run: UsageRun): string {
+  const mode = run.mode
+  if (typeof mode !== 'string' || !mode) return '-'
+  return MODE_NAMES[mode] ?? mode
+}
+
 /* 'first' or 'first - last' (UTC, as the host stores it). */
 export function runTime(run: UsageRun): string {
   return run.first_at === run.last_at ? `${run.first_at} UTC` : `${run.first_at} - ${run.last_at} UTC`

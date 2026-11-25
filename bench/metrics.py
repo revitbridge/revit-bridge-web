@@ -199,7 +199,9 @@ def summarize(runs: list[dict]) -> dict:
                  "skipped": first.get("skipped") if not scored else None,
                  "runs": len(scored), "correct": sum(1 for result in scored if result["correct"]),
                  "failed": sum(1 for result in scored if result.get("error")),
-                 "errors": [result["error"] for result in scored if result.get("error")]}
+                 "errors": [result["error"] for result in scored if result.get("error")],
+                 # runs in which a ready proposal got the bench's one "yes" (--confirm once)
+                 "confirmed": sum(1 for result in scored if result.get("confirm_turns"))}
         if scored:
             values = [task_values(result) for result in scored]
             entry["metrics"] = {field: stat([None if value is None else value[field] for value in values])

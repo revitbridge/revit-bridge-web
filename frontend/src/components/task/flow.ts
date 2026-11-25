@@ -32,6 +32,9 @@ export interface FlowApi {
 export interface FlowDeps {
   events: EventSource
   api: FlowApi
+  /* The chat mode each bridge request carries, read when it goes out (the page's mode
+     selector); undefined or absent: no mode is sent, the host runs its default. */
+  mode?: () => HostRequest['mode'] | undefined
 }
 
 export interface Transcript {
@@ -183,6 +186,12 @@ export function createTaskFlow(deps: FlowDeps) {
   const patch = (side: Side, fn: (t: Transcript) => Transcript) =>
     setState(s => ({ [side]: fn(s[side]) }) as Partial<TaskState>)
 
+  /* A bridge request with the chat mode of the moment, when there is one to send. */
+  const withMode = (request: HostRequest): HostRequest => {
+    const mode = deps.mode?.()
+    return mode === undefined ? request : { ...request, mode }
+  }
+
   const push = (side: Side, message: ChatMessage) =>
     patch(side, t => ({ ...t, messages: [...t.messages, message] }))
 
@@ -259,7 +268,7 @@ export function createTaskFlow(deps: FlowDeps) {
     push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}) })
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
     if (picked) request.mentions = mentionRefs(mentions)
-    const jobs = [consume('bridge', request, onSpec)]
+    const jobs = [consume('bridge', withMode(request), onSpec)]
     if (s.compare) {
       push('baseline', { role: 'user', content: message })
       jobs.push(consume('baseline', { message, session_id: s.baseline.sessionId, bridge: false }))
@@ -362,7 +371,7 @@ export function createTaskFlow(deps: FlowDeps) {
     push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
     controller = new AbortController()
     const attempt: PreviousAttempt = { execution: s.execution, executionKind: s.executionKind }
-    await consume('bridge', { execution: s.execution, session_id: s.bridge.sessionId }, evt => {
+    await consume('bridge', withMode({ execution: s.execution, session_id: s.bridge.sessionId }), evt => {
       onSpec(evt)
       setState({ previous: attempt })
     })

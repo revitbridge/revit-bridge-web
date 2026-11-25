@@ -102,7 +102,8 @@ def test_route_chat_is_the_analysts_note_and_nothing_else(client, model):
     frames = sse(resp.text)
     assert names(frames) == ["stage", "usage", "stage", "token", "done"]
     assert tokens(frames) == "Hello - ask me for a wall."
-    assert events(frames, "stage") == [{"role": "analyst", "model": "fake-1", "status": "start"},
+    # The turn's first stage event names the chat mode it runs in.
+    assert events(frames, "stage") == [{"role": "analyst", "model": "fake-1", "status": "start", "mode": "roles_analyst"},
                                        {"role": "analyst", "model": "fake-1", "status": "end"}]
     assert events(frames, "usage")[0]["role"] == "analyst" and events(frames, "usage")[0]["round"] == 1
     assert model.roles == ["analyst"]
@@ -663,6 +664,8 @@ def test_the_switch_and_the_default(make_client, env, model):
     env.delenv("LLM_SINGLE_MODEL")
     client = make_client()
     assert client.get("/config.json").json()["features"]["roles"] is True
+    # The default roles are planner + supervisor: the analyst is ROLES_ANALYST=on (tests/test_chat_modes.py).
+    assert client.get("/config.json").json()["features"]["chatModeDefault"] == "roles"
     env.setenv("LLM_SINGLE_MODEL", "1")
     client = make_client()
     assert client.get("/config.json").json()["features"]["roles"] is False
@@ -682,6 +685,7 @@ def test_without_the_bridge_there_are_no_roles(client, model):
 
 def test_the_rate_limit_counts_turns_not_model_calls(make_client, env, model):
     env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_ANALYST", "on")
     env.setenv("CHAT_RATE_LIMIT", "2")
     client = make_client()
     for _ in range(2):
@@ -708,6 +712,7 @@ def test_picks_are_checked_before_the_analyst_and_reach_both_roles(env, picker, 
 
     from tests.test_mentions import L2
     env.delenv("LLM_SINGLE_MODEL")
+    env.setenv("ROLES_ANALYST", "on")
     from backend.main import create_app
     with TestClient(create_app()) as client:
         bound = spec_for("create_wall", **{**WALL, "level_name": "L2"})
@@ -980,12 +985,16 @@ def test_the_digest_is_kept_per_device_and_a_failed_read_waits(monkeypatch):
     assert len(reads) == 4
 
 
-# -- the old suite's key cases, in both modes ---------------------------------------------------
+# -- the old suite's key cases, in every mode ---------------------------------------------------
 
-@pytest.fixture(params=["single", "roles"])
+@pytest.fixture(params=["single", "roles_analyst", "roles"])
 def mode(request, env):
-    if request.param == "roles":
+    """The chat's modes by their switches: the one loop, the roles with the analyst
+    (ROLES_ANALYST=on) and the default roles, planner + supervisor (ROLES_ANALYST unset)."""
+    if request.param != "single":
         env.delenv("LLM_SINGLE_MODEL")
+    if request.param == "roles_analyst":
+        env.setenv("ROLES_ANALYST", "on")
     return request.param
 
 
@@ -995,14 +1004,15 @@ def mode_client(mode, make_client):
 
 
 def planner_script(model, mode, *turns) -> str:
-    """The turns of the one loop, or of the planner after an analyst that routes to tool. The
-    role whose requests to read."""
-    if mode == "roles":
+    """The turns of the one loop, or of the planner (after an analyst that routes to tool in mode
+    roles_analyst). The role whose requests to read."""
+    if mode == "single":
+        model.script("single", *turns)
+        return "single"
+    if mode == "roles_analyst":
         model.script("analyst", json_turn({"route": "tool", "facts_needed": [], "note": ""}))
-        model.script("planner", *turns)
-        return "planner"
-    model.script("single", *turns)
-    return "single"
+    model.script("planner", *turns)
+    return "planner"
 
 
 def test_both_modes_a_tool_that_raises_closes_its_row_and_the_stage(mode, mode_client, model, monkeypatch):
@@ -1020,7 +1030,7 @@ def test_both_modes_a_tool_that_raises_closes_its_row_and_the_stage(mode, mode_c
         mode_client.post("/api/chat", json={"message": "x"}, headers=HEADERS)
     frames = sse("".join(chunks))
     tools = events(frames, "tool")
-    first = "1.2.1" if mode == "roles" else "1.1.1"
+    first = "1.2.1" if mode == "roles_analyst" else "1.1.1"      # the analyst made call 1
     assert [(t["id"], t["role"], t["status"]) for t in tools] == [(first, "planner", "running"),
                                                                     (first, "planner", "error")]
     assert tools[1]["error"] == "RuntimeError" and "secret" not in "".join(chunks)

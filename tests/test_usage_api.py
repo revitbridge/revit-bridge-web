@@ -27,7 +27,8 @@ def test_usage_routes_keep_unknown_unknown(make_client, local_env):
     assert one.json()["session_id"] == "s2"
     assert [(r["turn"], r["round"], r["input"], r["output"]) for r in one.json()["items"]] == [(1, 1, None, 7), (2, 1, 50, 3)]
     assert set(one.json()["items"][0]) == {"session_id", "turn", "round", "role", "model", "input", "output",
-                                           "cache_read", "cache_write", "ms", "created_at", "run_label"}
+                                           "cache_read", "cache_write", "ms", "created_at", "run_label", "mode"}
+    assert one.json()["items"][0]["mode"] is None            # recorded without a mode
     assert client.get("/api/usage", params={"session_id": "nope"}).json()["items"] == []
     assert client.get("/api/usage").status_code == 422
 

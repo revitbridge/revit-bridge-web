@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -93,10 +93,12 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         return {"status": "ok", "version": APP_VERSION}
 
     @app.get("/config.json", tags=["meta"])
-    async def config_json():
-        """Runtime configuration for the SPA (read once at startup)."""
+    async def config_json(request: Request):
+        """Runtime configuration for the SPA (read once at startup). ``features.chatModes``
+        lists the chat modes the caller may pick: on a cloud host every mode only with the
+        right ``X-Admin-Token``, else ``auto`` alone."""
         settings = get_settings()
-        body = settings.config_json()
+        body = settings.config_json(admin=settings.admin_token_ok(request.headers.get("x-admin-token")))
         # Each role's model name (from LLM_MODEL or the models file) and where it comes from.
         body["features"].update(config_features(settings, get_models()))
         return JSONResponse(body, headers={"Cache-Control": "no-cache"})
@@ -132,11 +134,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
     log_deploy_mode(settings)
     log_models(settings, models)
-    if settings.single_model:
-        _log.info("chat: one model loop (LLM_SINGLE_MODEL=1)")
-    else:
-        _log.info("chat: roles (planner tools: %s, analyst: %s)", settings.roles_planner_tools,
-                  "on" if settings.roles_analyst else "off")
+    _log.info("chat: default mode %s (single: LLM_SINGLE_MODEL=1, roles_analyst: ROLES_ANALYST=on; "
+              "planner tools: %s); a request's mode is honoured %s", settings.chat_mode_default,
+              settings.roles_planner_tools, "for an admin only" if settings.cloud else "always")
     return app
 
 

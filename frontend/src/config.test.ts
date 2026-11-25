@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { parseRuntimeConfig } from './config'
 
-const NO_MODELS = { models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false }
+const NO_MODELS = {
+  models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false,
+  chatModes: [], chatModeDefault: null,
+}
 
 describe('parseRuntimeConfig', () => {
   it('reads apiBase / wsBase / features and strips trailing slashes', () => {
@@ -44,6 +47,19 @@ describe('parseRuntimeConfig', () => {
     expect(parseRuntimeConfig(JSON.stringify({ features: { roles: false } })).features.roles).toBe(false)
     expect(parseRuntimeConfig(JSON.stringify({ features: { roles: 'yes' } })).features.roles).toBe(false)
     expect(parseRuntimeConfig('{}').features.roles).toBe(false)
+  })
+
+  it('reads the chat modes the host offers and what auto runs; anything else is none', () => {
+    const local = parseRuntimeConfig(JSON.stringify({ features: {
+      chatModes: ['auto', 'single', 'roles', 'roles_analyst'], chatModeDefault: 'roles' } }))
+    expect(local.features.chatModes).toEqual(['auto', 'single', 'roles', 'roles_analyst'])
+    expect(local.features.chatModeDefault).toBe('roles')
+    const odd = parseRuntimeConfig(JSON.stringify({ features: {
+      chatModes: ['auto', 'fast', 7, 'roles', 'roles'], chatModeDefault: 'auto' } }))
+    expect(odd.features.chatModes).toEqual(['auto', 'roles'])
+    expect(odd.features.chatModeDefault).toBeNull()                    // auto is never what auto runs
+    expect(parseRuntimeConfig(JSON.stringify({ features: { chatModes: 'roles' } })).features.chatModes).toEqual([])
+    expect(parseRuntimeConfig('{}').features).toMatchObject({ chatModes: [], chatModeDefault: null })
   })
 
   it('accepts the static config.example.json shape a split deployment ships', async () => {

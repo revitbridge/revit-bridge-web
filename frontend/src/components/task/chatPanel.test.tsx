@@ -92,4 +92,14 @@ describe('ChatPanel and the mention input', () => {
     expect(html).toContain('<span class="chat-mention is-unresolved" title="not checked: revit unreachable">@level:F2')
     expect(html.match(/class="chat-mentions"/g)).toHaveLength(2)      // none under a message without picks
   })
+
+  it('a used-up output limit shows as the model error notice in the reply, with its whole text', () => {
+    const notice = 'Output limit used up: the analyst (small-model) spent its whole output limit (max_tokens 16384) ' +
+      'before it wrote a reply or called a tool - most likely on thinking, which counts toward the limit.'
+    const transcript: Transcript = { ...empty, sessionId: 's1', messages: [
+      { role: 'user', content: 'a wall' }, { role: 'assistant', content: `**Model error:** ${notice}` }] }
+    const { html } = render(transcript, { onSend: vi.fn() })
+    expect(html).toMatch(/<div class="chat-bubble assistant"><div class="markdown-body">.*<strong>Model error:<\/strong> Output limit used up: the analyst \(small-model\)/s)
+    expect(html).toContain('(max_tokens 16384)')
+  })
 })

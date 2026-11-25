@@ -24,9 +24,10 @@ is refused, and `websocket_connect` needs a full `ws://127.0.0.1:7860/...` URL).
 `tests/test_deploy_mode.py` covers what differs; `tests/test_refused.py` runs a pack's refusal
 (revit-bridge 0.9.1 `refused: true`) through the package with the add-in's own reply. The suite's
 chat is the one model loop (`env` sets `LLM_SINGLE_MODEL=1`: the tests written before the roles
-describe it, and passing them unchanged is what shows the switch keeps it); `roles_env` gives the host's default, the three roles,
+describe it, and passing them unchanged is what shows the switch keeps it); `roles_env` gives the three roles
+(`ROLES_ANALYST=on`, mode `roles_analyst`; the host's default is planner + supervisor, mode `roles`),
 with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own script
-(`tests/test_roles.py`).
+(`tests/test_roles.py`); `tests/test_chat_modes.py` covers the modes, the switches and the cloud rule.
 
 ## Layout
 
@@ -36,15 +37,19 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); a message's
   `mentions` (the designer's picks) are checked with the package's `resolve_mentions` before any
   model call (`event: mentions` first; the verified ones as the package's `mention_block` after the
-  designer's words, kept on the session). By default the turn runs in role segments (`Turn.loop`,
-  one per role; `message_roles`: the analyst, then the planner for `query` / `tool`;
+  designer's words, kept on the session). The request's `mode` (`single`, `roles`, `roles_analyst`,
+  `auto`) picks how the turn runs: `WebSettings.resolve_chat_mode` (a local host honours it, a cloud
+  host only with the admin token; else `chat_mode_default`: `roles`, or `single` with
+  `LLM_SINGLE_MODEL=1`, `roles_analyst` with `ROLES_ANALYST=on`); `Turn.mode` goes on the turn's
+  first `stage` event and every `llm_calls` row. With the roles the turn runs in role segments (`Turn.loop`,
+  one per role; `message_roles`: the analyst (mode `roles_analyst`), then the planner for `query` / `tool`;
   `execution_roles`: the supervisor, then the planner on `retry`), each role with the package's
   `host_instructions(role=..., code=False)` (`build_role_prompt`: the planner's plus
   `WORKBENCH_LINE`, the analyst's plus `roles.ANALYST_WORKBENCH_LINE`), its own tools and the model
   `models_file.resolve(role, headers)` gives it; the analyst's digest is the package's
   `snapshot_digest` (`model_digest`: one snapshot per session and device scope, again after a
-  reported run; a failed read waits a minute). `ROLES_PLANNER_TOOLS` (`route` / `all`) and
-  `ROLES_ANALYST` (`on` / `off`) are two variants of the roles for measuring (`WebSettings`);
+  reported run; a failed read waits a minute). `ROLES_PLANNER_TOOLS` (`route` / `all`) is a
+  variant of the roles for measuring, `ROLES_ANALYST` (`off` / `on`) the default mode (`WebSettings`);
   `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
   prompt the package's `host_instructions(code=False, mentions=True)` plus `WORKBENCH_LINE`, every
@@ -62,20 +67,39 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `backend/api/model_tools.py` the model's tools (the package's read-only ones + `propose_spec`, which
   refuses `execute_code` with `code_not_offered`; no `get_guidance`);
   `backend/llm.py` the single OpenAI-compatible client, with function calling and token usage
-  (`parse_usage`: the provider shapes; a count not reported is `None`, never 0);
+  (`parse_usage`: the provider shapes; a count not reported is `None`, never 0), the provider
+  options a models file entry sets (`api: responses` -> `stream_responses`, not streamed, the same
+  items out; `max_tokens_param`, `reasoning_effort`, `timeout_s`) and `ProviderMemory` (a tool
+  call's provider keys - Gemini's `extra_content` - and a responses reply's output items, per
+  session, back to the same endpoint and model only; a key two different replies share is unusable,
+  so is a value over `MEMORY_VALUE_MAX`; at most `MEMORY_CALLS`, trimmed with the history by
+  `Session.add` via `retain`, skipped when a trim leaves no user message); the default output limit
+  `DEFAULT_MAX_TOKENS` (16384, read at call time), replaced by `LLM_MAX_TOKENS` (`WebSettings.llm_max_tokens`,
+  passed as `ModelTarget.max_tokens` by `models_file.resolve` for every call whose entry sets none);
+  an empty reply at the output limit is an `OutputLimitError`, which `chat.Turn.limit_notice` turns
+  into the turn's `error` detail (role, model, limit, what is still there - `Turn.card`, the reported
+  run, the untold planner after the supervisor's limit - and `limit_advice`, which depends on
+  `ModelTarget.browser_model` / `entry_max_tokens`) - every role, no repair, no fallback. Without
+  a models file the requests and streams are byte for byte the record in
+  `tests/default_path_golden.json` (`tests/test_default_path.py`: section `max_tokens_16384`, and
+  `max_tokens_4096` - taken from aa5556c, never regenerated - with the default forced back to 4096);
   `backend/session.py` (history, the session's fixed system prompt and role prompts, the turn
   counter, the verified picks per device scope, the roles' open task, digests per device scope,
-  pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported); `backend/mention_check.py` the `unknown_mention` check of a spec's
+  pending verdict and the spec `/spec/confirm` confirmed with the session until its run is reported,
+  the `provider_memory`); `backend/mention_check.py` the `unknown_mention` check of a spec's
   `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
-- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, and `by_role`: the same per role and model): the `llm_calls` rows read back.
+- `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, the run's chat `mode` (`mixed` for more than one), and `by_role`: the same per role and model): the `llm_calls` rows read back.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
 - `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
-- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render; pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
-- `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). The host
-  decides whether its chat runs in roles (`LLM_SINGLE_MODEL`); the bench records which (`chat` in
-  the results), and how it fed results back (`feedback_policy`; `compare` notes a difference).
+- `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render (`features.chatModes` / `chatModeDefault` feed `components/task/chatMode.ts` and the task page's `ChatModeSelect`: the pick in `localStorage`, sent as `mode` by `flow.ts`); pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
+- `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). `--mode`
+  (default `auto`) goes as the chat mode with every request; the bench records it (`chat_mode`), the
+  host's default and the modes its turns ran in (`chat`), and how it fed results back
+  (`feedback_policy`) and confirmed ready proposals (`confirm_policy`; `--confirm once`, the
+  unattended mode: one "yes" when the host's tool events show a ready `reconcile` and no
+  `propose_spec`, `runner.waits_for_confirmation`; `compare` notes a difference in either).
   `bench/tasks-supervisor.yml`: tasks whose fixed execution result failed (a task's own
   `execution`), to measure the report step and the supervisor's send-backs.
 - `tests/` - pytest, with `tests/fake_revit.py` (a TCP stand-in for the add-in; no import from the package's tests) and `tests/fake_model.py` (a scripted OpenAI-compatible model behind `httpx.MockTransport`; it returns usage in each provider's shape, `USAGE_SHAPES`); `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`, `.env.example`.

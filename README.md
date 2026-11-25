@@ -190,9 +190,10 @@ its connection.
    arguments - the first 2000 characters and the size when they run past 8000 - and the first
    2000 characters of the result; errors in red). A row or stage still open when the turn's
    stream ended (stopped, broken off) shows as *interrupted*. The rows are grouped by role, each
-   group headed by the role and the model it ran on (see *The chat's roles* below): the analyst
-   (no tools), then the planner, or the supervisor after a run. A small-talk or "no tool" reply is
-   the analyst's own, and after a run the supervisor's report is the reply. When the supervisor
+   group headed by the role and the model it ran on (see *The chat's roles* below): the planner, or
+   the supervisor after a run - and, in mode `roles_analyst` only, the analyst (no tools) before the
+   planner, whose small-talk or "no tool" reply is then its own (the default mode is planner +
+   supervisor). After a run the supervisor's report is the reply. When the supervisor
    sends the task back, the planner's new card comes in the same reply, and above it, as *Previous
    attempt*, what the page itself received from the run (succeeded, failed with its error, or the
    validator's checks that did not pass) - the model's report is never the only record. A run the
@@ -239,16 +240,32 @@ its connection.
    *Validate* re-runs its assertion against the model as it is now. A run the tool refused in Revit
    is listed as *refused by the tool* with its reason; there is nothing to validate.
 5. **Token** (`/token`) - the measured runs: every chat sent with an `X-Run-Label` header (the token
-   bench sends one per run) is counted under that label. One line per run - time, model calls,
-   input, cache read, cache write, output, time - and one per role and model under it. Pick two runs
-   to see them side by side with the difference (B - A) of each count, in total and per role. A
-   count the provider did not report shows as `-`, and so does every total and difference it is
-   part of. Read-only; on a cloud host it asks for the admin password (as `/api/logs` does).
+   bench sends one per run) is counted under that label. One line per run - its chat mode, time,
+   model calls, input, cache read, cache write, output, time - and one per role and model under it.
+   Pick two runs to see them side by side with the difference (B - A) of each count, in total and
+   per role. A count the provider did not report shows as `-`, and so does every total and
+   difference it is part of. Read-only; on a cloud host it asks for the admin password (as
+   `/api/logs` does).
 
-The chat runs in three roles, each with its own prompt (see *The chat's roles* under
+The token bench drives a running host the way the page does and measures each task
+(`python -m bench run --label <name>`; `python -m bench run --help` lists the options). Unattended
+runs use **`--confirm once`** (the automatic mode): when a tool or ask task's turn stops at a
+proposal that is ready for confirmation - the host's tool events show a `reconcile` that came back
+`ready` and no `propose_spec` - the bench answers one "yes" and scores the task on what follows; the
+extra turn's tokens are counted (`confirm_turns`). Nothing runs in Revit unless `--execute` is given.
+`--mode auto|single|roles|roles_analyst` (default `auto`, the host's default) goes as the chat mode
+with every request; the results record it and the modes the host ran (a cloud host runs its
+default: the bench sends no admin token). Its HTTP read timeout (`--timeout`) is 1260 seconds by
+default - longer than the host's longest model call, 1200 s (600 s, plus the part of a `timeout_s`
+above 300) - so a long non-streamed call the host is still waiting for is not counted as a failure;
+connecting to a host that does not answer fails after 15 s. Example: `python -m bench run --label
+nightly --repeat 3 --confirm once`.
+
+The chat runs in roles by default - the planner and the supervisor; the analyst too in mode
+`roles_analyst` - each with its own prompt (see *Chat modes* and *The chat's roles* under
 *Configure*): the analyst's is 1.8 KB, the planner's 3.5 KB with up to seven tool definitions
-(4 KB; two, 1.6 KB, for a read), the supervisor's 1.6 KB with one (1 KB). With
-`LLM_SINGLE_MODEL=1` it is one loop, as before the split: its system prompt is the package's host
+(4 KB; two, 1.6 KB, for a read), the supervisor's 1.6 KB with one (1 KB). In mode `single`
+(`LLM_SINGLE_MODEL=1`) it is one loop, as before the split: its system prompt is the package's host
 instructions for a host whose model writes no code
 (`host_instructions(code=False, mentions=True)`: no `execute_code`, snippet contract or
 `get_guidance`; saved tools only; the rule for the designer's `@` selections) and one line of this
@@ -290,9 +307,10 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 |---|---|---|
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Server-side model defaults; headers `X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key` override them per request. The server's key is only ever sent to `LLM_BASE_URL`: a request that sends its own `X-LLM-Base-Url` must send `X-LLM-Key` too (400 otherwise), while a visitor's key or model name alone goes to the server's endpoint. The server model counts as configured (`/config.json` `serverModel`) only with all three set. Unset = visitors must bring their own. |
-| `LLM_SINGLE_MODEL` | `0` | `1`: the chat runs as one model loop - the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the three roles (see *The chat's roles*). `/config.json` reports it as `features.roles` (`false` with `1`). |
+| `LLM_MAX_TOKENS` | unset (16384) | The output limit (`max_tokens`, or `max_output_tokens` on the responses api) of every model call whose models file entry sets none: the server's model, a model the browser's settings chose, every call without a models file. A whole number from 256 to 65536; anything else refuses the start (the message names the variable, not the value). Lower it for a model whose output cap is below 16384; raise it for a thinking model that uses the limit up (see *Models by role*). Unset, the requests are as without it. |
+| `LLM_SINGLE_MODEL` | `0` | `1`: the chat's default mode is `single` - one model loop, the planner's model with the whole host text and all seven tools, exactly as before the roles (the comparison baseline and the fallback). Unset or `0`: the roles (see *The chat's roles* and *Chat modes*). `/config.json` reports it as `features.roles` (`false` with `1`) and in `features.chatModeDefault`. |
 | `ROLES_PLANNER_TOOLS` | `route` | With the roles: `route` - the planner gets, and may call, the tools of the analyst's route only; `all` - all seven on every route, every one runs (the tool definitions then stay the same for a provider's prompt cache). Any other value refuses the start. For measuring both. |
-| `ROLES_ANALYST` | `on` | With the roles: `off` sends every message straight to the planner with route `tool` (all seven tools); the supervisor still reports runs - planner and supervisor only, to measure whether the analyst pays for itself. Any other value refuses the start. |
+| `ROLES_ANALYST` | `off` | `off`: the roles are the planner and the supervisor (default mode `roles`) - every message goes straight to the planner with route `tool` (all seven tools), the supervisor reports runs. `on`: the analyst routes each message first (default mode `roles_analyst`). Any other value refuses the start. **The default was `on` before this release.** |
 | `MODELS_FILE` | `DATA_DIR/models.yml` | The models file: an endpoint, a model and the name of the key's variable per entry, an entry per role (see *Models by role*). No file at the default path: `LLM_*` and the headers, as before. Set it only to read another path; the host then refuses to start when there is no file there, as it does for any file that is not valid. `/config.json` reports each role's model name (`features.models`) and whether the file set them (`features.modelsFile`). |
 | `LLM_ALLOW_HTTP` | `0` | Allow browser-supplied `http://` endpoints and endpoints on loopback or private addresses (a model on the operator's own machine or network). Without it a browser-supplied endpoint must be `https://` on a public address: a literal loopback, private, link-local, multicast or reserved address, or a name that resolves to one, is refused with 400. The name is resolved once per request, which does not stop DNS rebinding. `LLM_BASE_URL` itself is never checked. In the models file it lets an entry's `base_url` be `http://` to any host (`http://` to loopback is allowed there without it). The check is best-effort: a host on the public internet should also restrict the container's outbound traffic (egress) to what it needs. Redirects from a model endpoint are never followed. |
 | `CHAT_RATE_LIMIT` | `30` | `/api/chat` and `/api/v1/bridge/spec/confirm` requests per minute per client IP (separate counters); on a cloud host `/api/v1/bridge/check` and `/dry-run` count against `/spec/confirm`'s. |
@@ -312,11 +330,38 @@ come from one file, `models.yml` (see *Models by role* below). The browser gets 
 | `REVIT_BRIDGE_WEB_CONTAINER` | `1` in the image | Set by the Dockerfile: a local host checks `BIND_ADDRESS` instead of `HOST`. Not for `.env`. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1,172.16.0.0/12` in the image, `127.0.0.1` outside it | Proxies whose `X-Forwarded-*` headers are trusted for the client address (per-address rate limits, logs). The image default fits the documented setup: the port published on loopback and a reverse proxy on the Docker host, which reaches the container from the Docker bridge gateway. When `BIND_ADDRESS` is not loopback, set it to the proxy's address - or to `127.0.0.1` with no proxy in front - so a visitor cannot choose their own address. If the compose network is in `192.168.0.0/16` (`docker network inspect revit-bridge-web_default`), list its gateway instead. An explicit value always wins. |
 
+### Chat modes
+
+How the chat runs a request is its mode:
+
+| Mode | Runs |
+|---|---|
+| `single` | one model loop: the planner's model with the whole host text and all seven tools, as before the roles |
+| `roles` | the planner and the supervisor (the analyst is left out: every message goes to the planner with route `tool`) - **the default** |
+| `roles_analyst` | the analyst, the planner and the supervisor |
+| `auto` | the host's default: `single` with `LLM_SINGLE_MODEL=1`, else `roles_analyst` with `ROLES_ANALYST=on`, else `roles` |
+
+`POST /api/chat` takes an optional `mode` (one of the four; anything else is 422; absent or `null`
+is `auto`). A local host honours it; a cloud host only for a request with the right
+`X-Admin-Token` - anyone else's is ignored and the default runs. Without the bridge (`bridge:
+false`) a request runs as `single`. `/config.json` lists the modes the caller may pick
+(`features.chatModes`: all four on a local host and for an admin on a cloud host, `["auto"]` for
+anyone else there) and what `auto` runs (`features.chatModeDefault`). The mode a turn ran in is a
+field of its first `stage` event (`{role, model, status, mode}`) and of every `llm_calls` row;
+`GET /api/usage/runs` reports it per run (`mode`; `mixed` when a run's calls ran in more than
+one). On the task page a *Mode* menu next to the chat input picks it (Auto shows what it runs
+here); the pick is remembered in the browser and sent with every chat request, and the menu is
+not there when the host offers fewer than two modes. The Token page shows each run's mode.
+
+Planner + supervisor is the default (one model call less per message than with the analyst); turn
+the analyst on with a strong model only. `single` is cheapest, but on modelling tasks a model may
+stop at a proposal in text ("reply yes to confirm") without calling `propose_spec`.
+
 ### The chat's roles
 
-By default the chat splits each request into three roles, each with its own instructions (the
-package's role texts, `host_instructions(role=..., code=False)`), its own tools and its own model
-(see *Models by role*):
+With the roles the chat splits each request into up to three roles, each with its own instructions
+(the package's role texts, `host_instructions(role=..., code=False)`), its own tools and its own
+model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 
 | Role | Does | Sees | Tools |
 |---|---|---|---|
@@ -324,7 +369,9 @@ package's role texts, `host_instructions(role=..., code=False)`), its own tools 
 | planner | reads the model, picks the tool, fills the parameters, asks, proposes the spec | the session's conversation, each message with the analyst's routing after it, its own tool results | `query` route: `query`, `get_project_snapshot`; `tool` route: those and `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` |
 | supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
-The analyst answers one JSON object; with `chat` or `none` its `note` is the reply (with `none`
+In mode `roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`; the default mode `roles` has no
+analyst and sends every message to the planner with route `tool`) the analyst answers one JSON
+object; with `chat` or `none` its `note` is the reply (with `none`
 the host adds the workbench link when the note lacks it) and nothing else runs. With `query` or
 `tool` the planner runs as the chat did before, with that route's tools only; a call of any other
 tool is answered `tool_not_offered` and never run. Confirmation and execution stay on the page.
@@ -356,7 +403,7 @@ planner's transcript - and each role's prompt and tool definitions stay the same
 `usage` event and one `llm_calls` row with its role and model. `CHAT_RATE_LIMIT` counts requests to
 `/api/chat` (your messages and reported runs), not model calls.
 
-The split costs one more model call per message (the analyst) and one round trip more before the
+With the analyst (mode `roles_analyst`), the split costs one more model call per message and one round trip more before the
 planner starts; it saves where the analyst answers alone (small talk, no tool), on reads (two tool
 definitions instead of seven) and on reports (a short supervisor prompt instead of the whole
 conversation). In the test suite's scripted flows, with the same model answers and revit-bridge
@@ -371,12 +418,12 @@ reach the model through `list_tools`, whose answer grew by 15.7 KB. Real models 
 script: measure with the token bench (`python -m bench`; it records which way the host ran). A
 tool task the designer never runs pays the analyst calls without the report's saving.
 
-`LLM_SINGLE_MODEL=1` runs the chat as one model loop instead (the planner's model, the whole host
-text, all seven tools), request for request and event for event as before the split - the
-comparison baseline and the fallback. Without the bridge (`bridge: false`) there are no roles. Two
-more switches exist to measure variants of the roles: `ROLES_PLANNER_TOOLS=all` gives the planner
-all seven tools on every route, and `ROLES_ANALYST=off` leaves the analyst out (planner and
-supervisor). The interaction log (`/api/logs`) names each role that ran in a turn and its model.
+Mode `single` (`LLM_SINGLE_MODEL=1` as the default) runs the chat as one model loop instead (the
+planner's model, the whole host text, all seven tools), request for request and event for event as
+before the split - the comparison baseline and the fallback; its first `stage` event carries the
+`mode` field. Without the bridge (`bridge: false`) there are no roles. `ROLES_PLANNER_TOOLS=all`
+gives the planner all seven tools on every route (to measure it). The interaction log
+(`/api/logs`) names each role that ran in a turn and its model.
 
 ### Models by role (`models.yml`)
 
@@ -404,16 +451,55 @@ roles:
   as it does without `LLM_API_KEY`.
 - **An entry** is `base_url` (`https://`, or `http://` to `127.0.0.1` / `localhost` - to any host
   only with `LLM_ALLOW_HTTP=1`; no user name, password or query), `model`, `api_key_env`, and optionally `max_tokens` and `temperature`
-  (0 to 2). Nothing else: `api_key`, `key`, `token`, `extra_headers` or any other field refuses
+  (0 to 2) and the provider options below. Nothing else: `api_key`, `key`, `token`, `extra_headers` or any other field refuses
   the start, as do YAML aliases and a key given twice. The message names the file, the field and
   the problem, never a value from the file.
+- **Provider options** of an entry, each sent only when set (an entry without them sends exactly
+  what it sent before):
+
+  | Field | Values | Default | What it does |
+  |---|---|---|---|
+  | `api` | `chat`, `responses` | `chat` | `responses` calls `<base_url>/responses` (OpenAI's Responses API) instead of `<base_url>/chat/completions` - for models that take tools only there. The call is not streamed: its text reaches the page in one piece when the model is done; the page's events are the same. Stateless (`store: false`); with `reasoning_effort` set the request asks for the encrypted reasoning, and the host sends it back with the function calls in the following calls (kept in memory with the chat session, never on disk or in a log). `max_tokens` goes as `max_output_tokens`; `temperature` only when the entry sets it; the tools in the flat form, `strict: false`. Usage: `input_tokens` is the input, `input_tokens_details.cached_tokens` the cache read (and `cache_write_tokens` the cache write when reported), `output_tokens` the output, reasoning included. |
+  | `max_tokens_param` | `max_tokens`, `max_completion_tokens` | `max_tokens` | The name the output limit goes under on the chat api (OpenAI's newer models refuse `max_tokens`). Chat api only. |
+  | `reasoning_effort` | `low`, `medium`, `high`, `xhigh` | not sent | `reasoning_effort` on the chat api, `reasoning.effort` on the responses api. |
+  | `timeout_s` | 10 to 900 | 300 | Seconds one read of a model call may wait (a thinking model may be silent for minutes; a responses call is one long read). A value above 300 also lengthens the whole call's limit (600 s) by as much. |
+
+  Tool calls on the chat api come back with their provider's own keys - Gemini's `extra_content`
+  with its thought signature, which Gemini 3 and later require on the next request - and the host
+  sends them back unchanged on that call in the following requests to the same endpoint and model
+  (held with the chat session in memory, never logged; at most 64 calls, none whose data is over
+  64 KB, and forgotten with the history). Two calls that share an id, a name and arguments - a
+  provider that numbers its calls from `call_0` in every reply, the same tool asked the same twice
+  - go back with nothing rather than with each other's data (the responses api then sends them as
+  plain `function_call` items).
+- **The output limit** (`max_tokens`) is an entry's own, else the host's default: `LLM_MAX_TOKENS`
+  when set (256 to 65536), else 16384 (it was 4096). The default also applies to every call on a
+  model the browser's settings chose (no entry option does) and to every call without a models
+  file; a model whose output cap is below 16384 needs an entry `max_tokens` or `LLM_MAX_TOKENS`. A
+  thinking model's thinking counts toward the limit - Gemini's and DeepSeek's do. A reply that ends
+  at its limit (`finish_reason: length`, or `incomplete` for `max_output_tokens`) before it wrote
+  anything or called a tool - a thinking model that spent the limit thinking - ends the turn, for
+  the analyst, the planner and the supervisor alike (no repair request, no fallback), with an
+  `error` event the chat shows as its reply: *Output limit used up: the planner (some-model) spent
+  its whole output limit (max_tokens 16384) ...*, then what is still there and how to raise it.
+  What is still there: the last card the turn proposed - kept and confirmable when it was ready,
+  otherwise not confirmable as it stands - or, when the turn reported a run, the run and its result
+  (evidence id) as the page received them. When the supervisor is the one that ran out, its report
+  is missing and the planner has not been told of the run: say what it did in your next message
+  (nothing else carries it over). How to raise it: a larger `max_tokens` in the model's entry; for
+  an entry without one, or without a models file, that or `LLM_MAX_TOKENS`; for a model the
+  browser's settings chose, only the host can - with `LLM_MAX_TOKENS`, or with an entry for that
+  model used without the browser's model settings. Without a models file (and `LLM_MAX_TOKENS`
+  unset) every request is the chat api with `max_tokens` 16384, `temperature` 0.3 and a 300 s read
+  timeout (it was 120 s).
 - **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
   the planner's entry.
 - **The browser's model settings** (`X-LLM-Base-Url` / `X-LLM-Model` / `X-LLM-Key`) keep their
   meaning: they replace the planner's entry for that browser's requests, field by field as they
   replace `LLM_*` without the file (a base URL of the browser's own needs its own key, and must be
   https on a public address unless `LLM_ALLOW_HTTP=1`). A role on another entry is not affected.
-  An entry's `max_tokens` / `temperature` apply only while its own endpoint and model are used.
+  An entry's `max_tokens` / `temperature` and provider options apply only while its own endpoint and
+  model are used: a browser's endpoint or model is called on the chat api with the defaults.
 - **Base URLs** in the file are the operator's settings, treated like `LLM_BASE_URL` (which the host
   never checks against private addresses); only a browser-supplied URL is. `http://` to another
   machine (a local model elsewhere on the network) needs `LLM_ALLOW_HTTP=1`, the same switch with the
@@ -439,6 +525,32 @@ roles:
   analyst: cheap
   planner: strong
   supervisor: cheap
+```
+
+OpenAI on the Responses API for the planner (the model's name as OpenAI lists it; the key in
+`OPENAI_API_KEY`):
+
+```yaml
+models:
+  openai: { base_url: https://api.openai.com/v1, model: your-openai-model, api_key_env: OPENAI_API_KEY,
+            api: responses, reasoning_effort: low, max_tokens: 16384 }
+  other:  { base_url: https://api.example.com/v1, model: some-model, api_key_env: EXAMPLE_API_KEY }
+roles:
+  planner: openai
+  analyst: other
+  supervisor: other
+```
+
+Gemini through its OpenAI-compatible endpoint (Gemini's thinking counts toward `max_tokens`, so it
+needs a large output limit - more than 16384 if the chat shows the "output limit used up" notice -
+and time; its thought signatures go back by themselves):
+
+```yaml
+models:
+  gemini: { base_url: https://generativelanguage.googleapis.com/v1beta/openai, model: your-gemini-model,
+            api_key_env: GEMINI_API_KEY, max_tokens: 16384, timeout_s: 600 }
+roles:
+  planner: gemini
 ```
 
 With Docker the default path is in the `./data` volume, so placing the file there is enough. To keep
@@ -583,13 +695,14 @@ reaches the model (this page does not send it). A message without picks has no s
 goes to the model as typed.
 
 Every turn also streams what the host did: `event: stage` `{role, model, status}` around each
-role's part of the turn (`start`, then `end`; the last `end` before `done` or `error`), `event: tool`
+role's part of the turn (`start`, then `end`; the last `end` before `done` or `error`; the turn's
+first one also has `mode`, the chat mode it runs in - see *Chat modes*), `event: tool`
 `{id, role, name, args, status, ms?, size?, preview?, error?}` twice per tool call (`running`, then
 `ok` or `error` with the same `id`) and `event: usage` `{role, model, round, input, output,
 cache_read, cache_write, ms}` after each model call. `role` is `analyst`, `planner` or `supervisor`
-(always `planner` with `LLM_SINGLE_MODEL=1` or `bridge: false`), `model` the model the call went to,
+(always `planner` in mode `single` or with `bridge: false`), `model` the model the call went to,
 and `round` counts the model calls of the turn across its roles. A message's turn is the analyst's
-stage, then the planner's when the route is `query` or `tool`; an execution report's is the
+stage (mode `roles_analyst`), then the planner's when the route is `query` or `tool`; an execution report's is the
 supervisor's, then the planner's when it sends the task back - its new card comes as `event: spec`
 in that same reply. The analyst's and the supervisor's answers are JSON for the host: the page gets
 only the text the host makes of them (the note, the report and question). `args` is what the model sent,
@@ -606,9 +719,11 @@ always sends `prompt_tokens_details.cached_tokens` (new-api sends 0 when the ups
 nothing) shows a cache read of 0, not unknown - the host cannot tell the two apart. Each call is also
 stored in the `llm_calls` table (no text, no address, no key) with the optional `X-Run-Label`
 header (1-64 of `A-Z a-z 0-9 _ . -`, 422 otherwise). `GET /api/usage?session_id=<id>` returns
-those rows for one session, `GET /api/usage/runs` one line per run label with each sum `null` as
-soon as one call lacks that count, and under `by_role` the same sums per role and model of the run;
-like `/api/logs`, they need no password on a local host and `X-Admin-Token` on a cloud one.
+those rows for one session (each with the chat `mode` it ran in), `GET /api/usage/runs` one line
+per run label with each sum `null` as soon as one call lacks that count, the run's `mode` (`mixed`
+for more than one, `null` for calls recorded before modes), and under `by_role` the same sums per
+role and model of the run; like `/api/logs`, they need no password on a local host and
+`X-Admin-Token` on a cloud one.
 
 Secrets never enter this repository: `.env`, `.secrets/` and `*.token` are ignored; a device's token
 and browser key exist in plain text only in the one response that creates them (the store keeps

@@ -29,6 +29,9 @@ def test_health_and_config_json(make_client, env):
             "maxDevices": 3,
             # the suite's chat is the one loop (LLM_SINGLE_MODEL=1, tests/conftest.py)
             "roles": False,
+            # a cloud host's visitor picks no mode (an admin may: tests/test_chat_modes.py)
+            "chatModes": ["auto"],
+            "chatModeDefault": "single",
             # kept until the connect page of 7.3 reads maxDevices
             "slotTokenRequired": False,
             "maxSlots": 3,
@@ -45,7 +48,10 @@ def test_settings_defaults_come_from_env_only():
     assert (s.host, s.port, s.max_devices, s.cors_origins) == ("0.0.0.0", 7860, 20, ())
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "mode": "cloud", "byoModel": True, "serverModel": False, "admin": True, "maxDevices": 20,
-        "roles": True, "slotTokenRequired": False, "maxSlots": 20}}
+        "roles": True, "chatModes": ["auto"], "chatModeDefault": "roles", "slotTokenRequired": False,
+        "maxSlots": 20}}
+    # The analyst is off by default (planner + supervisor).
+    assert s.roles_analyst is False and s.chat_mode_default == "roles"
     s = WebSettings.from_env({"DEPLOY_MODE": "cloud", "ADMIN_PASSWORD": "pw",     # CORS_ORIGINS: cloud only
                               "LLM_BASE_URL": "https://m.example/v1", "LLM_MODEL": "m", "LLM_API_KEY": "k",
                               "CORS_ORIGINS": "https://a, https://b"})

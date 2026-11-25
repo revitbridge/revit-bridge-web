@@ -281,6 +281,7 @@ export interface HostRequest {
   session_id: string | null
   bridge?: boolean
   mentions?: MentionRef[]
+  mode?: 'auto' | 'single' | 'roles' | 'roles_analyst'    // how the chat runs it; absent: the host's default
 }
 
 /* The SSE events of one turn, as chatEvents() yields them. */
@@ -405,4 +406,5 @@ export interface UsageRun {
   first_at: string
   last_at: string
   by_role?: UsagePart[]
+  mode?: string | null     // the chat mode the run's calls ran in; 'mixed' for more than one; null or absent: not recorded
 }

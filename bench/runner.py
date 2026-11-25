@@ -12,9 +12,23 @@ card would send it, at most ``MAX_FEEDBACK_TURNS`` reports per task. With
 (``POST /api/v1/bridge/spec/confirm``) and run (``POST /api/v1/bridge/tools/{name}/run``)
 - that changes the open model - and the real result goes back instead, once.
 
-The host decides how its chat runs (three roles, or one loop with
-``LLM_SINGLE_MODEL=1``); the bench only records which (``chat`` in the results: from
-``/config.json`` ``features.roles``, and the roles each task's events named).
+The chat mode (``mode``: ``auto``, the host's default, or ``single``, ``roles``,
+``roles_analyst``) goes as ``mode`` in every chat request of the run. A local host runs
+it; a cloud host runs its default instead (it honours a mode for an admin only, and the
+bench sends no admin token). The results record the mode asked for (``chat_mode``), the
+host's default (``chat.host``: ``/config.json`` ``features.chatModeDefault``, or
+``features.roles`` on an older host), the modes the host said each turn ran in (the
+first ``stage`` event's ``mode``: ``chat.modes_seen`` and each task's ``modes``) and the
+roles the events named.
+
+``confirm`` (``never`` by default, or ``once``): with ``once``, a tool or ask task whose
+turn ends with no accepted spec while the host reports a proposal ready for the
+designer's confirmation - read from the turn's tool events, not from the reply's words:
+the turn's last ``reconcile`` call succeeded with ``ready: true`` and no ``propose_spec``
+was called - gets one more user message, ``CONFIRM_MESSAGE``, and the task is scored on
+what follows (``confirm_turns`` counts it; its tokens are in the task's usage). This lets
+the model reach ``propose_spec`` in an unattended run; nothing more runs in Revit than
+without it (the report step still uses the fixed result unless ``execute``).
 
 A task's ``mentions`` are the designer's picks, sent with its first message (the
 session keeps them for its later turns): ``{kind, id}`` as written, or ``{kind,
@@ -62,6 +76,12 @@ FEEDBACK_FOLLOWS = f"follows send-backs (at most {MAX_FEEDBACK_TURNS} reports pe
 FEEDBACK_ONCE = "one report per task"
 MENTIONS_PATH = "/api/v1/bridge/mentions"
 PICK_LIMIT = 200                 # the most the host lists for one pick
+CHAT_MODES = ("auto", "single", "roles", "roles_analyst")
+CONFIRM_POLICIES = ("never", "once")
+# The designer's answer to a proposal the model waits on (confirm once).
+CONFIRM_MESSAGE = "yes"
+# Tasks whose turn may end at a proposal ready for confirmation.
+CONFIRM_KINDS = ("tool", "ask")
 
 
 class HostError(Exception):
@@ -206,8 +226,36 @@ def execute_spec(client: httpx.Client, base: str, spec: dict, session_id: str | 
             "message": body.get("message") or f"HTTP {response.status_code}: {reason}"}
 
 
+def waits_for_confirmation(events: list[dict]) -> bool:
+    """The host's structural sign that a turn stopped at a proposal ready for the designer's
+    confirmation: its tool events show no ``propose_spec`` call, and its last ``reconcile`` call
+    ended ``ok`` with a result (the event's ``preview``, read only when it is the whole result)
+    whose ``ready`` is true. The reply's wording is never read."""
+    tools = merge_tools([event for event in events if event.get("type") == "tool" and "id" in event])
+    if any(tool.get("name") == "propose_spec" for tool in tools):
+        return False
+    reconciles = [tool for tool in tools if tool.get("name") == "reconcile"]
+    if not reconciles or reconciles[-1].get("status") != "ok":
+        return False
+    last = reconciles[-1]
+    preview, size = last.get("preview"), last.get("size")
+    if not isinstance(preview, str) or (isinstance(size, int) and size > len(preview)):
+        return False                     # cut: the whole result is not there to read
+    try:
+        result = json.loads(preview)
+    except ValueError:
+        return False
+    return isinstance(result, dict) and result.get("ready") is True
+
+
+def turn_modes(events: list[dict]) -> list[str]:
+    """The chat modes the host said its turns ran in (each turn's first ``stage`` event), each once."""
+    return list(dict.fromkeys(event["mode"] for event in events
+                              if event.get("type") == "stage" and isinstance(event.get("mode"), str)))
+
+
 def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: dict,
-             execute: bool = False) -> dict:
+             execute: bool = False, mode: str = "auto", confirm: str = "never") -> dict:
     base = base.rstrip("/")
     started = time.perf_counter()
     events: list[dict] = []
@@ -216,6 +264,7 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
     turns = 0
     requests = 0
     feedback_turns = 0
+    confirm_turns = 0
     failure = None
     http_status = None
     execution = None
@@ -224,6 +273,7 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
     def chat(payload: dict) -> list[dict]:
         nonlocal session_id, requests
         requests += 1
+        payload = {**payload, "mode": mode}
         current = []
         with client.stream("POST", base + "/api/chat", json=payload, headers={"X-Run-Label": label}) as response:
             check_status(response)
@@ -254,6 +304,15 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
                 payload["mentions"] = mentions
             current = chat(payload)
             specs.extend(event for event in current if accepted(event))
+            if (not specs and confirm == "once" and confirm_turns == 0 and task["kind"] in CONFIRM_KINDS
+                    and waits_for_confirmation(current)):
+                # The model stopped at a ready proposal and waits for a yes: say it once, then
+                # score the task on what follows.
+                confirm_turns += 1
+                current = chat({"message": CONFIRM_MESSAGE, "session_id": session_id, "bridge": True})
+                specs.extend(event for event in current if accepted(event))
+                if not specs:
+                    break
             if specs:
                 if execute:
                     execution = execute_spec(client, base, specs[-1]["spec"], session_id)
@@ -284,7 +343,8 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
     result = {
         "id": task["id"], "kind": task["kind"], "requires": task.get("requires", []), "skipped": None,
         **verdict, "error": failure, "http_status": http_status,
-        "turns": turns, "feedback_turns": feedback_turns, "requests": requests,
+        "turns": turns, "feedback_turns": feedback_turns, "confirm_turns": confirm_turns, "requests": requests,
+        "modes": turn_modes(events),
         "tool_calls": len(tool_events), "usage": sum_usage(usage_events),
         "by_role": role_usage(usage_events, tool_events), "models": models_by_role(events),
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
@@ -298,7 +358,8 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
 
 
 def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fixture: dict | None = None, *,
-             skip_requires=(), include_placeholder_ids: bool = False, execute: bool = False) -> dict:
+             skip_requires=(), include_placeholder_ids: bool = False, execute: bool = False, mode: str = "auto",
+             confirm: str = "never") -> dict:
     """One pass over the task set under one run label."""
     results = []
     for task in tasks:
@@ -308,7 +369,8 @@ def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fix
             continue
         try:
             results.append(run_task(client, base, label, task,
-                                    fixture if fixture is not None else DEFAULT_EXECUTION, execute))
+                                    fixture if fixture is not None else DEFAULT_EXECUTION, execute,
+                                    mode=mode, confirm=confirm))
         except PickNotFound as exc:          # raised before any chat: nothing was measured
             results.append(skipped_result(task, str(exc)))
     totals, by_role = run_totals(results)
@@ -383,11 +445,16 @@ def run_labels(label: str, repeat: int) -> list[str]:
 
 def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fixture: dict | None = None, *,
               repeat: int = 1, skip_requires=(), include_placeholder_ids: bool = False,
-              execute: bool = False) -> dict:
+              execute: bool = False, mode: str = "auto", confirm: str = "never") -> dict:
     """The task set ``repeat`` times under ``<label>-1`` .. ``<label>-<repeat>``, each repeat
-    cross-checked against ``/api/usage/runs``, and the summary over the repeats. Refuses
-    (ValueError, before any chat) a label the host already has calls for: its line would mix
-    two runs."""
+    cross-checked against ``/api/usage/runs``, and the summary over the repeats; every chat
+    request carries ``mode``, and ``confirm`` is the confirmation policy (see the module).
+    Refuses (ValueError, before any chat) a label the host already has calls for: its line
+    would mix two runs; and a mode or policy that is not one of the known."""
+    if mode not in CHAT_MODES:
+        raise ValueError(f"mode must be one of {', '.join(CHAT_MODES)}")
+    if confirm not in CONFIRM_POLICIES:
+        raise ValueError(f"confirm must be one of {', '.join(CONFIRM_POLICIES)}")
     labels = run_labels(label, repeat)
     before, unavailable = host_runs(client, base)
     if before is not None:
@@ -397,7 +464,7 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
     runs = []
     for name in labels:
         run = run_once(client, base, name, tasks, fixture, skip_requires=skip_requires,
-                       include_placeholder_ids=include_placeholder_ids, execute=execute)
+                       include_placeholder_ids=include_placeholder_ids, execute=execute, mode=mode, confirm=confirm)
         after, unavailable = host_runs(client, base)
         run["host_usage"] = cross_check(run, after, unavailable)
         runs.append(run)
@@ -407,15 +474,25 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
         "mode": "execute" if execute else "synthetic",
         "skip_requires": sorted(set(skip_requires)), "include_placeholder_ids": include_placeholder_ids,
         "host": {"features": features},
+        "chat_mode": mode,
         "chat": chat_mode(features, runs),
         "feedback_policy": FEEDBACK_ONCE if execute else FEEDBACK_FOLLOWS,
+        "confirm_policy": confirm,
         "runs": runs, "summary": summarize(runs),
     }
 
 
 def chat_mode(features: dict | None, runs: list[dict]) -> dict:
-    """How the host ran its chat, as it says (``features.roles``: ``roles``, ``single``, or
-    None for a host that does not say), and the roles the events named."""
-    said = (features or {}).get("roles")
-    seen = dict.fromkeys(role for run in runs for task in run["tasks"] for role in task.get("by_role", {}))
-    return {"host": "roles" if said is True else "single" if said is False else None, "roles_seen": list(seen)}
+    """How the host runs its chat by default, as it says (``features.chatModeDefault``); a host
+    before the modes says only ``features.roles``: ``false`` is ``single``, ``true`` is None (not
+    reported - there it meant the analyst too unless ROLES_ANALYST=off, which it does not say),
+    and so is a host that says neither. Also the modes its turns ran in (``modes_seen``) and the
+    roles the events named."""
+    features = features or {}
+    default = features.get("chatModeDefault")
+    if default not in CHAT_MODES[1:]:
+        default = "single" if features.get("roles") is False else None
+    tasks = [task for run in runs for task in run["tasks"]]
+    seen = dict.fromkeys(role for task in tasks for role in task.get("by_role", {}))
+    modes = dict.fromkeys(m for task in tasks for m in task.get("modes", []))
+    return {"host": default, "modes_seen": list(modes), "roles_seen": list(seen)}

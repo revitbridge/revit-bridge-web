@@ -65,7 +65,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("REVIT_BRIDGE_TIMEOUT", "2")
     for var in ("REVIT_BRIDGE_TOKEN", "REVIT_BRIDGE_CAPABILITIES_DIR", "REVIT_BRIDGE_EVIDENCE_DIR",
                 "REVIT_BRIDGE_GUIDANCE_COMPANY", "REVIT_BRIDGE_GUIDANCE_PROJECT", "SKILLS_DIR",
-                "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_ALLOW_HTTP",
+                "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_ALLOW_HTTP", "LLM_MAX_TOKENS",
                 "ADMIN_PASSWORD", "MCP_BRIDGE_REQUIRE_SLOT_TOKEN", "MCP_BRIDGE_SLOT_TOKEN_1",
                 "MCP_BRIDGE_SLOT_TOKEN_FILE_1", "CORS_ORIGINS",
                 "PUBLIC_WS_BASE", "MAX_SLOTS", "MAX_DEVICES", "CHAT_RATE_LIMIT",
@@ -91,8 +91,11 @@ def local_env(env):
 
 @pytest.fixture
 def roles_env(env):
-    """The host's default chat, the three roles (no LLM_SINGLE_MODEL); returns monkeypatch."""
+    """The three roles: no LLM_SINGLE_MODEL and ROLES_ANALYST=on (mode roles_analyst, what
+    tests/test_roles.py describes; the host's default is planner + supervisor, mode roles);
+    returns monkeypatch."""
     env.delenv("LLM_SINGLE_MODEL", raising=False)
+    env.setenv("ROLES_ANALYST", "on")
     _reset()
     return env
 
