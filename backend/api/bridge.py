@@ -991,7 +991,7 @@ async def confirm_spec(req: ConfirmRequest):
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
     needs no Revit here. The token belongs to the browser session and never enters the model
     context."""
-    if req.confirmed_by.strip() == "designer:auto-run":
+    if req.confirmed_by.strip().casefold() == "designer:auto-run":
         raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
     return await issue_spec(req, ToolStore())
 

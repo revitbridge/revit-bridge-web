@@ -86,10 +86,12 @@ class Session:
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
     proposed_in_request: bool = False
     direct_reads: int = 0
+    read_results: list[tuple[str, object]] = field(default_factory=list)
     auto_count: int = 0
     auto_assumptions: tuple | None = None
     pending_interpretations: dict = field(default_factory=dict)
     auto_worker: object | None = None
+    pending_auto_receipt: tuple[str, dict] | None = None
     request_answers: list[dict] = field(default_factory=list)
     reported_evidence: set[str] = field(default_factory=set)
     # What a provider returned with a tool call that goes back with it in the next requests

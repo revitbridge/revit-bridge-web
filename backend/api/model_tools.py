@@ -375,10 +375,13 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
         read = await try_read(spec, session, store, step=read_step)
         if read is not None:
             plan_event = None
+            if read.get("success") is True and read.get("result") is not None:
+                session.read_results.append((current_scope(), read["result"]))
             if read_step and "success" in read:
                 from backend.roles import step_result
                 step.status = "done" if read["success"] else "failed"
                 step.result = step_result(read)
+                step.recorded_result = read.get("result")
                 step.evidence_id = read.get("evidence_id")
                 session.spec = plan.proposed = None
                 plan_event = plan.event()

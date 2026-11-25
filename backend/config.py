@@ -209,12 +209,17 @@ class WebSettings:
         host = env.get("HOST", "").strip() or DEFAULT_HOST[mode]
         data_dir = Path(env.get("DATA_DIR", "").strip() or "data")
         models_file = env.get("MODELS_FILE", "").strip()
+        extra_names = [s.strip().casefold() for s in env.get("AUTO_RUN_EXCLUDE", "").split(",") if s.strip()]
+        if extra_names:
+            from revit_bridge.capabilities import ToolStore
+            unknown = set(extra_names) - {tool.name.casefold() for tool in ToolStore().list_tools()}
+            if unknown:
+                raise ConfigError("AUTO_RUN_EXCLUDE contains unknown tools: " + ", ".join(sorted(unknown)))
         settings = cls(
             mode=mode,
             auto_run=_choice(env.get("AUTO_RUN"), "AUTO_RUN", ("off", "on") if cloud else ("on", "off")) == "on",
             auto_run_max_steps=_int(env.get("AUTO_RUN_MAX_STEPS"), 8, "AUTO_RUN_MAX_STEPS"),
-            auto_run_exclude=tuple(dict.fromkeys(name.strip() for name in env.get("AUTO_RUN_EXCLUDE",
-                                   ",".join(cls.auto_run_exclude)).split(",") if name.strip())),
+            auto_run_exclude=tuple(dict.fromkeys((*cls.auto_run_exclude, *extra_names))),
             host=host,
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
             cors_origins=tuple(
@@ -250,8 +255,8 @@ class WebSettings:
         else:
             _refuse_local_settings(env)
             _refuse_exposed_local(env, settings.host)
-        if settings.auto_run_max_steps < 0:
-            raise ConfigError("AUTO_RUN_MAX_STEPS must be nonnegative")
+        if not 1 <= settings.auto_run_max_steps <= 20:
+            raise ConfigError("AUTO_RUN_MAX_STEPS must be from 1 to 20")
         return settings
 
     @property
