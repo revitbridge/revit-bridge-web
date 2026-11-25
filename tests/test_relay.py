@@ -192,6 +192,23 @@ class _InstantAddin:
             self._relay.resolve_response(self._device, json.dumps(reply))
 
 
+def test_picker_cache_scope_is_shared_by_requests_and_changes_on_reconnect():
+    from backend.relay import DeviceRelay, WebSocketRevitClient
+
+    relay = DeviceRelay()
+    client = WebSocketRevitClient(relay, DEV)
+    assert client.mention_cache_scope is None
+    relay.register(DEV, _InstantAddin(relay, DEV, lambda _: []))
+    first = client.mention_cache_scope
+    assert first is not None and first == WebSocketRevitClient(relay, DEV).mention_cache_scope
+    relay.register("other", _InstantAddin(relay, "other", lambda _: []))
+    assert WebSocketRevitClient(relay, "other").mention_cache_scope != first
+    relay.unregister(DEV)
+    assert client.mention_cache_scope is None
+    relay.register(DEV, _InstantAddin(relay, DEV, lambda _: []))
+    assert client.mention_cache_scope is not None and client.mention_cache_scope != first
+
+
 def test_reply_arriving_before_send_returns_is_not_lost():
     import asyncio
 

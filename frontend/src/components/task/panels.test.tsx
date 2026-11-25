@@ -68,6 +68,15 @@ describe('SpecCard', () => {
     expect(away).toContain('not reconciled')
   })
 
+  it.each([[false, '已被新卡替换'], [true, '已执行']] as const)('renders an archived card with success=%s', (success, label) => {
+    const proposal = proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null })
+    const html = renderToStaticMarkup(<SpecCard archived proposal={proposal} execution={success ? { success } : null}
+      canConfirm={false} confirming={false} confirmErrors={[]} onToggleInterpretation={noop} onConfirm={noop} />)
+    expect(html).toContain(label)
+    expect(html).not.toContain('<button')
+    expect(html).toContain('disabled=""')
+  })
+
   it('lights Confirm when reconcile says ready', () => {
     const html = render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: { conflicts: [], questions: [], interpretations_required: [], ready: true } }), true)
     expect(html).toMatch(/<button class="btn-primary">确认并执行<\/button>/)
@@ -107,12 +116,14 @@ describe('ExecutionView', () => {
     expect(html).toContain('VALIDATION FAILED')
     expect(html).toContain('check-failed')
 
-    const refused: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'mismatch', message: 'the projection differs' }
-    const refusal = renderToStaticMarkup(<ExecutionView execution={refused} tampered />)
+    const refused: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'used',
+      message: 'confirmation already redeemed at 2026-09-22T09:02:00Z' }
+    const refusal = renderToStaticMarkup(<ExecutionView execution={refused} />)
     expect(refusal).toContain('execution-banner refused')
     expect(refusal).toContain('confirmation_invalid')
-    expect(refusal).toContain('(mismatch)')
-    expect(refusal).toContain('Nothing reached Revit; the token is not consumed.')
+    expect(refusal).toContain('(used)')
+    expect(refusal).toContain('already redeemed')
+    expect(refusal).toContain('This request did not reach Revit.')
   })
 
   it('a refusal of the tool in Revit (revit-bridge 0.9.1) says so, as a refusal and not as a failure', () => {

@@ -4,7 +4,7 @@ tool fits."""
 from __future__ import annotations
 
 import json
-
+import pytest
 
 from backend.api import chat as chat_module
 from backend.api import model_tools
@@ -44,6 +44,17 @@ def test_a_get_guidance_call_is_an_unknown_tool(client, model):
     assert client.post("/api/chat", json={"message": "x"}, headers=HEADERS).status_code == 200
     reply = model.tool_results("get_guidance")[0]
     assert reply["error"] == "unknown_tool" and "get_guidance" not in reply["known"]
+
+
+@pytest.mark.parametrize("role,missing", [(None, "Show the spec card; wait for an explicit yes."),
+                                          ("planner", "in this host's interface"),
+                                          ("supervisor", "in this host's interface")])
+def test_inline_shim_detects_replaced_package_wording(monkeypatch, role, missing):
+    original = chat_module.host_instructions
+    monkeypatch.setattr(chat_module, "host_instructions",
+                        lambda **kwargs: original(**kwargs).replace(missing, "inline card"))
+    with pytest.raises(RuntimeError, match="inline-card shim"):
+        chat_module.inline_card_instructions(role=role, code=False)
 
 
 def test_the_system_prompt_is_the_package_text_without_code_and_one_host_line(client, model):

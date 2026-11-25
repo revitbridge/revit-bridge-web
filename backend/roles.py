@@ -12,7 +12,7 @@ segments and one execution report in up to two:
   host shows ``note`` (``none`` with the workbench link, added by the host when the note
   lacks it) and the turn ends.
 - **planner** (``host_instructions(role="planner", code=False)`` plus
-  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all seven on every
+  ``chat.WORKBENCH_LINE``): the tools of the route (``ROUTE_TOOLS``; all eight on every
   route with ``ROLES_PLANNER_TOOLS=all``), the session's conversation, and this turn's
   message with the analyst's routing after it (``planner_message``) - not the analyst's
   prompt, digest or tool list. With ``ROLES_ANALYST=off`` every message comes to it with
@@ -111,7 +111,7 @@ SUPERVISOR_DEFINITIONS = definitions(SUPERVISOR_TOOLS)
 # ends with its never-list): where a tool that does not exist yet is made.
 ANALYST_WORKBENCH_LINE = (
     "With route none, end `note` with exactly this Markdown link to where a new tool is tried "
-    f"and saved: {WORKBENCH_LINK}. {CARD_GUIDANCE}"
+    f"and saved: {WORKBENCH_LINK}. When a card is pending confirmation: {CARD_GUIDANCE}"
 )
 
 REPAIR_INSTRUCTION = (
@@ -121,6 +121,7 @@ REPAIR_INSTRUCTION = (
 
 # What the host adds to a role's user message, each on its own line: the designer did not write it.
 FROM_HOST = "(from the host; the designer did not write this)"
+ANSWERS_PREFIX = f"Verified form answers {FROM_HOST}:"
 SUPERVISOR_PREFIX = f"Execution to report {FROM_HOST}:"
 ROUTING_PREFIX = f"Analyst's routing {FROM_HOST}:"
 VERDICT_PREFIX = f"Supervisor's verdict on the last execution {FROM_HOST}:"

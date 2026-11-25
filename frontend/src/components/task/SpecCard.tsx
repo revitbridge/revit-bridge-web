@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { ExecutionResult, SpecError, TaskSpec } from '../../types/api'
-import { interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
+import { confirmLabel, interpretationsOf, type Confirmation, type Proposal, type Tamper } from './flow'
 import { showValue, tokenPrefix } from './format'
 import { ExecutionView, TamperDemo } from './ExecutionPanel'
 
@@ -91,7 +91,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
           <span className="label-text">Interpretations to confirm</span>
           {interpretations.map(it => (
             <label key={it.text} className="interpretation">
-              <input type="checkbox" checked={it.confirmed} disabled={archived || !!execution?.success || confirming || running || proposal.reconciling}
+              <input type="checkbox" checked={it.confirmed} disabled={archived || proposal.ended || !!execution?.success || confirming || running || proposal.reconciling}
                 onChange={e => onToggleInterpretation(it.text, e.target.checked)} />
               <span>{it.text}{it.param ? <span className="muted"> ({it.param})</span> : null}</span>
             </label>
@@ -141,9 +141,9 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
         </ul>
       )}
       {execution && <ExecutionView execution={execution} />}
-      {execution?.success ? <p role="status">已执行</p> : archived ? <p>已被新卡替换</p> :
+      {proposal.ended ? <p role="status">任务已结束</p> : execution?.success ? <p role="status">已执行</p> : archived ? <p>已被新卡替换</p> :
         <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
-          {confirming ? '正在确认…' : running ? '正在执行…' : execution || confirmErrors.length ? '重试执行' : '确认并执行'}
+          {confirming ? '正在确认…' : running ? '正在执行…' : confirmLabel(execution, confirmErrors)}
         </button>}
     </section>
   )

@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import type { DesignerAnswers, DesignerForm } from '../../types/api'
+import type { ChatMessage, DesignerAnswers, DesignerForm } from '../../types/api'
 
 interface Props {
   form: DesignerForm
-  answered?: 'form' | 'text'
+  answered?: ChatMessage['answered']
   disabled?: boolean
   onAnswer: (message: string, answers: DesignerAnswers) => void
 }
@@ -45,7 +45,8 @@ export default function QuestionForm({ form, answered, disabled, onAnswer }: Pro
       {picked.get(q.id)?.includes(-1) && <input aria-label={q.text + '（其他）'} maxLength={500}
         value={other.get(q.id) ?? ''} onChange={e => setOther(new Map(other).set(q.id, e.target.value))} />}
     </fieldset>)}
-    {answered ? <p role="status">{answered === 'text' ? '已用文字回答' : '已提交'}</p>
+    {answered ? <p role="status">{{ form: '已提交', text: '已用文字回答', replaced: '已被新问题替换',
+      invalid: '此表单已失效，请在对话框中回复。' }[answered]}</p>
       : <button className="btn-primary" disabled={!complete || disabled}>继续</button>}
   </form>
 }

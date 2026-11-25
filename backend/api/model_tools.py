@@ -1,5 +1,5 @@
 """The tools the model may call from the chat: the package's read-only tools plus
-``propose_spec``, the host's one addition.
+``propose_spec`` and ``ask_designer``, the host's card and form tools.
 
 Same names, arguments and result JSON as the MCP server's tools; the
 implementations call the package directly through the helpers the v1 routes use
@@ -154,7 +154,23 @@ TOOL_DEFINITIONS: list[dict] = [
         "name": "ask_designer",
         "description": "End this turn with questions in this reply. Use choices grounded in facts "
                        "already read. Ask all outstanding questions together.",
-        "parameters": DesignerForm.model_json_schema(),
+        "parameters": {"type": "object", "required": ["questions"], "additionalProperties": False,
+                       "properties": {"questions": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
+                           "type": "object", "required": ["id", "text", "options"], "additionalProperties": False,
+                           "properties": {
+                               "id": {"type": "string", "minLength": 1, "maxLength": 100},
+                               "text": {"type": "string", "minLength": 1, "maxLength": 500},
+                               "allow_other": {"type": "boolean"},
+                               "multiple": {"type": "boolean"},
+                               "options": {"type": "array", "minItems": 2, "maxItems": 6, "items": {
+                                   "type": "object", "required": ["value", "label"], "additionalProperties": False,
+                                   "properties": {
+                                       "value": {"description": "A string, number or boolean."},
+                                       "label": {"type": "string", "minLength": 1, "maxLength": 500},
+                                   },
+                               }},
+                           },
+                       }}}},
     }},
 ]
 

@@ -81,6 +81,46 @@ const conflicted: ReconcileResult = {
 }
 
 describe('the task flow', () => {
+  it('retires a superseded form and marks only the submitted form invalid on a 422 invalid_answers', async () => {
+    const questions = [{ id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false }]
+    const events = async function* (request: HostRequest): AsyncGenerator<HostEvent> {
+      if (request.answers) throw new BridgeApiError(422, JSON.stringify({ error: 'invalid_answers' }))
+      yield { type: 'questions', ask_id: 'old', questions }
+      yield { type: 'questions', ask_id: 'new', questions }
+      yield { type: 'done' }
+    }
+    const flow = createTaskFlow({ events, api: fakeApi() })
+    await flow.send('ask')
+    await flow.send('L1', [], { ask_id: 'new', items: [{ id: 'level', ...levelQuestion.options[0] }] })
+    expect(flow.store.getState().bridge.messages.filter(m => m.form).map(m => m.answered)).toEqual(['replaced', 'invalid'])
+  })
+
+  it('consumes a form when a typed reply is accepted', async () => {
+    const host = scriptedHost([{ type: 'questions', ask_id: 'old', questions: [
+      { id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false },
+    ] }], [{ type: 'done' }])
+    const flow = createTaskFlow({ events: host.events, api: fakeApi() })
+    await flow.send('ask')
+    await flow.send('Change the task')
+    expect(flow.store.getState().bridge.messages[1].answered).toBe('text')
+    expect(host.requests[1].answers).toBeUndefined()
+  })
+
+  it('closes the failed card after a supervisor stop and keeps its execution visible', async () => {
+    const stop = { value: 'stop', label: 'End this task' }
+    const host = scriptedHost([{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }], [
+      { type: 'stage', role: 'supervisor', model: 'm', status: 'end' },
+      { type: 'questions', ask_id: 'next', questions: [{ id: 'next_step', text: 'What next?',
+        options: [stop, { value: 'revise', label: 'Revise' }], allow_other: true, multiple: false }] },
+    ], [{ type: 'token', text: 'This task has ended.' }])
+    const execution = { success: false, error: 'validation_failed' }
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool: vi.fn().mockResolvedValue(execution) }) })
+    await flow.send('create a wall')
+    await flow.confirmAndRun()
+    await flow.send(stop.label, [], { ask_id: 'next', items: [{ id: 'next_step', ...stop }] })
+    expect(flow.store.getState().execution).toEqual(execution)
+    expect(canConfirm(flow.store.getState())).toBe(false)
+  })
   it('accepts a click once, retries an expired token with a new confirmation and keeps the execution with its reply', async () => {
     const host = scriptedHost(
       [{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }],
@@ -323,7 +363,8 @@ describe('the task flow', () => {
   })
 
   it('tamper demo: an edited value under the same token is refused and nothing is reported', async () => {
-    const refusal: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'mismatch', message: 'projection hash differs' }
+    const refusal: ExecutionResult = { success: false, error: 'confirmation_invalid', reason: 'used',
+      message: 'confirmation already redeemed at 2026-09-22T09:02:00Z' }
     const host = scriptedHost([{ type: 'session', id: 's1' }, { type: 'spec', spec, card: 'c', errors: [], reconcile: ready }, { type: 'done' }])
     const api = fakeApi({ runTool: vi.fn().mockResolvedValueOnce(success).mockResolvedValueOnce(refusal) })
     const flow = createTaskFlow({ events: host.events, api })
@@ -365,6 +406,8 @@ describe('the task flow', () => {
     let s = flow.store.getState()
     expect(s.confirmation).toBeNull()
     expect(s.confirmErrors).toEqual([{ code: 'guessed_value', param: 'x', message: 'x looks guessed' }])
+    await flow.send('yes')
+    expect(flow.store.getState().bridge.messages.at(-1)?.content).toContain('重试执行')
 
     api.confirm = fakeApi().confirm
     api.runTool = vi.fn().mockRejectedValue(new BridgeApiError(400, JSON.stringify({ success: false, error: 'confirmation_required', hint: 'confirm first' })))

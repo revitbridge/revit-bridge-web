@@ -34,13 +34,13 @@ export function TamperDemo({ confirmation, running, onTamper }: { confirmation: 
               finally { setPending(false) }
             }} disabled={pending || running || unchanged}>Run edited</button>
           </div>}
-      {result && <ExecutionView execution={result} tampered />}
-      <p className="section-copy small">The token is bound to the confirmed values: anything else is refused as <code>confirmation_invalid</code> and nothing reaches Revit.</p>
+      {result && <ExecutionView execution={result} />}
+      <p className="section-copy small">This demo submits the edited value with the token from the completed run. The gate checks whether that token has already been used before comparing values.</p>
     </details>
   )
 }
 
-export function ExecutionView({ execution, tampered }: { execution: ExecutionResult; tampered?: boolean }) {
+export function ExecutionView({ execution }: { execution: ExecutionResult }) {
   const validation = execution.validation ?? null
   const validationFailed = !execution.success && validation !== null && !validation.passed
   const refusal = isGateRefusal(execution)
@@ -54,7 +54,7 @@ export function ExecutionView({ execution, tampered }: { execution: ExecutionRes
         <div className="execution-banner refused">
           Refused by the gate: <code>{execution.error}</code>{execution.reason ? ` (${execution.reason})` : ''}
           {execution.message ? ` - ${execution.message}` : ''}
-          <div className="muted small-mono">{tampered ? 'The edited value does not match the confirmed spec. ' : ''}Nothing reached Revit; the token is not consumed.</div>
+          <div className="muted small-mono">This request did not reach Revit.</div>
           {execution.hint && <div className="muted small-mono">{execution.hint}</div>}
         </div>
       )}

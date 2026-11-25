@@ -61,22 +61,28 @@ class DesignerAnswers(BaseModel):
     ask_id: Identifier
     items: list[AnswerItem] = Field(min_length=1, max_length=28)
 
-    def matches(self, event: dict | None) -> bool:
+    def verified_items(self, event: dict | None) -> list[dict] | None:
+        """Rebuild answers in question order from the options the host actually offered."""
         if not event or event["ask_id"] != self.ask_id:
-            return False
-        questions = {q["id"]: q for q in event["questions"]}
-        if {item.id for item in self.items} != questions.keys():
-            return False
-        for q in questions.values():
+            return None
+        if {item.id for item in self.items} != {q["id"] for q in event["questions"]}:
+            return None
+        verified = []
+        for q in event["questions"]:
             items = [i for i in self.items if i.id == q["id"]]
             if not q["multiple"] and len(items) != 1:
-                return False
-            supplied = {(*i.key, i.label) for i in items}
-            options = [Option.model_validate(o) for o in q["options"]]
-            offered = {(*o.key, o.label) for o in options}
-            other = supplied - offered
-            if len(supplied) != len(items) or len(other) > int(q["allow_other"]):
-                return False
-            if any(kind is not str or value != label for kind, value, label in other):
-                return False
-        return True
+                return None
+            if len({i.key for i in items}) != len(items):
+                return None
+            offered = {Option.model_validate(o).key: o for o in q["options"]}
+            allow_other = q["allow_other"]
+            for item in items:
+                option = offered.get(item.key)
+                if option is not None and option["label"] == item.label:
+                    verified.append({"id": q["id"], **option})
+                elif option is None and allow_other and isinstance(item.value, str) and item.value == item.label:
+                    verified.append({"id": q["id"], "label": item.label, "value": item.value, "other": True})
+                    allow_other = False
+                else:
+                    return None
+        return verified

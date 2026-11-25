@@ -45,6 +45,7 @@ export interface Transcript {
 
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
 export interface Proposal {
+  ended?: boolean
   spec: TaskSpec
   card: string
   errors: SpecError[]
@@ -104,7 +105,7 @@ export const NOT_OFFERED: SpecError = {
 }
 const GATE_REFUSALS: readonly string[] = ['confirmation_required', 'confirmation_invalid']
 
-/* A gate refusal: nothing reached Revit and the token is still whole. A pack that refused its
+/* A gate refusal: this request did not reach Revit. A pack that refused its
    input in Revit (refused: true) is never one, whatever its text says: it reached Revit and
    spent the token. */
 export function isGateRefusal(result: ExecutionResult | null): boolean {
@@ -153,8 +154,12 @@ export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEven
 const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
 
 export function canConfirm(s: TaskState): boolean {
-  return !!s.proposal && s.proposal.reconcile?.ready === true && !s.proposal.reconcileError
+  return !!s.proposal && !s.proposal.ended && s.proposal.reconcile?.ready === true && !s.proposal.reconcileError
     && !s.proposal.reconciling && !s.confirming && !s.running && !s.bridge.streaming && !s.execution?.success
+}
+
+export function confirmLabel(execution?: ExecutionResult | null, errors: SpecError[] = []): string {
+  return execution || errors.length ? '重试执行' : '确认并执行'
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>
@@ -196,6 +201,7 @@ export function createTaskFlow(deps: FlowDeps) {
     let reply = ''
     let sawSpec = false
     let sawForm = false
+    let supervisor = false
     const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
       messages[messages.length - 1] = fn(messages[messages.length - 1])
@@ -207,11 +213,22 @@ export function createTaskFlow(deps: FlowDeps) {
         if (onAccepted) { onAccepted(); onAccepted = undefined }
         if (evt.type === 'session') { patch(side, t => ({ ...t, sessionId: evt.id })); continue }
         if (evt.type === 'token') { reply += evt.text; show(reply); continue }
-        if (isTraceEvent(evt)) { update(m => ({ ...m, trace: [...(m.trace ?? []), evt] })); continue }
+        if (isTraceEvent(evt)) {
+          if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
+          update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
+          continue
+        }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
         if (evt.type === 'questions') {
           sawForm = true
-          update(m => ({ ...m, form: { ask_id: evt.ask_id, questions: evt.questions } }))
+          patch(side, t => {
+            const messages = t.messages.map(m => m.form && !m.answered ? { ...m, answered: 'replaced' as const } : m)
+            const form = { ask_id: evt.ask_id, questions: evt.questions }
+            const last = messages.length - 1
+            if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })
+            else messages[last] = { ...messages[last], form, supervisorForm: supervisor }
+            return { ...t, messages }
+          })
           continue
         }
         if (evt.type === 'execution') continue          // the echo of what the page sent
@@ -224,6 +241,11 @@ export function createTaskFlow(deps: FlowDeps) {
         break                                             // done
       }
     } catch (e: unknown) {
+      const askId = request.answers?.ask_id
+      if (askId && e instanceof BridgeApiError && e.status === 422 && e.code === 'invalid_answers') {
+        patch(side, t => ({ ...t, messages: t.messages.map(m =>
+          m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
+      }
       if (!isAbortError(e)) {
         reply += `${reply ? '\n\n' : ''}**Model error:** ${getErrorMessage(e)}`
         show(reply)
@@ -267,12 +289,17 @@ export function createTaskFlow(deps: FlowDeps) {
     if (!message || s.bridge.streaming || s.baseline.streaming || s.confirming || s.running) return
     const open = s.bridge.messages.findLastIndex(m => !!m.form && !m.answered)
     if (answers && (open < 0 || s.bridge.messages[open].form?.ask_id !== answers.ask_id)) return
-    const closeForm = open < 0 ? undefined : () => patch('bridge', t => ({
-      ...t, messages: t.messages.map((m, i) => i === open ? { ...m, answered: answers ? 'form' : 'text' } : m),
-    }))
+    const closeForm = open < 0 ? undefined : () => {
+      patch('bridge', t => ({ ...t, messages: t.messages.map((m, i) =>
+        i === open ? { ...m, answered: answers ? 'form' : 'text' } : m) }))
+      if (s.bridge.messages[open].supervisorForm && answers?.items[0]?.value === 'stop' && s.proposal) {
+        setState({ proposal: { ...s.proposal, ended: true } })
+      }
+    }
     if (open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
       push('bridge', { role: 'user', content: message })
-      push('bridge', { role: 'assistant', content: '卡片在我上一条提交它的回复里。请点击卡片上的“确认并执行”。' })
+      push('bridge', { role: 'assistant',
+        content: `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。` })
       setState({ highlight: s.highlight + 1 })
       return
     }
@@ -297,7 +324,7 @@ export function createTaskFlow(deps: FlowDeps) {
   /* Ticking an interpretation changes the draft, and the draft is reconciled again. */
   async function toggleInterpretation(text: string, confirmed: boolean) {
     const p = getState().proposal
-    if (!p || getState().confirming || getState().running || getState().execution?.success) return
+    if (!p || p.ended || getState().confirming || getState().running || getState().execution?.success) return
     const list = [...(p.draft.interpretations ?? [])]
     const at = list.findIndex(it => it.text === text)
     if (at >= 0) list[at] = { ...list[at], confirmed }
@@ -366,6 +393,7 @@ export function createTaskFlow(deps: FlowDeps) {
           success: false,
           error: body?.error ?? 'request_failed',
           message: body?.message ?? getErrorMessage(e),
+          ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}),
           ...(typeof body?.hint === 'string' ? { hint: body.hint } : {}),
         },
         reported: false, running: false,
@@ -402,7 +430,9 @@ export function createTaskFlow(deps: FlowDeps) {
     try {
       return await deps.api.runTool(c.spec.action.tool, { ...params, [tamper.param]: value }, c.token)
     } catch (e: unknown) {
-      return { success: false, error: e instanceof BridgeApiError ? e.code : 'request_failed', message: getErrorMessage(e) }
+      const body = e instanceof BridgeApiError ? e.body : null
+      return { success: false, error: body?.error ?? 'request_failed', message: body?.message ?? getErrorMessage(e),
+        ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}) }
     }
   }
 

@@ -75,6 +75,8 @@ class Session:
     pending_verdict: dict | None = None
     pending_form: dict | None = None
     form_routing: Routing | None = None
+    # Only a supervisor-issued form can close a task. The acknowledgement uses its display language.
+    form_stop_reply: str | None = None
     confirmed_spec: dict | None = None
     # What a provider returned with a tool call that goes back with it in the next requests
     # (Gemini's thought signature, the responses api's reasoning items): by call, for the
