@@ -21,8 +21,10 @@ function typedChoice(q: DesignerForm['questions'][number], text: string) {
   if (choice) return choice
   try {
     const scalar: unknown = JSON.parse(text)
-    const typed = q.options.find(o => o.value === scalar)
-    if (typed) return typed
+    if (typeof scalar === 'number' || typeof scalar === 'boolean') {
+      const typed = q.options.find(o => o.value === scalar)
+      if (typed) return typed
+    }
   } catch { /* A free-text answer need not be a JSON scalar. */ }
   return { label: text, value: text }
 }

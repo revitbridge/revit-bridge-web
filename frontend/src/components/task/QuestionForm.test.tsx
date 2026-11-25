@@ -25,9 +25,12 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('requires each question and nonblank other text, then submits the displayed choices with their typed values', () => {
+it.each(['Mezzanine', '"east"'])('requires each question and preserves unmatched text %s', freeText => {
   const submit = vi.fn()
-  act(() => root.render(<QuestionForm form={form} onAnswer={submit} />))
+  const choices = { ...form, questions: [form.questions[0], {
+    ...form.questions[1], options: [...levels, { value: 'east', label: 'East level' }],
+  }] }
+  act(() => root.render(<QuestionForm form={choices} onAnswer={submit} />))
   const button = container.querySelector('button')!
   const click = (selector: string) => act(() => container.querySelector<HTMLInputElement>(selector)!.click())
   expect(button.disabled).toBe(true)
@@ -39,15 +42,15 @@ it('requires each question and nonblank other text, then submits the displayed c
   expect(button.disabled).toBe(true)
   const other = container.querySelector<HTMLInputElement>('input[aria-label]')!
   act(() => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(other, '  Mezzanine  ')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(other, '  ' + freeText + '  ')
     other.dispatchEvent(new Event('input', { bubbles: true }))
   })
   expect(button.disabled).toBe(false)
   click('button')
-  expect(submit).toHaveBeenCalledWith(expect.stringContaining('L1、Mezzanine'), {
+  expect(submit).toHaveBeenCalledWith(expect.stringContaining('L1、' + freeText), {
     ask_id: form.ask_id, items: [
       { id: 'base', ...levels[1] }, { id: 'levels', ...levels[0] },
-      { id: 'levels', value: 'Mezzanine', label: 'Mezzanine' },
+      { id: 'levels', value: freeText, label: freeText },
     ],
   })
 })
