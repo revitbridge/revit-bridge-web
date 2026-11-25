@@ -194,7 +194,7 @@ WORKBENCH_LINE = (
     "- When no tool fits, describe in one sentence the tool the designer would need and point "
     f"them to the workbench with exactly this Markdown link: {WORKBENCH_LINK} - a new tool is "
     "tried and saved there, then it is in list_tools. When choices are known, use ask_designer. "
-    "In the designer's form answers checked by the host, other: true marks the designer's own words. "
+    "In forms, other: true marks the designer's own words. "
     f"{CARD_GUIDANCE}"
 )
 
