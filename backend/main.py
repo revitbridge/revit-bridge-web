@@ -20,16 +20,20 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette._utils import get_route_path
 from starlette.requests import HTTPConnection
+from starlette.routing import Route
 
 from revit_bridge.capabilities import ToolStore
 
 from backend.api import bridge, chat, errors, logs, skills, usage
 from backend.api.settings import router as model_settings_router
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
-from backend.localguard import LocalModeGuard, host_names_for
+from backend.localguard import LocalModeGuard, host_names_for, with_frame_policy
 from backend.llm import BROWSER_KEYS_DISABLED, HEADER_KEY
 from backend.models_file import config_features, get_models, log_models
+from backend.remote_mcp import RemoteMCP
+from backend.api.remote_mcp import SETTINGS as MCP_SETTINGS, router as remote_mcp_router
 from backend.upgrade import quarantine_legacy_packs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -47,6 +51,21 @@ async def reject_browser_key(request: HTTPConnection):
         raise HTTPException(400, BROWSER_KEYS_DISABLED)
 
 
+class DisabledRemoteMCP:
+    """Answer before CORS preflight, body parsing, device selection or settings I/O."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = get_route_path(scope) if scope["type"] == "http" else ""
+        if path in ("/mcp", MCP_SETTINGS) or path.startswith(MCP_SETTINGS + "/"):
+            response = JSONResponse({"error": "remote_mcp_disabled"}, status_code=404,
+                                    headers={"Cache-Control": "no-store"})
+            return await response(scope, receive, with_frame_policy(send))
+        await self.app(scope, receive, send)
+
+
 def create_app(frontend_dist: Path | None = None) -> FastAPI:
     settings = get_settings()
     # The models file, when there is one, is read and checked now: a bad one stops the
@@ -61,7 +80,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     if own_capabilities_dir(user_dir, settings):
         quarantine_legacy_packs(user_dir)
     _log.info("user tools (capability packs) are read from and saved to %s", user_dir)
+    remote = RemoteMCP(settings)
     app = FastAPI(
+        lifespan=remote.lifespan,
         title="revit-bridge-web",
         dependencies=[] if settings.allow_browser_keys else [Depends(reject_browser_key)],
         version=APP_VERSION,
@@ -70,6 +91,9 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     )
 
     app.state.selection_watches = {}
+    app.state.remote_mcp = remote
+    # An exact ASGI route keeps POST /mcp at its advertised URL (no slash redirect).
+    app.router.routes.append(Route("/mcp", remote, name="remote_mcp"))
     if settings.cors_origins:
         # Credentials only for an explicit origin list: with "*" the middleware would
         # echo any origin back as allowed with credentials. Nothing here needs them
@@ -87,10 +111,13 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
         # directly, gets through (backend/localguard.py). CORS is never on here.
         app.add_middleware(LocalModeGuard, host_names=host_names_for(settings.exposed),
                            check_peer=not settings.in_container)
+    if not settings.remote_mcp:
+        app.add_middleware(DisabledRemoteMCP)
 
     errors.install(app)
     app.include_router(chat.router)
     app.include_router(model_settings_router)
+    app.include_router(remote_mcp_router)
     app.include_router(skills.router)
     app.include_router(logs.router)
     app.include_router(usage.router)
@@ -126,7 +153,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
 
         @app.get("/{rest:path}", include_in_schema=False)
         async def spa_fallback(rest: str = ""):
-            if rest == "api" or rest.startswith("api/"):
+            if rest == "api" or rest.startswith(("api/", "mcp/")):
                 # A mistyped API address is a 404, not the SPA page with 200 (registered
                 # last, so every real route, /config.json and /health match first).
                 raise errors.ApiError(404, "not_found", f"No API route GET /{rest}")
@@ -165,6 +192,8 @@ def log_deploy_mode(settings: WebSettings) -> None:
     """One line for the mode, one per cloud-only variable a local host was given anyway."""
     if settings.cloud:
         _log.info("deploy mode: cloud - device relay, pairing and the admin password are on")
+        if settings.remote_mcp:
+            _log.warning("REMOTE_MCP is enabled in cloud mode. Per-device disk quotas are not enforced yet.")
         return
     _log.info("deploy mode: local - this machine only; no relay, no pairing, no admin password")
     for name in settings.unused_variables:

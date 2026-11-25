@@ -6,6 +6,12 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Settings → Remote MCP connects Codex CLI and Claude Code over Streamable HTTP.
+Local mode shares the default web tool directory. Cloud mode can enable the endpoint
+with `REMOTE_MCP=on` and issue revocable tokens for individual paired devices.
+Settings shows recent execution evidence. Tool authoring can load a successful
+remote rollback and take it through the existing compile, trial and save steps.
+
 The host uses revit-bridge 0.11.0. Designers can observe a normal Revit selection
 from the composer or answer a planner selection question. Built-in UI-only packs
 run directly and share the reader budget. The tool drawer includes native view

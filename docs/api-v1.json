@@ -258,6 +258,268 @@
         }
       }
     },
+    "/api/v1/settings/remote-mcp": {
+      "get": {
+        "tags": [
+          "remote-mcp"
+        ],
+        "summary": "Remote Status",
+        "description": "Endpoint status, token metadata and the selected device's recent remote execution evidence.",
+        "operationId": "remote_status_api_v1_settings_remote_mcp_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Remote MCP is disabled"
+          }
+        }
+      }
+    },
+    "/api/v1/settings/remote-mcp/tokens": {
+      "post": {
+        "tags": [
+          "remote-mcp"
+        ],
+        "summary": "Create Token",
+        "description": "Issue a bearer once. Cloud requires a redeemed X-Device-Id and its X-Device-Key or X-Admin-Token.",
+        "operationId": "create_token_api_v1_settings_remote_mcp_tokens_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewToken"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Remote MCP is disabled"
+          },
+          "409": {
+            "description": "This device already has five active tokens"
+          },
+          "429": {
+            "description": "Token creation rate exceeded for this address"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/remote-mcp/tokens/{token_id}": {
+      "delete": {
+        "tags": [
+          "remote-mcp"
+        ],
+        "summary": "Revoke Token",
+        "description": "Revoke a bearer by its public management ID for the selected device.",
+        "operationId": "revoke_token_api_v1_settings_remote_mcp_tokens__token_id__delete",
+        "parameters": [
+          {
+            "name": "token_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Token Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Revoke Token Api V1 Settings Remote Mcp Tokens  Token Id  Delete"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Remote MCP is disabled or token not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/remote-trials": {
+      "get": {
+        "tags": [
+          "remote-mcp"
+        ],
+        "summary": "List Trials",
+        "description": "Successful remote rollbacks with source still available in this device's draft cache.",
+        "operationId": "list_trials_api_v1_bridge_remote_trials_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "$ref": "#/components/schemas/Trial"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response List Trials Api V1 Bridge Remote Trials Get"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/remote-trials/{evidence_id}": {
+      "get": {
+        "tags": [
+          "remote-mcp"
+        ],
+        "summary": "Load Trial",
+        "description": "Load the selected device's draft source into the existing authoring form.",
+        "operationId": "load_trial_api_v1_bridge_remote_trials__evidence_id__get",
+        "parameters": [
+          {
+            "name": "evidence_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Evidence Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Load Trial Api V1 Bridge Remote Trials  Evidence Id  Get"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/skills": {
       "get": {
         "tags": [
@@ -3471,7 +3733,7 @@
             }
           },
           "503": {
-            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable)",
+            "description": "The device store could not be read for a moment; nothing changed, try again (device_store_unavailable). If MCP token cleanup fails after revocation, the device is already revoked (token_store_unavailable).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3567,6 +3829,34 @@
           "id"
         ],
         "title": "AnswerItem"
+      },
+      "Call": {
+        "properties": {
+          "time": {
+            "type": "string",
+            "title": "Time"
+          },
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "time",
+          "tool",
+          "success",
+          "evidence_id"
+        ],
+        "title": "Call"
       },
       "CallRow": {
         "properties": {
@@ -4321,6 +4611,23 @@
         ],
         "title": "ModelStatus"
       },
+      "NewToken": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          },
+          "info": {
+            "$ref": "#/components/schemas/TokenInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "info"
+        ],
+        "title": "NewToken"
+      },
       "PairRequest": {
         "properties": {
           "label": {
@@ -4919,6 +5226,131 @@
           "code"
         ],
         "title": "SolidifyRequest"
+      },
+      "Status": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "device_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Device Id"
+          },
+          "tokens": {
+            "items": {
+              "$ref": "#/components/schemas/TokenInfo"
+            },
+            "type": "array",
+            "title": "Tokens"
+          },
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/Call"
+            },
+            "type": "array",
+            "title": "Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "device_id",
+          "tokens",
+          "calls"
+        ],
+        "title": "Status"
+      },
+      "TokenInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 64,
+            "title": "Label"
+          },
+          "device_id": {
+            "type": "string",
+            "title": "Device Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "device_id",
+          "created_at"
+        ],
+        "title": "TokenInfo"
+      },
+      "TokenRequest": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Label"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label"
+        ],
+        "title": "TokenRequest"
+      },
+      "Trial": {
+        "properties": {
+          "time": {
+            "type": "string",
+            "title": "Time"
+          },
+          "evidence_id": {
+            "type": "string",
+            "title": "Evidence Id"
+          },
+          "code_sha256": {
+            "type": "string",
+            "title": "Code Sha256"
+          },
+          "rolled_back": {
+            "type": "boolean",
+            "title": "Rolled Back"
+          }
+        },
+        "type": "object",
+        "required": [
+          "time",
+          "evidence_id",
+          "code_sha256",
+          "rolled_back"
+        ],
+        "title": "Trial"
       },
       "UpdateToolRequest": {
         "properties": {

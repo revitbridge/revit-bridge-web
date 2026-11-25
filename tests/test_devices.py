@@ -415,7 +415,8 @@ def test_the_contract_lists_the_device_store_503(client):
     """503 is documented where the device store is written, and the operations that newly
     document a 503 since 0.1 are exactly these three, the four pack writes (admin_disabled),
     the workbench's compile, dry run and choices, the chat's picker and selection watch, and confirmation of a spec
-    that binds picks, which reads them again (revit_unreachable)."""
+    that binds picks, which reads them again (revit_unreachable). Remote trial lookups
+    also check the selected device's pairing."""
     spec = client.get("/openapi.json").json()
     for path, method in ((f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"),
                          (f"{B}/devices/{{device_id}}", "delete")):
@@ -436,6 +437,7 @@ def test_the_contract_lists_the_device_store_503(client):
         (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
         (f"{B}/tools/import", "post"), (f"{B}/check", "post"), (f"{B}/dry-run", "post"), (f"{B}/choices", "post"),
         (f"{B}/mentions", "get"), (f"{B}/watch-selection", "post"), (f"{B}/spec/confirm", "post"),
+        (f"{B}/remote-trials", "get"), (f"{B}/remote-trials/{{evidence_id}}", "get"),
     }
     assert before <= with_503
     assert "503" not in spec["paths"][f"{B}/devices/{{device_id}}"]["get"]["responses"]
