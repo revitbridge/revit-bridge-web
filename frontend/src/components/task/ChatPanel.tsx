@@ -17,6 +17,8 @@ import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import PlanChecklist from './PlanChecklist'
+import ToolDrawer from './ToolDrawer'
+import { browserLanguage } from '../../utils/language'
 import QuestionForm from './QuestionForm'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
@@ -105,6 +107,12 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                 ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
+              {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details key={evt.id}>
+                <summary>{evt.read.result.success === false
+                  ? (browserLanguage() === 'zh' ? '读取失败：' : 'Read failed: ')
+                  : (browserLanguage() === 'zh' ? '已读取：' : 'Read: ')}{evt.read.name}</summary>
+                <pre>{JSON.stringify(evt.read.result, null, 2)}</pre>
+              </details>)}
               {m.plan && <PlanChecklist plan={m.plan} results={m.stepResults} />}
               {m.role === 'assistant' && renderCards?.(i)}
               {i === questionMessage && !m.form && questions.length > 0 && onAnswer && (
@@ -147,6 +155,7 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             {controls}
+            {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
             <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
             {onReset && <button className="btn-ghost" onClick={onReset} disabled={disabled || transcript.streaming}>New session</button>}
           </div>

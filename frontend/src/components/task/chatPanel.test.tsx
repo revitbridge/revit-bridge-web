@@ -36,6 +36,14 @@ beforeEach(() => vi.stubGlobal('navigator', { languages: ['en-US'] }))
 afterEach(() => vi.unstubAllGlobals())
 
 describe('ChatPanel and the mention input', () => {
+  it('shows the reader and its expandable result without a card', () => {
+    const { html } = render({ ...empty, messages: [{ role: 'assistant', content: '', trace: [{
+      type: 'tool', role: 'planner', id: '1', name: 'propose_spec', args: {}, status: 'ok',
+      read: { name: 'get_element_geometry', result: { midpoint: 137 } },
+    }] }] })
+    expect(html).toContain('<summary>Read: get_element_geometry</summary>')
+    expect(html).toContain('137')
+  })
   it('the input is the mention input, fed by the host, off while a turn streams', () => {
     const { input } = render(empty, { onSend: vi.fn(), placeholder: 'e.g. a wall' })
     expect(input).toMatchObject({ value: '', mentions: [], disabled: undefined, placeholder: 'e.g. a wall', invalid: [] })

@@ -4,6 +4,7 @@ import type { Mention, MentionItem, StageEvent, ToolEvent, TraceEvent, UsageEven
 
 export interface RevitHealthResponse {
   revit_connected: boolean
+  user_tools_allowed?: boolean | null
   latency_ms: number | null
   detail: string
   mode: string
@@ -85,6 +86,11 @@ export interface ToolParam {
    directory only on a local host. */
 export interface ToolInfo {
   name: string
+  display_name?: string
+  applies_when?: string[]
+  not_for?: string[]
+  revit_versions?: string[]
+  read_only?: boolean
   description: string
   version: string
   parameters: ToolParam[]
@@ -195,6 +201,7 @@ export interface SentMention extends Mention {
 /* A pick as POST /api/chat takes it: the kind and the element id (the host also takes a
    `label`, which this page does not send: the host reads the item from the model). */
 export interface MentionRef {
+  document_id?: string
   kind: string
   id: number
 }
@@ -309,6 +316,7 @@ export interface DesignerAnswers {
 }
 
 export interface HostRequest {
+  run?: 'confirm' | 'auto'
   answers?: DesignerAnswers
   message?: string
   execution?: ExecutionResult
@@ -325,7 +333,7 @@ export type HostEvent =
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
-      reconcile_error?: { error: string; message?: string } }
+      run?: 'confirm' | 'auto'; run_reason?: string; reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
   | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
   | StageEvent | ToolEvent | UsageEvent      // what the host did: its stage, each tool call, each model call's tokens
@@ -444,5 +452,6 @@ export interface UsageRun {
   first_at: string
   last_at: string
   by_role?: UsagePart[]
+  run?: string | null
   mode?: string | null     // the chat mode the run's calls ran in; 'mixed' for more than one; null or absent: not recorded
 }

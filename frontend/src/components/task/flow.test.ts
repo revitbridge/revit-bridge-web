@@ -81,6 +81,14 @@ const conflicted: ReconcileResult = {
 }
 
 describe('the task flow', () => {
+  it('uses the host receipt for automatic execution without calling the manual gate', async () => {
+    const api = fakeApi()
+    const host = scriptedHost([{ ...specEvent, run: 'auto' }, { type: 'execution', execution: success }])
+    const flow = createTaskFlow({ events: host.events, api, run: () => 'auto' })
+    await flow.send('Build it')
+    expect(flow.store.getState().execution).toEqual(success)
+    expect(api.calls).toHaveLength(0)
+  })
   it('retires a superseded form and marks only the submitted form invalid on a 422 invalid_answers', async () => {
     const questions = [{ id: 'level', text: 'Level?', options: levelQuestion.options, multiple: false, allow_other: false }]
     const events = async function* (request: HostRequest): AsyncGenerator<HostEvent> {

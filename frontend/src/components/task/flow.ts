@@ -36,6 +36,7 @@ export interface FlowDeps {
   /* The chat mode each bridge request carries, read when it goes out (the page's mode
      selector); undefined or absent: no mode is sent, the host runs its default. */
   mode?: () => HostRequest['mode'] | undefined
+  run?: () => HostRequest['run']
 }
 
 export interface Transcript {
@@ -46,6 +47,9 @@ export interface Transcript {
 
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
 export interface Proposal {
+  run?: 'auto' | 'confirm'
+  runReason?: string
+  awaitingReceipt?: boolean
   ended?: boolean
   planStep?: { planId: string; stepId: string; status: PlanStatus }
   spec: TaskSpec
@@ -156,7 +160,7 @@ export function usageOf(t: Transcript): { turn: UsageEvent[]; session: UsageEven
 const isTraceEvent = (e: HostEvent): e is TraceEvent => e.type === 'stage' || e.type === 'tool' || e.type === 'usage'
 
 export function canConfirm(s: TaskState): boolean {
-  return !!s.proposal && !s.proposal.ended && s.proposal.reconcile?.ready === true && !s.proposal.reconcileError
+  return !!s.proposal && s.proposal.run !== 'auto' && !s.proposal.ended && s.proposal.reconcile?.ready === true && !s.proposal.reconcileError
     && !s.proposal.reconciling && !s.confirming && !s.running && !s.bridge.streaming && !s.execution?.success
 }
 
@@ -204,7 +208,8 @@ export function createTaskFlow(deps: FlowDeps) {
   /* A bridge request with the chat mode of the moment, when there is one to send. */
   const withMode = (request: HostRequest): HostRequest => {
     const mode = deps.mode?.()
-    return mode === undefined ? request : { ...request, mode }
+    const run = deps.run?.()
+    return { ...request, ...(mode ? { mode } : {}), ...(run === 'auto' ? { run } : {}) }
   }
 
   const push = (side: Side, message: ChatMessage) =>
@@ -227,6 +232,7 @@ export function createTaskFlow(deps: FlowDeps) {
     let sawPlan = false
     let startNextReply = false
     let supervisor = false
+    let receipt = request.execution
     const update = (fn: (m: ChatMessage) => ChatMessage) => patch(side, t => {
       const messages = t.messages.slice()
       messages[messages.length - 1] = fn(messages[messages.length - 1])
@@ -244,13 +250,13 @@ export function createTaskFlow(deps: FlowDeps) {
           const current = getState().proposal?.planStep
           if (side === 'bridge' && current?.planId === plan.plan_id) {
             const step = plan.steps.find(s => s.id === current.stepId)
-            if (request.execution && step?.status === 'done') startNextReply = true
+            if (receipt && step?.status === 'done') startNextReply = true
             if (!step || step.status !== 'proposed') {
               setState(s => s.proposal ? { proposal: { ...s.proposal, ended: true,
                 planStep: { ...current, status: step?.status ?? 'skipped' } } } : {})
             }
           }
-          patch(side, t => updatePlan(t, plan, request.execution))
+          patch(side, t => updatePlan(t, plan, receipt))
           continue
         }
         if (isTraceEvent(evt)) {
@@ -277,7 +283,11 @@ export function createTaskFlow(deps: FlowDeps) {
           })
           continue
         }
-        if (evt.type === 'execution') continue          // the echo of what the page sent
+        if (evt.type === 'execution') {
+          receipt = evt.execution
+          if (side === 'bridge' && getState().proposal?.run === 'auto') setState({ execution: receipt, reported: true })
+          continue
+        }
         if (evt.type === 'mentions') { patch(side, t => reportPicks(t, evt)); continue }
         if (evt.type === 'error') {
           reply += `${reply ? '\n\n' : ''}**Model error:** ${evt.detail}`
@@ -296,6 +306,9 @@ export function createTaskFlow(deps: FlowDeps) {
         reply += `${reply ? '\n\n' : ''}**Model error:** ${getErrorMessage(e)}`
         show(reply)
       }
+    }
+    if (side === 'bridge' && getState().proposal?.run === 'auto' && !getState().execution) {
+      setState(s => s.proposal ? { proposal: { ...s.proposal, awaitingReceipt: true } } : {})
     }
     if (!reply && !sawForm && !sawPlan) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
     // However the stream ended (done, error, abort, broken off): a tool or stage still open
@@ -317,6 +330,7 @@ export function createTaskFlow(deps: FlowDeps) {
         execution: s.execution, confirmation: s.confirmation }] : s.archived,
       proposal: {
         ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
+        run: evt.run, runReason: evt.run_reason,
         spec: evt.spec,
         card: evt.card,
         errors: evt.errors ?? [],

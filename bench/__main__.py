@@ -360,7 +360,7 @@ def command_run(args: argparse.Namespace) -> int:
     with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
         result = run_bench(client, base, args.label, tasks, fixture, repeat=args.repeat, skip_requires=skip,
                            include_placeholder_ids=args.include_placeholder_ids, execute=args.execute,
-                           mode=args.mode, confirm=args.confirm)
+                           mode=args.mode, confirm=args.confirm, run=args.run)
     result["tasks_file"] = str(args.tasks)
     print_results(result)
     print("Saved: " + str(save(result, destination)))
@@ -441,6 +441,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="also run tasks whose mention ids are placeholders (skipped by default)")
     run.add_argument("--execution-fixture", type=Path,
                      help="JSON execution result sent back after an accepted spec (default: a built-in one)")
+    run.add_argument("--run", choices=("confirm", "auto"), default="confirm",
+                     help="request server-side automatic execution only with --execute")
     run.add_argument("--execute", action="store_true",
                      help="confirm and RUN each accepted spec in Revit (changes the model; off by default)")
     run.add_argument("--mode", choices=CHAT_MODES, default="auto",

@@ -19,7 +19,7 @@ def parse_frame(lines: list[str]) -> dict | None:
     raw = "\n".join(data)
     if event == "done" or raw.strip() == "[DONE]":
         return {"type": "done"}
-    if event not in ("", "spec", "stage", "tool", "usage", "error") or not data:
+    if event not in ("", "spec", "stage", "tool", "usage", "execution", "error") or not data:
         return None
     try:
         value = json.loads(raw)

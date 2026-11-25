@@ -30,6 +30,9 @@ def test_health_and_config_json(make_client, env):
             # the suite's chat is the one loop (LLM_SINGLE_MODEL=1, tests/conftest.py)
             "roles": False,
             # a cloud host's visitor picks no mode (an admin may: tests/test_chat_modes.py)
+            "runModes": ["confirm"],
+            "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
+            "authoring": False,
             "chatModes": ["auto"],
             "chatModeDefault": "single",
             # kept until the connect page of 7.3 reads maxDevices
@@ -49,6 +52,9 @@ def test_settings_defaults_come_from_env_only():
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "mode": "cloud", "byoModel": True, "serverModel": False, "admin": True, "maxDevices": 20,
         "roles": True, "chatModes": ["auto"], "chatModeDefault": "roles", "slotTokenRequired": False,
+        "runModes": ["confirm"],
+        "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
+        "authoring": False,
         "maxSlots": 20}}
     # The analyst is off by default (planner + supervisor).
     assert s.roles_analyst is False and s.chat_mode_default == "roles"
@@ -194,7 +200,7 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/snapshot", "/api/v1/bridge/query", "/api/v1/bridge/mentions",
         "/api/v1/bridge/tools", "/api/v1/bridge/tools/{name}", "/api/v1/bridge/tools/{name}/choices",
         "/api/v1/bridge/tools/{name}/missing-params", "/api/v1/bridge/tools/{name}/run",
-        "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import",
+        "/api/v1/bridge/tools/{name}/export", "/api/v1/bridge/tools/import", "/api/v1/bridge/tools/draft",
         "/api/v1/bridge/spec/reconcile", "/api/v1/bridge/spec/confirm",
         "/api/v1/bridge/check", "/api/v1/bridge/dry-run", "/api/v1/bridge/choices",
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",

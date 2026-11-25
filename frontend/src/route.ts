@@ -4,13 +4,14 @@
    Token page is /token. The server answers every such path with the page itself. */
 
 export const WORKBENCH_PATH = '/capabilities/workbench'
+export const AUTHORING_PATH = '/capabilities/authoring'
 export const TOKEN_PATH = '/token'
 
 export const TABS = ['Connect', 'Task', 'Capabilities', 'Evidence', 'Token'] as const
 export const CAPABILITIES_TAB = 2
 export const TOKEN_TAB = 4
 
-export type CapabilitiesView = 'packs' | 'workbench' | 'skills'
+export type CapabilitiesView = 'packs' | 'workbench' | 'authoring' | 'skills'
 
 export interface View {
   tab: number
@@ -22,6 +23,7 @@ export interface View {
 export function viewOf(pathname: string): View {
   const path = pathname.replace(/\/+$/, '').toLowerCase()
   if (path === WORKBENCH_PATH) return { tab: CAPABILITIES_TAB, capabilities: 'workbench' }
+  if (path === AUTHORING_PATH) return { tab: CAPABILITIES_TAB, capabilities: 'authoring' }
   if (path === TOKEN_PATH) return { tab: TOKEN_TAB, capabilities: 'packs' }
   return { tab: 0, capabilities: 'packs' }
 }
@@ -29,6 +31,7 @@ export function viewOf(pathname: string): View {
 /* The address a view is shown at: the workbench's and the Token page's own paths, '/' for the rest. */
 export function pathOf(view: View): string {
   if (view.tab === CAPABILITIES_TAB && view.capabilities === 'workbench') return WORKBENCH_PATH
+  if (view.tab === CAPABILITIES_TAB && view.capabilities === 'authoring') return AUTHORING_PATH
   if (view.tab === TOKEN_TAB) return TOKEN_PATH
   return '/'
 }

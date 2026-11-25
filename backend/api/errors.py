@@ -36,6 +36,7 @@ _DESCRIPTIONS = {
     422: "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
     429: "Too many requests from this address (rate_limited)",
     500: "The package failed (snapshot_failed, query_failed)",
+    502: "The model did not return a usable draft (invalid_draft)",
     503: "No Revit add-in answers (revit_unreachable)",
     504: "Revit did not answer in time (revit_timeout)",
 }

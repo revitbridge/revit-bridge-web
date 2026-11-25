@@ -21,6 +21,7 @@ export interface ToolEvent {
   ms?: number
   size?: number
   preview?: string
+  read?: { name: string; result: Record<string, unknown> }
   error?: string
 }
 
@@ -44,6 +45,7 @@ export const MAX_PICKS = 20
 export interface MentionOptions { category?: string; q?: string; offset?: number; source?: 'selection' }
 export interface MentionFacet { category: string; label: string; count: number }
 export interface MentionItem {
+  document_id?: string
   kind: string
   id: number | string
   name: string | null
@@ -66,7 +68,7 @@ export interface MentionCandidates {
   total: number
   truncated: boolean
 }
-export interface Mention { kind: MentionKind; id: number; name: string }
+export interface Mention { kind: MentionKind; id: number; name: string; document_id?: string }
 export type FetchCandidates =
   (kind: MentionKind, opts: MentionOptions) => Promise<MentionCandidates>
 

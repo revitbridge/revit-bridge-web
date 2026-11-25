@@ -85,6 +85,8 @@ from revit_bridge import checking
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
+from revit_bridge.capabilities.store import SolidifiedTool, normalize_pack
+from revit_bridge.revit.capabilities import discover
 from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
@@ -447,7 +449,7 @@ class DryRunRequest(WorkbenchCodeRequest):
 
 class ChoicesRequest(BaseModel):
     """One ``choices_from`` of the pack format: levels | floor_types | family_types:OST_* |
-    elements:OST_*."""
+    elements | elements:OST_*."""
     model_config = ConfigDict(extra="forbid")
 
     choices_from: str
@@ -474,7 +476,7 @@ class UpdateToolRequest(BaseModel):
     not_for: list[str] | None = None
 
 
-def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
+def tool_listing(tool, store: ToolStore, *, directory: bool = False, catalog: bool = False) -> dict:
     """One item of ``GET /tools`` and of the model's ``list_tools``: the MCP ``list_tools``
     shape plus ``builtin`` and ``origin`` (``"builtin"``: the wheel's read-only pack;
     ``"user"``: a file in the user capabilities directory). ``directory`` adds the
@@ -493,16 +495,20 @@ def tool_listing(tool, store: ToolStore, *, directory: bool = False) -> dict:
         "used": tool.execution_count,
         "builtin": origin == "builtin",
         "origin": origin,
+        "read_only": tool.read_only,
     }
+    if catalog:
+        item.update(display_name=tool.display_name, applies_when=tool.applies_when,
+                    not_for=tool.not_for, revit_versions=tool.revit_versions)
     if directory:
         item["directory"] = str(path.parent if path is not None else store.user_dir)
     return item
 
 
-def list_packs(*, directory: bool = False) -> list[dict]:
+def list_packs(*, directory: bool = False, catalog: bool = False) -> list[dict]:
     """Every pack, read from disk now (no cache: a pack another process just wrote is in it)."""
     store = ToolStore()
-    return [tool_listing(t, store, directory=directory) for t in store.list_tools()]
+    return [tool_listing(t, store, directory=directory, catalog=catalog) for t in store.list_tools()]
 
 
 def _tool_detail(tool) -> dict:
@@ -513,6 +519,7 @@ def _tool_detail(tool) -> dict:
         "version": tool.version,
         "parameters": tool.parameters,
         "tags": tool.tags,
+        "read_only": tool.read_only,
         "execution_count": tool.execution_count,
         "code_template": tool.code_template,
         "source_query": tool.source_query,
@@ -589,9 +596,9 @@ async def mention_items(
 ):
     """Items the designer can pick in chat: the package's
     ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
-    category?, family?, disabled?, reason?, summary?, level?, category_label?}], total, truncated,
+    category?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,
     offset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;
-    element lists the current selection with a summary, level and category label. When
+    element lists the current selection with a summary, level, category label and document identity. When
     facets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A
     kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
     reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
@@ -615,14 +622,38 @@ async def mention_items(
 
 @router.get("/tools", responses=responses(403))
 async def list_tools():
-    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, plus ``builtin`` and
+    """``ToolStore.list_tools`` in the MCP ``list_tools`` shape, including the pack's ``read_only`` flag, plus ``builtin`` and
     ``origin`` (and, on a local host, ``directory``: where the file was read). Read from
-    disk on every call."""
-    return list_packs(directory=not get_settings().cloud)
+    disk on every call. Catalog metadata includes display_name, applies_when, not_for and revit_versions."""
+    return list_packs(directory=not get_settings().cloud, catalog=True)
+
+
+class DraftToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(min_length=1, max_length=16000)
+    name: str | None = None
+    based_on: str | None = None
+
+
+@router.post("/tools/draft", dependencies=[Depends(require_admin)], responses=admin_responses(403, 404, 422, 502, 503))
+async def draft_tool(req: DraftToolRequest, request: Request):
+    """Generate an in-memory v1 pack. Return its validation problems alongside the editable pack."""
+    from backend.authoring import generate
+    description = req.description.strip()
+    if not description:
+        raise ApiError(422, "invalid_args", "Describe the tool to draft.")
+    name = require_tool_name(req.name) if req.name is not None else None
+    reference = None
+    if req.based_on is not None:
+        reference = ToolStore().load(require_tool_name(req.based_on))
+        if reference is None:
+            raise unknown_tool(req.based_on)
+    return await generate(description, name, reference, request)
 
 
 @router.get("/tools/{name}", responses=responses(403, 404, 422))
 async def get_tool(name: str):
+    """The full pack, including its declared ``read_only`` flag."""
     tool = ToolStore().load(require_tool_name(name))
     if not tool:
         raise unknown_tool(name)
@@ -826,8 +857,11 @@ async def run_tool(name: str, req: RunToolRequest):
     400 ``confirmation_required`` before anything else is looked at. With a claimed plan
     token, execution failures including ``unknown_tool`` and ``revit_unreachable`` return
     HTTP 200 with ``success: false`` so the supervisor can handle the step's receipt."""
+    return await execute_pack(name, req, ToolStore())
+
+
+async def execute_pack(name, req, store):
     require_tool_name(name)
-    store = ToolStore()
     if not req.token.strip() and store.load(name) is None:
         raise unknown_tool(name)
     token = _require_token(req.token)
@@ -986,11 +1020,17 @@ async def confirm_spec(req: ConfirmRequest):
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
     needs no Revit here. The token belongs to the browser session and never enters the model
     context."""
+    if req.confirmed_by.strip().casefold() == "designer:auto-run":
+        raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
+    return await issue_spec(req, ToolStore())
+
+
+async def issue_spec(req, store):
     try:
         spec = TaskSpec.model_validate(req.spec)
     except ValidationError as exc:
         raise ApiError(422, "invalid_spec", errors=[{"code": "invalid_spec", "param": None, "message": str(exc)}]) from None
-    pack = pack_for(spec, ToolStore())
+    pack = pack_for(spec, store)
     errors = validate_spec(spec, pack) + mention_errors(spec, pack, session_picks(req.session_id))
     if errors:
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in errors])
@@ -1061,33 +1101,23 @@ def workbench_rate_limit(request: Request) -> None:
 RENDER_FAILED = "render_failed"
 
 
+class DraftStore(ToolStore):
+    """Use the package's renderer with one transient pack and no filesystem lookups."""
+
+    def __init__(self, pack):
+        self.tool = SolidifiedTool(**normalize_pack(pack))
+
+    def load(self, name):
+        return self.tool if self.tool.name == name else None
+
+
 def render_draft(pack: dict, values: dict) -> str:
-    """The draft pack's template filled with ``values`` by the package itself: the draft is
-    checked with ``validate_pack`` (422 ``invalid_pack``) and its name with
-    ``require_tool_name``, then saved with ``ToolStore.solidify`` in a store whose user and
-    built-in directories are both fresh temporary directories (never the real ones,
-    removed afterwards), and ``ToolStore.render(name, values)`` fills it - defaults,
-    escaping, leftover placeholders, all the package's. A render it refuses is 422
-    ``render_failed`` with the package's messages in ``errors``."""
+    """Validate, normalize and render the supplied v1 pack entirely in memory."""
     problems = pack_problems(pack)
     if problems:
         raise ApiError(422, "invalid_pack", problems=problems)
     name = require_tool_name(pack["name"])
-    with tempfile.TemporaryDirectory(prefix="rbw-draft-") as scratch:
-        root = Path(scratch)
-        (root / "builtin").mkdir()
-        store = ToolStore(user_dir=root / "user", builtin_dir=root / "builtin")
-        try:
-            store.solidify(
-                name=name, code=pack["code_template"], description=pack.get("description") or "",
-                display_name=pack.get("display_name") or "", parameters=pack.get("parameters") or [],
-                source_query=pack.get("source_query") or "", preconditions=pack.get("preconditions") or [],
-                applies_when=pack.get("applies_when") or [], not_for=pack.get("not_for") or [],
-                validator=pack.get("validator"),
-            )
-        except ValueError as exc:
-            raise _invalid_pack(exc) from None
-        code, errors = store.render(name, values)
+    code, errors = DraftStore(pack).render(name, values)
     if code is None:
         raise ApiError(422, RENDER_FAILED, "The package could not fill the draft's template with these values",
                        errors=errors)
@@ -1127,6 +1157,12 @@ async def check_code(req: CheckCodeRequest):
     return await checking.check_code(client, code, parameters, library=guidance_library)
 
 
+class DraftLedger:
+    def append(self, record):
+        # Retain the rollback evidence and code hash while the source is an unsaved draft.
+        return get_ledger().append({k: v for k, v in record.items() if k != "code_head"})
+
+
 @router.post("/dry-run", dependencies=[Depends(workbench_rate_limit)], responses=responses(403, 422, 429, 503))
 async def dry_run_code(req: DryRunRequest):
     """``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group
@@ -1145,20 +1181,21 @@ async def dry_run_code(req: DryRunRequest):
     if refused is not None:
         return refused
     client = await get_revit_client()
-    return await package_dry_run.dry_run_code(client, code, parameters, ledger=get_ledger(),
+    ledger = DraftLedger() if req.pack is not None else get_ledger()
+    return await package_dry_run.dry_run_code(client, code, parameters, ledger=ledger,
                                               host=HOST, scope=current_scope())
 
 
 @router.post("/choices", responses=responses(403, 422, 503, 504))
 async def choices_of(req: ChoicesRequest):
     """The real options of one ``choices_from`` (``levels``, ``floor_types``,
-    ``family_types:OST_*``, ``elements:OST_*``) as ``[{label, value}]``: the package's
+    ``family_types:OST_*``, ``elements``, ``elements:OST_*``) as ``[{label, value}]``: the package's
     ``RevitQueryExecutor.get_tool_choices``, the code ``GET /tools/{name}/choices`` uses,
     asked for one parameter - so the values are what a saved pack receives. A value the
     pack format does not accept is 422 ``invalid_args``; Revit as for that route (503, 504
     after 15 s)."""
     if not CHOICES_FROM_RE.fullmatch(req.choices_from):
-        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_* or "
+        raise ApiError(422, "invalid_args", "choices_from is levels, floor_types, family_types:OST_*, elements or "
                                             "elements:OST_*", choices_from=req.choices_from[:100])
     client = await get_revit_client()
     try:
@@ -1280,9 +1317,20 @@ async def trigger_selection():
 
 # -- health --------------------------------------------------------------------
 
+async def _user_tools_allowed():
+    try:
+        caps = await discover(await get_revit_client(), refresh=True, timeout=2)
+        tools = caps.info.get("user_tools")
+        if isinstance(tools, dict) and type(tools.get("allowed")) is bool:
+            return tools["allowed"]
+    except Exception:
+        pass  # Older add-ins may answer health but lack the capabilities method.
+    return None
+
+
 @router.get("/revit-health", responses=responses(403, 422))
 async def revit_health():
-    """Is a Revit reachable: the selected device, else the local TCP add-in."""
+    """Whether the selected Revit is reachable. A connected add-in can report user_tools_allowed."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     device_id = request_device()
     relay = get_relay()
@@ -1299,6 +1347,7 @@ async def revit_health():
         t0 = time.monotonic()
         ok = await WebSocketRevitClient(relay, device_id, timeout=10).ping()
         return {
+            "user_tools_allowed": await _user_tools_allowed() if ok else None,
             "revit_connected": ok,
             "latency_ms": round((time.monotonic() - t0) * 1000) if ok else None,
             "mode": "websocket",
@@ -1312,6 +1361,7 @@ async def revit_health():
     latency = round((time.monotonic() - t0) * 1000)
     if status["reachable"]:
         return {
+            "user_tools_allowed": await _user_tools_allowed(),
             "revit_connected": True, "latency_ms": latency, "mode": "tcp",
             "detail": "Local add-in responded",
             "endpoint": f"{status['host']}:{status['port']}",

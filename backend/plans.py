@@ -26,6 +26,8 @@ class Step:
     evidence_id: str | None = None
     result: dict | None = None
     retries: int = 0
+    # The actual result for provenance, separate from the clipped model context.
+    recorded_result: object = field(default=None, repr=False)
 
     def event(self):
         item = {"id": self.id, "title": self.title, "status": self.status}
@@ -50,6 +52,7 @@ class Plan:
     expires_at: float = 0
     running: bool = False
     closed: bool = False
+    auto_receipt_pending: bool = False
 
     @staticmethod
     def fingerprint(token: str):

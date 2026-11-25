@@ -148,6 +148,7 @@ from revit_bridge.snapshot import RevitQueryExecutor, snapshot_digest
 from revit_bridge.snapshot.query import RevitQueryError
 
 from backend import roles
+from backend.api.auto_run import AutoRun
 from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
 from backend.api.errors import ApiError
 from backend.api.model_tools import (
@@ -273,10 +274,12 @@ class ChatMention(BaseModel):
 
     kind: str = Field(max_length=32, description="level, type, link or element")
     id: StrictInt = Field(description="the item's element id")
+    document_id: str | None = Field(default=None, max_length=200, description="Document identity recorded by the element picker")
     label: str | None = Field(default=None, max_length=500, description="what the page showed; not sent to the model")
 
 
 class ChatRequest(BaseModel):
+    run: Literal["confirm", "auto"] = "confirm"
     answers: DesignerAnswers | None = None
     message: str | None = Field(default=None, max_length=8000)
     execution: dict | None = None      # an ExecutionResult the page got from /run or /execute
@@ -429,6 +432,18 @@ async def check_mentions(mentions: list[ChatMention]) -> dict:
               "not_found": [e for e in found["not_found"] if e.get("reason") != "invalid"],
               "invalid": [e for e in found["not_found"] if e.get("reason") == "invalid"],
               "unresolved": []}
+    documents: dict[int, set[str]] = {}
+    for pick in mentions:
+        if pick.kind == "element" and pick.document_id is not None:
+            documents.setdefault(pick.id, set()).add(pick.document_id)
+    matched = []
+    for item in report["resolved"]:
+        expected = documents.get(item["id"]) if item["kind"] == "element" else None
+        if expected and expected != {item.get("document_id")}:
+            report["not_found"].append({"kind": "element", "id": item["id"], "reason": "document_changed"})
+        else:
+            matched.append(item)
+    report["resolved"] = matched
     if found.get("warnings"):
         report["warnings"] = list(found["warnings"])
     return report
@@ -495,6 +510,7 @@ class Turn:
         # The last spec card this turn sent the page: "ready" (accepted: it can be confirmed),
         # "not_ready" (errors, or reconcile not ready), None (no spec event in this turn).
         self.card: str | None = None
+        self.auto: AutoRun | None = None
         self.question_tools = False
         self.calls_log = get_log_store()
         self.round = 0
@@ -613,6 +629,15 @@ class Turn:
                                    "Use the original request, verified form answers and previous results throughout the plan.")
                     context[index] = {**context[index], "content": context[index]["content"] +
                                       f"\n\nPlan {roles.FROM_HOST}: {instruction}\n{data}"}
+                if self.auto and role in (roles.PLANNER, roles.SUPERVISOR, ROLE):
+                    context = [dict(m) for m in context]
+                    context[0]["content"] += ("\nThe host automatically runs eligible ready cards. Do not ask for a click "
+                                              "unless the host requires manual confirmation. Ask whenever information is missing.")
+                    if role != roles.SUPERVISOR:
+                        context[0]["content"] += (
+                            " For a value from a read in this message or a completed step in this plan, cite "
+                            "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
+                            "value and source tool. Designer and answer need the designer's words or form answer.")
                 async for item in stream_completion(llm, context, tools=round_tools, stats=stats,
                                                     memory=self.session.provider_memory, **target.options):
                     if isinstance(item, str):
@@ -654,6 +679,7 @@ class Turn:
                 keep(assistant)
             messages.append(assistant)
             questions = None
+            stop_reply = None
             for index, call in enumerate(calls, start=1):
                 event_id = f"{self.turn}.{this_round}.{index}"     # unique in the session
                 args = parse_arguments(call.arguments)
@@ -672,6 +698,19 @@ class Turn:
                                                "message": f"the {role} has only: {', '.join(offered)}"})
                     else:
                         outcome = await call_tool(call.name, args, self.session)
+                    auto_card = bool(self.auto and outcome.spec_event is not None)
+                    if auto_card:
+                        reason, detail = self.auto.inspect(outcome.spec_event)
+                        if reason == "apply_approval":
+                            updated = {**args, "spec": {**args["spec"], "interpretations": detail}}
+                            outcome = await call_tool(call.name, updated, self.session)
+                            reason, detail = self.auto.inspect(outcome.spec_event) if outcome.spec_event else ("not_ready", None)
+                        if outcome.spec_event:
+                            outcome.spec_event["run"] = "confirm" if reason else "auto"
+                            if reason:
+                                outcome.spec_event["run_reason"] = reason
+                            if reason == "unconfirmed_interpretation" and detail:
+                                outcome.questions_event = detail
                     reply = tool_message(call, outcome.result)
                 except Exception as exc:
                     # The turn fails as before; the row still closes. The browser gets the
@@ -690,6 +729,8 @@ class Turn:
                 error = tool_error_text(outcome.result)
                 closing = {"ms": int((time.monotonic() - tool_started) * 1000), "size": len(result_text),
                            "preview": result_text[:TOOL_PREVIEW]}
+                if outcome.read_tool is not None:
+                    closing["read"] = {"name": outcome.read_tool, "result": outcome.result}
                 if error is not None:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
@@ -707,11 +748,31 @@ class Turn:
                 messages.append(reply)
                 if outcome.questions_event is not None:
                     questions = outcome.questions_event
+                    stop_reply = outcome.stop_reply
+                if auto_card:
+                    # Close every call ID in this assistant message before handing off.
+                    for remaining in calls[index:]:
+                        skipped = tool_message(remaining, {"error": "card_pending"})
+                        messages.append(skipped)
+                        if keep is not None:
+                            keep(kept_tool_message(skipped))
+                    if outcome.spec_event and outcome.spec_event.get("run") == "auto":
+                        if await self.auto.request.is_disconnected():
+                            return
+                        worker = self.auto.start(outcome.spec_event["spec"])
+                        if self.run_label is None:
+                            self.run_label = f"auto-{self.session.session_id}-{self.turn}"
+                        await asyncio.to_thread(self.calls_log.mark_auto, self.session.session_id, self.turn, self.run_label)
+                        self.auto.receipt = await asyncio.shield(worker)
+                        yield format_sse_event("execution", self.auto.receipt)
+                    break
             if questions is not None:
                 self.session.pending_form = questions
                 self.session.form_routing = self.routing
-                self.session.form_stop_reply = None
+                self.session.form_stop_reply = stop_reply
                 yield format_sse_event("questions", questions)
+                return
+            if auto_card:
                 return
 
     async def answer_json(self, role: str, target: ModelTarget, messages: list[dict], parse, *,
@@ -818,15 +879,18 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
     plan = session.plan
     step = plan.current if plan else None
     if step:
+        if execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution):
+            session.auto_paused = True
         task.retries = step.retries
         step.evidence_id = execution.get("evidence_id")
         step.result = roles.step_result(execution)
+        step.recorded_result = execution.get("result")
     supervisor = targets[roles.SUPERVISOR]
     # The spec the page confirmed with this session, once: a report without one (the page did
     # not say, or the bench's fixed result) shows the last proposal as proposed, never confirmed.
     confirmed = session.confirmed_spec is not None
     spec = session.confirmed_spec if confirmed else session.spec
-    if not step:
+    if not step and session.pending_auto_receipt is None:
         session.confirmed_spec = None
     yield run.stage(roles.SUPERVISOR, supervisor.model, "start")
     messages = [{"role": "system", "content": session.role_prompt(roles.SUPERVISOR, build_role_prompt)},
@@ -847,6 +911,7 @@ async def execution_roles(run: Turn, targets: dict[str, ModelTarget], execution:
         plan.proposed = None
         plan.token_digest = None
         plan.receipt = None
+        plan.auto_receipt_pending = False
         session.confirmed_spec = None
         session.spec = None
         failed = execution.get("success") is not True or roles.validator_failed(execution) or roles.is_refused(execution)
@@ -996,7 +1061,7 @@ async def chat(req: ChatRequest, request: Request,
     with_roles = mode != MODE_SINGLE
     targets = {}
     session = get_session_store().get_or_create(req.session_id)
-    if req.bridge and session.bridge_turn.locked():
+    if req.bridge and (session.bridge_turn.locked() or session.auto_worker is not None):
         raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
     plan = session.plan if req.bridge else None
     step = plan.current if plan else None
@@ -1004,6 +1069,24 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_step", "This plan belongs to another device.")
     if step and plan.reporting:
         raise ApiError(409, "step_in_progress", "The current execution report is already being reviewed.")
+    resume_message = None
+    single_receipt = session.pending_auto_receipt if req.bridge else None
+    if single_receipt:
+        scope, receipt = single_receipt
+        if scope != current_scope():
+            raise ApiError(422, "invalid_step", "The pending execution belongs to another device.")
+        req.execution = receipt
+        req.message = None
+        req.answers = None
+        req.mentions = []
+        req.run = "confirm"
+    elif step and plan.auto_receipt_pending and plan.receipt is not None and req.message and not req.answers:
+        # A stopped stream may never have delivered the receipt. A new user turn resumes
+        # supervision of the completed operation, with any subsequent card left for review.
+        resume_message = req.message
+        req.execution = plan.receipt
+        req.message = None
+        req.run = "confirm"
     pending = session.pending_form
     verified = req.answers.verified_items(pending) if req.answers else None
     if req.answers and verified is None:
@@ -1033,7 +1116,7 @@ async def chat(req: ChatRequest, request: Request,
                 raise HTTPException(exc.status, str(exc)) from None
             if not targets[first].llm.configured:
                 raise no_model(targets[first], first)
-    elif not with_roles and step and req.execution is not None:
+    elif not with_roles and (step or single_receipt) and req.execution is not None:
         # Single-model mode uses the same target to review this step, then to plan the next.
         targets[roles.SUPERVISOR] = target
 
@@ -1069,6 +1152,8 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_answers", "the form was already answered or replaced")
     if req.bridge and (session.plan is not plan or (step and plan.current is not step)):
         raise ApiError(409, "plan_changed", "The plan changed while checking this request.")
+    if req.bridge and (session.pending_auto_receipt is not single_receipt or session.auto_worker is not None):
+        raise ApiError(409, "turn_in_progress", "The execution changed while checking this request.")
     if req.execution is not None:
         evidence = req.execution.get("evidence_id")
         if isinstance(evidence, str) and evidence in session.reported_evidence:
@@ -1085,11 +1170,18 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
     if step and req.execution is not None:
         plan.reporting = True
+        if resume_message:
+            plan.answers.append({"question": "After reconnecting", "answer": resume_message})
     changed_plan = None
     if req.bridge and req.message:
+        session.direct_reads = 0
+        session.read_results.clear()
+        session.auto_count = 0
         if not step and pending is None and session.clarification is None:
+            session.auto_paused = False
             session.request_text = req.message
             session.request_answers = []
+            session.pending_interpretations.clear()
             session.proposed_in_request = False
         elif not step and pending is None and session.clarification:
             session.request_answers.append({"question": session.clarification, "answer": req.message})
@@ -1109,6 +1201,15 @@ async def chat(req: ChatRequest, request: Request,
         session.form_stop_reply = None
     turn = session.next_turn()
     run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
+    approved = None
+    if session.auto_assumptions and verified and pending and pending["ask_id"] == session.auto_assumptions[0]:
+        if verified[0].get("value") == "accept" and not verified[0].get("other"):
+            approved = session.auto_assumptions[1]
+    if req.bridge:
+        session.auto_assumptions = None
+    if req.bridge and req.run == "auto" and settings.auto_run and (admin or not settings.cloud):
+        run.auto = AutoRun(session, request, settings, prefers_chinese(request.headers.get("accept-language", "")),
+                           None if verified else req.message, approved)
 
     if stop_reply:
         log_model = None
@@ -1132,7 +1233,7 @@ async def chat(req: ChatRequest, request: Request,
                 yield format_sse_event("mentions", picks)
             yield format_sse(stop_reply)
             yield SSE_DONE
-    elif with_roles or (step and req.execution is not None):
+    elif with_roles or ((step or single_receipt) and req.execution is not None):
         log_model = lambda: run.models_ran() or llm.model
         scope = current_scope()                   # the device this request drives
         async def generate() -> AsyncGenerator[str, None]:
@@ -1192,15 +1293,42 @@ async def chat(req: ChatRequest, request: Request,
             yield run.stage(ROLE, llm.model, "end")
             yield SSE_DONE
 
+    async def with_auto_reports():
+        async with aclosing(generate()) as frames:
+            async for frame in frames:
+                if frame != SSE_DONE or not run.auto or run.auto.receipt is None:
+                    yield frame
+                    continue
+                while run.auto.receipt is not None:
+                    if await request.is_disconnected():
+                        return
+                    receipt, run.auto.receipt = run.auto.receipt, None
+                    if receipt.get("success") is not True:
+                        run.auto.paused = True
+                    if roles.SUPERVISOR not in targets:
+                        targets[roles.SUPERVISOR] = (await resolve_model(roles.SUPERVISOR, request.headers)
+                                                     if with_roles else targets[ROLE])
+                    targets.setdefault(roles.PLANNER, targets[ROLE])
+                    async with aclosing(execution_roles(run, targets, receipt, current_scope(), chinese=run.auto.chinese)) as report:
+                        async for part in report:
+                            yield part
+                yield SSE_DONE
+
     async def session_stream():
         try:
-            async with aclosing(generate()) as events:
+            async with aclosing(with_auto_reports()) as events:
                 logged = log_and_stream(events, module="chat", session_id=session.session_id,
                                         client_ip=get_client_ip(request), user_agent=request.headers.get("user-agent", ""),
                                         user_input=text, model=log_model)
                 async with aclosing(logged):
                     async for event in logged:
                         yield event
+                        if req.bridge and event == SSE_DONE and session.pending_auto_receipt is not None:
+                            evidence = session.pending_auto_receipt[1].get("evidence_id")
+                            if isinstance(evidence, str):
+                                session.reported_evidence.add(evidence)
+                            session.pending_auto_receipt = None
+                            session.confirmed_spec = None
         finally:
             if step and req.execution is not None:
                 plan.reporting = False

@@ -46,7 +46,7 @@ function RunRows({ run, picked, onToggle }: { run: UsageRun; picked: number; onT
           </label>
         </td>
         <td className="mono">{run.run_label}</td>
-        <td className="token-mode">{modeOf(run)}</td>
+          <td className="token-mode">{modeOf(run)}{run.run === 'auto' && ' · Auto execution'}</td>
         <td>{runTime(run)}</td>
         <CountCells counts={countsOf(run)} />
       </tr>

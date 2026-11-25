@@ -32,7 +32,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 ## Layout
 
 - `backend/main.py` - app factory, `/health`, `/config.json`, SPA serving, the `revit-bridge-web` console entry (`[project.scripts]`).
-- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, `mentions` (the chat's `@` picker: the package's `mention_candidates`), packs, specs (`/spec/reconcile` and `/spec/confirm` take the chat's `session_id` for the pick check), confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in a temporary store, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
+- `backend/api/bridge.py` - `/api/v1/bridge/*` (the v1 contract: snapshot, query, `mentions` (the chat's `@` picker: the package's `mention_candidates`), packs, specs (`/spec/reconcile` and `/spec/confirm` take the chat's `session_id` for the pick check), confirmed execution, evidence, and the workbench's `check` and `dry-run` (`code` or a draft `pack` + `values` filled by the package in memory, `render_draft`), `choices`, `tools/{name}/export`, `tools/import` (`PackYamlLoader`: no aliases)), the tool name check (`require_tool_name`), the built-in read-only rule (`is_builtin`, 409 `builtin_read_only`), the listing (`list_packs`: `builtin`, `origin`, local `directory`), the device header dependency, add-in WebSocket endpoint; `relay_router` (socket + device routes) is mounted in cloud mode only, `cloud_only_router` (404 `cloud_mode_only`) in local mode; `backend/api/devices.py` pairing and the request's device; `backend/api/errors.py` the `{error, message?}` responses.
 - `backend/api/chat.py` - `/api/chat`, the host loop (SSE: tokens, `spec`, `execution`, `done`, and
   what the host did: `stage`, `tool`, `usage`; the optional `X-Run-Label` header); a message's
   `mentions` (the designer's picks) are checked with the package's `resolve_mentions` before any
@@ -163,8 +163,8 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   token. The page sends only `{kind, id}`.
 - Every tool name from a request or from the model goes through `require_tool_name` (ASCII
   letters, digits and `_`, at most 100 characters, no Windows device name) before any `ToolStore`
-  call. A draft pack is filled only by the package (`ToolStore.render` in a store of temporary
-  directories): no escaping or substitution in the host or the frontend.
+  call. The package fills draft packs in memory through `ToolStore.render` on the host's
+  `DraftStore`. The package handles escaping and substitution.
 - The host never sets the package's data variables: without a container the user tools are the
   package's per-user directory, shared with its MCP server. Listings are read from disk on every
   call (no cache). The 0.1 repair at startup touches only `DATA_DIR/capabilities`.
@@ -194,8 +194,8 @@ Runtime attribute lookup across the host/package boundary:
   `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge==0.10.0` from PyPI; `uv.lock` pins the exact
-release (0.10.0). When the host needs something newer, bump the constraint and
+`pyproject.toml` requires `revit-bridge==0.10.1` from PyPI; `uv.lock` pins the exact
+release (0.10.1). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
 a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).

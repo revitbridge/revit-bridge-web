@@ -208,11 +208,11 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "multi_step_4096"
+PLAN_4096 = "tool_authoring_4096"
 
 
 def current_section() -> str:
-    return f"multi_step_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"tool_authoring_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
@@ -229,7 +229,9 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
     requests, streams = run_scenario(name, env, revit, recorder)
     sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
     assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
-    assert hashes(streams) == recorded(name, f"mention_picker_{llm_module.DEFAULT_MAX_TOKENS}")["streams"]
+    prior = recorded(name, f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}")
+    assert hashes([r.replace("/capabilities/authoring", "/capabilities/workbench") for r in requests]) == prior["requests"]
+    assert hashes(streams) == prior["streams"]
     legacy = recorded(name, AA5556C_SECTION)["streams"]
     for index, stream in enumerate(streams):
         if name.startswith("single-") and index == 2:
@@ -249,7 +251,7 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
             assert digest(stream) == legacy[index]
     if REGENERATE:
         record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("multi_step_")
+        assert section.startswith("tool_authoring_")
         record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
         GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("record written")

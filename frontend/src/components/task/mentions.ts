@@ -79,7 +79,8 @@ export function tooManyPicks(mentions: Mention[]): string | null {
 /* The picks as POST /api/chat takes them: kind and element id, each item once. The name the
    page shows is not sent: the host reads the item from the model. */
 export const mentionRefs = (mentions: Mention[]): MentionRef[] =>
-  distinctMentions(mentions).map(m => ({ kind: m.kind, id: m.id }))
+  distinctMentions(mentions).map(m => ({ kind: m.kind, id: m.id,
+    ...(m.kind === 'element' && m.document_id ? { document_id: m.document_id } : {}) }))
 
 /* The picks of a message being sent, each item once: nothing is known about them yet. */
 export const pendingMentions = (mentions: Mention[]): SentMention[] =>
@@ -120,6 +121,7 @@ export function unavailableInInput(messages: ChatMessage[], inInput: Mention[]):
 }
 
 const zhReasons: Record<string, string> = {
+  document_changed: '文档已切换，请重新选择',
   not_found: '模型中找不到此项', not_loaded: '链接尚未加载', timeout: '读取超时',
   revit_unreachable: '无法连接 Revit', revit_error: 'Revit 读取失败', unresolved: '原因未知',
 }

@@ -17,6 +17,9 @@ services:
       # password. cloud: the relay, pairing and ADMIN_PASSWORD, which is then
       # required. See README.
       DEPLOY_MODE: ${DEPLOY_MODE:-local}
+      AUTO_RUN: ${AUTO_RUN:-}
+      AUTO_RUN_MAX_STEPS: ${AUTO_RUN_MAX_STEPS:-8}
+      AUTO_RUN_EXCLUDE: ${AUTO_RUN_EXCLUDE:-}
       # The address the port above is published on, the same expression: inside
       # the container the app listens on 0.0.0.0, so this is what local mode checks.
       BIND_ADDRESS: ${BIND_ADDRESS:-127.0.0.1}

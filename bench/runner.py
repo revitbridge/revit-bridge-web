@@ -288,7 +288,7 @@ def turn_modes(events: list[dict]) -> list[str]:
 
 
 def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: dict,
-             execute: bool = False, mode: str = "auto", confirm: str = "never") -> dict:
+             execute: bool = False, mode: str = "auto", confirm: str = "never", run: str = "confirm") -> dict:
     base = base.rstrip("/")
     started = time.perf_counter()
     events: list[dict] = []
@@ -307,6 +307,8 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
         nonlocal session_id, requests
         requests += 1
         payload = {**payload, "mode": mode}
+        if execute and run == "auto":
+            payload["run"] = "auto"
         current = []
         with client.stream("POST", base + "/api/chat", json=payload, headers={"X-Run-Label": label}) as response:
             check_status(response)
@@ -347,6 +349,11 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
                 if not specs:
                     break
             if specs:
+                if execute and run == "auto":
+                    # The host owns this execution. Excluded cards wait for a real click.
+                    actual = [e for e in current if e["type"] == "execution"]
+                    execution = {k: v for k, v in actual[-1].items() if k not in ("type", "request")} if actual else None
+                    break
                 if execute:
                     execution = execute_spec(client, base, specs[-1]["spec"], session_id)
                     feedback_turns += 1
@@ -392,7 +399,7 @@ def run_task(client: httpx.Client, base: str, label: str, task: dict, fixture: d
 
 def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fixture: dict | None = None, *,
              skip_requires=(), include_placeholder_ids: bool = False, execute: bool = False, mode: str = "auto",
-             confirm: str = "never") -> dict:
+             confirm: str = "never", run: str = "confirm") -> dict:
     """One pass over the task set under one run label."""
     results = []
     for task in tasks:
@@ -403,7 +410,7 @@ def run_once(client: httpx.Client, base: str, label: str, tasks: list[dict], fix
         try:
             results.append(run_task(client, base, label, task,
                                     fixture if fixture is not None else DEFAULT_EXECUTION, execute,
-                                    mode=mode, confirm=confirm))
+                                    mode=mode, confirm=confirm, run=run))
         except PickNotFound as exc:          # raised before any chat: nothing was measured
             results.append(skipped_result(task, str(exc)))
     totals, by_role = run_totals(results)
@@ -495,7 +502,7 @@ def run_labels(label: str, repeat: int) -> list[str]:
 
 def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fixture: dict | None = None, *,
               repeat: int = 1, skip_requires=(), include_placeholder_ids: bool = False,
-              execute: bool = False, mode: str = "auto", confirm: str = "never") -> dict:
+              execute: bool = False, mode: str = "auto", confirm: str = "never", run: str = "confirm") -> dict:
     """The task set ``repeat`` times under ``<label>-1`` .. ``<label>-<repeat>``, each repeat
     cross-checked against ``/api/usage/runs``, and the summary over the repeats; every chat
     request carries ``mode``, and ``confirm`` is the confirmation policy (see the module).
@@ -514,7 +521,7 @@ def run_bench(client: httpx.Client, base: str, label: str, tasks: list[dict], fi
     runs = []
     for name in labels:
         run = run_once(client, base, name, tasks, fixture, skip_requires=skip_requires,
-                       include_placeholder_ids=include_placeholder_ids, execute=execute, mode=mode, confirm=confirm)
+                       include_placeholder_ids=include_placeholder_ids, execute=execute, mode=mode, confirm=confirm, run=run)
         after, unavailable = host_runs(client, base)
         run["host_usage"] = cross_check(run, after, unavailable)
         runs.append(run)

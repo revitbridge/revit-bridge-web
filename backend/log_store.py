@@ -48,7 +48,7 @@ def _token_count(value) -> int | None:
         value = int(value)
     return value if 0 <= value <= MAX_COUNT else None
 _CALL_COLUMNS = ("session_id, turn, round, role, model, input, output, cache_read, cache_write, "
-                 "ms, created_at, run_label, mode, plan_id, step_id")
+                 "ms, created_at, run_label, mode, plan_id, step_id, run")
 # A run whose calls ran in more than one chat mode.
 MIXED_MODES = "mixed"
 # Rows older than RETENTION_DAYS go at startup and then at most once a day, on the
@@ -113,7 +113,7 @@ class InteractionLogStore:
             """)
             # A table created before the chat modes: the column is added, its old rows NULL.
             columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_calls)")}
-            for column in ("mode", "plan_id", "step_id"):
+            for column in ("mode", "plan_id", "step_id", "run"):
                 if column not in columns:
                     conn.execute(f"ALTER TABLE llm_calls ADD COLUMN {column} TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_session ON llm_calls(session_id)")
@@ -259,6 +259,11 @@ class InteractionLogStore:
             except Exception as exc:  # noqa: BLE001
                 _log.error("failed to write a model call: %s", exc)
 
+    def mark_auto(self, session_id: str, turn: int, label: str) -> None:
+        with self._lock, contextlib.closing(self._conn()) as conn, conn:
+            conn.execute("UPDATE llm_calls SET run = 'auto', run_label = COALESCE(run_label, ?) "
+                         "WHERE session_id = ? AND turn = ?", (label, session_id, turn))
+
     def calls_of_session(self, session_id: str) -> list[dict]:
         """Every model call of one session, oldest first."""
         with contextlib.closing(self._conn()) as conn:
@@ -285,6 +290,7 @@ class InteractionLogStore:
             rows = conn.execute(
                 f"""SELECT run_label, COUNT(*) AS calls, {sums}, TOTAL(ms) AS ms,
                            MIN(created_at) AS first_at, MAX(created_at) AS last_at, {mode},
+                           MAX(run) AS run,
                            CASE WHEN COUNT(DISTINCT plan_id) = 1 THEN MIN(plan_id) END AS plan_id,
                            CASE WHEN COUNT(DISTINCT plan_id) = 1 AND COUNT(DISTINCT step_id) = 1
                                 THEN MIN(step_id) END AS step_id
