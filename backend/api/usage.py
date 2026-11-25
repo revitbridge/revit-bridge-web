@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/usage", tags=["usage"])
 
 class CallRow(BaseModel):
     """One model call."""
+    run: str | None = None
     session_id: str
     turn: int
     round: int
@@ -56,6 +57,7 @@ class RolePart(BaseModel):
 
 class RunTotal(BaseModel):
     """The calls of one run label: each token sum is null when any call lacks it."""
+    run: str | None = None
     run_label: str
     calls: int
     input: int | None

@@ -38,6 +38,8 @@ def test_local_is_the_default_and_reports_no_admin_and_no_devices():
     assert s.unused_variables == ()
     assert s.config_json() == {"apiBase": "", "wsBase": "", "features": {
         "mode": "local", "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 0,
+        "runModes": ["confirm", "auto"],
+        "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
         "roles": True, "chatModes": ["auto", "single", "roles", "roles_analyst"], "chatModeDefault": "roles",
         "slotTokenRequired": False, "maxSlots": 0}}
     assert WebSettings.from_env({"DEPLOY_MODE": " Local "}).mode == "local"
@@ -288,6 +290,8 @@ def test_a_local_host_publishes_no_relay(make_client, local_env):
     client = make_client(**LOCAL)
     assert client.get("/config.json").json()["features"] == {
         "mode": "local", "byoModel": True, "serverModel": False, "admin": False, "maxDevices": 0,
+        "runModes": ["confirm", "auto"],
+        "autoRun": {"max_steps": 8, "excluded_tools": ["delete_elements", "delete_selected", "delete_elements_by_category"]},
         "roles": False, "chatModes": ["auto", "single", "roles", "roles_analyst"], "chatModeDefault": "single",
         "slotTokenRequired": False, "maxSlots": 0,
         "models": {"analyst": None, "planner": None, "supervisor": None}, "modelsFile": False}

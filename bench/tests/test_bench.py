@@ -517,6 +517,16 @@ def test_a_label_the_host_already_has_is_refused_before_any_chat():
 
 # -- execute ------------------------------------------------------------------------------
 
+def test_server_auto_requires_execute_and_never_confirms_again():
+    receipt = {"success": True, "evidence_id": "ev-auto"}
+    host = FakeHost([response(("spec", spec(run="auto")), ("execution", receipt))])
+    result = host.run([task()], execute=True, run="auto")["tasks"][0]
+    assert result["execution"] == receipt and host.requests[0][0]["run"] == "auto" and not host.other
+    host = FakeHost([response(("", "No tool"))])
+    host.run([task()], run="auto")
+    assert "run" not in host.requests[0][0]
+
+
 def test_execute_confirms_runs_and_reports_the_real_result():
     host = FakeHost([response(("spec", spec()), ("usage", usage())), response(("usage", usage("supervisor")))])
     result = host.run([task()], execute=True)["tasks"][0]

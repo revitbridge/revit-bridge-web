@@ -147,8 +147,19 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
           {confirmErrors.map((e, i) => <li key={i}>{zh ? '确认被拒绝：' : 'Confirm refused: '}<code>{e.code}</code>{e.param ? <>{zh ? '，参数 ' : ' on '}<code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
+      {proposal.runReason && <p role="status">{(zh ? '未自动执行：' : 'Manual confirmation: ') + (
+        ({ excluded_tool: zh ? '此工具需要单独确认' : 'tool requires a separate confirmation',
+           previous_failure: zh ? '此前步骤未成功' : 'a previous step failed',
+           step_limit: zh ? '已达到本条消息的步数上限' : 'step limit reached',
+           unverified_evidence: zh ? '无法核实参数依据' : 'parameter evidence could not be verified',
+           unconfirmed_interpretation: zh ? '请确认假设' : 'assumptions need confirmation',
+           not_ready: zh ? '规格尚未就绪' : 'specification is not ready' } as Record<string, string>)[proposal.runReason]
+        ?? proposal.runReason)}</p>}
       {execution && <ExecutionView execution={execution} />}
-      {onRetryReport ? <button type="button" onClick={onRetryReport}>{zh ? '重新提交执行结果' : 'Resend execution result'}</button>
+      {proposal.run === 'auto' ? <p role="status">{execution
+        ? (execution.success ? (zh ? '已执行' : 'Executed') : (zh ? '执行失败' : 'Execution failed'))
+        : proposal.awaitingReceipt ? (zh ? '结果待核对，请查看执行记录。' : 'Result pending. Check the execution record.')
+        : (zh ? '自动执行中' : 'Running automatically')}</p> : onRetryReport ? <button type="button" onClick={onRetryReport}>{zh ? '重新提交执行结果' : 'Resend execution result'}</button>
         : proposal.ended ? <p role="status">{proposal.planStep && proposal.planStep.status !== 'proposed' ? planStatus(proposal.planStep.status, zh).label : (zh ? '任务已结束' : 'Task ended')}</p> : execution?.success ? <p role="status">{zh ? '已执行' : 'Executed'}</p> : archived ? <p>{zh ? '已被新卡替换' : 'Replaced by a new card'}</p> :
         <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
           {confirming ? (zh ? '正在确认…' : 'Confirming…') : running ? (zh ? '正在执行…' : 'Running…') : confirmLabel(execution, confirmErrors)}

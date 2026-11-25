@@ -3086,6 +3086,17 @@
       },
       "CallRow": {
         "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          },
           "session_id": {
             "type": "string",
             "title": "Session Id"
@@ -3280,6 +3291,15 @@
       },
       "ChatRequest": {
         "properties": {
+          "run": {
+            "type": "string",
+            "enum": [
+              "confirm",
+              "auto"
+            ],
+            "title": "Run",
+            "default": "confirm"
+          },
           "answers": {
             "anyOf": [
               {
@@ -3861,6 +3881,17 @@
       },
       "RunTotal": {
         "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          },
           "run_label": {
             "type": "string",
             "title": "Run Label"

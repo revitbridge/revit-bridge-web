@@ -8,7 +8,7 @@
    error) and stays as it was. */
 
 import { apiStream } from './client'
-import { llmHeaders } from '../store'
+import { adminHeaders, llmHeaders } from '../store'
 import type {
   DesignerForm, ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, PlanStep, ReconcileResult, SpecError, TaskSpec,
 } from '../types/api'
@@ -95,6 +95,8 @@ export function parseSseFrame(frame: string): HostEvent | null {
     if (isRecord(parsed.reconcile_error) && typeof parsed.reconcile_error.error === 'string') {
       spec.reconcile_error = parsed.reconcile_error as { error: string; message?: string }
     }
+    if (parsed.run === 'auto' || parsed.run === 'confirm') spec.run = parsed.run
+    if (typeof parsed.run_reason === 'string') spec.run_reason = parsed.run_reason
     return spec
   }
   if (event === 'execution') {
@@ -190,7 +192,8 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.mentions?.length) body.mentions = request.mentions
   if (request.answers) body.answers = request.answers
   if (request.mode !== undefined) body.mode = request.mode
-  const resp = await apiStream('/api/chat', body, llmHeaders(), signal)
+  if (request.run !== undefined) body.run = request.run
+  const resp = await apiStream('/api/chat', body, { ...llmHeaders(), ...(request.run === 'auto' ? adminHeaders() : {}) }, signal)
   const sid = resp.headers.get('X-Session-Id')
   if (sid) yield { type: 'session', id: sid }
   for await (const frame of sseFrames(resp.body!)) {

@@ -375,14 +375,18 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
         read = await try_read(spec, session, store, step=read_step)
         if read is not None:
             plan_event = None
+            if read.get("success") is True and read.get("evidence_id"):
+                session.read_results[current_scope(), read["evidence_id"]] = read.get("result")
             if read_step and "success" in read:
                 from backend.roles import step_result
                 step.status = "done" if read["success"] else "failed"
                 step.result = step_result(read)
+                step.recorded_result = read.get("result")
                 step.evidence_id = read.get("evidence_id")
                 session.spec = plan.proposed = None
                 plan_event = plan.event()
                 if step.status == "failed":
+                    session.auto_paused = True
                     question = DesignerForm(questions=[{
                         "id": "next_step", "text": "读取失败，接下来怎么做？" if spec.language == "zh" else "The read failed. How should we proceed?",
                         "options": [{"value": "revise", "label": "修改" if spec.language == "zh" else "Revise"},

@@ -18,6 +18,8 @@ export type ChatMode = typeof CHAT_MODES[number]
 export type ResolvedMode = Exclude<ChatMode, 'auto'>
 
 export interface RuntimeFeatures {
+  runModes?: ('confirm' | 'auto')[]
+  autoRun?: { max_steps: number; excluded_tools: string[] }
   mode: DeployMode
   byoModel: boolean
   serverModel: boolean
@@ -89,6 +91,7 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
       ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
       models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
       roles: features.roles === true,
+      runModes: Array.isArray(features.runModes) && features.runModes.includes('auto') ? ['confirm', 'auto'] : ['confirm'],
       chatModes: readChatModes(features.chatModes), chatModeDefault: readChatModeDefault(features.chatModeDefault),
     },
   }

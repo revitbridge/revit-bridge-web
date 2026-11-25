@@ -4,10 +4,13 @@
    moves live in components/task/flow.ts; this page only lays them out. */
 
 import { useState } from 'react'
+import { ExecutionMode } from '../task/ExecutionMode'
+import { useExecutionMode } from '../task/executionPreference'
+import useHostFeatures from '../shared/useHostFeatures'
 import { useStore } from 'zustand'
 import { chatEvents } from '../../api/chat'
 import { browserLanguage } from '../../utils/language'
-import { getConfig } from '../../config'
+
 import { flowApi } from '../task/api'
 import { currentRequestMode, useChatMode } from '../task/chatMode'
 import ChatModeSelect from '../task/ChatModeSelect'
@@ -23,8 +26,9 @@ const STEPS = ['Snapshot', 'Conversation', 'Report']
 /* One flow for the tab's lifetime, so switching pages keeps the conversation. */
 let sharedFlow: TaskFlow | null = null
 function flowFor(events?: EventSource): TaskFlow {
-  if (events) return createTaskFlow({ events, api: flowApi, mode: currentRequestMode })
-  sharedFlow ??= createTaskFlow({ events: chatEvents, api: flowApi, mode: currentRequestMode })
+  const run = () => useExecutionMode.getState().auto ? 'auto' as const : 'confirm' as const
+  if (events) return createTaskFlow({ events, api: flowApi, mode: currentRequestMode, run })
+  sharedFlow ??= createTaskFlow({ events: chatEvents, api: flowApi, mode: currentRequestMode, run })
   return sharedFlow
 }
 
@@ -38,6 +42,7 @@ export default function TaskPage({ events }: { events?: EventSource }) {
   const zh = browserLanguage() === 'zh'
   const [flow] = useState(() => flowFor(events))
   const state = useStore(flow.store)
+  const features = useHostFeatures()
   const chatMode = useChatMode(s => s.mode)
   const setChatMode = useChatMode(s => s.setMode)
   const busy = state.bridge.streaming || state.baseline.streaming || state.confirming || state.running
@@ -83,7 +88,10 @@ export default function TaskPage({ events }: { events?: EventSource }) {
             hint={zh ? '模型会读取快照和工具包，询问缺少的信息，再在回复中给出任务卡。输入 @ 可选择标高、类型、链接或 Revit 中选中的构件。宿主会逐项与当前模型核对。'
               : 'The model sees the snapshot and the packs. It asks what it cannot know, then adds a spec card to its reply. Type @ to pick a level, type, link or selected Revit element. The host verifies each pick against the open model.'}
             showTrace
-            controls={<ChatModeSelect features={getConfig().features} mode={chatMode} onChange={setChatMode} disabled={busy} />} />
+            controls={<><ChatModeSelect features={features} mode={chatMode} onChange={setChatMode} disabled={busy} />
+              {features.runModes?.includes('auto') && <ExecutionMode disabled={busy} />}
+              {state.bridge.streaming && <button type="button" onClick={flow.abort}>{zh ? '停止' : 'Stop'}</button>}
+            </>} />
           {state.compare && (
             <ChatPanel title="Without the bridge (baseline)" transcript={state.baseline}
               hint="The same brief goes here with bridge=false. Nothing it says can be executed." />

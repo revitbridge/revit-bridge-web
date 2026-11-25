@@ -180,6 +180,9 @@ class WebSettings:
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
+    auto_run: bool = True
+    auto_run_max_steps: int = 8
+    auto_run_exclude: tuple[str, ...] = ("delete_elements", "delete_selected", "delete_elements_by_category")
     # Cloud-only variables a local host was given anyway (logged once at startup).
     unused_variables: tuple[str, ...] = ()
     # Inside the image (REVIT_BRIDGE_WEB_CONTAINER): connections arrive from Docker's
@@ -206,8 +209,17 @@ class WebSettings:
         host = env.get("HOST", "").strip() or DEFAULT_HOST[mode]
         data_dir = Path(env.get("DATA_DIR", "").strip() or "data")
         models_file = env.get("MODELS_FILE", "").strip()
+        extra_names = [s.strip().casefold() for s in env.get("AUTO_RUN_EXCLUDE", "").split(",") if s.strip()]
+        if extra_names:
+            from revit_bridge.capabilities import ToolStore
+            unknown = set(extra_names) - {tool.name.casefold() for tool in ToolStore().list_tools()}
+            if unknown:
+                raise ConfigError("AUTO_RUN_EXCLUDE contains unknown tools: " + ", ".join(sorted(unknown)))
         settings = cls(
             mode=mode,
+            auto_run=_choice(env.get("AUTO_RUN"), "AUTO_RUN", ("off", "on") if cloud else ("on", "off")) == "on",
+            auto_run_max_steps=_int(env.get("AUTO_RUN_MAX_STEPS"), 8, "AUTO_RUN_MAX_STEPS"),
+            auto_run_exclude=tuple(dict.fromkeys((*cls.auto_run_exclude, *extra_names))),
             host=host,
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
             cors_origins=tuple(
@@ -243,6 +255,8 @@ class WebSettings:
         else:
             _refuse_local_settings(env)
             _refuse_exposed_local(env, settings.host)
+        if not 1 <= settings.auto_run_max_steps <= 20:
+            raise ConfigError("AUTO_RUN_MAX_STEPS must be from 1 to 20")
         return settings
 
     @property
@@ -318,6 +332,8 @@ class WebSettings:
                 "roles": not self.single_model,
                 # the chat modes this caller may pick, and what auto runs here
                 "chatModes": self.chat_modes(admin),
+                "runModes": ["confirm", "auto"] if self.auto_run and (admin or not self.cloud) else ["confirm"],
+                "autoRun": {"max_steps": self.auto_run_max_steps, "excluded_tools": list(self.auto_run_exclude)},
                 "chatModeDefault": self.chat_mode_default,
                 # 0.1 names the pre-7.3 frontend still reads; they go with the connect page.
                 "slotTokenRequired": False,
