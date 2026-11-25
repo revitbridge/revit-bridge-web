@@ -197,6 +197,12 @@ export function createTaskFlow(deps: FlowDeps) {
      usage events stay with the assistant message of their turn (its trace), in order. */
   async function consume(side: Side, request: HostRequest, onSpec?: (e: SpecEvent) => void,
     onAccepted?: () => void) {
+    // An accepted execution report retires the previous question even if the supervisor ends the task.
+    const previousForm = request.execution && getState()[side].messages.findLast(m => m.form && !m.answered)?.form
+    if (previousForm) {
+      onAccepted = () => patch(side, t => ({ ...t, messages: t.messages.map(m =>
+        m.form?.ask_id === previousForm.ask_id ? { ...m, answered: 'invalid' } : m) }))
+    }
     patch(side, t => ({ ...t, streaming: true, messages: [...t.messages, { role: 'assistant', content: '' }] }))
     let reply = ''
     let sawSpec = false
@@ -222,7 +228,8 @@ export function createTaskFlow(deps: FlowDeps) {
         if (evt.type === 'questions') {
           sawForm = true
           patch(side, t => {
-            const messages = t.messages.map(m => m.form && !m.answered ? { ...m, answered: 'replaced' as const } : m)
+            const messages = t.messages.map(m => m.form && (!m.answered || m.form.ask_id === previousForm?.ask_id)
+              ? { ...m, answered: 'replaced' as const } : m)
             const form = { ask_id: evt.ask_id, questions: evt.questions }
             const last = messages.length - 1
             if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })

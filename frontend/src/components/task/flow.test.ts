@@ -121,6 +121,25 @@ describe('the task flow', () => {
     expect(flow.store.getState().execution).toEqual(execution)
     expect(canConfirm(flow.store.getState())).toBe(false)
   })
+
+  it.each([false, true])('retires the previous supervisor question on retry (new form: %s)', async newForm => {
+    const questions = [{ id: 'next_step', text: 'What next?', multiple: false, allow_other: true,
+      options: [{ value: 'revise', label: 'Revise' }, { value: 'stop', label: 'Stop' }] }]
+    const host = scriptedHost([{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }], [
+      { type: 'questions', ask_id: 'first', questions },
+    ], newForm ? [{ type: 'questions', ask_id: 'second', questions }] : [{ type: 'done' }])
+    const failed = { success: false, error: 'validation_failed' }
+    const runTool = vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(newForm ? failed : success)
+    const flow = createTaskFlow({ events: host.events, api: fakeApi({ runTool }) })
+    await flow.send('wall')
+    await flow.confirmAndRun()
+    expect(flow.store.getState().bridge.messages.find(m => m.form)?.answered).toBeUndefined()
+    await flow.confirmAndRun()
+    const forms = flow.store.getState().bridge.messages.filter(m => m.form)
+    expect(forms.map(m => m.answered)).toEqual(newForm ? ['replaced', undefined] : ['invalid'])
+    await flow.send('Stop', [], { ask_id: 'first', items: [{ id: 'next_step', value: 'stop', label: 'Stop' }] })
+    expect(host.requests).toHaveLength(3)
+  })
   it('accepts a click once, retries an expired token with a new confirmation and keeps the execution with its reply', async () => {
     const host = scriptedHost(
       [{ type: 'session', id: 's1' }, { ...specEvent, reconcile: ready }],
