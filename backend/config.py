@@ -179,6 +179,7 @@ class WebSettings:
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
     auto_run: bool = True
     auto_run_max_steps: int = 8
+    direct_run_limit: int = 10
     auto_run_exclude: tuple[str, ...] = ("delete_elements", "delete_selected", "delete_elements_by_category")
     # Cloud-only variables a local host was given anyway (logged once at startup).
     unused_variables: tuple[str, ...] = ()
@@ -216,6 +217,7 @@ class WebSettings:
             mode=mode,
             auto_run=_choice(env.get("AUTO_RUN"), "AUTO_RUN", ("off", "on") if cloud else ("on", "off")) == "on",
             auto_run_max_steps=_int(env.get("AUTO_RUN_MAX_STEPS"), 8, "AUTO_RUN_MAX_STEPS"),
+            direct_run_limit=_int(env.get("DIRECT_RUN_LIMIT"), 10, "DIRECT_RUN_LIMIT"),
             auto_run_exclude=tuple(dict.fromkeys((*cls.auto_run_exclude, *extra_names))),
             host=host,
             port=_int(env.get("PORT"), DEFAULT_PORT, "PORT"),
@@ -256,6 +258,8 @@ class WebSettings:
             _refuse_exposed_local(env, settings.host)
         if not 1 <= settings.auto_run_max_steps <= 20:
             raise ConfigError("AUTO_RUN_MAX_STEPS must be from 1 to 20")
+        if settings.direct_run_limit < 0:
+            raise ConfigError("DIRECT_RUN_LIMIT must be non-negative")
         return settings
 
     @property

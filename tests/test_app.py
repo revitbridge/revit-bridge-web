@@ -206,6 +206,8 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/execute", "/api/v1/bridge/solidify",
         "/api/v1/bridge/evidence", "/api/v1/bridge/evidence/{evidence_id}/validate",
         "/api/v1/bridge/trigger-selection",
+        "/api/v1/bridge/watch-selection", "/api/v1/bridge/watch-selection/{session_id}/{watch_id}",
+        "/api/v1/bridge/host-functions",
         "/api/v1/bridge/devices", "/api/v1/bridge/devices/{device_id}",
         "/api/v1/bridge/devices/pair", "/api/v1/bridge/devices/redeem",
         "/api/v1/bridge/revit-health", "/api/v1/bridge/service-health", "/api/v1/bridge/slots",

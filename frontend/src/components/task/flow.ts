@@ -10,7 +10,7 @@
 import { browserLanguage } from '../../utils/language'
 import { createStore } from 'zustand/vanilla'
 import type {
-  ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
+  AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   PlanStatus, SpecError, TaskPlan, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
@@ -49,6 +49,7 @@ export interface Transcript {
 export interface Proposal {
   run?: 'auto' | 'confirm'
   runReason?: string
+  assistantSelection?: AssistantSelection
   awaitingReceipt?: boolean
   ended?: boolean
   planStep?: { planId: string; stepId: string; status: PlanStatus }
@@ -70,6 +71,7 @@ export interface Confirmation extends ConfirmResponse {
 export type Tamper = { param: string; value: string }
 
 export interface TaskState {
+  attachment: string | null
   cardMessage: number
   highlight: number
   archived: { message: number; proposal: Proposal; execution: ExecutionResult | null; confirmation: Confirmation | null }[]
@@ -88,6 +90,7 @@ export interface TaskState {
 const emptyTranscript = (): Transcript => ({ messages: [], sessionId: null, streaming: false })
 
 export const initialState = (): TaskState => ({
+  attachment: null,
   cardMessage: -1, highlight: 0, archived: [],
   bridge: emptyTranscript(),
   baseline: emptyTranscript(),
@@ -229,6 +232,7 @@ export function createTaskFlow(deps: FlowDeps) {
     let reply = ''
     let sawSpec = false
     let sawForm = false
+    let sawImage = false
     let sawPlan = false
     let startNextReply = false
     let supervisor = false
@@ -263,19 +267,29 @@ export function createTaskFlow(deps: FlowDeps) {
           if (startNextReply && evt.type === 'stage' && evt.role === 'planner' && evt.status === 'start') {
             push(side, { role: 'assistant', content: '', continuesTurn: true })
             reply = ''
-            sawSpec = sawForm = sawPlan = startNextReply = false
+            sawSpec = sawForm = sawPlan = sawImage = startNextReply = false
           }
           if (evt.type === 'stage') supervisor = evt.role === 'supervisor'
           update(m => ({ ...m, trace: [...(m.trace ?? []), evt] }))
           continue
         }
         if (evt.type === 'spec') { sawSpec = true; onSpec?.(evt); continue }
-        if (evt.type === 'questions') {
+        if (evt.type === 'view_image') {
+          sawImage = true
+          update(m => ({ ...m, images: [...(m.images ?? []), evt] }))
+          continue
+        }
+        if (evt.type === 'image_notice') {
+          update(m => ({ ...m, imageNotice: evt.reason }))
+          continue
+        }
+        if (evt.type === 'questions' || evt.type === 'ask_selection') {
           sawForm = true
           patch(side, t => {
             const messages = t.messages.map(m => m.form && (!m.answered || m.form.ask_id === previousForm?.ask_id)
               ? { ...m, answered: 'replaced' as const } : m)
-            const form = { ask_id: evt.ask_id, questions: evt.questions }
+            const form = evt.type === 'questions' ? { ask_id: evt.ask_id, questions: evt.questions }
+              : { ask_id: evt.ask_id, questions: [], selection: evt.selection }
             const last = messages.length - 1
             if (messages[last].form) messages.push({ role: 'assistant', content: '', form, supervisorForm: supervisor })
             else messages[last] = { ...messages[last], form, supervisorForm: supervisor }
@@ -297,7 +311,7 @@ export function createTaskFlow(deps: FlowDeps) {
         break                                             // done
       }
     } catch (e: unknown) {
-      const askId = request.answers?.ask_id
+      const askId = request.answers?.ask_id ?? request.selection_answer
       if (askId && e instanceof BridgeApiError && e.status === 422 && e.code === 'invalid_answers') {
         patch(side, t => ({ ...t, messages: t.messages.map(m =>
           m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
@@ -310,7 +324,7 @@ export function createTaskFlow(deps: FlowDeps) {
     if (side === 'bridge' && getState().proposal?.run === 'auto' && !getState().execution) {
       setState(s => s.proposal ? { proposal: { ...s.proposal, awaitingReceipt: true } } : {})
     }
-    if (!reply && !sawForm && !sawPlan) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
+    if (!reply && !sawForm && !sawPlan && !sawImage) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
     // However the stream ended (done, error, abort, broken off): a tool or stage still open
     // will never be closed by the server now - mark it interrupted.
     patch(side, t => {
@@ -330,7 +344,7 @@ export function createTaskFlow(deps: FlowDeps) {
         execution: s.execution, confirmation: s.confirmation }] : s.archived,
       proposal: {
         ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
-        run: evt.run, runReason: evt.run_reason,
+        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection,
         spec: evt.spec,
         card: evt.card,
         errors: evt.errors ?? [],
@@ -348,20 +362,21 @@ export function createTaskFlow(deps: FlowDeps) {
 
   /* The designer's message, with the model items picked in it (bridge side only: the
      comparison has no model to check them against, and gets the text as typed). */
-  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers) {
+  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers, selectionAnswer?: string) {
     const s = getState()
     const message = text.trim()
     if (!message || s.bridge.streaming || s.baseline.streaming || s.confirming || s.running) return
     const open = s.bridge.messages.findLastIndex(m => !!m.form && !m.answered)
-    if (answers && (open < 0 || s.bridge.messages[open].form?.ask_id !== answers.ask_id)) return
+    const askId = answers?.ask_id ?? selectionAnswer
+    if (askId && (open < 0 || s.bridge.messages[open].form?.ask_id !== askId)) return
     const closeForm = open < 0 ? undefined : () => {
       patch('bridge', t => ({ ...t, messages: t.messages.map((m, i) =>
-        i === open ? { ...m, answered: answers ? 'form' : 'text' } : m) }))
+        i === open ? { ...m, answered: askId ? 'form' : 'text' } : m) }))
       if (s.bridge.messages[open].supervisorForm && answers?.items[0]?.value === 'stop' && s.proposal) {
         setState({ proposal: { ...s.proposal, ended: true } })
       }
     }
-    if (open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
+    if (!s.attachment && open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
       push('bridge', { role: 'user', content: message })
       push('bridge', { role: 'assistant',
         content: browserLanguage() === 'zh' ? `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。`
@@ -374,6 +389,12 @@ export function createTaskFlow(deps: FlowDeps) {
     push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}) })
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
     if (answers) request.answers = answers
+    if (selectionAnswer) request.selection_answer = selectionAnswer
+    if (s.attachment) {
+      const image = s.bridge.messages.flatMap(m => m.images ?? []).find(img => img.capture_id === s.attachment)
+      if (image) request.capture = { capture_id: image.capture_id, png_base64: image.png_base64 }
+      setState({ attachment: null })
+    }
     if (picked) request.mentions = mentionRefs(mentions)
     const jobs = [consume('bridge', withMode(request), onSpec, closeForm)]
     if (s.compare) {

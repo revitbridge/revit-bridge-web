@@ -794,6 +794,36 @@ def _error_echoes_key(body: str, key: str) -> bool:
     return False
 
 
+_IMAGE_WINDOW = 16
+
+
+def _image_markers(messages: list[dict]) -> dict[int, set[str]]:
+    markers = {}
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") == "user" and isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    body = part["image_url"]["url"].partition(",")[2]
+                    if body:
+                        width = min(len(body), _IMAGE_WINDOW)
+                        windows = markers.setdefault(width, set())
+                        windows.update(body[i:i + width] for i in range(0, len(body) - width + 1, width))
+                        windows.add(body[-width:])
+    return markers
+
+
+def _check_image_echo(value, markers):
+    if not markers:
+        return
+    text = value if isinstance(value, str) else json.dumps(value)
+    # Any 31 consecutive encoded characters contain a complete aligned 16-character
+    # window. Scan the assembled reply so SSE chunk boundaries cannot split a match.
+    for width, windows in markers.items():
+        if any(text[i:i + width] in windows for i in range(len(text) - width + 1)):
+            raise LLMError("Model endpoint echoed the image attachment")
+
+
 def _provider_error(status: int, body: str, key: str) -> LLMError:
     # Authentication diagnostics commonly quote Authorization. Keep other
     # provider diagnostics (unsupported parameters, output limits) useful.
@@ -853,6 +883,8 @@ async def stream_completion(
     max_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
     stats = stats if stats is not None else CallStats()
     url = completions_url(llm.base_url)
+    image_markers = _image_markers(messages)
+    image_reply = []
     origin = _origin(url, llm.model)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
@@ -905,7 +937,7 @@ async def stream_completion(
                             ask_usage = False
                             stats.retried = True
                             continue
-                        raise _provider_error(resp.status_code, body, llm.api_key)
+                        raise _provider_error(resp.status_code, "" if image_markers else body, llm.api_key)
                     stats.accepted = True
                     stats.asked_usage = ask_usage
                     if stats.retried:
@@ -948,7 +980,10 @@ async def stream_completion(
                             safe, pending = _safe_delta(pending, token, llm.api_key, previous)
                             if safe:
                                 previous = safe[-1]
-                                yield safe
+                                if image_markers:
+                                    image_reply.append(safe)
+                                else:
+                                    yield safe
                         for fragment in delta.get("tool_calls") or []:
                             _merge_tool_call(calls, fragment)
                 break
@@ -962,7 +997,16 @@ async def stream_completion(
         raise LLMError(f"Model endpoint unreachable: {type(exc).__name__}", status=502) from None
     if pending:
         safe, _ = _safe_delta(pending, "", llm.api_key, previous, final=True)
-        yield safe
+        if image_markers:
+            image_reply.append(safe)
+        else:
+            yield safe
+    if image_markers:
+        text = "".join(image_reply)
+        _check_image_echo(text, image_markers)
+        _check_image_echo(calls, image_markers)
+        if text:
+            yield text
     for call in calls.values():
         _check_reply(call, llm.api_key)
     assembled = [ToolCall(id=c["id"] or f"call_{i}", name=c["name"], arguments=c["arguments"], extra=c["extra"])
@@ -1013,7 +1057,14 @@ def responses_input(messages: list[dict], memory: ProviderMemory | None = None, 
             continue
         role = message.get("role")
         if role in ("system", "developer", "user"):
-            items.append({"role": role, "content": _text_of(message.get("content"))})
+            content = message.get("content")
+            if role == "user" and isinstance(content, list) and any(isinstance(p, dict) and p.get("type") == "image_url" for p in content):
+                content = [{"type": "input_image", "image_url": p["image_url"]["url"]} if p.get("type") == "image_url"
+                           else {"type": "input_text", "text": p["text"]} for p in content
+                           if isinstance(p, dict) and ("text" in p or p.get("type") == "image_url")]
+            else:
+                content = _text_of(content)
+            items.append({"role": role, "content": content})
         elif role == "assistant":
             parts = [p for p in message.get("tool_calls") or [] if isinstance(p, dict)]
             stored = memory.recall(origin, parts[0]) if memory is not None and parts else None
@@ -1099,6 +1150,7 @@ async def stream_responses(
     max_tokens = DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
     stats = stats if stats is not None else CallStats()
     url = responses_url(llm.base_url)
+    image_markers = _image_markers(messages)
     origin = _origin(url, llm.model)
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
@@ -1129,7 +1181,7 @@ async def stream_responses(
     if 300 <= resp.status_code < 400:
         raise LLMError(f"Model endpoint returned HTTP {resp.status_code}: redirects are not followed", status=502)
     if resp.status_code >= 400:
-        raise _provider_error(resp.status_code, resp.text, llm.api_key)
+        raise _provider_error(resp.status_code, "" if image_markers else resp.text, llm.api_key)
     stats.accepted = True
     try:
         data = resp.json()
@@ -1138,6 +1190,7 @@ async def stream_responses(
     if not isinstance(data, dict):
         raise LLMError("Model endpoint answered with something that is not a responses api object", status=502)
     stats.usage = parse_responses_usage(data.get("usage"))
+    _check_image_echo(data, image_markers)
     if data.get("status") == "failed":
         error = data.get("error") if isinstance(data.get("error"), dict) else {}
         _check_reply(error.get("code"), llm.api_key)
@@ -1146,6 +1199,7 @@ async def stream_responses(
     output = data.get("output") if isinstance(data.get("output"), list) else []
     _check_reply(output, llm.api_key)
     text, calls = _reply_parts(output)
+    _check_image_echo(text, image_markers)
     _check_reply(text, llm.api_key)
     incomplete = data.get("incomplete_details") if isinstance(data.get("incomplete_details"), dict) else {}
     if (data.get("status") == "incomplete" and incomplete.get("reason") == "max_output_tokens"

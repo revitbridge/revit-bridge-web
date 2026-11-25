@@ -5,7 +5,7 @@ forms add one planner tool and new card directions, so v3 has its own
 request records at both output limits. These scripted conversations do not
 ask a question; their SSE streams must still match the original records.
 
-Regenerate the v3 request records after an intentional prompt or tool change:
+Regenerate the W2 delta records after an intentional prompt or tool change:
     REGEN_DEFAULT_PATH_GOLDEN=1 uv run pytest tests/test_default_path.py
 """
 from __future__ import annotations
@@ -208,34 +208,30 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "tool_authoring_4096"
+PLAN_4096 = "selection_capture_4096"
 
 
 def current_section() -> str:
-    return f"tool_authoring_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"selection_capture_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
-    return json.loads(GOLDEN.read_text(encoding="utf-8"))[section or current_section()][name]
+    records = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    section = section or current_section()
+    if not section.startswith("selection_capture_"):
+        return records[section][name]
+    base = records[section.replace("selection_capture_", "tool_authoring_")][name]
+    for kind, changes in records[section][name].items():
+        for index, value in changes.items():
+            base[kind][int(index)] = value
+    return base
 
 
-@pytest.mark.parametrize("limit", [AA5556C_LIMIT, None], ids=["aa5556c-limit-4096", "current-default"])
-@pytest.mark.parametrize("name", list(SCENARIOS))
-def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revit, recorder, monkeypatch):
-    """V3 requests at both limits and identical streams to the v2 conversations."""
-    if limit is not None:
-        monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
-    section = current_section()
-    requests, streams = run_scenario(name, env, revit, recorder)
-    sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
-    assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
-    prior = recorded(name, f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}")
-    assert hashes([r.replace("/capabilities/authoring", "/capabilities/workbench") for r in requests]) == prior["requests"]
-    assert hashes(streams) == prior["streams"]
+def assert_catalogue_streams(name, streams):
     legacy = recorded(name, AA5556C_SECTION)["streams"]
     for index, stream in enumerate(streams):
         if name.startswith("single-") and index == 2:
-            # Only list_tools' size and preview changed with the published 0.10 catalogue.
+            # Only list_tools' size and preview changed as the catalogue grew.
             # Compare every other byte with the same turn in the V1 checkout.
             blocks = stream.split("\n\n")
             for i, block in enumerate(blocks):
@@ -249,12 +245,37 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
             assert digest("\n\n".join(blocks)) == normalized_v1[name]
         else:
             assert digest(stream) == legacy[index]
-    if REGENERATE:
-        record = json.loads(GOLDEN.read_text(encoding="utf-8")) if GOLDEN.exists() else {}
-        assert section.startswith("tool_authoring_")
-        record.setdefault(section, {})[name] = {"requests": hashes(requests), "streams": hashes(streams)}
-        GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
-        pytest.skip("record written")
+
+
+@pytest.mark.parametrize("limit", [AA5556C_LIMIT, None], ids=["aa5556c-limit-4096", "current-default"])
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env, revit, recorder, monkeypatch):
+    """Replay the original planner surface and 0.10.1 inventory against every historical assertion."""
+    from backend import roles
+    from backend.api import chat, model_tools
+    from revit_bridge.capabilities import ToolStore
+    added = {"clear_selection", "connect_pipes", "create_duct", "create_pipe", "create_pipes_by_points",
+             "link_cad", "link_revit_model", "list_mep_types", "load_family", "place_family_instance",
+             "select_by_filter", "select_elements", "select_in_box", "set_section_box", "set_view_orientation",
+             "zoom_to_elements"}
+    list_tools = ToolStore.list_tools
+    monkeypatch.setattr(ToolStore, "list_tools", lambda store: [p for p in list_tools(store) if p.name not in added])
+    new_functions = {"ask_selection", "open_view", "capture_view_image"}
+    legacy_tools = [t for t in model_tools.TOOL_DEFINITIONS if t["function"]["name"] not in new_functions]
+    monkeypatch.setattr(chat, "TOOL_DEFINITIONS", legacy_tools)
+    monkeypatch.setattr(chat, "list_host_functions", lambda: [])
+    for route, defs in roles.ROUTE_DEFINITIONS.items():
+        monkeypatch.setitem(roles.ROUTE_DEFINITIONS, route, [t for t in defs if t in legacy_tools])
+    if limit is not None:
+        monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
+    section = f"tool_authoring_{llm_module.DEFAULT_MAX_TOKENS}"
+    requests, streams = run_scenario(name, env, revit, recorder)
+    sent = [json.loads(r.split("\n", len(SENT_HEADERS) + 1)[-1])["max_tokens"] for r in recorder.raw]
+    assert set(sent) == {limit or llm_module.DEFAULT_MAX_TOKENS}
+    prior = recorded(name, f"direct_reads_{llm_module.DEFAULT_MAX_TOKENS}")
+    assert hashes([r.replace("/capabilities/authoring", "/capabilities/workbench") for r in requests]) == prior["requests"]
+    assert hashes(streams) == prior["streams"]
+    assert_catalogue_streams(name, streams)
     record = recorded(name, section)
     assert len(requests) == len(record["requests"])
     for index, (text, expected) in enumerate(zip(requests, record["requests"])):
@@ -264,10 +285,31 @@ def test_the_default_path_is_byte_identical_to_the_record(name, limit, env, revi
         assert digest(text) == expected, f"stream {index + 1} of {name} differs from the record"
     if limit is None:
         # The two v3 sets of request bytes differ only in their output limit.
-        old = recorded(name, PLAN_4096)
+        old = recorded(name, "tool_authoring_4096")
         written_back = [re.sub(r'("max_tokens":\s*)%d\b' % llm_module.DEFAULT_MAX_TOKENS, rf"\g<1>{AA5556C_LIMIT}",
                                text, count=1) for text in requests]
         assert hashes(written_back) == old["requests"] and hashes(streams) == old["streams"]
+
+
+@pytest.mark.parametrize("limit", [4096, 16384])
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_selection_capture_bytes(name, limit, env, revit, recorder, monkeypatch):
+    monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
+    requests, streams = run_scenario(name, env, revit, recorder)
+    assert_catalogue_streams(name, streams)
+    actual = {"requests": hashes(requests), "streams": hashes(streams)}
+    prior = recorded(name, f"tool_authoring_{limit}")
+    assert all(len(actual[k]) == len(prior[k]) for k in actual)
+    if REGENERATE:
+        data = json.loads(GOLDEN.read_text(encoding="utf-8"))
+        data.setdefault(current_section(), {})[name] = {
+            k: {str(i): value for i, value in enumerate(values) if value != prior[k][i]}
+            for k, values in actual.items()}
+        GOLDEN.write_text(json.dumps(data, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    assert actual == recorded(name)
+    if limit == 16384:
+        replaced = [r.replace('"max_tokens":16384', '"max_tokens":4096', 1) for r in requests]
+        assert {"requests": hashes(replaced), "streams": hashes(streams)} == recorded(name, PLAN_4096)
 
 
 ENTRY = "models:\n  only: {base_url: https://srv.example/v1, model: srv-model, api_key_env: W8_SRV_KEY%s}\n" \

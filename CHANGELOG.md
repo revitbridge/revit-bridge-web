@@ -6,6 +6,12 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+The host uses revit-bridge 0.11.0. Designers can observe a normal Revit selection
+from the composer or answer a planner selection question. Built-in UI-only packs
+run directly and share the reader budget. The tool drawer includes native view
+activation and PNG capture. Captures appear in chat, with an opt-in switch for
+attaching one to the next planner message on a vision-enabled model.
+
 Settings → Models now saves shared or per-role credentials on the host with user-only file
 permissions. Rotation takes effect on the next request. Cloud administrators manage these
 settings. Local Docker users can edit them through the loopback-published port.

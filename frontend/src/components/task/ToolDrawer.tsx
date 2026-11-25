@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import { useSessionStore } from '../../store'
-import type { RevitHealthResponse, ToolDetail, ToolInfo } from '../../types/api'
+import type { HostFunction, RevitHealthResponse, ToolDetail, ToolInfo } from '../../types/api'
 import { browserLanguage } from '../../utils/language'
 import { describePreconditions } from '../capabilities/directRun'
 import './toolDrawer.css'
@@ -46,11 +46,15 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
   const [open, setOpen] = useState(false)
   const [tools, setTools] = useState<ToolInfo[] | null>(null)
   const [error, setError] = useState(false)
+  const [functions, setFunctions] = useState<HostFunction[]>([])
+  const [functionError, setFunctionError] = useState(false)
   const [query, setQuery] = useState('')
   const [health, setHealth] = useState<RevitHealthResponse | null>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     let active = true
+    bridgeApi.hostFunctions().then(list => { if (active) { setFunctions(list); setFunctionError(false) } })
+      .catch(() => { if (active) setFunctionError(true) })
     bridgeApi.listTools().then(list => { if (active) { setTools(list); setError(false) } })
       .catch(() => { if (active) setError(true) })
     return () => { active = false }
@@ -68,12 +72,15 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
   const shown = (tools ?? []).filter(t => [t.name, t.display_name, t.description, ...(t.applies_when ?? [])]
     .join(' ').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const grouped = tools?.length && tools.every(t => typeof t.read_only === 'boolean' && t.builtin)
-  const groups = grouped ? [true, false].map(read => ({
-    label: read ? (zh ? '只读' : 'Read only') : (zh ? '会修改模型' : 'Changes the model'),
-    items: shown.filter(t => t.read_only === read),
+  const visibleFunctions = functions.filter(f => (f.name + ' ' + f.description).toLowerCase().includes(query.trim().toLowerCase()))
+  const total = (tools?.length ?? 0) + functions.length
+  const shownCount = shown.length + visibleFunctions.length
+  const groups = grouped ? ['read', 'ui', 'write'].map(group => ({
+    label: group === 'read' ? (zh ? '只读' : 'Read only') : group === 'ui' ? (zh ? '仅界面' : 'View and selection') : (zh ? '会修改模型' : 'Changes the model'),
+    items: shown.filter(t => (t.ui_only ? 'ui' : t.read_only ? 'read' : 'write') === group),
   })) : [{ label: '', items: shown }]
   return <>
-    <button type="button" className="btn-ghost" onClick={() => setOpen(true)}>{zh ? '工具' : 'Tools'} ({tools?.length ?? '…'})</button>
+    <button type="button" className="btn-ghost" onClick={() => setOpen(true)}>{zh ? '工具' : 'Tools'} ({tools ? total : '…'})</button>
     {open && <dialog ref={dialog} className="tool-drawer" aria-label={zh ? '工具清单' : 'Tool catalog'} onCancel={close}>
       <header><h2>{zh ? '工具清单' : 'Tool catalog'}</h2><button type="button" onClick={close}>{zh ? '关闭' : 'Close'}</button></header>
       <p>{zh ? '助手可读取项目快照、标高、类型和选择集，并使用下列工具。超出范围时会说明缺少工具。聊天里不编写代码。'
@@ -84,7 +91,13 @@ export default function ToolDrawer({ onExample }: { onExample: (example: string)
           ? (health.user_tools_allowed ? (zh ? '开' : 'On') : (zh ? '关' : 'Off')) : (zh ? '未知' : 'Unknown')}</p>
       <label>{zh ? '搜索工具' : 'Search tools'} <input type="search" value={query} onChange={e => setQuery(e.target.value)} /></label>
       <p role="status">{error ? (zh ? '无法刷新清单' : 'Could not refresh the catalog') : tools === null ? (zh ? '加载中' : 'Loading')
-        : tools.length === 0 ? (zh ? '暂无工具' : 'No tools available') : shown.length === 0 ? (zh ? '无匹配工具' : 'No matching tools') : shown.length + ' / ' + tools.length}</p>
+        : total === 0 ? (zh ? '暂无工具' : 'No tools available') : shownCount === 0 ? (zh ? '无匹配工具' : 'No matching tools') : shownCount + ' / ' + total}</p>
+      {functionError && <p role="status">{zh ? '无法加载宿主函数。' : 'Host functions could not be loaded.'}</p>}
+      {visibleFunctions.length > 0 && <section><h3>{zh ? '宿主函数' : 'Host functions'}</h3>
+        {visibleFunctions.map(f => <details key={f.name}><summary>{f.name}</summary><p>{f.description}</p>
+          <p>{f.class === 'ui_only' ? (zh ? '仅界面' : 'View only') : (zh ? '只读' : 'Read only')}</p>
+          {f.parameters.map(p => <div key={p.name}><code>{p.name}</code> · {p.type} · {p.required
+            ? (zh ? '必填' : 'Required') : (zh ? '可选' : 'Optional')}</div>)}</details>)}</section>}
       {groups.filter(g => g.items.length).map(g => <section key={g.label}>{g.label && <h3>{g.label}</h3>}
         {g.items.map(t => <ToolRow key={t.name} tool={t} choose={choose} zh={zh} />)}</section>)}
     </dialog>}

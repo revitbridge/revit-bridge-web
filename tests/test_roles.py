@@ -116,7 +116,8 @@ def test_route_chat_is_the_analysts_note_and_nothing_else(client, model):
     # First the tool list: every pack of the wheel, one "- <name>: <description>" line each, by name.
     listed = sent.split("\n\n", 1)[0].split("\n")
     assert listed[0] == "Tools:"
-    assert [line.split(": ", 1)[0] for line in listed[1:]] == [f"- {name}" for name in sorted(builtin_pack_names())]
+    catalogue_names = builtin_pack_names() | {"open_view", "capture_view_image"}
+    assert [line.split(": ", 1)[0] for line in listed[1:]] == [f"- {name}" for name in sorted(catalogue_names)]
     assert "\n\nDigest of the open model:\nnot available (revit_unreachable)\n\n" in sent   # no add-in here
     assert sent.endswith("Designer's message:\nhi")
     # The run count of a pack is not in the list: the bytes stay the same after a run.
@@ -155,7 +156,7 @@ def test_route_query_runs_the_planner_with_the_read_tools_only(revit, client, mo
     assert [(t["id"], t["role"]) for t in events(frames, "tool")] == [("1.2.1", "planner"), ("1.2.1", "planner")]
     assert model.roles == ["analyst", "planner", "planner"]
     planner = model.requests_of("planner")[0]
-    assert tool_names(planner) == ["get_project_snapshot", "query", "ask_designer"]
+    assert tool_names(planner) == ["get_project_snapshot", "query", "ask_designer", "ask_selection", "open_view", "capture_view_image"]
     assert planner["tools"] == roles.ROUTE_DEFINITIONS["query"]
     assert planner["messages"][0] == {"role": "system", "content": chat_module.build_role_prompt("planner")}
     # The planner's message: the designer's words, then the analyst's routing - not the
@@ -512,7 +513,8 @@ def test_a_role_cannot_run_a_tool_outside_its_subset(revit, client, model, monke
     assert ran == ["query"] and events(frames, "spec") == []
     closing = events(frames, "tool")[1::2]
     assert [(t["name"], t["status"]) for t in closing] == [("propose_spec", "error"), ("query", "ok")]
-    assert closing[0]["error"] == "tool_not_offered: the planner has only: get_project_snapshot, query, ask_designer"
+    assert closing[0]["error"] == ("tool_not_offered: the planner has only: get_project_snapshot, query, ask_designer, "
+                                   "ask_selection, open_view, capture_view_image")
     assert get_session_store().get(resp.headers["X-Session-Id"]).spec is None
 
     # The supervisor has query alone.
@@ -540,9 +542,10 @@ def test_the_supervisor_answers_after_its_query_rounds(revit, client, model):
 
 
 def test_role_definitions_are_constant_and_follow_the_table():
-    assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query", "ask_designer"),
+    assert roles.ROUTE_TOOLS == {"query": ("get_project_snapshot", "query", "ask_designer", "ask_selection", "open_view", "capture_view_image"),
                                  "tool": ("get_project_snapshot", "query", "list_tools", "get_tool_choices",
-                                          "missing_params", "reconcile", "propose_spec", "ask_designer", "set_plan")}
+                                          "missing_params", "reconcile", "propose_spec", "ask_designer", "set_plan",
+                                          "ask_selection", "open_view", "capture_view_image")}
     assert roles.SUPERVISOR_TOOLS == ("query",)
     assert roles.ROUTE_DEFINITIONS["tool"] == TOOL_DEFINITIONS
     assert all(d in TOOL_DEFINITIONS for d in roles.ROUTE_DEFINITIONS["query"] + roles.SUPERVISOR_DEFINITIONS)

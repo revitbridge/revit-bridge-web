@@ -70,6 +70,8 @@ export default function TaskPage({ events }: { events?: EventSource }) {
         <div className={`task-columns${state.compare ? ' two' : ''}`}>
           <ChatPanel title="With the bridge" transcript={state.bridge} questions={questions} questionMessage={state.cardMessage}
             highlight={state.highlight} onSubmitForm={(text, answers) => flow.send(text, [], answers)}
+            attachment={state.attachment} onAttach={attachment => flow.store.setState({ attachment })}
+            onSelectionAnswer={(id, items) => flow.send(zh ? '已在 Revit 中选择构件。' : 'Selected elements in Revit.', items, undefined, id)}
             renderCards={index => <>
               {state.archived.filter(c => c.message === index).map((c, i) => <SpecCard key={i} archived
                 proposal={c.proposal} confirmation={c.confirmation} execution={c.execution}

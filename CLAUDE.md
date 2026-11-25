@@ -52,7 +52,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   variant of the roles for measuring, `ROLES_ANALYST` (`off` / `on`) the default mode (`WebSettings`);
   `no_model` names the role without a model; the interaction log names each role that ran.
   `LLM_SINGLE_MODEL=1` (`WebSettings.single_model`) is the one loop as before the roles - system
-  prompt from the package with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all nine
+  prompt from the package with `code=False, mentions=True`, plus `WORKBENCH_LINE` and all planner
   tools. An active plan uses the same configured model to review the current step and prepare the next card.
   A request with `bridge: false` uses the baseline prompt and no tools;
   `backend/roles.py` the role table, the route -> tools map (`ROUTE_TOOLS`, `SUPERVISOR_TOOLS`; a call
@@ -187,14 +187,23 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 
 ## Dependency on the package
 
+Selection watches call `RevitQueryExecutor.watch_selection` only from the browser's
+dedicated bridge endpoint. A planner's `ask_selection` waits for a designer click.
+Native view function descriptors come from `list_host_functions()`. Captures have a
+dedicated image SSE event and a session/device signature. Only an explicit signed
+attachment on a designer message can supply pixels to a vision-enabled planner.
+The `selection_capture_4096` and `selection_capture_16384` golden sections record
+changed hashes relative to the tool-authoring records. The historical catalogue
+replay continues to check those original records.
+
 Runtime attribute lookup across the host/package boundary:
 
 - `WebSocketRevitClient.mention_cache_scope` returns (device ID, connection identity), or
   `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge==0.10.1` from PyPI; `uv.lock` pins the exact
-release (0.10.1). When the host needs something newer, bump the constraint and
+`pyproject.toml` requires `revit-bridge==0.11.0` from PyPI; `uv.lock` pins the exact
+release (0.11.0). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
 a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).

@@ -9,6 +9,7 @@ from tests.fake_revit import FakeRevit
 from tests.test_api_v1 import B, WALL, spec_for
 from tests.test_host_loop import HEADERS, events, sse
 from tests.test_multi_step import request
+from tests.test_mentions import picker
 from tests.test_roles import DONE, ROUTING_TOOL, model  # noqa: F401
 from fastapi.testclient import TestClient
 
@@ -24,6 +25,103 @@ def client(local_env):
         yield tc
 
 BRIEF = "Build two walls with " + ", ".join(f"{k}={v}" for k, v in WALL.items())
+
+
+def select_turn(tool="select_elements", **params):
+    draft = spec_for(tool, **params)
+    for binding in draft["parameters"]:
+        if binding["name"] == "category":
+            binding.update(source="designer", evidence=binding["value"])
+        else:
+            binding.update(source="tool", evidence="I chose these")
+    return tool_turn(("propose_spec", {"spec": draft}))
+
+
+def rotate_turn(**params):
+    draft = spec_for("rotate_elements", angle=90, **params)
+    draft["parameters"][0].update(unit=None, source="designer", evidence="angle=90")
+    for binding in draft["parameters"][1:]:
+        binding.update(source="designer", evidence=f"element_ids={binding['value']}")
+    return tool_turn(("propose_spec", {"spec": draft}))
+
+
+@pytest.mark.parametrize("ids", [{}, {"element_ids": ""}, {"element_ids": None}])
+def test_assistant_selected_ids_require_a_click_until_new_request(client, model, revit, ids):
+    model.script("analyst", json_turn(ROUTING_TOOL), json_turn(ROUTING_TOOL))
+    model.script("planner", select_turn(element_ids="93,94"), rotate_turn(**ids))
+    model.script("supervisor", json_turn(DONE))
+    sid, frames = request(client, run="auto", message="Rotate them, angle=90")
+    assert [r["read"]["name"] for r in events(frames, "tool") if "read" in r] == ["select_elements"]
+    card, = events(frames, "spec")
+    assert card.get("run_reason") == "unverified_evidence" and card["run"] == "confirm"
+    assert card["assistant_selection"] == {"tool": "select_elements", "count": 2, "ids": ["93", "94"]}
+    assert not events(frames, "execution")
+    assert not any("RotateElements" in r.get("params", {}).get("code", "") for r in revit.requests)
+    model.script("planner", rotate_turn())
+    _, frames = request(client, session_id=sid, run="auto", message="Rotate the current selection, angle=90")
+    assert events(frames, "execution")[0]["success"] and "assistant_selection" not in events(frames, "spec")[0]
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_explicit_rotation_targets_use_their_own_evidence(client, model, revit, verified):
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", select_turn(element_ids="93,94"), rotate_turn(element_ids="93,94"))
+    model.script("supervisor", json_turn(DONE))
+    words = "Rotate them, angle=90" + (", element_ids=93,94" if verified else "")
+    _, frames = request(client, run="auto", message=words)
+    card, = events(frames, "spec")
+    assert "assistant_selection" not in card
+    assert card.get("run_reason") == (None if verified else "unverified_evidence")
+    assert bool(events(frames, "execution")) == verified
+
+
+@pytest.mark.parametrize("mode,tool,params,reply,display_ids", [
+    ("confirm", "select_by_filter", {"category": "OST_Walls"}, {"Count": 31, "ElementIds": list(range(1, 32))},
+     [str(i) for i in range(1, 21)]),
+    ("auto", "select_in_box", {"element_ids": "71,72"}, {"Count": 5}, []),
+    ("auto", "select_elements", {"element_ids": "71,72", "mode": "remove"}, {"Count": 5}, []),
+    ("confirm", "clear_selection", {}, {"Count": 0}, []),
+])
+def test_delete_card_discloses_assistant_selection(client, model, revit, mode, tool, params, reply, display_ids):
+    original = revit.handler
+    def handler(req):
+        if "SetElementIds" in req.get("params", {}).get("code", ""):
+            return FakeRevit.code_result(req["id"], reply)
+        return original(req)
+    revit.handler = handler
+    model.script("analyst", json_turn(ROUTING_TOOL))
+    model.script("planner", select_turn(tool, **params), select_turn("delete_selected"), text_turn("Review the card."))
+    _, frames = request(client, run=mode, message="Remove selected elements")
+    assert [r["read"]["name"] for r in events(frames, "tool") if "read" in r] == [tool], model.tool_results("propose_spec")[0]
+    card, = events(frames, "spec")
+    assert card["assistant_selection"] == {"tool": tool, "count": reply["Count"], "ids": display_ids}
+    if mode == "auto":
+        assert card["run_reason"] == "excluded_tool"
+    assert not events(frames, "execution")
+
+
+@pytest.mark.parametrize("designer_pick", ["watch", "mention", "plain answer"])
+def test_selection_provenance_during_clarification(client, model, picker, designer_pick):
+    from backend.session import get_session_store
+    from tests.test_selection_capture import WATCH, WATCH_ARGS, select_one
+    select_one(picker)
+    model.script("analyst", json_turn(ROUTING_TOOL), json_turn(ROUTING_TOOL))
+    model.script("planner", select_turn(element_ids="93,94"), text_turn("What angle?"), rotate_turn())
+    sid, _ = request(client, run="auto", message="Rotate them")
+    session = get_session_store().get(sid)
+    assert session.assistant_selections["local"]["tool"] == "select_elements"
+    extra = {}
+    if designer_pick == "watch":
+        picked = client.post(WATCH, json={**WATCH_ARGS, "session_id": sid}).json()
+        assert picked["items"][0]["id"] == 93
+        assert "local" not in session.assistant_selections
+    elif designer_pick == "mention":
+        extra["mentions"] = [{"kind": "element", "id": 93, "document_id": "fake-document"}]
+    model.script("supervisor", json_turn(DONE))
+    _, frames = request(client, session_id=sid, run="auto", message="angle=90", **extra)
+    card, = events(frames, "spec")
+    assert ("assistant_selection" in card) == (designer_pick == "plain answer")
+    assert bool(events(frames, "execution")) == (designer_pick != "plain answer")
 
 
 @pytest.mark.parametrize("words,quote,value", [("start_x=125", "25", 25), ("start_x=-25", "25", 25),
@@ -80,6 +178,25 @@ def test_two_steps_are_run_and_recorded_without_clicking(client, model, revit):
     assert len(writes) == 2 and all(s["status"] == "done" for s in events(frames, "plan")[-1]["steps"])
     assert client.get(f"{B}/evidence").text.count("designer:auto-run") == 2
     assert client.get("/api/usage/runs").json()["items"][0]["run"] == "auto"
+
+
+def test_attached_view_stays_on_the_designer_message_across_auto_steps(client, model, revit, env, tmp_path):
+    from backend.captures import capture_id
+    from tests.test_selection_capture import PNG, configure_vision
+    configure_vision(env, tmp_path)
+    model.script("analyst", json_turn({"route": "chat", "facts_needed": [], "note": "Hello."}))
+    sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
+    simulated_wall_counter(revit)
+    two(model)
+    reply = client.post("/api/chat", json={"session_id": sid, "run": "auto", "message": BRIEF, "capture": {
+        "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+    assert len(events(sse(reply.text), "execution")) == 2
+    first, second, continued = [r["messages"] for r in model.requests_of("planner")]
+    assert second[:len(first)] == first
+    assert isinstance(first[-1]["content"], list) and PNG in str(first[-1]["content"])
+    assert continued[len(first) - 1] == first[-1]
+    assert "Continue the plan" in continued[-1]["content"]
+    assert PNG not in str(model.requests_of("supervisor"))
 
 
 def test_budget_reverts_to_card(client, model, revit, monkeypatch):

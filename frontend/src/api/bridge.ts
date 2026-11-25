@@ -2,7 +2,7 @@
 
 import { apiDelete, apiGet, apiPost, apiPut } from './client'
 import type {
-  DevicesStatus, ExecutionResponse, ProjectSnapshot, QueryAnswer, RevitHealthResponse, SolidifyResponse,
+  DevicesStatus, ExecutionResponse, HostFunction, ProjectSnapshot, QueryAnswer, RevitHealthResponse, SolidifyResponse,
   ToolChoiceItem, ToolDetail, ToolInfo, ToolParam, ToolUpdatePayload,
 } from '../types/api'
 
@@ -24,6 +24,7 @@ export const bridgeApi = {
     apiPost<SolidifyResponse>(`${B}/solidify`, payload),
 
   listTools: () => apiGet<ToolInfo[]>(`${B}/tools`),
+  hostFunctions: () => apiGet<HostFunction[]>(`${B}/host-functions`),
   getTool: (name: string) => apiGet<ToolDetail>(`${B}/tools/${enc(name)}`),
   updateTool: (name: string, payload: ToolUpdatePayload) => apiPut<ToolDetail & { revit_synced: boolean }>(`${B}/tools/${enc(name)}`, payload),
   deleteTool: (name: string) => apiDelete<{ status: string; name: string }>(`${B}/tools/${enc(name)}`),

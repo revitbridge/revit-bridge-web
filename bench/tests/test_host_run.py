@@ -398,7 +398,8 @@ def test_v2_tasks_bind_the_current_model_items_and_account_for_usage(roles_host,
     inventory = builtin_pack_names()
     for request in model.requests_of("analyst"):
         rows = request["messages"][-1]["content"].split("Tools:\n", 1)[1].split("\n\nDigest of the open model:", 1)[0].splitlines()
-        assert [row.removeprefix("- ").split(": ", 1)[0] for row in rows] == sorted(inventory)
+        assert [row.removeprefix("- ").split(": ", 1)[0] for row in rows] == sorted(
+            inventory | {"open_view", "capture_view_image"})
         assert all(row.partition(": ")[2] for row in rows)
     for catalog in model.tool_results("list_tools"):
         assert {tool["name"] for tool in catalog} == inventory

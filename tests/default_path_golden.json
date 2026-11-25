@@ -575,6 +575,106 @@
    ]
   }
  },
+ "selection_capture_16384": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "3904ab442581beb91bd9ce68b9644ba82453f1649cc853330ab850665e8d4635",
+    "1": "7b315b5e8bf44f86f7cc01aea035e950afa2aa0ee4cf94d526a027f15582f566",
+    "2": "4a446ff898438cdca6bb5a4c0731388929b23793b73650134b0b13a6b575c8b8",
+    "4": "9945d750321329a324ff8c2daad68949a1f2ee56f88207d3b9ff5e4ab68371c3",
+    "5": "73bac3a1f874607baa718c0829fecdb9c2d14b69060828d1d3c343df8c576b94",
+    "7": "4c03085d1f88e5d55983573fbcdbcab73cd883b0d1b91ef5649199b55893d0bc",
+    "8": "8c0e1376d50b8f2449d6d064089140cc34d4a5e4aa4964c5091f00ebc01235a8",
+    "9": "29067b4aa537359b2df61953f551adc245f7b43f0489ddc9111d8ab204719aae"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {
+    "0": "168a6c7242d6b4fc3ade99f35dbb5d339b272f749a8a7fb746b3f7a4fe6612b2",
+    "1": "e5b0982006adb2711bfbc41546e504352e67ed2450c16eadb72a2be7356b46c1",
+    "3": "a6b7e45e00b48b9db2c92ac47a6aa82862ebbae1710e9026df9315b7249cb124",
+    "4": "ddcab7f3fd6d13e6bfb3eb55707e788d5afa1f63d27d106b52a814d4ca0c7290"
+   },
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "0": "f2dd00aea2dbae225ab7e95cf36a8839542f45422b9cda4e81b2ab37b673c7c7",
+    "1": "862b714e92d20ae5a20555b0edb6d2b3cbaf841d8ac2f06d8fc9032f13817e0f",
+    "2": "1b42086904d961f98470d81d9f4d187c07c5d088cfe24311d16632203dc1e1bd",
+    "3": "99ade02f88b4f75d1441401171c41778e7137b36dd38be845c0b3730d12f05d2",
+    "4": "01afc62c71d8b2f927a5d5d1763c92f6f125cd47f276d1737ab48b128e64be36",
+    "5": "7230034b09750cb4c669d7b56808cf487badcc8627adc15f11073bd4a2750714"
+   },
+   "streams": {
+    "2": "cd7a2b53907415b4d6523ee0a2c681a328ab4c54fc6f707c0fefbeb8b8a738ba"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "0": "8693aa6ae010e2e23d86defbff21e5c6351d4d6f71a593b1cbee548416cdcd04",
+    "1": "8b8bdad5a94c69f7a3acddc282cb16c1217ded293bda44b52723738212ff99ee",
+    "2": "a44bba6d5eeb069f088fce6afae5f50b6490758f8765730aa3f36cda5233aa90",
+    "3": "819bd7ba2c06e407e7270640b60e2dfab12f9291327cd5d8af493ebd165ad343",
+    "4": "153769283b248e3dc5dd2f28bcd808ce7cc10ed8fd0badfd3c722785351dd151",
+    "5": "5c0eeea076c3c8b3cc39ea197fecf89c0c3a0e05ed5c09c5ab97efe104d78e28"
+   },
+   "streams": {
+    "2": "1a8f95da5a33e586c8cfefe27f9cf315df8852ad10ccec73c24c6b44ca8ccfa5"
+   }
+  }
+ },
+ "selection_capture_4096": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "a8e2160fb60ed199dd273e451caace214e25ff46a247b80ab43e23ba9f227157",
+    "1": "acfe53219a7477c9e960c8da55b14a12d29e222ae4cae6766a2686a37a68e0f2",
+    "2": "6d5607be7238d7bf04cff8ff5a00ab94e459ea498c77b5399b74d64a42c7f7c3",
+    "4": "08c241dbc5ff11fc4d82beedbe16ad78404239010500879f895108bf3da12bcd",
+    "5": "d6adc35daaf4be83400335f4dfc71696e9f5076bcafb54105e36356de050ab00",
+    "7": "25813ece9f2b3e2e47a7775b1f7251c045a113372b989f041dd7de8beb1bd92e",
+    "8": "3296e9b918d847f23c5eb5107816f5b968a1f438caa77d11c903f343999539f0",
+    "9": "e50c9731e2990572925c6072120f958ce712eaeb51f0af6334bab694b3f1b544"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {
+    "0": "2365bb8146defbd719655bf018fa8c95c2bdcc72843c38641ec80bec7fa4a059",
+    "1": "29828152ec9af3c5619e93c583be08c20762b80cf3690c58dda5f90f316a3ced",
+    "3": "d65f6914b3327aa505829abe731f3a75f904d5343435c592a3007490b761b97e",
+    "4": "03e92283363a5e975b3daa5926f40f23eb7c65ec710de8abac9d72f7f6ddf7aa"
+   },
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "0": "f64a4ff999794a33df298ee120fa6a016354f07c724a8461b27094065ccfb5a7",
+    "1": "7bc7f113fc4027627f73125f1985c9af00615f4d33dcbd611f8b5db8a97d7464",
+    "2": "fd3a15c377ee5a838f2a9ae05783563ce4ecd2b46086bb5a0685a96936d4e47f",
+    "3": "a67f7572a2c223fe39b97a82344992aaacfc66fffdb56d438781d1969ada58ef",
+    "4": "9ba3bd0cb11c0816dea0bf3fc78829fc0d02823e9d740063b62c13379bfe4ae7",
+    "5": "7630328024d35a412aec771f4cdc80113d088a9aa52ac5aeff466dcbffa507a1"
+   },
+   "streams": {
+    "2": "cd7a2b53907415b4d6523ee0a2c681a328ab4c54fc6f707c0fefbeb8b8a738ba"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "0": "c7b119addbc715068e9bed1b9f454cd335e319a63b2c1e2d6b24ca51ff8d1e65",
+    "1": "7ef4dacd2290ed48b9bde6c09da94c16cc2cf30c341828d2c9f1fce445243387",
+    "2": "9958a1c59e01c561c76dbe1be72fc27018dd3d4b481977956bb2852c934d75ee",
+    "3": "e96239121c3e102073a738c39bdfc422d590a1fa5e2e3af85208ab19e6083554",
+    "4": "d905b995b1f1a308874aeafb7ff36d8e23ada4e1883c71da6dd6d318edefcb32",
+    "5": "91b6b5397898daf5924c7371e00efe6d86dada9e994896fa5b9feedad51b3312"
+   },
+   "streams": {
+    "2": "1a8f95da5a33e586c8cfefe27f9cf315df8852ad10ccec73c24c6b44ca8ccfa5"
+   }
+  }
+ },
  "tool_authoring_16384": {
   "roles-analyst-server": {
    "requests": [

@@ -69,6 +69,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
                     "a WebSocket relay for remote add-ins and a bring-your-own-model chat.",
     )
 
+    app.state.selection_watches = {}
     if settings.cors_origins:
         # Credentials only for an explicit origin list: with "*" the middleware would
         # echo any origin back as allowed with credentials. Nothing here needs them

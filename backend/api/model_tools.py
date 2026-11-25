@@ -32,10 +32,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import partial
 from uuid import uuid4
 
 from pydantic import ValidationError
 
+from revit_bridge import list_host_functions, view_commands
 from revit_bridge.capabilities import ToolStore
 from revit_bridge.snapshot import RevitQueryExecutor
 from revit_bridge.snapshot.project import take_snapshot, validate_categories
@@ -43,14 +45,16 @@ from revit_bridge.snapshot.query import run_query
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
+from backend import captures
+from backend.api import bridge
 from backend.api.bridge import (
     current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
-from backend.api.direct_reads import try_read
+from backend.api.direct_reads import reserve_direct_run, selection_for_card, try_read
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
 from backend.session import Session
-from backend.questions import DesignerForm
+from backend.questions import DesignerForm, SelectionQuestion
 from backend.plans import Plan
 
 
@@ -186,6 +190,22 @@ TOOL_DEFINITIONS: list[dict] = [
     }},
 ]
 
+TOOL_DEFINITIONS.append({"type": "function", "function": {
+    "name": "ask_selection", "description": "Ask the designer to select elements. Only their click starts observation.",
+    "parameters": {"type": "object", "additionalProperties": False, "required": ["prompt", "mode"],
+                   "properties": {"prompt": {"type": "string"},
+                                  "mode": {"type": "string", "enum": ["single", "multiple", "box"]},
+                                  "category": {"type": "string", "description": "BuiltInCategory such as OST_Walls"}}},
+}})
+for descriptor in list_host_functions():
+    params = descriptor["parameters"]
+    TOOL_DEFINITIONS.append({"type": "function", "function": {
+        "name": descriptor["name"], "description": descriptor["description"],
+        "parameters": {"type": "object", "additionalProperties": False,
+                       "properties": {p["name"]: {"type": p["type"]} for p in params},
+                       "required": [p["name"] for p in params if p["required"]]},
+    }})
+
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOL_DEFINITIONS)
 
 
@@ -199,6 +219,7 @@ class ToolOutcome:
     plan_event: dict | None = None
     read_tool: str | None = None
     stop_reply: str | None = None
+    image_event: dict | None = None
 
 
 def parse_arguments(raw: str) -> dict | None:
@@ -231,6 +252,78 @@ async def _ask_designer(args: dict, session: Session) -> ToolOutcome:
     except ValidationError as exc:
         return ToolOutcome({"error": "invalid_questions", "message": str(exc)})
     return ToolOutcome(event, questions_event=event)
+
+
+async def _ask_selection(args: dict, session: Session) -> ToolOutcome:
+    try:
+        question = SelectionQuestion.model_validate(args)
+    except ValidationError:
+        return ToolOutcome({"error": "invalid_selection"})
+    event = {"ask_id": uuid4().hex, "selection": question.model_dump(exclude_none=True)}
+    return ToolOutcome({"awaiting_designer": True}, questions_event=event)
+
+
+async def _view(name: str, args: dict, session: Session) -> ToolOutcome:
+    capture = name == "capture_view_image"
+    allowed = {"width", "view_id"} if capture else {"name"}
+    if args.keys() - allowed or (not capture and not isinstance(args.get("name"), str)):
+        return ToolOutcome({"error": "invalid_args"})
+    plan = session.plan
+    step = plan.current if plan and plan.current and plan.current.tool == name else None
+    if step and step.status != "pending":
+        return ToolOutcome({"error": "invalid_step"})
+    if limit := reserve_direct_run(session):
+        return ToolOutcome(limit)
+    command = view_commands.capture_view_image if capture else view_commands.open_view
+    scope = current_scope()
+    reply = await command(await get_revit_client(), **args, ledger=bridge.get_ledger(), host=bridge.HOST, scope=scope)
+    # The native diagnostic, warnings and view name could echo the PNG. Allow only safe
+    # metadata into the model result, tool trace, plan, and interaction log.
+    success = reply["error"] is None
+    result = {"success": success, "evidence_id": reply["evidence_id"]}
+    image = None
+    if capture:
+        if success:
+            result.update(width=reply["width"], height=reply["height"])
+            image = {k: reply[k] for k in ("width", "height", "view_name", "png_base64")}
+            image["capture_id"] = captures.capture_id(session.session_id, scope, reply["png_base64"])
+        else:
+            result["error"] = reply["error"] if reply["error"] in ("invalid_args", "unsupported_addin") else "capture_failed"
+    else:
+        result.update(reply, ui_only=True)
+    outcome = _direct_outcome(name, result, session, step, chinese=session.chinese, recorded=result)
+    outcome.image_event = image
+    return outcome
+
+
+def _direct_outcome(name, read, session, step, *, chinese, recorded):
+    if "success" not in read:
+        return ToolOutcome(read)
+    outcome = ToolOutcome(read, read_tool=name)
+    evidence = read.get("evidence_id")
+    if read["success"] and evidence:
+        session.read_results[current_scope(), evidence] = recorded
+    if step:
+        from backend.roles import step_result
+        step.status = "done" if read["success"] else "failed"
+        step.result = step_result(read)
+        step.recorded_result = recorded
+        step.evidence_id = evidence
+        session.spec = session.plan.proposed = None
+        outcome.plan_event = session.plan.event()
+        if step.status == "failed":
+            session.auto_paused = True
+            question = ("读取失败，接下来怎么做？" if chinese else "The read failed. How should we proceed?")
+            if read.get("ui_only"):
+                question = "Revit 操作失败，接下来怎么做？" if chinese else "The Revit action failed. How should we proceed?"
+            outcome.questions_event = DesignerForm(questions=[{
+                "id": "next_step", "text": question,
+                "options": [{"value": "revise", "label": "修改" if chinese else "Revise"},
+                            {"value": "continue", "label": "跳过" if chinese else "Skip"},
+                            {"value": "stop", "label": "结束" if chinese else "End task"}],
+            }]).event()
+            outcome.stop_reply = "任务已结束。" if chinese else "This task has ended."
+    return outcome
 
 
 async def _set_plan(args: dict, session: Session) -> ToolOutcome:
@@ -281,6 +374,8 @@ async def _list_tools(args: dict, session: Session) -> ToolOutcome:
     for pack in packs:
         if pack["read_only"] and pack["builtin"]:
             pack["description"] += " Propose this reader to get its result directly in this turn."
+        if pack.get("ui_only") and pack["builtin"]:
+            pack["description"] += " Propose this view or selection tool to run it directly in Revit."
     return ToolOutcome(packs)
 
 
@@ -374,28 +469,8 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
         read_step = step if "step_id" in args and step.tool == spec.action.tool else None
         read = await try_read(spec, session, store, step=read_step)
         if read is not None:
-            plan_event = None
-            if read.get("success") is True and read.get("evidence_id"):
-                session.read_results[current_scope(), read["evidence_id"]] = read.get("result")
-            if read_step and "success" in read:
-                from backend.roles import step_result
-                step.status = "done" if read["success"] else "failed"
-                step.result = step_result(read)
-                step.recorded_result = read.get("result")
-                step.evidence_id = read.get("evidence_id")
-                session.spec = plan.proposed = None
-                plan_event = plan.event()
-                if step.status == "failed":
-                    session.auto_paused = True
-                    question = DesignerForm(questions=[{
-                        "id": "next_step", "text": "读取失败，接下来怎么做？" if spec.language == "zh" else "The read failed. How should we proceed?",
-                        "options": [{"value": "revise", "label": "修改" if spec.language == "zh" else "Revise"},
-                                    {"value": "continue", "label": "跳过" if spec.language == "zh" else "Skip"},
-                                    {"value": "stop", "label": "结束" if spec.language == "zh" else "End task"}],
-                    }]).event()
-                    return ToolOutcome(read, read_tool=spec.action.tool, plan_event=plan_event, questions_event=question,
-                                       stop_reply="任务已结束。" if spec.language == "zh" else "This task has ended.")
-            return ToolOutcome(read, read_tool=spec.action.tool if "success" in read else None, plan_event=plan_event)
+            return _direct_outcome(spec.action.tool, read, session, read_step,
+                                   chinese=spec.language == "zh", recorded=read.get("result"))
     if step and "step_id" not in args:
         return _refused("invalid_step", f"Propose only the current unconfirmed plan step {step.id}.")
     if step:
@@ -415,6 +490,8 @@ async def _propose_spec(args: dict, session: Session) -> ToolOutcome:
     picks = session.picks_for(current_scope())
     errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
     event = {"spec": normalized, "card": spec.card(), "errors": errors, "reconcile": None}
+    if selection := selection_for_card(spec, pack, session):
+        event["assistant_selection"] = selection
     try:
         report = reconcile(spec, await snapshot_now(await get_revit_client()), pack_for(spec, store)).model_dump(mode="json")
     except ApiError as exc:
@@ -455,4 +532,7 @@ _HANDLERS = {
     "reconcile": _reconcile,
     PROPOSE_SPEC: _propose_spec,
     "ask_designer": _ask_designer,
+    "ask_selection": _ask_selection,
+    "open_view": partial(_view, "open_view"),
+    "capture_view_image": partial(_view, "capture_view_image"),
 }

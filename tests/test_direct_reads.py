@@ -98,7 +98,9 @@ def test_a_user_override_never_gets_direct_execution(client, model, revit):
 
 
 def test_limit_is_per_designer_message(client, model, revit, monkeypatch):
-    monkeypatch.setattr(direct_reads, "MAX_READS", 1)
+    from dataclasses import replace
+    settings = replace(direct_reads.get_settings(), direct_run_limit=1)
+    monkeypatch.setattr(direct_reads, "get_settings", lambda: settings)
     sid = None
     for _ in range(2):
         model.script("analyst", json_turn(ROUTING_TOOL))

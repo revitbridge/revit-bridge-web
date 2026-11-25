@@ -371,8 +371,9 @@ GOOD = "models:\n  main: {base_url: https://a.example/v1, model: m, api_key_env:
     (", timeout_s: '60'", "models.main.timeout_s: must be a whole number"),
     (", timeout_s: 60.5", "models.main.timeout_s: must be a whole number"),
     (", timeout_s: true", "models.main.timeout_s: must be a whole number"),
+    (", vision: 'false'", "models.main.vision: must be a boolean"),
     (", top_p: 0.5", "models.main: 'top_p' is not a field of an entry (base_url, model, api_key_env, max_tokens, "
-                     "temperature, api, max_tokens_param, reasoning_effort, timeout_s)"),
+                     "temperature, api, max_tokens_param, reasoning_effort, timeout_s, vision)"),
 ])
 def test_bad_provider_options_refuse_the_start(tmp_path, fields, problem):
     with pytest.raises(ConfigError) as exc:
