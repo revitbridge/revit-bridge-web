@@ -214,7 +214,7 @@ ROLE = roles.PLANNER
 ROLE_INSTRUCTIONS = {"code": False}
 # Seconds the analyst's digest may take to read (a snapshot); past that it is "not available".
 DIGEST_TIMEOUT = 15.0
-NO_MODEL = ("No model configured: fill in Model settings on the Connect page "
+NO_MODEL = ("No model configured: configure a model in Settings "
             "or set LLM_BASE_URL / LLM_MODEL / LLM_API_KEY on the server.")
 TOOL_PREVIEW = 2000          # characters of a tool result in its closing ``tool`` event
 TOOL_ERROR_TEXT = 500        # characters of the error text in a closing ``tool`` event

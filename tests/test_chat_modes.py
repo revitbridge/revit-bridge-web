@@ -43,6 +43,7 @@ def host(env, local: bool = False, **environment) -> TestClient:
     env.delenv("LLM_SINGLE_MODEL", raising=False)
     if local:
         env.setenv("DEPLOY_MODE", "local")
+        env.setenv("ALLOW_BROWSER_KEYS", "on")  # scripted browser model
         env.delenv("ADMIN_PASSWORD", raising=False)
     for name, value in environment.items():
         env.setenv(name, value)

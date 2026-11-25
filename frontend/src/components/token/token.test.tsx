@@ -219,14 +219,14 @@ describe('the Token page', () => {
     expect(calls[1].init.headers).not.toHaveProperty('X-Admin-Token')
   })
 
-  it('has its own tab and address, /token', () => {
-    expect(TABS).toContain('Token')
-    expect(viewOf('/token')).toEqual({ tab: TABS.indexOf('Token'), capabilities: 'packs' })
+  it('keeps its /token address under Settings', () => {
+    expect(TABS).toContain('Settings')
+    expect(viewOf('/token')).toEqual({ tab: 'Settings', capabilities: 'packs', settings: 'usage' })
     expect(viewOf('/Token/')).toEqual(viewOf(TOKEN_PATH))
     expect(pathOf(viewOf('/token'))).toBe('/token')
-    expect(pathOf({ tab: 0, capabilities: 'packs' })).toBe('/')
+    expect(pathOf({ tab: 'Chat', capabilities: 'packs' })).toBe('/')
     const html = renderToStaticMarkup(<App path="/token" />)
-    expect(html).toContain('<button class="tab-button is-active">Token</button>')
+    expect(html).toMatch(/class="tab-button is-active">(Settings|设置)<\/button>/)
     expect(html).toContain('<h3 class="heading-display section-title">Token</h3>')
   })
 })

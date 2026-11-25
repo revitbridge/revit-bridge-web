@@ -9,7 +9,7 @@
    admin password: neither header is sent there, whatever this tab still holds. */
 
 import { create } from 'zustand'
-import { isLocalHost } from '../config'
+import { getConfig, isLocalHost } from '../config'
 
 const KEYS = {
   deviceId: 'rb_device_id',
@@ -63,6 +63,7 @@ interface SessionState {
   llmBaseUrl: string
   llmModel: string
   llmKey: string
+  removedLegacyKey: boolean
   adminToken: string
   chatSessionId: string
   selectDevice: (deviceId: string) => void
@@ -80,6 +81,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   llmBaseUrl: read(KEYS.llmBaseUrl),
   llmModel: read(KEYS.llmModel),
   llmKey: read(KEYS.llmKey),
+  removedLegacyKey: false,
   adminToken: read(KEYS.adminToken),
   chatSessionId: '',
 
@@ -128,12 +130,32 @@ export function deviceHeaders(): Record<string, string> {
 }
 
 export function llmHeaders(): Record<string, string> {
+  if (!canUseBrowserModel()) return {}
   const { llmBaseUrl, llmModel, llmKey } = useSessionStore.getState()
   const h: Record<string, string> = {}
   if (llmBaseUrl) h['X-LLM-Base-Url'] = llmBaseUrl
   if (llmModel) h['X-LLM-Model'] = llmModel
   if (llmKey) h['X-LLM-Key'] = llmKey
   return h
+}
+
+export function canUseBrowserModel(): boolean {
+  const { serverModel, byoModel } = getConfig().features
+  return !serverModel && byoModel
+}
+
+export function cleanBrowserKey(): boolean {
+  if (!getConfig().features.serverModel) return false
+  let removed = Boolean(read(KEYS.llmKey) || useSessionStore.getState().llmKey)
+  try {
+    removed ||= Boolean(localStorage.getItem(KEYS.llmKey))
+    localStorage.removeItem(KEYS.llmKey)
+  } catch { /* storage is optional */ }
+  if (removed) {
+    useSessionStore.getState().setLlm({ llmKey: '' })
+    useSessionStore.setState({ removedLegacyKey: true })
+  }
+  return removed
 }
 
 export function adminHeaders(): Record<string, string> {

@@ -373,13 +373,13 @@ describe('the tool list and the edit gate', () => {
 
   it('a host that does not let the page change tools hides import and delete and says why', async () => {
     const { api, model } = await setup()
-    model.setGate(false, 'Enter the admin password on the Connect page to edit, delete or save packs.')
+    model.setGate(false, 'Enter the admin password in Settings to edit, delete or save packs.')
     await model.dryRun()
     const page = html(model)
     expect(page).not.toContain('Import YAML')
     expect(page).not.toContain('>Delete</button>')
-    expect(page).toContain('Enter the admin password on the Connect page')
-    expect(saveDisabledReason(model.getSnapshot())).toBe('Enter the admin password on the Connect page to edit, delete or save packs.')
+    expect(page).toContain('Enter the admin password in Settings')
+    expect(saveDisabledReason(model.getSnapshot())).toBe('Enter the admin password in Settings to edit, delete or save packs.')
     await model.save()
     await model.importTool('name: x')
     model.requestDelete(draft.name)

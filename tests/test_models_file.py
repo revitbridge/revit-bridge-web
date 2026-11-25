@@ -170,7 +170,7 @@ def test_without_a_file_the_requests_and_the_stream_are_the_same_as_before(revit
         return frames, bodies(recorder)
 
     server = {"LLM_BASE_URL": "https://srv.example/v1/", "LLM_MODEL": "srv-model", "LLM_API_KEY": ENV_KEY}
-    for extra_env, sent_headers in (({}, headers), (server, {}), (server, {"X-LLM-Key": VISITOR_KEY})):
+    for extra_env, sent_headers in (({}, headers), (server, {})):
         now, before = run(True, extra_env, sent_headers), run(False, extra_env, sent_headers)
         assert now == before
         frames, sent = now
@@ -281,7 +281,7 @@ def test_headers_replace_the_planners_entry_only(keys, tmp_path):
 
     # Field by field, as with LLM_*: a key alone uses the entry's endpoint and model ...
     own_key = resolve_now("planner", Headers({"X-LLM-Key": VISITOR_KEY}), settings=settings, models=models)
-    assert (own_key.base_url, own_key.model, own_key.api_key) == ("https://main.example/v1", "main-model", VISITOR_KEY)
+    assert (own_key.base_url, own_key.model, own_key.api_key) == ("https://main.example/v1", "main-model", MAIN_KEY)
     own_model = resolve_now("planner", Headers({"X-LLM-Model": "m2"}), settings=settings, models=models)
     assert (own_model.base_url, own_model.model, own_model.api_key) == ("https://main.example/v1", "m2", MAIN_KEY)
     # ... and the entry's key never goes to the browser's endpoint, which is checked as before.
@@ -306,7 +306,7 @@ def test_roles_on_the_planners_entry_take_the_headers_too(keys, tmp_path):
     browser = Headers({"X-LLM-Key": VISITOR_KEY})
     analyst = resolve_now("analyst", browser, settings=get_settings(), models=models)
     supervisor = resolve_now("supervisor", browser, settings=get_settings(), models=models)
-    assert analyst.api_key == VISITOR_KEY and supervisor.api_key == SMALL_KEY
+    assert analyst.api_key == MAIN_KEY and supervisor.api_key == SMALL_KEY
 
 
 def test_without_a_file_every_role_is_the_environment_and_the_headers(env):
@@ -317,7 +317,7 @@ def test_without_a_file_every_role_is_the_environment_and_the_headers(env):
     for role in ("analyst", "planner", "supervisor"):
         target = resolve_now(role, Headers({"X-LLM-Model": "m2"}), settings=settings, models=None)
         assert (target.base_url, target.model, target.api_key, target.entry) == (
-            "https://srv.example/v1", "m2", ENV_KEY, None)
+            "https://srv.example/v1", "srv-model", ENV_KEY, None)
         assert target.options == {}
     with pytest.raises(ValueError):
         resolve_now("reviewer", {}, settings=settings, models=None)

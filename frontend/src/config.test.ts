@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { parseRuntimeConfig } from './config'
+import { describe, expect, it, vi } from 'vitest'
+import { loadRuntimeConfig, parseRuntimeConfig } from './config'
 
 const NO_MODELS = {
   models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false,
@@ -7,6 +7,20 @@ const NO_MODELS = {
 }
 
 describe('parseRuntimeConfig', () => {
+  it('reads live model policy from the API of a split deployment before rendering', async () => {
+    const apiBase = 'https://split.example'
+    const fetch = vi.fn(async (url: string) => Response.json(url === '/config.json'
+      ? { apiBase, features: { serverModel: false, byoModel: true } }
+      : { features: { serverModel: true, byoModel: false, models: { planner: 'server-model' } } }))
+    vi.stubGlobal('fetch', fetch)
+    try {
+      const cfg = await loadRuntimeConfig()
+      expect(cfg.apiBase).toBe(apiBase)
+      expect(cfg.features).toMatchObject({ serverModel: true, byoModel: false, models: { planner: 'server-model' } })
+      expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/config.json', apiBase + '/config.json'])
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it('reads apiBase / wsBase / features and strips trailing slashes', () => {
     const cfg = parseRuntimeConfig(JSON.stringify({
       apiBase: 'https://api.example.com/',
@@ -16,6 +30,18 @@ describe('parseRuntimeConfig', () => {
     expect(cfg.apiBase).toBe('https://api.example.com')
     expect(cfg.wsBase).toBe('wss://api.example.com/api/v1/bridge/ws')
     expect(cfg.features).toEqual({ mode: 'cloud', byoModel: true, serverModel: false, admin: true, maxDevices: 3, ...NO_MODELS })
+  })
+
+  it('requires a live API report before treating a split host as configured', async () => {
+    vi.stubGlobal('fetch', async (url: string) => url === '/config.json'
+      ? Response.json({ apiBase: 'https://split.example', features: { serverModel: true, byoModel: false } })
+      : new Response(null, { status: 503 }))
+    try {
+      const cfg = await loadRuntimeConfig()
+      expect(cfg.features.serverModel).toBe(false)
+      expect(cfg.features.byoModel).toBe(false)
+      expect(parseRuntimeConfig('{"features":{"serverModel":"false"}}').features.serverModel).toBe(false)
+    } finally { vi.unstubAllGlobals() }
   })
 
   it('reads the deploy mode; a config that does not say local is a cloud host, as before modes', () => {

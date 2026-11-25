@@ -76,6 +76,17 @@ function readRoleModels(raw: unknown): RoleModels {
 }
 
 let current: RuntimeConfig = DEFAULTS
+const listeners = new Set<() => void>()
+
+export function subscribeConfig(listener: () => void) {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+export function updateModels(serverModel: boolean, models: RoleModels) {
+  current = { ...current, features: { ...current.features, serverModel, models } }
+  listeners.forEach(listener => listener())
+}
 
 /* Parse the body of /config.json. A static host without the file answers the
    SPA fallback (index.html) with 200, which must not silently become defaults. */
@@ -90,6 +101,7 @@ export function parseRuntimeConfig(body: string, contentType = ''): RuntimeConfi
     wsBase: String(data.wsBase || '').replace(/\/+$/, ''),
     features: {
       ...features, mode: features.mode === 'local' ? 'local' : 'cloud',
+      serverModel: features.serverModel === true,
       authoring: features.authoring === true,
       models: readRoleModels(features.models), modelsFile: features.modelsFile === true,
       roles: features.roles === true,
@@ -104,13 +116,30 @@ export async function loadRuntimeConfig(): Promise<RuntimeConfig> {
     const resp = await fetch('/config.json', { cache: 'no-store' })
     if (resp.ok) {
       current = parseRuntimeConfig(await resp.text(), resp.headers.get('content-type') || '')
+      if (current.apiBase) {
+        // The static shell supplies the addresses. Model configuration and the
+        // browser-key policy can change on its API host between page loads.
+        if (current.features.serverModel) {
+          // A stale static flag must neither clear the tab key nor start sending it.
+          current = { ...current, features: { ...current.features, serverModel: false, byoModel: false } }
+        }
+        const live = await fetch(current.apiBase + '/config.json', {
+          cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(5000),
+        })
+        if (live.ok) {
+          const { serverModel, byoModel, models, modelsFile } = parseRuntimeConfig(
+            await live.text(), live.headers.get('content-type') || '',
+          ).features
+          current = { ...current, features: { ...current.features, serverModel, byoModel, models, modelsFile } }
+        }
+      }
     } else {
       console.warn(`/config.json answered ${resp.status}; using same-origin defaults`)
     }
   } catch (e) {
     // Same-origin defaults keep the app usable; the console says why they apply
     // (split deployment: put a static config.json next to index.html).
-    console.warn(`runtime config unavailable, using same-origin defaults: ${e instanceof Error ? e.message : String(e)}`)
+    console.warn(`runtime config unavailable: ${e instanceof Error ? e.message : String(e)}`)
   }
   return current
 }
@@ -119,7 +148,7 @@ export function getConfig(): RuntimeConfig {
   return current
 }
 
-/* A local host: no device headers, no admin token, no pairing on the Connect page. */
+/* A local host: no device headers, no admin token, no pairing in Settings. */
 export function isLocalHost(): boolean {
   return current.features.mode === 'local'
 }

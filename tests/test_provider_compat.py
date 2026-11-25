@@ -496,11 +496,15 @@ def test_a_browser_model_is_told_only_the_host_can_raise_it(revit, env, keys, tm
     # Without a models file the browser's own endpoint is told the same.
     (tmp_path / "data" / "models.yml").unlink()
     provider.chat.script("single", LIMIT)
-    client = server_model(env)
+    from tests.conftest import _reset
+    from backend.main import create_app
     from backend.models_file import get_models
+    _reset()
+    client = TestClient(create_app())
     assert get_models() is None
     text = notice(sse(client.post("/api/chat", json={"message": "hi"}, headers={
-        "X-LLM-Base-Url": "https://visitor.example/v1", "X-LLM-Key": "made-up-visitor"}).text))
+        "X-LLM-Base-Url": "https://visitor.example/v1", "X-LLM-Model": "visitor-model",
+        "X-LLM-Key": "made-up-visitor"}).text))
     assert text.endswith(BROWSER.format(default=16384))
     # The browser's own key alone keeps the entry: its own advice.
     client = app_client(env, tmp_path, models_text(main=", max_tokens: 32768"))

@@ -63,6 +63,201 @@
         }
       }
     },
+    "/api/v1/settings/models": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Get Models Settings",
+        "operationId": "get_models_settings_api_v1_settings_models_get",
+        "parameters": [
+          {
+            "name": "status_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Status Only"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ModelDetails"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ModelStatus"
+                    }
+                  ],
+                  "title": "Response Get Models Settings Api V1 Settings Models Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Put Models Settings",
+        "description": "Save one group. An omitted key retains the saved key at the same endpoint.",
+        "operationId": "put_models_settings_api_v1_settings_models_put",
+        "parameters": [
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Delete Models Settings",
+        "description": "Clear one saved group, or all saved groups when role is omitted.",
+        "operationId": "delete_models_settings_api_v1_settings_models_delete",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "shared",
+                    "planner",
+                    "analyst",
+                    "supervisor"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/skills": {
       "get": {
         "tags": [
@@ -3776,6 +3971,41 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "MaskedModel": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "key_set": {
+            "type": "boolean",
+            "title": "Key Set"
+          },
+          "key_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Tail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "model",
+          "key_set",
+          "key_tail"
+        ],
+        "title": "MaskedModel"
+      },
       "MissingParamsRequest": {
         "properties": {
           "known": {
@@ -3804,6 +4034,56 @@
         "type": "object",
         "title": "MissingParamsRequest"
       },
+      "ModelDetails": {
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "models": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MaskedModel"
+            },
+            "type": "object",
+            "title": "Models"
+          },
+          "saved": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/MaskedModel"
+            },
+            "propertyNames": {
+              "enum": [
+                "shared",
+                "planner",
+                "analyst",
+                "supervisor"
+              ]
+            },
+            "type": "object",
+            "title": "Saved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured",
+          "models",
+          "saved"
+        ],
+        "title": "ModelDetails"
+      },
+      "ModelStatus": {
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured"
+        ],
+        "title": "ModelStatus"
+      },
       "PairRequest": {
         "properties": {
           "label": {
@@ -3815,6 +4095,54 @@
         },
         "type": "object",
         "title": "PairRequest"
+      },
+      "ProfileWrite": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "shared",
+              "planner",
+              "analyst",
+              "supervisor"
+            ],
+            "title": "Role",
+            "default": "shared"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "base_url",
+          "model"
+        ],
+        "title": "ProfileWrite"
       },
       "QueryRequest": {
         "properties": {

@@ -37,7 +37,7 @@ describe('packGate', () => {
   it('opens only with an admin password configured and entered, and says why otherwise', () => {
     expect(packGate(true, 'pw')).toEqual({ canEdit: true, note: '' })
     expect(packGate(true, '')).toEqual({ canEdit: false,
-      note: 'Enter the admin password on the Connect page to edit, delete or save packs.' })
+      note: 'Enter the admin password in Settings to edit, delete or save packs.' })
     expect(packGate(false, 'pw')).toEqual({ canEdit: false,
       note: 'This host has no admin password configured; packs are read-only here (running them still works).' })
   })
@@ -66,6 +66,6 @@ describe('the pack library', () => {
   it('says why packs are read-only, the way the skills view does', async () => {
     expect(renderToStaticMarkup(<ToolLibrary />)).toContain('This host has no admin password configured; packs are read-only here')
     await hostWithAdmin(true)
-    expect(renderToStaticMarkup(<ToolLibrary />)).toContain('Enter the admin password on the Connect page to edit, delete or save packs.')
+    expect(renderToStaticMarkup(<ToolLibrary />)).toContain('Enter the admin password in Settings to edit, delete or save packs.')
   })
 })

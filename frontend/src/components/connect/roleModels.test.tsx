@@ -91,7 +91,7 @@ describe('the roles and their models', () => {
     expect(local).toContain('Models by role')
     expect(local).toContain(html(ROLES_ON))
     expect(local).toContain(html(MODELS_FROM_FILE))
-    expect(local.indexOf('Models by role')).toBeLessThan(local.indexOf('Bring your own model'))
+    expect(local).not.toContain('Bring your own model')
     expect(local).toMatch(/data-role="planner">.*main-model/)
 
     await host({ mode: 'cloud', admin: true, maxDevices: 20, models: { ...models, planner: 'env-model' }, modelsFile: false })

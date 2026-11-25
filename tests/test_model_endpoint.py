@@ -132,8 +132,8 @@ def test_each_request_goes_where_its_key_belongs(server_model, recorder, monkeyp
                                       "X-LLM-Key": "visitor-key"}).status_code == 200
     assert recorder.sent == [
         ("https://srv.example/v1/chat/completions", "Bearer srv-key-not-real"),
-        ("https://srv.example/v1/chat/completions", "Bearer visitor-key"),
-        ("https://mine.example/v1/chat/completions", "Bearer visitor-key"),
+        ("https://srv.example/v1/chat/completions", "Bearer srv-key-not-real"),
+        ("https://srv.example/v1/chat/completions", "Bearer srv-key-not-real"),
     ]
 
 
@@ -206,21 +206,21 @@ def test_a_redirect_from_the_model_endpoint_is_not_followed(monkeypatch):
     assert exc.value.status == 502 and "302" in str(exc.value) and "169.254" not in str(exc.value)
 
 
-def test_a_literal_private_address_is_never_requested(server_model, recorder):
+def test_a_literal_private_address_is_never_requested(client, recorder):
     recorder.model.turns.append(text_turn("never"))
-    resp = server_model.post("/api/chat", json={"message": "hi", "bridge": False},
-                             headers={"X-LLM-Base-Url": "https://10.0.0.5/v1", "X-LLM-Key": "k"})
+    resp = client.post("/api/chat", json={"message": "hi", "bridge": False},
+                             headers={"X-LLM-Base-Url": "https://10.0.0.5/v1", "X-LLM-Key": "k", "X-LLM-Model": "m"})
     assert resp.status_code == 400 and recorder.sent == []
 
 
-def test_a_name_that_resolves_to_a_private_address_is_refused(server_model, recorder, monkeypatch):
+def test_a_name_that_resolves_to_a_private_address_is_refused(client, recorder, monkeypatch):
     asked = answers(monkeypatch, {"localhost": ["127.0.0.1", "::1"], "internal.example": ["10.1.2.3"],
                                   "mixed.example": [PUBLIC, "10.1.2.3"], "public.example": [PUBLIC]})
     recorder.model.turns.append(text_turn("public"))
 
     def chat(base_url: str):
-        return server_model.post("/api/chat", json={"message": "hi", "bridge": False},
-                                 headers={"X-LLM-Base-Url": base_url, "X-LLM-Key": "k"})
+        return client.post("/api/chat", json={"message": "hi", "bridge": False},
+                                 headers={"X-LLM-Base-Url": base_url, "X-LLM-Key": "k", "X-LLM-Model": "m"})
 
     for url in ("https://localhost:8443/v1", "https://internal.example/v1", "https://mixed.example/v1",
                 "https://unknown.example/v1"):
