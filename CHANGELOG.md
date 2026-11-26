@@ -6,6 +6,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Requires `revit-bridge` 0.11.2: a tool template is refused when a placeholder sits where its value could become code, and values are rendered so they cannot form code in any context. Existing user tools with such templates are listed with the reason and cannot run until repaired.
+
 Tool authoring now shows field-level validation and clickable compiler locations.
 Drafts use a built-in syntax reference by default and receive up to two repairs
 after validation or sample compilation. Draft and repair calls appear in usage.
