@@ -67,6 +67,9 @@ it('reuses named inputs, sets typed literals and validates a custom path into an
   expect(draft.steps.map(s => s.params.height)).toEqual([{ input: 'height' }, { input: 'height' }])
   select(steps()[0].querySelector('select')!, 'fixed')
   type(steps()[0].querySelector('input[type=number]')!, '125')
+  // Clicking the already active segment must preserve the edited literal.
+  click(buttons('Fixed value')[0])
+  expect(steps()[0].querySelector<HTMLInputElement>('input[type=number]')!.value).toBe('125')
   select(steps()[1].querySelector('select')!, 'from')
   await act(async () => {})
   expect(workflowApi.resultPaths).toHaveBeenCalledWith('walls')

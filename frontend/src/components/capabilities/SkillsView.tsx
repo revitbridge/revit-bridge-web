@@ -2,7 +2,7 @@
    frameworks; the chat's model here writes no code and its prompt has no skills. */
 
 import { uiText } from '../../utils/strings'
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { skillsApi } from '../../api/skills'
 import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
@@ -86,7 +86,7 @@ export default function SkillsView() {
         <p className="section-copy small">{uiText("Loading...")}</p>
       ) : skills.length === 0 ? (
         <div className="empty-state">
-          <h3 className="heading-display" style={{ fontSize: 15 }}>{uiText("No skills yet")}</h3>
+          <h3 className="heading-display">{uiText("No skills yet")}</h3>
           <p className="section-copy">{uiText("The package's own skills are listed unless")} <code>SKILLS_DIR</code> {uiText("points at a directory without any; unset it to get them back, or add company standards and personal preferences here. They shape how the model asks and answers.")}</p>
         </div>
       ) : (
@@ -103,7 +103,7 @@ export default function SkillsView() {
                     <span />
                   </button>
                 )}
-              <div className="skill-name">{s.name}</div>
+              <button type="button" className="skill-name btn-ghost">{s.name}</button>
               <p className="skill-desc">{s.description || 'No description'}</p>
               <div className="skill-meta">
                 <span className={`pill ${s.source}`}>{s.source}</span>
@@ -120,7 +120,7 @@ export default function SkillsView() {
         <Modal onClose={() => setView(null)} width={760}>
           <div className="modal-head">
             <div>
-              <h3 className="heading-display" style={{ fontSize: 16 }}>{view.name}</h3>
+              <h3 className="heading-display">{view.name}</h3>
               <p className="section-copy small">{view.source}{view.layer ? ` / ${view.layer}` : ''}{view.version && view.version !== '-' ? ` · v${view.version}` : ''}{view.author ? ` · ${view.author}` : ''}</p>
             </div>
             <div className="flex gap-2">
@@ -150,8 +150,8 @@ export function SkillContent({ content }: { content?: string }) {
 
 function Modal({ children, onClose, width }: { children: React.ReactNode; onClose: () => void; width: number }) {
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, maxWidth: width }} onClick={e => e.stopPropagation()}>{children}</div>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-shell" style={{ maxWidth: width }} onClick={e => e.stopPropagation()}>{children}</div>
     </div>
   )
 }
@@ -174,7 +174,7 @@ function AddSkillModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
   return (
     <Modal onClose={onClose} width={680}>
-      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 16 }}>{uiText("New skill")}</h3>
+      <h3 className="heading-display">{uiText("New skill")}</h3>
       <div className="form-grid">
         <label><span className="label-text">{uiText("Name *")}</span><input className="input-field" value={name} onChange={e => setName(e.target.value)} placeholder={uiText("e.g. office-layout")} /></label>
         <label><span className="label-text">{uiText("Author")}</span><input className="input-field" value={author} onChange={e => setAuthor(e.target.value)} /></label>
@@ -207,7 +207,7 @@ function ImportSkillModal({ onClose, onDone }: { onClose: () => void; onDone: ()
 
   return (
     <Modal onClose={onClose} width={560}>
-      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 8 }}>{uiText("Import from GitHub")}</h3>
+      <h3 className="heading-display">{uiText("Import from GitHub")}</h3>
       {!result ? (
         <>
           <p className="section-copy small">{uiText("A repository (its")} <code>skills/&lt;repo&gt;/SKILL.md</code> {uiText("or root")} <code>SKILL.md</code>{uiText("), a blob link or a raw link.")}</p>
@@ -230,15 +230,4 @@ function ImportSkillModal({ onClose, onDone }: { onClose: () => void; onDone: ()
       )}
     </Modal>
   )
-}
-
-const overlayStyle: CSSProperties = {
-  position: 'fixed', inset: 0, background: 'rgba(20,20,19,0.4)', zIndex: 1000,
-  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-}
-
-const modalStyle: CSSProperties = {
-  background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
-  padding: '24px 28px', width: '100%', maxHeight: '85vh', overflow: 'auto',
-  boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
 }

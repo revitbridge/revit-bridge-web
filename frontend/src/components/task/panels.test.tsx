@@ -243,7 +243,7 @@ describe('ChatPanel trace', () => {
     expect(html.match(/<li /g)).toHaveLength(1)
     for (const text of ['get_project_snapshot', 'OST_Walls', '30 ms', '2,048 characters', 'planner', 'm-1']) expect(html).toContain(text)
     // the reply bubble stays a direct child of the scroll area, after its timeline
-    expect(html).toContain('</section><div class="chat-bubble assistant">')
+    expect(html).toMatch(/<\/section><div class="message-role">.*?<\/div><div class="chat-bubble assistant">/s)
     const mirror = renderToStaticMarkup(<ChatPanel title="t" transcript={transcript} />)
     expect(mirror).not.toContain('hostv2-trace')
   })

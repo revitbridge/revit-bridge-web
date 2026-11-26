@@ -88,7 +88,7 @@ describe('the workbench address', () => {
 
   it('renders the workbench there', () => {
     const html = renderToStaticMarkup(<App path="/capabilities/workbench" />)
-    expect(html).toContain('<button class="tab-button is-active">Tools</button>')
+    expect(html.replace(/<svg\b[^>]*>.*?<\/svg>/gs, '')).toMatch(/<button class="tab-button is-active" aria-current="page">Tools<\/button>/)
     expect(html).toContain('<button class="subtab is-active">Workbench</button>')
     expect(html).toContain('<h2>Tool workbench</h2>')
     expect(html).not.toContain('being wired in')

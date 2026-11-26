@@ -1,6 +1,7 @@
 /* Step 1 of the three-step flow: a pairing code, the install command that carries
    it, and the same code typed into the add-in's settings window. */
 
+import Snippet from '../shared/Snippet'
 import { uiText } from '../../utils/strings'
 import { useEffect, useState } from 'react'
 import type { PairingResponse } from '../../types/api'
@@ -62,7 +63,7 @@ export default function PairPanel({ pairing, waiting, gaveUp, error, label, onLa
 
           <p className="section-copy small" style={{ marginTop: 12 }}>
             <strong>{uiText("Either")}</strong> {uiText("run this in PowerShell on the designer's machine, with Revit closed:")}</p>
-          <pre className="command-block">{pairing.install_command}</pre>
+          <Snippet text={pairing.install_command} />
           <p className="section-copy small">
             <strong>{uiText("or")}</strong>{uiText(", if the add-in is already installed, open its settings window in Revit and type the code above.")}</p>
 

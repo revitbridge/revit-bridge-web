@@ -38,7 +38,7 @@ export default function Capture({ image, hidden, older, expired, toggle }: {
       <img src={src} alt={image.view_name} /></button>
     <figcaption>{image.view_name} · {image.width} × {image.height}
       <label><input type="checkbox" role="switch" checked={hidden} onChange={toggle} />{t('Hide from model')}</label>
-      <small>{reason}</small></figcaption>
+      <small className={'badge ' + (reason === t('Used as context') ? 'info' : 'neutral')}>{reason}</small></figcaption>
     {open && createPortal(<dialog className="capture-viewer" ref={dialog} aria-label={image.view_name}
       onCancel={e => { e.preventDefault(); setOpen(false) }}
       onClick={e => { if (e.target === e.currentTarget) setOpen(false) }}

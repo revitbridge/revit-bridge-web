@@ -6,6 +6,7 @@ import { useSessionStore } from '../../store'
 import type { ToolInfo } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
 import useHostFeatures from '../shared/useHostFeatures'
+import Icon from '../shared/Icon'
 import { ParameterEditor } from './StepEditor'
 import './workflows.css'
 
@@ -33,6 +34,17 @@ function withSteps(draft: Workflow, steps: WorkflowStep[], tools: ToolInfo[]): W
     }
   }
   return { ...draft, steps, inputs }
+}
+
+// Unscoped validator messages stay with the save controls.
+function validationLocation(message: string, steps: WorkflowStep[]) {
+  const field = /^(name|display_name|version|summary|description|steps):/.exec(message)
+  if (field) return field[1]
+  const indexed = /^steps\[(\d+)\]/.exec(message)
+  if (indexed && steps[Number(indexed[1])]) return 'step:' + steps[Number(indexed[1])].id
+  const bound = steps.find(step => message.startsWith('step ' + step.id + ':') ||
+    message.startsWith('step ' + step.id + ','))
+  return bound ? 'step:' + bound.id : ''
 }
 
 function Editor() {
@@ -109,6 +121,10 @@ function Editor() {
   }
   const replacing = saved.some(w => w.name === draft.name)
   const errors = check?.draft === draft ? check.errors : null
+  function problems(location: string) {
+    const messages = errors?.filter(error => validationLocation(error, draft.steps) === location)
+    return messages?.length ? <ul className="validation-errors">{messages.map((message, i) => <li key={i}>{message}</li>)}</ul> : null
+  }
   return <div className="page workflows-page">
     <h2>{uiText("Workflows")}</h2>
     <fieldset disabled={busy} className="workflow-editor">
@@ -138,10 +154,10 @@ function Editor() {
       <div className="workflow-meta">
         {([['name', uiText("Name")], ['display_name', uiText("Display name")],
           ['version', uiText("Version")], ['summary', uiText("Summary")]] as const).map(([key, label]) =>
-          <label key={key}>{label}<input value={draft[key]} maxLength={key === 'summary' ? 120 : undefined}
-            onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>)}
-        <label>{uiText("Description")}<textarea value={draft.description}
-          onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
+          <div key={key}><label>{label}<input value={draft[key]} maxLength={key === 'summary' ? 120 : undefined}
+            onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>{problems(key)}</div>)}
+        <div><label>{uiText("Description")}<textarea value={draft.description}
+          onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>{problems('description')}</div>
       </div>
       <div className="workflow-columns"><section>
         <h3>{uiText("Tools")}</h3>
@@ -153,26 +169,27 @@ function Editor() {
             <button disabled={draft.steps.length >= 8} onClick={() => add(t)}>{uiText("Add")}</button>
           </li>)}</ul>
       </section><section className="workflow-steps" onDragOver={e => e.preventDefault()} onDrop={e => drop(e, draft.steps.length)}>
-        <h3>{uiText("Steps")}</h3>
-        {!draft.steps.length && <p>{uiText("Drag a pack here or choose Add.")}</p>}
+        <h3>{uiText("Steps")}</h3>{problems('steps')}
+        {!draft.steps.length && <p className="empty-state">{uiText("Drag a pack here or choose Add.")}</p>}
         <ol>{draft.steps.map((s, index) => <li key={s.id} onDrop={e => drop(e, index)}>
           <div className="workflow-step-heading"><strong draggable tabIndex={0} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
             onDragStart={e => e.dataTransfer.setData('application/x-workflow-step', s.id)} onKeyDown={e => {
               if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
                 e.preventDefault(); move(index, index + (e.key === 'ArrowUp' ? -1 : 1))
               }
-            }} title={uiText("Drag or press Alt + Up or Down to reorder")}>{index + 1}. {s.tool}</strong>
-            <button disabled={!index} onClick={() => move(index, index - 1)}>{uiText("Move up")}</button>
-            <button disabled={index === draft.steps.length - 1} onClick={() => move(index, index + 1)}>{uiText("Move down")}</button>
-            <button onClick={() => editSteps(draft.steps.filter(step => step !== s))}>{uiText("Remove")}</button></div>
+            }} title={uiText("Drag or press Alt + Up or Down to reorder")}><Icon name="grip" />{index + 1}. {s.tool}</strong>
+            <button className="icon-button" disabled={!index} onClick={() => move(index, index - 1)}><Icon name="up" /><span className="sr-only">{uiText("Move up")}</span></button>
+            <button className="icon-button" disabled={index === draft.steps.length - 1} onClick={() => move(index, index + 1)}><Icon name="down" /><span className="sr-only">{uiText("Move down")}</span></button>
+            <button className="btn-ghost danger" onClick={() => editSteps(draft.steps.filter(step => step !== s))}>{uiText("Remove")}</button></div>
           <label>{uiText("Step title")}<input value={s.title} onChange={e => updateStep(s.id, { title: e.target.value })} /></label>
           {tools.find(t => t.name === s.tool)?.parameters.map(p => <ParameterEditor key={p.name} param={p}
             binding={Object.hasOwn(s.params, p.name) ? s.params[p.name] : undefined} inputs={draft.inputs}
             describe={(name, description) => setDraft({ ...draft, inputs: draft.inputs.map(i => i.name === name ? { ...i, description } : i) })}
             earlier={draft.steps.slice(0, index)} change={v => bind(s, p.name, v)} />)}
+          {problems('step:' + s.id)}
         </li>)}</ol>
       </section></div>
-      <div aria-live="polite">{errors?.length ? <ul>{errors.map((error, index) => <li key={index}>{error}</li>)}</ul>
+      <div className="workflow-validation" aria-live="polite">{errors?.length ? problems('')
         : <p>{errors ? uiText("Validation passed") : uiText("Validating…")}</p>}</div>
       {writable && <div className="workflow-actions"><label><input type="checkbox" checked={overwrite}
         onChange={e => setOverwrite(e.target.checked)} />{uiText("Allow replacing a saved workflow")}</label>

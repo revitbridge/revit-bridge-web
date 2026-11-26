@@ -1,5 +1,6 @@
 import { uiText } from '../../utils/strings'
 import { useEffect, useId, useState } from 'react'
+import SegmentedSelect from '../shared/SegmentedSelect'
 import { workflowApi, type Binding, type WorkflowInput, type WorkflowStep } from '../../api/workflows'
 import type { ToolParam } from '../../types/api'
 
@@ -44,13 +45,11 @@ export function ParameterEditor({ param, binding, inputs, earlier, change, descr
     }
   }
   return <fieldset className="workflow-param"><legend><code>{param.name}</code> {param.unit}</legend>
-    <label>{uiText("Value source")}
-      <select value={mode} onChange={e => setMode(e.target.value)}>
-        {(!param.required || mode === 'omit') && <option value="omit">{uiText("Unspecified")}</option>}
-        <option value="fixed">{uiText("Fixed value")}</option>
-        <option value="input">{uiText("Ask at run time")}</option>
-        <option value="from" disabled={!earlier.length}>{uiText("Earlier result")}</option>
-      </select></label>
+    <SegmentedSelect label={uiText("Value source")} value={mode} change={setMode} options={[
+      ...(!param.required || mode === 'omit' ? [{ value: 'omit', label: uiText("Unspecified") }] : []),
+      { value: 'fixed', label: uiText("Fixed value") }, { value: 'input', label: uiText("Ask at run time") },
+      { value: 'from', label: uiText("Earlier result"), disabled: !earlier.length },
+    ]} />
     {mode === 'fixed' && <label>{uiText("Fixed value")}
       {bool ? <select value={String(binding)} onChange={e => change(e.target.value === 'true')}>
         <option value="true">true</option><option value="false">false</option></select> :

@@ -16,6 +16,7 @@ __pycache__/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/screenshots-check/
 frontend/*.local
 
 # Runtime data (skills, capability packs, interaction logs)

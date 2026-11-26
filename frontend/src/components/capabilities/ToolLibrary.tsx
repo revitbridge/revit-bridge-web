@@ -142,29 +142,29 @@ export default function ToolLibrary() {
 
       {tools.length > 0 && (
         <div className="card table-scroll">
-          <table className="w-full" style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
+          <table className="pack-table">
             <thead>
               <tr style={{ background: 'var(--bg2)' }}>
-                <th className="px-3 py-2 text-left label-text">{uiText("Name")}</th>
-                <th className="px-3 py-2 text-left label-text">{uiText("Description")}</th>
-                <th className="px-3 py-2 text-left label-text w-16">{uiText("Version")}</th>
-                <th className="px-3 py-2 text-left label-text">{uiText("Validator")}</th>
-                <th className="px-3 py-2 text-left label-text">{uiText("Preconditions")}</th>
-                <th className="px-3 py-2 text-left label-text w-16">{uiText("Uses")}</th>
-                <th className="px-3 py-2 w-16"></th>
+                <th>{uiText("Name")}</th>
+                <th>{uiText("Description")}</th>
+                <th>{uiText("Version")}</th>
+                <th>{uiText("Validator")}</th>
+                <th>{uiText("Preconditions")}</th>
+                <th>{uiText("Uses")}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {tools.map(t => (
                 <tr key={t.name} onClick={() => select(t.name)}
-                  style={{ cursor: 'pointer', background: selected === t.name ? 'rgba(217,119,87,0.08)' : 'transparent', borderBottom: '1px solid var(--line)' }}>
-                  <td className="px-3 py-1.5" style={{ fontWeight: 500 }}>{t.name}</td>
-                  <td className="px-3 py-1.5" style={{ fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--mid)' }}>{t.description}</td>
-                  <td className="px-3 py-1.5">{t.version}</td>
-                  <td className="px-3 py-1.5">{t.validator ?? <span style={{ color: 'var(--faint)' }}>{uiText("none")}</span>}</td>
-                  <td className="px-3 py-1.5" style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
-                  <td className="px-3 py-1.5">{t.used}</td>
-                  <td className="px-3 py-1.5">
+                  className={selected === t.name ? 'is-open' : undefined}>
+                  <td><button className="pack-name">{t.name}</button></td>
+                  <td>{t.description}</td>
+                  <td>{t.version}</td>
+                  <td>{t.validator ?? <span style={{ color: 'var(--faint)' }}>{uiText("none")}</span>}</td>
+                  <td style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
+                  <td>{t.used}</td>
+                  <td>
                     {gate.canEdit && !t.builtin && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>{uiText("Delete")}</button>}
                   </td>
                 </tr>
@@ -178,7 +178,7 @@ export default function ToolLibrary() {
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="label-text" style={{ margin: 0 }}>{uiText("Selected:")}</span>
-            <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)' }}>{detail?.display_name || selected}</span>
+            <span className="chip info">{detail?.display_name || selected}</span>
             <button onClick={() => load(selected)} disabled={loading} className="btn-primary">{loading ? uiText("Loading...") : uiText("Load pack")}</button>
             {detail && <button onClick={() => setShowCode(!showCode)} className="btn-secondary">{showCode ? uiText("Hide code") : uiText("View code")}</button>}
             {detail && gate.canEdit && !tools.find(t => t.name === selected)?.builtin && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">{uiText("Edit pack")}</button>}

@@ -30,15 +30,15 @@ export default function SnapshotPanel() {
   useEffect(() => { refresh() }, [refresh])
 
   return (
-    <section className="card section">
+    <section className="context-section snapshot-panel">
       <div className="panel-head">
-        <h3 className="heading-display section-title">{uiText("1. Snapshot")}</h3>
+        <h3 className="heading-display section-title">{uiText("Snapshot")}</h3>
         <div className="flex gap-2">
           <button className="btn-secondary" onClick={refresh} disabled={loading}>{loading ? uiText("Taking...") : uiText("Refresh")}</button>
           {snapshot && <button className="btn-ghost" onClick={() => setOpen(!open)}>{open ? uiText("Collapse") : uiText("Expand")}</button>}
         </div>
       </div>
-      {status && <div className="status-line">{uiText(status)}</div>}
+      {status && <div className={loading ? "skeleton status-line" : "status-line"}>{uiText(status)}</div>}
       {snapshot && open && <SnapshotSummary snapshot={snapshot} />}
       {snapshot && !open && (
         <p className="section-copy small">
@@ -65,7 +65,7 @@ export function SnapshotSummary({ snapshot }: { snapshot: ProjectSnapshot }) {
       <dt>{uiText("Types")}</dt>
       <dd>{snapshot.family_types.length === 0 ? <span className="muted">{uiText("none in the default categories")}</span>
         : snapshot.family_types.map(t => (
-          <div key={t.category}><code>{t.category}</code> {t.count} <span className="muted">{names(t.names)}</span></div>
+          <div key={t.category}><span className="chip">{t.category}</span> {t.count} <span className="muted">{names(t.names)}</span></div>
         ))}</dd>
       <dt>{uiText("Selection")}</dt>
       <dd>{snapshot.selection_count === 0 ? <span className="muted">{uiText("nothing selected")}</span>

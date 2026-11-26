@@ -12,7 +12,7 @@ interface Props {
 
 export default function ToolParamEditor({ params, choices, values, onChange }: Props) {
   if (!params.length) {
-    return <p style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', fontSize: 14, color: 'var(--faint)' }}>{uiText("Tool has no parameters -- click Run directly")}</p>
+    return <p className="section-copy">{uiText("Tool has no parameters -- click Run directly")}</p>
   }
 
   return (

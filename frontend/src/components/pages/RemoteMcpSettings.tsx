@@ -1,3 +1,4 @@
+import Snippet from '../shared/Snippet'
 import { uiText } from '../../utils/strings'
 import { useEffect, useState } from 'react'
 import { apiFetch, BridgeApiError } from '../../api/client'
@@ -62,8 +63,8 @@ function Panel() {
       {uiText("Use an access token in the configuration")}</label>}
     <p>{withToken ? uiText("Set REVIT_MCP_TOKEN in your MCP client environment to the token you create below.")
       : uiText("Direct loopback connections can use these snippets without a token.")}</p>
-    <h3>Codex CLI</h3><pre>{'codex mcp add revit --url ' + address + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : '')}</pre>
-    <h3>Claude Code · .mcp.json</h3><pre>{JSON.stringify({ mcpServers: { revit: claude } }, null, 2)}</pre>
+    <Snippet title="Codex CLI" text={'codex mcp add revit --url ' + address + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : '')} />
+    <Snippet title="Claude Code · .mcp.json" text={JSON.stringify({ mcpServers: { revit: claude } }, null, 2)} />
   </section>
   <section className="card section"><h3>{uiText("Access tokens")}</h3>
     {status?.device_id ? <>
@@ -76,9 +77,11 @@ function Panel() {
       </form>
       {issued && <div role="status"><p>{uiText("Copy this token now. It is shown once.")}</p>
         <code>{issued}</code>{' '}<button className="btn-ghost" onClick={() => setIssued('')}>{uiText("Dismiss")}</button></div>}
-      <ul>{status.tokens.map(t => <li key={t.id}><strong>{t.label}</strong> · {uiText("Created")} {t.created_at}
-        {' · '}{uiText("Last used")} {t.last_used_at || uiText("Never")}{' '}
-        <button className="btn-ghost" disabled={busy} onClick={() => void change(t.id)}>{uiText("Revoke")}</button></li>)}</ul>
+      {status.tokens.length > 0 && <div className="table-scroll"><table><thead><tr>
+        <th>{uiText("Token label")}</th><th>{uiText("Created")}</th><th>{uiText("Last used")}</th><th /></tr></thead>
+        <tbody>{status.tokens.map(t => <tr key={t.id}><td>{t.label}</td><td>{t.created_at}</td><td>{t.last_used_at || uiText("Never")}</td>
+          <td><button className="btn-ghost danger" disabled={busy} onClick={() => void change(t.id)}>{uiText("Revoke")}</button></td>
+        </tr>)}</tbody></table></div>}
     </> : cloud && status?.enabled && <p>{uiText("Select a paired device in Settings → Connection.")}</p>}
   </section>
   <section className="card section"><h3>{uiText("Recent calls")}</h3>

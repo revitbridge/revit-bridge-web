@@ -18,6 +18,9 @@ import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import PlanChecklist from './PlanChecklist'
+import Icon from '../shared/Icon'
+import ProjectContext from './ProjectContext'
+import { useContextLayout } from '../shared/usePanelLayout'
 import ToolDrawer from './ToolDrawer'
 import QuestionForm from './QuestionForm'
 import Capture from './Capture'
@@ -29,6 +32,10 @@ import { questionBadge } from './format'
 import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
+  context?: ReactNode
+  compare?: boolean
+  footer?: ReactNode
+  stop?: ReactNode
   onSelectionAnswer?: (askId: string, items: Mention[]) => void
   support?: SelectionSupport
   hiddenCaptures?: string[]
@@ -50,13 +57,13 @@ interface Props {
   hint?: string
   showTrace?: boolean                    // the tool activity above each reply (the bridge side)
   fetchCandidates?: FetchCandidates      // the picker's candidates (default: GET /api/v1/bridge/mentions)
-  controls?: ReactNode                   // drawn next to the input, above Send (the chat mode)
+  controls?: ReactNode
 }
 
 function ToolQuestion({ form, choose }: { form: MissingTool; choose: (action: keyof MissingTool['choices']) => void }) {
   return <fieldset className="inline-form"><legend>{form.question}</legend>
     {(['authoring', 'remote_mcp', 'dismiss'] as const).map(key => <button key={key} type="button"
-      onClick={() => choose(key)}>{form.choices[key]}</button>)}</fieldset>
+      className={key === 'authoring' ? 'btn-primary' : 'btn-ghost'} onClick={() => choose(key)}>{form.choices[key]}</button>)}</fieldset>
 }
 
 function omissionReason(reason: string) {
@@ -78,8 +85,9 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
 }
 
 export default function ChatPanel({ title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
-  showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
+  context, compare = false, footer, stop, showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
   onSelectionAnswer, hiddenCaptures = [], onHide, support = 'offline', onDestination, onDismiss }: Props) {
+  const layout = useContextLayout(compare)
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
@@ -106,7 +114,7 @@ export default function ChatPanel({ title, transcript, questionMessage, question
     if (!highlight) return
     const card = scroll.current?.querySelector<HTMLElement>('[data-active-card="true"]')
     card?.scrollIntoView?.({ block: 'nearest' })
-    card?.animate?.([{ outline: '3px solid currentColor' }, { outline: '3px solid transparent' }], 2200)
+    if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) card?.animate?.([{ outline: '3px solid currentColor' }, { outline: '3px solid transparent' }], 180)
   }, [highlight])
 
   /* A message with more picks than the host takes is not sent: the box keeps it and says why. */
@@ -127,25 +135,45 @@ export default function ChatPanel({ title, transcript, questionMessage, question
   }
 
   return (
-    <div className="card chat-card">
+    <>
+    <section className="chat-card">
       <div className="chat-head">
-        <span className="label-text" style={{ margin: 0 }}>{title}</span>
-        <span className="muted small-mono">
+        <div className="chat-heading"><h2>{title}</h2>
+        <span className="session-id">
           {transcript.sessionId ? `${uiText('session')} ${transcript.sessionId.slice(0, 8)}` : uiText("no session yet")}
           {transcript.streaming ? uiText(" | streaming") : ''}
-        </span>
+        </span></div>
+        <div className="toolbar">
+          {onReset && <button className="btn-ghost" onClick={() => {
+            setComposerSession(previous => previous + 1)
+            onReset()
+          }} disabled={disabled || transcript.streaming}><Icon name="plus" />{uiText("New session")}</button>}
+          {context && <button type="button" className="context-trigger btn-secondary" aria-controls="project-context"
+            aria-expanded={layout.open} onClick={layout.toggle}><Icon name="panel" />{uiText('Project context')}</button>}
+        </div>
       </div>
       <div className="chat-scroll" ref={scroll}>
-        {transcript.messages.length === 0 && hint && <p className="section-copy small chat-hint">{hint}</p>}
+        {transcript.messages.length === 0 && hint && <div className="chat-hint"><svg className="conversation-mark" aria-hidden="true" viewBox="0 0 160 110" fill="none" strokeLinejoin="round">
+          <g stroke="var(--line)" strokeDasharray="3 4"><path d="M16 62v18m62-45v19m63-24v30M80 81v23" /></g>
+          <g stroke="var(--accent)" strokeWidth="1.5">
+            <path fill="var(--tint)" d="m16 70 63-34 63 28-63 36z" />
+            <path fill="var(--panel)" d="m21 58 58-32 58 26-58 33z" />
+            <path fill="var(--tint)" d="M21 58V35l58-31v22z" />
+            <path fill="var(--bg2)" d="M79 4l58 26v22L79 26z" />
+            <path d="m35 50 34 15 52-29M69 65V48l22-12m-22 12-12-5M91 36l16 7" />
+            <path strokeWidth=".8" d="m87 14 42 18v10L87 24zM96 18v10m12-5v10m12-4v9" />
+          </g></svg><h2>{uiText("Conversation")}</h2><p>{hint}</p></div>}
         {transcript.messages.map((m, i) => (
           <Fragment key={i}>
             {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
+            {m.role === 'assistant' && <div className="message-role"><Icon name="mark" />
+              {uiText(m.trace?.findLast(e => e.type === 'stage')?.role ?? 'planner')}</div>}
             <div className={`chat-bubble ${m.role}`}>
               {m.role === 'assistant'
                 ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan || m.missingTool || m.images?.length ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
-              {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details key={evt.id}>
+              {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details className="read-row" key={evt.id}>
                 <summary>{evt.read.result.ui_only ? (evt.read.result.success === false
                   ? uiText("Revit action failed: ") : uiText("Done in Revit: ")) : evt.read.result.success === false
                   ? uiText("Read failed: ")
@@ -203,17 +231,20 @@ export default function ChatPanel({ title, transcript, questionMessage, question
       </div>
       {onSend && (
         <div className="chat-input-row">
-          {selected && <div className="current-selection" role="status">
-            {uiText("{0} selected in Revit", selected.count)}
-            {attachSelection && <button type="button" aria-label={uiText('Remove current selection')} onClick={() => setRemoved(identity)}>
-              {uiText('Current selection')} ×</button>}
+          {(selected || mentions.length > 0) && <div className="composer-chips">
+            {selected && <div className="current-selection" role="status"><Icon name="select" />
+              {uiText("{0} selected in Revit", selected.count)}
+              {attachSelection && <button type="button" aria-label={uiText('Remove current selection')} onClick={() => setRemoved(identity)}>
+                {uiText('Current selection')} ×</button>}
+            </div>}
+            {distinctMentions(mentions).map(m => <span className="chip" key={m.kind + ':' + m.id}>{mentionLabel(m)}</span>)}
           </div>}
           <MentionInput value={input} mentions={mentions}
             onChange={(text, picked) => { setInput(text); setMentions(picked); setNotice('') }}
             onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
-            {controls}
+            <div className="composer-modes">{controls}</div>
             {!asking && (support === 'legacy' || reading?.legacy) && <SelectionWatch legacy key={composerSession} sessionId={transcript.sessionId} disabled={disabled} onPick={items => {
               const problem = tooManyPicks([...mentions, ...items])
               if (problem) { setNotice(problem); return }
@@ -221,16 +252,17 @@ export default function ChatPanel({ title, transcript, questionMessage, question
               setMentions(picked => [...picked, ...items])
               setNotice('')
             }} />}
-            {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
-            <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? uiText("Working...") : uiText("Send")}</button>
-            {onReset && <button className="btn-ghost" onClick={() => {
-              setComposerSession(previous => previous + 1)
-              onReset()
-            }} disabled={disabled || transcript.streaming}>{uiText("New session")}</button>}
+            <div className="composer-actions">
+              {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
+              <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}><Icon name="send" />{transcript.streaming ? uiText("Working...") : uiText("Send")}</button>{stop}
+            </div>
           </div>
         </div>
       )}
       {onSend && notice && <p className="chat-notice" role="alert">{notice}</p>}
-    </div>
+      {footer}
+    </section>
+    {context && <ProjectContext layout={layout} selection={selected?.count}>{context}</ProjectContext>}
+    </>
   )
 }

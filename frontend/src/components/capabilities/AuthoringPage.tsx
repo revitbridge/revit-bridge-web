@@ -117,11 +117,11 @@ function Editor({ initialBrief }: { initialBrief?: string }) {
     finally { setBusy(false) }
   }
   return <section className="card authoring-page"><h2>{uiText("Tool authoring")}</h2>
-    <section><h3>{uiText("Recent trials")}</h3>
-      <button type="button" onClick={() => setRefresh(n => n + 1)}>{uiText("Refresh")}</button>
+    <section className="recent-trials"><div className="panel-head"><h3>{uiText("Recent trials")}</h3>
+      <button type="button" onClick={() => setRefresh(n => n + 1)}>{uiText("Refresh")}</button></div>
       {trialsError && <p role="alert">{trialsError}</p>}
-      {trials.length ? <ul>{trials.map(t => <li key={t.evidence_id}><time>{t.time}</time> · {uiText("Rolled back")}
-        {' · '}<code>{t.evidence_id}</code> · SHA-256 <code>{t.code_sha256}</code>{' '}
+      {trials.length ? <ul>{trials.map(t => <li key={t.evidence_id} className="trial-row"><span><time>{t.time}</time> · {uiText("Rolled back")}
+        {' · '}<code>{t.evidence_id}</code> · SHA-256 <code>{t.code_sha256}</code></span>{' '}
         <button type="button" disabled={busy} onClick={() => void loadTrial(t)}>{uiText("Turn into a tool")}</button></li>)}</ul>
         : <p>{uiText("No remote rollback trials available.")}</p>}
     </section>
@@ -131,7 +131,7 @@ function Editor({ initialBrief }: { initialBrief?: string }) {
           <option value="">{uiText("None")}</option>{tools.map(t => <option key={t.name} value={t.name}>{t.display_name || t.name}</option>)}
         </select></label>
         {catalogError && <p role="alert">{catalogError}</p>}
-        <button type="button" disabled={!brief.trim()} onClick={() => action('draft')}>{uiText("Generate draft")}</button>
+        <button className="btn-primary" type="button" disabled={!brief.trim()} onClick={() => action('draft')}>{uiText("Generate draft")}</button>
         {meta && <><label>{uiText("Pack fields (JSON)")}<textarea value={meta} onChange={e => edited(setMeta, e.target.value)} /></label>
           <label>{uiText("Parameters (JSON)")}<textarea value={params} onChange={e => edited(setParams, e.target.value)} /></label>
           <label>{uiText("Trial values (JSON)")}<textarea value={values} onChange={e => edited(setValues, e.target.value)} /></label></>}

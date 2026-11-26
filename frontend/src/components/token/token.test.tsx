@@ -226,7 +226,7 @@ describe('the Token page', () => {
     expect(pathOf(viewOf('/token'))).toBe('/token')
     expect(pathOf({ tab: 'Chat', capabilities: 'packs' })).toBe('/')
     const html = renderToStaticMarkup(<App path="/token" />)
-    expect(html).toMatch(/class="tab-button is-active">(Settings|设置)<\/button>/)
+    expect(html.replace(/<svg\b[^>]*>.*?<\/svg>/gs, '')).toMatch(/class="tab-button is-active" aria-current="page">(Settings|设置)<\/button>/)
     expect(html).toContain('<h3 class="heading-display section-title">Token</h3>')
   })
 })
