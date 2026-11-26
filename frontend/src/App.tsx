@@ -4,6 +4,7 @@ import { bridgeApi } from './api/bridge'
 import { getConfig, subscribeConfig } from './config'
 import { cleanBrowserKey, useSessionStore } from './store'
 import { browserLanguage, setLanguage, subscribeLanguage } from './utils/language'
+import Icon from './components/shared/Icon'
 import ConnectPage from './components/pages/ConnectPage'
 import TaskPage from './components/pages/TaskPage'
 import CapabilitiesPage from './components/pages/CapabilitiesPage'
@@ -43,7 +44,7 @@ function useConnection() {
 
 function ConnectionStatus({ state, refresh }: { state: boolean | null; refresh: () => void }) {
   const label = state === null ? uiText("Checking") : state ? uiText("Connected") : uiText("Disconnected")
-  return <button className="runtime-chip" onClick={refresh} title={uiText("Check connection")}>
+  return <button className={"runtime-chip connection-chip " + (state === null ? "" : state ? "is-online" : "is-offline")} onClick={refresh} title={uiText("Check connection")}>
     <span>Revit</span><strong>{label}</strong></button>
 }
 
@@ -63,24 +64,24 @@ export default function App({ path }: { path?: string }) {
   const sections: Record<SettingsView, string> = { models: uiText("Models"), connection: uiText("Connection"),
     'remote-mcp': uiText("Remote MCP"), usage: uiText("Usage") }
 
-  return <div className="app-shell flex flex-col h-screen">
+  return <div className="app-shell">
     <header className="app-header">
-      <div className="brand-block"><div className="brand-mark" aria-hidden="true">R</div><h1 className="app-title">revit-bridge</h1></div>
+      <div className="brand-block"><div className="brand-mark" aria-hidden="true"><Icon name="mark" /></div><h1 className="app-title">revit-bridge</h1></div>
+      <nav className="tab-bar">
+        {TABS.map(tab => <button key={tab} onClick={() => setView({ ...view, tab })}
+          className={`tab-button${active === tab ? ' is-active' : ''}`} aria-current={active === tab ? 'page' : undefined}><Icon name={tab} />{zh ? tabsZh[tab] : tab}</button>)}
+      </nav>
       <div className="runtime-chips"><ConnectionStatus state={health?.connected ?? null} refresh={refresh} />
-        <div className="runtime-chip"><span>{uiText("Model")}</span><strong>{model}</strong></div>
+        <div className="runtime-chip model-chip"><Icon name="model" /><span>{uiText("Model")}</span><strong>{model}</strong></div>
         <button type="button" className="runtime-chip" aria-label={uiText("Switch to Chinese")}
           onClick={() => setLanguage(zh ? 'en' : 'zh')}>中 / EN</button>
       </div>
     </header>
-    <nav className="tab-bar">
-      {TABS.map(tab => <button key={tab} onClick={() => setView({ ...view, tab })}
-        className={`tab-button${active === tab ? ' is-active' : ''}`}>{zh ? tabsZh[tab] : tab}</button>)}
-    </nav>
     {removed && <p role="status">{uiText("The previously saved model key was removed from this browser.")}</p>}
-    <main className="flex-1 overflow-y-auto">
+    <main className={active === 'Chat' ? 'main-chat' : undefined}>
       {active === 'Chat' && <>
         {!features.serverModel && !(features.byoModel && guestModel) &&
-          <div className="page"><a href="/settings">{uiText("Open Settings to configure a model and start chatting.")}</a></div>}
+          <div className="configuration-notice"><a href="/settings">{uiText("Open Settings to configure a model and start chatting.")}</a></div>}
         <TaskPage support={!health?.connected ? 'offline' : health.selection === false ? 'legacy' : 'ready'}
           onDestination={(destination, brief) => setView(destination === 'authoring'
             ? { tab: 'Tools', capabilities: 'authoring', brief }
@@ -89,15 +90,15 @@ export default function App({ path }: { path?: string }) {
       {active === 'Tools' && <CapabilitiesPage view={view.capabilities} brief={view.brief} onRemote={() => setView({ tab: 'Settings', capabilities: 'packs', settings: 'remote-mcp' })} onView={capabilities => setView({ ...view, capabilities })} />}
       {active === 'Evidence' && <EvidencePage />}
       {active === 'Workflows' && <WorkflowsPage />}
-      {active === 'Settings' && <>
-        <div className="subtab-bar">{(Object.keys(sections) as SettingsView[]).map(s =>
+      {active === 'Settings' && <div className="settings-layout">
+        <nav className="settings-nav" aria-label={uiText("Settings")}>{(Object.keys(sections) as SettingsView[]).map(s =>
           <button key={s} className={`subtab${s === settings ? ' is-active' : ''}`}
-            onClick={() => setView({ ...view, settings: s })}>{sections[s]}</button>)}</div>
+            onClick={() => setView({ ...view, settings: s })}>{sections[s]}</button>)}</nav>
         {settings === 'models' && <ModelSettings />}
         {settings === 'remote-mcp' && <RemoteMcpSettings />}
         {settings === 'connection' && <ConnectPage />}
         {settings === 'usage' && <TokenPage />}
-      </>}
+      </div>}
     </main>
   </div>
 }

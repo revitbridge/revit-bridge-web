@@ -39,11 +39,11 @@ describe('the pages', () => {
     expect(html.toLowerCase()).not.toContain('slot')
   })
 
-  it('the task page lays out the sequence: snapshot, brief, the no-bridge switch', () => {
+  it('the conversation has a project context panel with snapshot and comparison controls', () => {
     const html = renderToStaticMarkup(<TaskPage events={noEvents} />)
-    expect(html).toContain('1. Snapshot')
-    expect(html).toContain('2. Brief')
-    expect(html).toContain('3. Compare with no bridge')
+    expect(html).toContain('Project context')
+    expect(html).toContain('Snapshot')
+    expect(html).toContain('Compare with no bridge')
     expect(html).toContain('With the bridge')
     expect(html).toContain('bridge=false')
     // nothing proposed yet: no card, no token panel

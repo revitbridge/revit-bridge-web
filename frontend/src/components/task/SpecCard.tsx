@@ -35,7 +35,7 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
 }) {
   const zh = browserLanguage() === 'zh'
   return (
-    <table className="spec-table">
+    <div className="table-scroll"><table className="spec-table">
       <thead>
         <tr><th>{uiText("Parameter")}</th><th>{uiText("Value")}</th><th>{uiText("Source")}</th><th>{uiText("Evidence")}</th></tr>
       </thead>
@@ -58,7 +58,7 @@ export function SpecTable({ spec, conflicts = [], defaults = [] }: {
           </tr>
         ))}
       </tbody>
-    </table>
+    </table></div>
   )
 }
 
@@ -172,12 +172,12 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
            not_ready: uiText("specification is not ready") } as Record<string, string>)[proposal.runReason]
         ?? proposal.runReason)}</p>}
       {execution && <ExecutionView execution={execution} />}
-      {proposal.run === 'auto' ? <p role="status">{execution
+      {proposal.run === 'auto' ? <p className={'badge ' + (execution ? execution.success ? 'success' : 'danger' : 'info')} role="status">{execution
         ? (execution.success ? uiText("Executed") : uiText("Execution failed"))
         : proposal.awaitingReceipt ? uiText("Result pending. Check the execution record.")
         : uiText("Running automatically")}</p> : onRetryReport ? <button type="button" onClick={onRetryReport}>{uiText("Resend execution result")}</button>
-        : proposal.ended ? <p role="status">{proposal.planStep && proposal.planStep.status !== 'proposed' ? planStatus(proposal.planStep.status, zh).label : uiText("Task ended")}</p> : execution?.success ? <p role="status">{uiText("Executed")}</p> : archived ? <p>{uiText("Replaced by a new card")}</p> :
-        <button className="btn-primary" onClick={onConfirm} disabled={!canConfirm}>
+        : proposal.ended ? <p className="badge warning" role="status">{proposal.planStep && proposal.planStep.status !== 'proposed' ? planStatus(proposal.planStep.status, zh).label : uiText("Task ended")}</p> : execution?.success ? <p className="badge success" role="status">{uiText("Executed")}</p> : archived ? <p>{uiText("Replaced by a new card")}</p> :
+        <button className="btn-primary" aria-busy={confirming || running || undefined} onClick={onConfirm} disabled={!canConfirm}>
           {confirming ? uiText("Confirming…") : running ? uiText("Running…") : confirmLabel(execution, confirmErrors)}
         </button>}
     </section>

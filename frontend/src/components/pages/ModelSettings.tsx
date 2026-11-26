@@ -89,7 +89,7 @@ function Editor({ details, role, onChange }: { details: Details; role: Scope; on
     </fieldset>
     {saved?.key_set && <p>{t.present} {saved.key_tail && '••••' + saved.key_tail}. {t.keep}</p>}
     <button className="btn-primary" type="submit" form={formId} disabled={busy}>{t.save}</button>{' '}
-    <button className="btn-ghost" type="button" disabled={busy || !saved} onClick={() => void submit(true)}>{t.clear}</button>
+    <button className="btn-ghost danger" type="button" disabled={busy || !saved} onClick={() => void submit(true)}>{t.clear}</button>
     <span role="status">{message}</span>
   </>
 }
@@ -110,11 +110,13 @@ function ServerModels({ token }: { token: string }) {
       })
     return () => controller.abort()
   }, [token, t])
-  if (!details) return <p role="status">{error || t.loading}</p>
+  if (!details) return <p className={error ? "notice" : "skeleton status-line"} role="status">{error || t.loading}</p>
   return <>
     <h3>{t.effective}</h3>
-    <ul>{ROLES.map(r => <li key={r}>{t[r]} · {details.models[r].model || '—'} · {details.models[r].base_url || '—'} · {details.models[r].key_set
-      ? t.present + (details.models[r].key_tail ? ' ••••' + details.models[r].key_tail : '') : t.missing}</li>)}</ul>
+    <ul className="model-profiles">{ROLES.map(r => <li key={r}><strong>{t[r]}</strong>
+      <span>{details.models[r].model || '—'} · {details.models[r].base_url || '—'}</span>
+      <small className="badge">{details.models[r].key_set
+        ? t.present + (details.models[r].key_tail ? ' ••••' + details.models[r].key_tail : '') : t.missing}</small></li>)}</ul>
     <p>{details.configured ? t.env : t.noModel}</p>
     <label>{t.scope} <select value={role} onChange={e => setRole(e.target.value as Scope)}>
       {(['shared', ...ROLES] as const).map(r => <option key={r} value={r}>{t[r]}</option>)}

@@ -8,7 +8,7 @@ interface Props {
 
 export default function StepIndicator({ steps, current }: Props) {
   return (
-    <div className="flex items-center gap-1 py-1 flex-wrap" style={{ fontFamily: 'var(--mono)', fontSize: 11, letterSpacing: '0.04em' }}>
+    <div className="steps-indicator">
       {steps.map((label, i) => {
         const step = i + 1
         const isDone = step < current
@@ -16,15 +16,7 @@ export default function StepIndicator({ steps, current }: Props) {
         return (
           <span key={i} className="flex items-center gap-1">
             {i > 0 && <span style={{ color: 'var(--subtle)', margin: '0 4px' }}>&rarr;</span>}
-            <span
-              style={{
-                color: isDone ? 'var(--mid)' : isActive ? 'var(--accent)' : 'var(--faint)',
-                fontWeight: isActive ? 600 : 400,
-                textDecorationLine: isActive ? 'underline' : 'none',
-                textDecorationColor: 'var(--accent)',
-                textUnderlineOffset: '4px',
-              }}
-            >
+            <span className={isActive ? 'is-active' : undefined}>
               {isDone ? '\u2713' : isActive ? '\u25B6' : ''} {step}.{uiText(label)}
             </span>
           </span>

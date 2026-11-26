@@ -1,13 +1,13 @@
 import { uiText } from '../../utils/strings'
+import SegmentedSelect from '../shared/SegmentedSelect'
 import { useExecutionMode } from './executionPreference'
 
 export function ExecutionMode({ disabled }: { disabled: boolean }) {
   const { auto, set } = useExecutionMode()
-  return <div><label>{uiText("Execution ")}
-    <select value={auto ? 'auto' : 'confirm'} disabled={disabled} onChange={e => set(e.target.value === 'auto')}>
-      <option value="confirm">{uiText("Confirm each step")}</option>
-      <option value="auto">{uiText("Run automatically")}</option>
-    </select></label>
+  return <div className="execution-mode"><SegmentedSelect label={uiText("Execution ")} value={auto ? 'auto' : 'confirm'}
+    disabled={disabled} change={mode => set(mode === 'auto')} options={[
+      { value: 'confirm', label: uiText("Confirm each step") }, { value: 'auto', label: uiText("Run automatically") },
+    ]} />
     {auto && <p>{uiText("Ready cards run directly in Revit.")}</p>}
   </div>
 }

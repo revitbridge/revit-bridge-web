@@ -1,9 +1,13 @@
-.authoring-page { padding: 1.5rem; }
+.authoring-page { padding: var(--s6); }
 .authoring-page fieldset { border: 0; margin: 0; padding: 0; }
-.authoring-columns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1.25rem; }
-.authoring-page label { display: grid; gap: .35rem; margin-block: .75rem; }
-.authoring-page textarea { width: 100%; min-height: 5rem; padding: .6rem; }
-.authoring-page .authoring-code { min-height: 18rem; font-family: monospace; }
+.authoring-columns { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: var(--s4); }
+.authoring-page label { display: grid; gap: var(--s1); margin-block: var(--s3); }
+.authoring-page textarea { width: 100%; min-height: 5rem; padding: var(--s2); }
+.authoring-page .authoring-code { min-height: 18rem; font-family: var(--mono); }
 .authoring-page pre { overflow-wrap: anywhere; white-space: pre-wrap; }
-.authoring-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.authoring-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
 @media (max-width: 700px) { .authoring-columns { grid-template-columns: 1fr; } }
+.authoring-page > section { padding: var(--s4); margin-block: var(--s4); background: var(--bg2); border-radius: var(--radius-md); }
+.authoring-page > section h3 { display: inline-block; margin-right: var(--s3); }
+.authoring-page > section ul li { padding: var(--s2) 0; overflow-wrap: anywhere; }
+.authoring-page > section p { margin-top: var(--s2); color: var(--faint); }

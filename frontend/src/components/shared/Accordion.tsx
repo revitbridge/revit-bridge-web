@@ -26,26 +26,10 @@ export default function Accordion({ title, defaultOpen = false, open: controlled
     <div ref={ref} id={id} className="card mb-2">
       <button
         onClick={toggle}
-        className="w-full flex items-center justify-between px-4 py-2.5 text-left"
-        style={{
-          fontFamily: 'var(--mono)',
-          fontSize: 12,
-          fontWeight: 500,
-          letterSpacing: '0.06em',
-          textTransform: 'uppercase',
-          color: 'var(--mid)',
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-        }}
+        className="accordion-trigger btn-ghost"
+        aria-expanded={isOpen}
       >
-        {title}
-        <span style={{
-          transition: 'transform 0.2s',
-          transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-          color: 'var(--faint)',
-          fontSize: 10,
-        }}>&#9660;</span>
+        {title}<span aria-hidden="true">{isOpen ? '▴' : '▾'}</span>
       </button>
       {isOpen && <div className="px-4 pb-3">{children}</div>}
     </div>

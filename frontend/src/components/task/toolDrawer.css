@@ -1,42 +1,33 @@
-.tool-drawer {
-  position: fixed;
-  inset: 0 0 0 auto;
-  margin: 0;
-  height: 100dvh;
-  max-height: 100dvh;
-  width: min(100vw, 32rem);
-  max-width: 100vw;
-  padding: 1.5rem;
-  overflow: auto;
-  background: var(--surface, white);
-  color: inherit;
-  border: 0;
-  box-shadow: -4px 0 24px #0002;
-}
-.tool-drawer::backdrop { background: #15212b55; }
-.tool-drawer header { display: flex; justify-content: space-between; align-items: center; }
-.tool-drawer-row { border-top: 1px solid #8885; padding-block: .6rem; }
-.tool-drawer-row > button { width: 100%; padding: .5rem; text-align: start; }
-.tool-drawer-row small { opacity: .7; }
-.tool-drawer-row dl { display: grid; grid-template-columns: minmax(6rem, 30%) 1fr; gap: .6rem; }
-.tool-drawer-row dd { margin: 0; overflow-wrap: anywhere; }
-.tool-drawer-row ul { margin: 0; padding-inline-start: 1rem; }
-.chat-capture { margin: .5rem 0; }
-.chat-capture img { display: block; max-width: 100%; max-height: 16rem; object-fit: contain; }
-.chat-capture figcaption label { display: block; }
+/* Native dialogs retain their keyboard and dismissal behavior. */
+.tool-drawer[open] { display: flex; flex-direction: column; gap: var(--s3); }
+.tool-drawer > p { color: var(--mid); font-size: var(--sm); }
+.tool-drawer .panel-head h2 { font-size: var(--xl); }
+.catalog-groups { min-height: 0; overflow: auto; scrollbar-gutter: stable; }
+.catalog-groups section > h3 { position: sticky; z-index: 1; top: 0; padding: var(--s2) var(--s3); background: var(--bg2); border-block: 1px solid var(--line); font-size: var(--sm); }
+.catalog-groups section + section { margin-top: var(--s4); }
+.catalog-row,.catalog-groups summary { width: 100%; padding: var(--s3); text-align: start; font-weight: 600; overflow-wrap: anywhere; }
+.catalog-row { justify-content: space-between; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; color: var(--dark); font-size: var(--body); }
+.catalog-row small,.catalog-groups summary small { display: block; color: var(--faint); font: 400 var(--xs)/1.6 var(--mono); }
+.catalog-badges { display: flex; align-items: center; flex-shrink: 0; gap: var(--s1); }
+.catalog-row[aria-expanded=true] .icon { transform: rotate(180deg); }
+.catalog-detail,.catalog-groups details[open] { background: var(--bg2); padding: var(--s3); border-radius: var(--radius-sm); }
+.catalog-detail > * + *,.catalog-groups details > * + * { margin-top: var(--s2); }
+.catalog-detail dl { display: grid; grid-template-columns: minmax(88px,.6fr) minmax(0,1.4fr); gap: var(--s2); font-size: var(--sm); }
+.catalog-detail dt { color: var(--faint); }
+.catalog-detail dd { overflow-wrap: anywhere; }
+.catalog-detail .param-list { grid-column: 1 / -1; }
+.catalog-detail table { background: var(--panel); }
+.catalog-detail th,.catalog-detail td { padding: var(--s2); }
 .capture-viewer[open] {
   position: fixed; inset: 0; margin: 0; width: 100%; height: 100%; max-width: none; max-height: none;
-  box-sizing: border-box; display: grid; place-items: center; padding: 3.5rem 1rem; border: 0; background: transparent;
+  box-sizing: border-box; display: grid; place-items: center; padding: 64px var(--s4); border: 0; background: transparent;
 }
-.capture-viewer::backdrop { background: rgb(10 15 22 / 78%); animation: capture-backdrop 180ms ease-out; }
+.capture-viewer::backdrop { background: var(--backdrop); animation: capture-backdrop 180ms ease-out; }
 .capture-viewer img { max-width: 100%; max-height: 100%; min-height: 0; object-fit: contain; transform-origin: var(--capture-origin, center); animation: capture-open 180ms ease-out; }
-.capture-viewer button { position: absolute; top: 1rem; right: 1rem; width: 2.75rem; height: 2.75rem;
-  border-radius: 50%; font-size: 1.6rem; color: white; background: #252932; }
+.capture-viewer button { position: absolute; top: var(--s4); right: var(--s4); width: 40px; height: 40px;
+  border-radius: 50%; font-size: var(--title); color: var(--dark); background: var(--panel); }
 @keyframes capture-backdrop { from { opacity: 0; } }
 @keyframes capture-open { from { opacity: 0; transform: scale(.96); } }
 @media (prefers-reduced-motion: reduce) {
   .capture-viewer::backdrop, .capture-viewer img { animation: none; }
 }
-.selection-watch { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
-.selection-watch input { max-width: 12em; }
-.selection-watch p { flex-basis: 100%; margin: .3rem 0; }

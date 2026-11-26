@@ -5,7 +5,7 @@ import { planStatus } from './plan'
 
 export default function PlanChecklist({ plan, results }: { plan: TaskPlan; results?: Record<string, ExecutionResult> }) {
   const zh = browserLanguage() === 'zh'
-  return <>{plan.workflow && <strong>{uiText("Workflow")} · {plan.workflow}</strong>}
+  return <section className="plan-card"><h3>{plan.workflow ? <>{uiText("Workflow")} · {plan.workflow}</> : uiText("Task plan")}</h3>
     <ol className="task-plan" aria-label={uiText("Task plan")}>
     {plan.steps.map(step => {
       const { icon, label } = planStatus(step.status, zh)
@@ -20,5 +20,5 @@ export default function PlanChecklist({ plan, results }: { plan: TaskPlan; resul
         </details> : <div>{title}</div>}
       </li>
     })}
-  </ol></>
+  </ol></section>
 }

@@ -5,6 +5,7 @@ import { uiText } from '../../utils/strings'
 import { useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { taskApi } from '../task/api'
+import { usePanelDialog, useWidePanel } from '../shared/usePanelLayout'
 import EvidenceDetails from '../evidence/EvidenceDetails'
 import { createEvidenceFlow, type EvidenceApi, type EvidenceFlow } from '../evidence/evidenceFlow'
 import { outcomeOf } from '../evidence/fields'
@@ -22,8 +23,11 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
 
   useEffect(() => { flow.load() }, [flow])
 
+  const record = state.records.find(r => r.id === state.expanded)
+  const docked = useWidePanel()
+  const inspector = usePanelDialog(docked, Boolean(record))
   return (
-    <div className="page">
+    <div className="page evidence-page">
       <section className="card section">
         <div className="panel-head">
           <h3 className="heading-display section-title">{uiText("Evidence")}</h3>
@@ -40,7 +44,7 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
             <a href="/">{uiText("Describe a task in Chat and run it to see its record here.")}</a></p>
         )}
         {state.records.length > 0 && (
-          <div className="table-scroll">
+          <div className="evidence-layout"><div className="table-scroll">
             <table className="evidence-table">
               <thead>
                 <tr>
@@ -51,10 +55,10 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
                 {state.records.map(r => {
                   const open = state.expanded === r.id
                   const outcome = outcomeOf(r)
-                  return [
+                  return (
                     <tr key={r.id} className={`evidence-row${open ? ' is-open' : ''}`} onClick={() => flow.expand(r.id)}>
                       <td>{r.ts}</td>
-                      <td className="mono">{r.id}</td>
+                      <td><button className="record-id btn-ghost" aria-expanded={open}>{r.id}</button></td>
                       <td>{r.host}</td>
                       <td>{r.action}</td>
                       <td className="mono">{r.tool ?? '-'}</td>
@@ -62,19 +66,17 @@ export default function EvidencePage({ api }: { api?: EvidenceApi }) {
                       <td>{r.validation ? <span className={`outcome ${r.validation.passed ? 'ok' : 'failed'}`}>{r.validation.validator} {r.validation.passed ? uiText("passed") : uiText("FAILED")}</span> : <span className="muted">-</span>}</td>
                       <td>{r.confirmed_by ?? '-'}</td>
                       <td>{r.duration_ms ?? '-'}</td>
-                    </tr>,
-                    open && (
-                      <tr key={`${r.id}-details`} className="evidence-row-details">
-                        <td colSpan={9}>
-                          <EvidenceDetails record={r} revalidation={state.revalidations[r.id]} onValidate={id => flow.validate(id)} />
-                        </td>
-                      </tr>
-                    ),
-                  ]
+                    </tr>
+                  )
                 })}
               </tbody>
             </table>
           </div>
+          {record && <dialog ref={inspector} className={'evidence-inspector ' + (docked ? 'docked' : 'drawer-shell')}
+            aria-label={record.id} onCancel={e => { e.preventDefault(); flow.expand(record.id) }}><div className="panel-head"><h3>{record.id}</h3>
+            <button className="btn-ghost" onClick={() => flow.expand(record.id)}>{uiText("Close")}</button></div>
+            <EvidenceDetails record={record} revalidation={state.revalidations[record.id]} onValidate={id => flow.validate(id)} />
+          </dialog>}</div>
         )}
       </section>
     </div>
