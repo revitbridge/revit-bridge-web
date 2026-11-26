@@ -17,7 +17,7 @@ import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
 import { interruptOpen } from '../hostv2/trace/events'
 import { mentionRefs, pendingMentions, withReport } from './mentions'
 import { NO_RESPONSE } from '../../utils/chatRun'
-import { getErrorMessage, isAbortError } from '../../utils/errors'
+import { getErrorMessage, isAbortError, serverReasons } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
 
 export type EventSource = (request: HostRequest, signal?: AbortSignal) => AsyncIterable<HostEvent>
@@ -340,7 +340,7 @@ export function createTaskFlow(deps: FlowDeps) {
           m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
       }
       if (!isAbortError(e)) {
-        reply += `${reply ? '\n\n' : ''}**${uiText("Model error:")}** ${e instanceof BridgeApiError && e.body?.message ? e.body.message : getErrorMessage(e)}`
+        reply += `${reply ? '\n\n' : ''}**${uiText("Model error:")}** ${getErrorMessage(e)}`
         show(reply)
       }
     }
@@ -495,11 +495,15 @@ export function createTaskFlow(deps: FlowDeps) {
     } catch (e: unknown) {
       // 400 confirmation_required, 404 unknown pack, 503 Revit unreachable: shown in the result's shape
       const body = e instanceof BridgeApiError ? e.body : null
+      // report() sends this receipt back to the model. Keep supplemental HTTP details in the UI.
+      const message = body && e instanceof BridgeApiError ? body.message || `${e.status}: ${body.error}` : getErrorMessage(e)
+      const additional = serverReasons(body).filter(text => text !== message && text !== body?.hint)
+      if (additional.length) push('bridge', { role: 'host', content: additional.join('\n') })
       setState({
         execution: {
           success: false,
           error: body?.error ?? 'request_failed',
-          message: body?.message ?? getErrorMessage(e),
+          message,
           ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}),
           ...(typeof body?.hint === 'string' ? { hint: body.hint } : {}),
         },
@@ -544,7 +548,7 @@ export function createTaskFlow(deps: FlowDeps) {
       return await deps.api.runTool(c.spec.action.tool, { ...params, [tamper.param]: value }, c.token)
     } catch (e: unknown) {
       const body = e instanceof BridgeApiError ? e.body : null
-      return { success: false, error: body?.error ?? 'request_failed', message: body?.message ?? getErrorMessage(e),
+      return { success: false, error: body?.error ?? 'request_failed', message: getErrorMessage(e),
         ...(typeof body?.reason === 'string' ? { reason: body.reason } : {}) }
     }
   }

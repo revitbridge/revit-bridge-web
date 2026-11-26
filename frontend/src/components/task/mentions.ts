@@ -42,7 +42,7 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: MentionOpt
     if (controller.signal.aborted || isAbortError(e)) throw new Error(browserLanguage() === 'zh'
       ? 'Revit 在 10 秒内未响应。可以继续输入，或按 Enter 发送。' : TIMEOUT_MESSAGE)
     if (e instanceof BridgeApiError && e.status === 503) {
-      const reason = e.body?.message ?? e.message
+      const reason = getErrorMessage(e)
       throw new Error(browserLanguage() === 'zh' ? `未连接 Revit，无法选择模型项：${reason}`
         : uiText("Revit is not connected, so there is nothing to pick: {0}", reason))
     }

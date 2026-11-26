@@ -1,4 +1,6 @@
 import { uiText } from '../../../utils/strings'
+import { BridgeApiError } from '../../../api/client'
+import { serverReasons } from '../../../utils/errors'
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
 import { dryRunNotSent, normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
 
@@ -40,19 +42,15 @@ const bodyOf = (error: unknown): Record<string, unknown> | null => {
 export function errorDetails(error: unknown): string[] {
   const body = bodyOf(error)
   if (!body) return []
-  const lines: string[] = []
-  for (const key of ['problems', 'errors', 'warnings']) {
-    const list = body[key]
-    if (!Array.isArray(list)) continue
-    for (const item of list) {
-      if (typeof item === 'string') lines.push(item)
-      else if (item && typeof item === 'object' && typeof (item as { message?: unknown }).message === 'string') {
-        const { code, param, message } = item as { code?: unknown; param?: unknown; message: string }
-        lines.push(`${typeof code === 'string' ? code : ''}${typeof param === 'string' && param ? ` (${param})` : ''}${typeof code === 'string' ? ': ' : ''}${message}`)
-      } else lines.push(JSON.stringify(item))
-    }
+  return serverReasons({ ...body, message: undefined })
+}
+
+export function workbenchFailure(error: unknown) {
+  if (error instanceof BridgeApiError && error.body) {
+    const { message, ...rest } = error.body
+    return { message: [error.status, error.code, message].filter(Boolean).join(': '), details: serverReasons(rest) }
   }
-  return lines
+  return { message: errorMessage(error), details: errorDetails(error) }
 }
 
 /* The server's error code of a refusal (body.error), or null. */
@@ -211,7 +209,10 @@ export class WorkbenchModel {
     return ticket
   }
   private current(action: Action, ticket: number) { return this.tickets[action] === ticket }
-  private fail(action: Action, error: unknown) { this.status(action, 'error', errorMessage(error), errorDetails(error)) }
+  private fail(action: Action, error: unknown) {
+    const { message, details } = workbenchFailure(error)
+    this.status(action, 'error', message, details)
+  }
   // The last word of an action that is still the current one: never left showing "running".
   private settle(action: Action, ticket: number) {
     if (this.current(action, ticket) && this.state.actions[action]?.status === 'running') this.fail(action, 'Stopped before it finished. Try again.')

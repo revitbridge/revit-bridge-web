@@ -4,6 +4,7 @@ export interface Diagnostic {
   severity: string
   line: number | null
   column: number | null
+  template_column?: number
   message: string
   symbol: string | null
   in_wrapper: boolean
@@ -58,6 +59,7 @@ function diagnostics(value: unknown): Diagnostic[] {
   return value.filter(object).map(item => ({
     id: text(item.id) ?? '', severity: text(item.severity) ?? 'error',
     line: number(item.line), column: number(item.column), message: text(item.message) ?? '',
+    ...(typeof item.template_column === 'number' ? { template_column: item.template_column } : {}),
     symbol: text(item.symbol), in_wrapper: item.in_wrapper === true,
     ...(typeof item.file === 'string' ? { file: item.file } : {}),
   }))
@@ -114,12 +116,12 @@ export function dryRunNotSent(result: DryRunReply): boolean {
 // Textarea values and selection offsets use LF, including when loaded code uses CRLF.
 export const normalizeCode = (code: string): string => code.replace(/\r\n?/g, '\n')
 
-export function diagnosticRange(code: string, diagnostic: Pick<Diagnostic, 'line' | 'column' | 'in_wrapper' | 'file'>): [number, number] | null {
+export function diagnosticRange(code: string, diagnostic: Pick<Diagnostic, 'line' | 'column' | 'template_column' | 'in_wrapper' | 'file'>): [number, number] | null {
   if (diagnostic.in_wrapper || diagnostic.file || diagnostic.line === null || !Number.isInteger(diagnostic.line) || diagnostic.line < 1) return null
   const lines = normalizeCode(code).split('\n')
   if (diagnostic.line > lines.length) return null
   const start = lines.slice(0, diagnostic.line - 1).reduce((sum, line) => sum + line.length + 1, 0)
-  const column = Math.max(0, Math.min(lines[diagnostic.line - 1].length, (diagnostic.column ?? 1) - 1))
+  const column = Math.max(0, Math.min(lines[diagnostic.line - 1].length, (diagnostic.template_column ?? diagnostic.column ?? 1) - 1))
   return [start + column, start + lines[diagnostic.line - 1].length]
 }
 

@@ -24,10 +24,10 @@ type RunOutcome =
   | { kind: 'executed'; token: string; expires_at: string; result: ExecutionResult }
   | { kind: 'failed'; message: string }
 
-export default function ToolLibrary() {
+export default function ToolLibrary({ initialTool = '' }: { initialTool?: string }) {
   const gate = usePackGate()
   const [tools, setTools] = useState<ToolInfo[]>([])
-  const [selected, setSelected] = useState('')
+  const [selected, setSelected] = useState(initialTool)
   const [step, setStep] = useState(1)
   const [params, setParams] = useState<ToolParam[]>([])
   const [choices, setChoices] = useState<Record<string, ToolChoiceItem[]>>({})

@@ -5,6 +5,7 @@ import { browserLanguage } from '../utils/language'
 import { getConfig } from '../config'
 import { adminHeaders, deviceHeaders } from '../store'
 import type { ApiErrorBody } from '../types/api'
+import { serverReasons } from '../utils/errors'
 
 function url(path: string): string {
   return `${getConfig().apiBase}${path}`
@@ -19,15 +20,7 @@ export function describeFailure(status: number, raw: string, contentType = ''): 
   try {
     const parsed = JSON.parse(raw)
     if (parsed && typeof parsed === 'object') {
-      if (typeof parsed.message === 'string' && parsed.message) {
-        detail = typeof parsed.error === 'string' ? `${parsed.error}: ${parsed.message}` : parsed.message
-      } else if (typeof parsed.error === 'string') {
-        detail = parsed.error
-      } else if (typeof parsed.detail === 'string') {
-        detail = parsed.detail
-      } else if (parsed.detail) {
-        detail = JSON.stringify(parsed.detail)
-      }
+      detail = [parsed.error, serverReasons(parsed).join('\n')].filter(Boolean).join(': ') || detail
     }
   } catch { /* keep raw text */ }
   return `${status}: ${detail}`

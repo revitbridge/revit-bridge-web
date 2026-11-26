@@ -85,9 +85,9 @@ from revit_bridge import checking, list_host_functions
 from revit_bridge import dry_run as package_dry_run
 from revit_bridge import guidance as _guidance
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.capabilities.store import SolidifiedTool, normalize_pack
+from revit_bridge.capabilities.store import SolidifiedTool, escape_param_value, normalize_pack
 from revit_bridge.revit.capabilities import discover
-from revit_bridge.capabilities.schema import CHOICES_FROM_RE, validate_pack
+from revit_bridge.capabilities.schema import CHOICES_FROM_RE, PLACEHOLDER_RE, validate_pack
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
@@ -770,9 +770,21 @@ class DraftToolRequest(BaseModel):
     based_on: str | None = None
 
 
-@router.post("/tools/draft", dependencies=[Depends(require_admin)], responses=admin_responses(403, 404, 422, 502, 503))
+class DraftToolResponse(BaseModel):
+    pack: dict
+    problems: list[str]
+    reference: str
+    repair_rounds: int = Field(ge=0, le=2)
+    compiled: bool | None = Field(description="Automatic sample compile result; null if unavailable.")
+    diagnostics: list[dict] = Field(description="Compiler diagnostics for the returned draft.")
+    check_reason: str | None = None
+
+
+@router.post("/tools/draft", dependencies=[Depends(require_admin)], response_model=DraftToolResponse,
+             responses=admin_responses(403, 404, 422, 502, 503))
 async def draft_tool(req: DraftToolRequest, request: Request):
-    """Generate an in-memory v1 pack. Return its validation problems alongside the editable pack."""
+    """Draft with a selected or built-in reference. Validate and sample-compile when connected.
+    Up to two model repairs. Remaining problems and diagnostics accompany the editable pack."""
     from backend.authoring import generate
     description = req.description.strip()
     if not description:
@@ -1288,6 +1300,58 @@ def render_draft(pack: dict, values: dict) -> str:
     return code
 
 
+def locate_diagnostics(result, pack, values, rendered):
+    """Translate Roslyn UTF-16 columns past substitutions back to the editable template.
+
+    Use the package's escaped widths. If substitutions in a value expanded again, keep
+    the compiler location and place the caret at the start of the affected line.
+    """
+    if not pack or not result.get("diagnostics"):
+        return result
+    lines = pack["code_template"].replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    compiled = rendered.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    filled = {p["name"]: p.get("default") for p in pack.get("parameters", [])}
+    filled.update({k: v for k, v in (values or {}).items() if v is not None})
+
+    def width(text):
+        return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+
+    for diag in result["diagnostics"]:
+        if not isinstance(diag, dict):
+            continue
+        line, column = diag.get("line"), diag.get("column")
+        if (diag.get("in_wrapper") or diag.get("file") or not isinstance(line, int)
+                or not 1 <= line <= len(lines) or not isinstance(column, int) or column < 1):
+            continue
+        template = lines[line - 1]
+        if template == compiled[line - 1]:
+            continue
+        actual = compiled[line - 1]
+        cursor = offset = shift = 0
+        start = 1
+        caret = None
+        for token in PLACEHOLDER_RE.finditer(template):
+            literal = template[cursor:token.start()]
+            replacement = escape_param_value(filled[token[1]])
+            if not actual.startswith(literal + replacement, offset):
+                caret = 1
+                break
+            offset += len(literal)
+            cursor = token.end()
+            start += width(literal)
+            span = width(replacement)
+            if caret is None and column < start + span:
+                caret = min(start, column) - shift
+            shift += span - width(token[0])
+            offset += len(replacement)
+            start += span
+        else:
+            if actual[offset:] != template[cursor:]:
+                caret = 1
+        diag["template_column"] = caret if caret is not None else column - shift
+    return result
+
+
 async def code_and_parameters(req: WorkbenchCodeRequest) -> tuple[str, list | None]:
     """The snippet to check or dry-run: ``code`` with its ``parameters``, or the draft
     ``pack`` filled with ``values`` (no parameters: a pack's code gets none when it runs)."""
@@ -1309,7 +1373,8 @@ async def check_code(req: CheckCodeRequest):
     blocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,
     environment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +
     ``values`` instead of ``code``: the draft's template filled by the package first (422
-    ``invalid_pack`` / ``render_failed``). As the MCP tool does, code the sandbox refuses is
+    ``invalid_pack`` / ``render_failed``). A draft diagnostic can also carry ``template_column``
+    to locate it before substitution. As the MCP tool does, code the sandbox refuses is
     answered before Revit is needed (``blocked: true``); no Revit to ask is 503
     ``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past
     ``/spec/confirm``'s limit."""
@@ -1318,7 +1383,8 @@ async def check_code(req: CheckCodeRequest):
     if refused is not None:
         return refused
     client = await get_revit_client()
-    return await checking.check_code(client, code, parameters, library=guidance_library)
+    result = await checking.check_code(client, code, parameters, library=guidance_library)
+    return locate_diagnostics(result, req.pack, req.values, code)
 
 
 class DraftLedger:
@@ -1335,7 +1401,8 @@ async def dry_run_code(req: DryRunRequest):
     The package's reply as it is (``{success, rolled_back, result, error, diagnostics,
     changes, failures, fingerprint, evidence_id, hint, warnings}``); each request that
     reaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's
-    scope. ``pack`` + ``values`` instead of ``code``: the draft's template filled by the
+    scope. Draft diagnostics may include the original ``template_column``.
+    ``pack`` + ``values`` instead of ``code``: the draft's template filled by the
     package first, exactly the code the saved pack would send. Code the sandbox refuses is
     answered before Revit is needed (``error: "blocked"``); no Revit to ask is 503
     ``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s
@@ -1346,8 +1413,9 @@ async def dry_run_code(req: DryRunRequest):
         return refused
     client = await get_revit_client()
     ledger = DraftLedger() if req.pack is not None else get_ledger()
-    return await package_dry_run.dry_run_code(client, code, parameters, ledger=ledger,
-                                              host=HOST, scope=current_scope())
+    result = await package_dry_run.dry_run_code(client, code, parameters, ledger=ledger,
+                                                host=HOST, scope=current_scope())
+    return locate_diagnostics(result, req.pack, req.values, code)
 
 
 @router.post("/choices", responses=responses(403, 422, 503, 504))

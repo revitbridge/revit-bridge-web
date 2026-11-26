@@ -26,7 +26,7 @@ function flowFor(events?: EventSource): TaskFlow {
   return sharedFlow
 }
 
-export default function TaskPage({ events, support, onDestination }: { events?: EventSource; support?: SelectionSupport; onDestination?: (destination: 'authoring' | 'remote_mcp', request: string) => void }) {
+export default function TaskPage({ events, support, onDestination, initialTool }: { initialTool?: string; events?: EventSource; support?: SelectionSupport; onDestination?: (destination: 'authoring' | 'remote_mcp', request: string) => void }) {
   const [flow] = useState(() => flowFor(events))
   const state = useStore(flow.store)
   const features = useHostFeatures()
@@ -37,7 +37,7 @@ export default function TaskPage({ events, support, onDestination }: { events?: 
 
   return (
     <div className={'chat-workspace' + (state.compare ? ' comparing' : '')}>
-      <ChatPanel title={uiText("With the bridge")} transcript={state.bridge} questions={questions} questionMessage={state.cardMessage}
+      <ChatPanel initialInput={initialTool ? uiText('Use the {0} tool.', initialTool) : ''} title={uiText("With the bridge")} transcript={state.bridge} questions={questions} questionMessage={state.cardMessage}
         highlight={state.highlight} onSubmitForm={(text, answers) => flow.send(text, [], answers)}
         compare={state.compare}
         context={<>

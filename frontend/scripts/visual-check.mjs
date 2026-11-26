@@ -60,7 +60,10 @@ async function walk(browser, origin, language, width, height, scheme) {
       }
       if (url.pathname === '/api/chat') return route.fulfill({ contentType: 'text/event-stream',
         headers: { 'X-Session-Id': 'studio08-demo' }, body: mock.chat })
-      if (Object.hasOwn(mock.routes, url.pathname)) return route.fulfill({ json: mock.routes[url.pathname] })
+      if (Object.hasOwn(mock.routes, url.pathname)) {
+        const fixture = mock.routes[url.pathname]
+        return route.fulfill({ json: typeof fixture === 'function' ? fixture(route.request().postDataJSON()) : fixture })
+      }
       if (url.pathname.startsWith('/api/')) {
         errors.push('Missing fixture ' + url.pathname)
         return route.fulfill({ status: 404, json: { error: 'no_fixture' } })
@@ -116,7 +119,24 @@ async function walk(browser, origin, language, width, height, scheme) {
         await page.locator('.workflow-actions select').selectOption('level_wall')
         await page.locator('.workflow-steps ol > li').nth(1).waitFor()
       }
-      await shot(name)
+      await shot(name === 'authoring' ? 'authoring-empty' : name)
+      if (name === 'authoring') {
+        await page.locator('.authoring-page textarea').first().fill(zh ? '读取当前视图名称。' : 'Read the active view name.')
+        const action = kind => page.locator('.authoring-page [data-action="' + kind + '"]')
+        await action('draft').click()
+        await page.locator('.authoring-page [data-field=name] .text-danger').scrollIntoViewIfNeeded()
+        await shot('authoring-draft-problems')
+        await page.locator('.authoring-page [data-field=name] input').fill('read_active_view')
+        await action('check').click()
+        await page.locator('.hostv2-workbench-diagnostics').scrollIntoViewIfNeeded()
+        await shot('authoring-compile-errors')
+        await page.locator('.authoring-code').fill('var view = document.ActiveView;\nreturn new { Name = view.Name };')
+        await action('check').click()
+        await action('trial').click()
+        await page.locator('.hostv2-workbench-rollback.is-safe').waitFor()
+        await action('save').evaluate(el => el.scrollIntoView({ block: 'center' }))
+        await shot('authoring-ready-to-save')
+      }
       if (name === 'workflows') {
         await page.locator('.workflow-steps ol > li').last().scrollIntoViewIfNeeded()
         await shot('workflow-steps')
@@ -137,7 +157,8 @@ async function main() {
   const pw = await installedPlaywright()
   if (!pw) { console.log('SKIP: Playwright is unavailable.'); return }
   let browser
-  try { browser = await pw.chromium.launch({ headless: true, args: ['--disable-background-networking', '--no-proxy-server'] }) }
+  try { browser = await pw.chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+    args: ['--disable-background-networking', '--no-proxy-server'] }) }
   catch (err) { console.log('SKIP: Chromium launch failed. ' + err.message.split('\n')[0]); return }
   const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://127.0.0.1').pathname

@@ -207,7 +207,7 @@ export function createPairingFlow(deps: PairingDeps = {}) {
 }
 
 function describe(e: unknown): string {
-  if (e instanceof BridgeApiError && e.code) return e.body?.message ? `${e.code}: ${e.body.message}` : e.code
+  if (e instanceof BridgeApiError && e.code) return e.message.replace(/^\d+: /, '')
   return getErrorMessage(e)
 }
 

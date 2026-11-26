@@ -8,6 +8,7 @@
    error) and stays as it was. */
 
 import { apiStream } from './client'
+import { serverReasons } from '../utils/errors'
 import { MAX_PICKS } from '../types/hostv2'
 import { uiText } from '../utils/strings'
 import { adminHeaders, llmHeaders } from '../store'
@@ -208,9 +209,9 @@ function mentionsEvent(parsed: unknown): HostEvent | null {
    bodies and the chat's {detail} frames both land here). */
 function errorDetail(parsed: unknown, raw: string): string {
   if (isRecord(parsed)) {
-    if (typeof parsed.message === 'string' && parsed.message) return parsed.message
+    const reasons = serverReasons(parsed)
+    if (reasons.length) return reasons.join('\n')
     if (typeof parsed.error === 'string' && parsed.error) return parsed.error
-    if (typeof parsed.detail === 'string' && parsed.detail) return parsed.detail
   }
   if (typeof parsed === 'string' && parsed) return parsed
   return raw

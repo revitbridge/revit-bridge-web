@@ -57,7 +57,7 @@ export function createEvidenceFlow(api: EvidenceApi) {
     } catch (e: unknown) {
       const body = e instanceof BridgeApiError ? e.body : null
       setState(s => ({
-        revalidations: { ...s.revalidations, [id]: { status: 'failed', error: body?.error ?? 'request_failed', message: body?.message ?? getErrorMessage(e) } },
+        revalidations: { ...s.revalidations, [id]: { status: 'failed', error: body?.error ?? 'request_failed', message: getErrorMessage(e) } },
       }))
     }
   }

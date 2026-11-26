@@ -50,6 +50,21 @@ it('switches the visible page, remembers the preference and sends its language t
   } finally { act(() => app.unmount()) }
 })
 
+it.each(['/tools?tool=sample_view', '/?tool=sample_view'])('opens a saved tool destination without sending or executing: %s', async path => {
+  localStorage.setItem('rb_language', 'en')
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const fetch = await configure()
+  const page = document.createElement('div')
+  const app = createRoot(page)
+  HTMLElement.prototype.scrollTo = vi.fn()
+  try {
+    await act(async () => app.render(<App path={path} />))
+    if (path.startsWith('/tools')) expect(page.querySelector('.chip.info')?.textContent).toBe('sample_view')
+    else expect(page.querySelector('textarea')?.value).toBe('Use the sample_view tool.')
+    expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+  } finally { act(() => app.unmount()) }
+})
+
 it('renders Chinese labels across the main pages and composer states', async () => {
   localStorage.setItem('rb_language', 'zh')
   await configure()
