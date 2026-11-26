@@ -1973,7 +1973,7 @@
           "bridge"
         ],
         "summary": "Draft Tool",
-        "description": "Generate an in-memory v1 pack. Return its validation problems alongside the editable pack.",
+        "description": "Draft with a selected or built-in reference. Validate and sample-compile when connected.\nUp to two model repairs. Remaining problems and diagnostics accompany the editable pack.",
         "operationId": "draft_tool_api_v1_bridge_tools_draft_post",
         "parameters": [
           {
@@ -2008,7 +2008,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/DraftToolResponse"
+                }
               }
             }
           },
@@ -2917,7 +2919,7 @@
           "bridge"
         ],
         "summary": "Check Code",
-        "description": "``checking.check_code``: compile the snippet in Revit without running it - no token,\nnothing changes. The package's reply as it is (``{schema_version, checked, compiled,\nblocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,\nenvironment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +\n``values`` instead of ``code``: the draft's template filled by the package first (422\n``invalid_pack`` / ``render_failed``). As the MCP tool does, code the sandbox refuses is\nanswered before Revit is needed (``blocked: true``); no Revit to ask is 503\n``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
+        "description": "``checking.check_code``: compile the snippet in Revit without running it - no token,\nnothing changes. The package's reply as it is (``{schema_version, checked, compiled,\nblocked, capability, reason, diagnostics, truncated, fingerprint, hints, guidance,\nenvironment, warnings}``), with the guidance lessons the MCP tool adds. ``pack`` +\n``values`` instead of ``code``: the draft's template filled by the package first (422\n``invalid_pack`` / ``render_failed``). A draft diagnostic can also carry ``template_column``\nto locate it before substitution. As the MCP tool does, code the sandbox refuses is\nanswered before Revit is needed (``blocked: true``); no Revit to ask is 503\n``revit_unreachable``, as on every route. On a cloud host 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
         "operationId": "check_code_api_v1_bridge_check_post",
         "requestBody": {
           "content": {
@@ -2987,7 +2989,7 @@
           "bridge"
         ],
         "summary": "Dry Run Code",
-        "description": "``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group\nthe add-in always rolls back - nothing is kept, the undo stack is untouched, so no\nconfirmation and no token (the package's rule: the gate takes no part in a dry run).\nThe package's reply as it is (``{success, rolled_back, result, error, diagnostics,\nchanges, failures, fingerprint, evidence_id, hint, warnings}``); each request that\nreaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's\nscope. ``pack`` + ``values`` instead of ``code``: the draft's template filled by the\npackage first, exactly the code the saved pack would send. Code the sandbox refuses is\nanswered before Revit is needed (``error: \"blocked\"``); no Revit to ask is 503\n``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s\nlimit.",
+        "description": "``dry_run.dry_run_code``: run the snippet in the open model inside a transaction group\nthe add-in always rolls back - nothing is kept, the undo stack is untouched, so no\nconfirmation and no token (the package's rule: the gate takes no part in a dry run).\nThe package's reply as it is (``{success, rolled_back, result, error, diagnostics,\nchanges, failures, fingerprint, evidence_id, hint, warnings}``); each request that\nreaches the add-in leaves a ``dry_run`` line in the evidence ledger of this device's\nscope. Draft diagnostics may include the original ``template_column``.\n``pack`` + ``values`` instead of ``code``: the draft's template filled by the\npackage first, exactly the code the saved pack would send. Code the sandbox refuses is\nanswered before Revit is needed (``error: \"blocked\"``); no Revit to ask is 503\n``revit_unreachable``. On a cloud host 429 ``rate_limited`` past ``/spec/confirm``'s\nlimit.",
         "operationId": "dry_run_code_api_v1_bridge_dry_run_post",
         "requestBody": {
           "content": {
@@ -5081,6 +5083,74 @@
           "description"
         ],
         "title": "DraftToolRequest"
+      },
+      "DraftToolResponse": {
+        "properties": {
+          "pack": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Pack"
+          },
+          "problems": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Problems"
+          },
+          "reference": {
+            "type": "string",
+            "title": "Reference"
+          },
+          "repair_rounds": {
+            "type": "integer",
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Repair Rounds"
+          },
+          "compiled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiled",
+            "description": "Automatic sample compile result; null if unavailable."
+          },
+          "diagnostics": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "description": "Compiler diagnostics for the returned draft."
+          },
+          "check_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pack",
+          "problems",
+          "reference",
+          "repair_rounds",
+          "compiled",
+          "diagnostics"
+        ],
+        "title": "DraftToolResponse"
       },
       "DryRunRequest": {
         "properties": {

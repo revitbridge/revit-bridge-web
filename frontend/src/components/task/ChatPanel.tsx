@@ -32,6 +32,7 @@ import { questionBadge } from './format'
 import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
+  initialInput?: string
   context?: ReactNode
   compare?: boolean
   footer?: ReactNode
@@ -84,11 +85,11 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
   )
 }
 
-export default function ChatPanel({ title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
+export default function ChatPanel({ initialInput = '', title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
   context, compare = false, footer, stop, showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
   onSelectionAnswer, hiddenCaptures = [], onHide, support = 'offline', onDestination, onDismiss }: Props) {
   const layout = useContextLayout(compare)
-  const [input, setInput] = useState('')
+  const [input, setInput] = useState(initialInput)
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
   const [composerSession, setComposerSession] = useState(0)

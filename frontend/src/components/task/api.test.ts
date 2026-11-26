@@ -75,7 +75,7 @@ describe('taskApi', () => {
     const failure = err as BridgeApiError
     expect(failure.status).toBe(422)
     expect(failure.code).toBe('invalid_spec')
-    expect(failure.message).toBe('422: invalid_spec')
+    expect(failure.message).toBe('422: invalid_spec: missing_param (x): x is required')
     expect(failure.body?.errors).toEqual([{ code: 'missing_param', param: 'x', message: 'x is required' }])
 
     stubFetch(502, '<!doctype html><html></html>')

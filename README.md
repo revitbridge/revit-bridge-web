@@ -82,6 +82,30 @@ to open tool authoring with your request, open **Settings → Remote MCP**, or d
 the question. You can also reach Remote MCP from **Tools**. Opening either page
 does not start a model request.
 
+### Author a tool
+
+Open **Tools → Author tools**, describe the operation (for example, “创建三维视图”),
+and choose **Generate draft**. The page names the reference pack. Automatic
+selection uses `create_level` for creation and modification requests and
+`query_levels` for other requests. Cloud drafting requires a verified administrator.
+
+The first model request contains the brief, reference definition and available Revit
+year. The host validates the pack and asks the connected add-in to compile a sample.
+It can request two corrections, each containing the previous draft and its problems.
+The page reports the repair count and remaining issues. Usage lists the calls under
+a common `authoring-` run label.
+
+Edit the name, description, parameters and C# template. The tool name determines
+its saved display name. **Edit as JSON** opens the complete pack. If a pack has
+fields the save endpoint cannot retain, review the list and remove them with one
+click. Trial inputs start with the parameter defaults.
+
+Choose **Compile check**. A compiler location takes you to the corresponding line
+in the template. Fill any required trial values and choose **Dry run and roll back**.
+**Add to tools** becomes available after a successful, confirmed rollback. Editing
+the pack or its inputs requires another check and trial. After saving, open the
+tool in the list or prefill a chat message with **Use it in chat**.
+
 ## Start on your machine
 
 By default the host runs in **local mode** (`DEPLOY_MODE=local`): it is reachable from this machine only,

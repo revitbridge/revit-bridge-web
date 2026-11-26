@@ -13,8 +13,7 @@ import { uiText } from '../../utils/strings'
 import { draftParameter } from '../../api/workbench'
 import type { ExecutionResult, SpecError, TaskSpec, ToolChoiceItem, ToolDetail } from '../../types/api'
 import type { ToolDraft, ToolParamDraft } from '../../types/hostv2'
-import { getErrorMessage } from '../../utils/errors'
-import { errorDetails, typedParameters } from '../hostv2/workbench/model'
+import { workbenchFailure, typedParameters } from '../hostv2/workbench/model'
 import { normalizeCode } from '../hostv2/workbench/results'
 import { BridgeApiError, get } from '../shared/http'
 import { taskApi } from '../task/api'
@@ -123,7 +122,7 @@ export async function confirmRun(api: WorkbenchRunApi, spec: TaskSpec, draft: To
       ? { kind: 'rejected', errors: outcome.errors }
       : { kind: 'executed', token: outcome.token, expires_at: outcome.expires_at, result: outcome.result }
   } catch (e: unknown) {
-    return { kind: 'failed', message: getErrorMessage(e), details: errorDetails(e) }
+    return { kind: 'failed', ...workbenchFailure(e) }
   }
 }
 

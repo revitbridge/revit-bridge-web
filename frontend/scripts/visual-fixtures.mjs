@@ -39,6 +39,14 @@ export function fixtures(zh, png) {
       calls: 3, input: 1654, output: 318, ms: 2050, cache_read: 740, cache_write: 0 }] },
   }
   const bridge = { 'revit-health': { revit_connected: true, user_tools_allowed: true, selection_state_supported: true },
+    'tools/draft': { pack: { schema_version: 1, version: '1.0.0', name: '', description: t('Read the active view name.', '读取当前视图名称。'),
+      parameters: [], code_template: 'var view = doc.ActiveView;\nreturn new { Name = view.Name };' },
+      problems: ['name: required, non-empty string'], reference: 'query_levels', repair_rounds: 2, compiled: null, diagnostics: [] },
+    check: body => ({ checked: true, compiled: body.pack.code_template.includes('document.ActiveView'),
+      diagnostics: body.pack.code_template.includes('document.ActiveView') ? [] : [
+        { severity: 'error', id: 'CS0103', line: 1, column: 12, message: "The name 'doc' does not exist in the current context." }] }),
+    'dry-run': { success: true, rolled_back: true, result: { Name: view }, diagnostics: [], failures: [],
+      changes: { added: { count: 0 }, modified: { count: 0 }, deleted: { count: 0 } } },
     snapshot, 'selection-state': { count: 2, stamp: 'selected', document_id: 'studio' }, tools: packs,
     'host-functions': [{ name: 'get_project_snapshot', description: t('Read project context.', '读取项目上下文。'), class: 'read_only', parameters: [] }],
     workflows: [flow], 'workflows/validate': { errors: [] }, evidence: [record, { ...record, id: 'ev_1031', tool: 'list_levels' }],

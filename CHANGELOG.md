@@ -6,6 +6,13 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+Tool authoring now shows field-level validation and clickable compiler locations.
+Drafts use a built-in syntax reference by default and receive up to two repairs
+after validation or sample compilation. Draft and repair calls appear in usage.
+The bilingual form supports parameter ordering, typed trial values and JSON
+editing. Saving requires a successful rollback trial for the current edits.
+Host errors across the UI now include the server's detailed reasons.
+
 Saved workflows can now be composed, validated and exchanged as YAML in the Workflows tab.
 Chat retrieves them by summary and description. Each step receives a host-built card with
 evidence for saved values, designer inputs and earlier results. Workflow cards use the existing

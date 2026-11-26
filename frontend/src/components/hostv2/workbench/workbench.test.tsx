@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { ExistingTool, ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
 import { BridgeApiError } from '../../shared/http'
-import { errorCode, errorDetails, parseValue, saveDisabledReason, WorkbenchModel } from './model'
+import { errorCode, errorDetails, parseValue, saveDisabledReason, WorkbenchModel, workbenchFailure } from './model'
 import { diagnosticRange, indentSelection, readCheck, readDryRun } from './results'
 import { downloadYaml, REVOKE_AFTER_MS } from './download'
 import Workbench, { WorkbenchView } from './Workbench'
@@ -320,7 +320,7 @@ describe('server refusals are shown as they are, in place', () => {
       .toEqual(['missing_param (height): height is required', 'plain', '7'])
     expect(errorDetails(new Error('no body'))).toEqual([])
     const real = new BridgeApiError(422, JSON.stringify({ error: 'invalid_pack', problems: ['parameters: not a list'] }), 'application/json')
-    expect([real.message, ...errorDetails(real)]).toEqual(['422: invalid_pack', 'parameters: not a list'])
+    expect(workbenchFailure(real)).toEqual({ message: '422: invalid_pack', details: ['parameters: not a list'] })
     expect(errorCode(new BridgeApiError(409, JSON.stringify({ error: 'pack_exists', tool: 'mine' })))).toBe('pack_exists')
   })
 })

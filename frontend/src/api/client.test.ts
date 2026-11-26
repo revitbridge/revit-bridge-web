@@ -1,20 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { describeFailure } from './client'
+import { BridgeApiError, describeFailure } from './client'
+import { getErrorMessage } from '../utils/errors'
 
 describe('describeFailure', () => {
   it('reads the bridge error body: error code, then message', () => {
     expect(describeFailure(503, JSON.stringify({ error: 'revit_unreachable', message: 'connect refused', endpoint: 'x:1' })))
       .toBe('503: revit_unreachable: connect refused')
     expect(describeFailure(400, JSON.stringify({ error: 'confirmation_required', success: false, hint: 'confirm first' })))
-      .toBe('400: confirmation_required')
+      .toBe('400: confirmation_required: confirm first')
     expect(describeFailure(422, JSON.stringify({ error: 'invalid_pack', problems: ['a', 'b'] })))
-      .toBe('422: invalid_pack')
+      .toBe('422: invalid_pack: a\nb')
   })
 
   it('still reads FastAPI detail, as a string or as a list', () => {
     expect(describeFailure(403, JSON.stringify({ detail: 'Admin password required' }))).toBe('403: Admin password required')
     expect(describeFailure(422, JSON.stringify({ detail: [{ loc: ['body', 'name'], msg: 'field required' }] })))
-      .toBe('422: [{"loc":["body","name"],"msg":"field required"}]')
+      .toBe('422: body.name: field required')
+  })
+
+  it('keeps message, field problems and detail together wherever a page catches a host error', () => {
+    const body = { error: 'invalid_pack', message: 'Cannot save', problems: ['name: empty', 'code_template: empty'],
+      detail: [{ loc: ['body', 'parameters', 0], msg: 'required' }] }
+    const message = 'Cannot save\nname: empty\ncode_template: empty\nbody.parameters.0: required'
+    const error = new BridgeApiError(422, JSON.stringify(body))
+    expect(error.message).toBe('422: invalid_pack: ' + message)
+    expect(getErrorMessage(error)).toBe(message)
+    expect(getErrorMessage(body)).toBe(message)
   })
 
   it('falls back to the raw text and spots an HTML page', () => {

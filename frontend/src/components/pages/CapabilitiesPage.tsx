@@ -4,6 +4,7 @@
 import { uiText } from '../../utils/strings'
 import { useState } from 'react'
 import type { CapabilitiesView } from '../../route'
+import { useSessionStore } from '../../store'
 import SkillsView from '../capabilities/SkillsView'
 import AuthoringPage from '../capabilities/AuthoringPage'
 import useHostFeatures from '../shared/useHostFeatures'
@@ -16,9 +17,14 @@ const VIEWS: { id: CapabilitiesView; label: string }[] = [
 
 /* `view` / `onView`: the sub-page, held by App so /capabilities/workbench can open it; on its
    own the page keeps it itself. */
-export default function CapabilitiesPage({ view: shown, onView, onRemote, brief }: { onRemote?: () => void; brief?: string; view?: CapabilitiesView; onView?: (view: CapabilitiesView) => void }) {
+export default function CapabilitiesPage({ view: shown, onView, onRemote, brief, connected, tool, onSavedLink, onConnectionLost }: {
+  onRemote?: () => void; brief?: string; view?: CapabilitiesView; onView?: (view: CapabilitiesView) => void
+  connected?: boolean; tool?: string; onSavedLink?: (name: string, chat: boolean) => void
+  onConnectionLost?: () => void
+}) {
   const [own, setOwn] = useState<CapabilitiesView>(shown ?? 'packs')
   const features = useHostFeatures()
+  const browserModel = useSessionStore(s => Boolean(s.llmModel || s.llmBaseUrl || s.llmKey))
   const view = shown ?? own
   const select = (next: CapabilitiesView) => { setOwn(next); onView?.(next) }
   return (
@@ -29,10 +35,12 @@ export default function CapabilitiesPage({ view: shown, onView, onRemote, brief 
         ))}
         <button className="subtab" onClick={onRemote}>{uiText("Remote MCP")}</button>
       </div>
-      {view === 'packs' && <ToolLibrary />}
+      {view === 'packs' && <ToolLibrary initialTool={tool} />}
       {view === 'workbench' && <WorkbenchPage />}
       {view === 'skills' && <SkillsView />}
-      {view === 'authoring' && (features.authoring ? <AuthoringPage brief={brief} /> : <p role="status">{uiText("Tool authoring requires a local host or a verified administrator.")}</p>)}
+      {view === 'authoring' && (features.authoring ? <AuthoringPage brief={brief} connected={connected} onConnectionLost={onConnectionLost}
+        modelAvailable={features.serverModel || (features.byoModel && browserModel)} onSavedLink={onSavedLink} />
+        : <p role="status">{uiText("Tool authoring requires a local host or a verified administrator.")}</p>)}
     </div>
   )
 }

@@ -63,13 +63,13 @@ export function DiagnosticList({ diagnostics, code, locate }: { diagnostics: Dia
   </ul>
 }
 
-function DryRunResult({ result }: { result: DryRunReply }) {
+export function DryRunResult({ result }: { result: DryRunReply }) {
   const notSent = dryRunNotSent(result)
   return <section className="hostv2-workbench-result" aria-label={uiText("Dry run result")}>
     <p className={`hostv2-workbench-rollback ${result.rolled_back === true ? 'is-safe' : notSent ? 'is-not-sent' : 'is-unknown'}`}>
       {result.rolled_back === true ? uiText("Model was not changed. The dry run was rolled back.")
         : notSent ? uiText("Nothing was sent to Revit ({0}): the code did not run, so the model is as it was.", result.error)
-        : 'Rollback is not confirmed. Check the model before continuing.'}
+        : uiText('Rollback is not confirmed. Check the model before continuing.')}
     </p>
     <h3>{uiText("What would change")}</h3>
     <dl className="hostv2-workbench-changes">

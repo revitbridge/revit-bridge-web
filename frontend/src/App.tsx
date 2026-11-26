@@ -68,7 +68,7 @@ export default function App({ path }: { path?: string }) {
     <header className="app-header">
       <div className="brand-block"><div className="brand-mark" aria-hidden="true"><Icon name="mark" /></div><h1 className="app-title">revit-bridge</h1></div>
       <nav className="tab-bar">
-        {TABS.map(tab => <button key={tab} onClick={() => setView({ ...view, tab })}
+        {TABS.map(tab => <button key={tab} onClick={() => setView({ ...view, tab, tool: undefined })}
           className={`tab-button${active === tab ? ' is-active' : ''}`} aria-current={active === tab ? 'page' : undefined}><Icon name={tab} />{zh ? tabsZh[tab] : tab}</button>)}
       </nav>
       <div className="runtime-chips"><ConnectionStatus state={health?.connected ?? null} refresh={refresh} />
@@ -82,12 +82,14 @@ export default function App({ path }: { path?: string }) {
       {active === 'Chat' && <>
         {!features.serverModel && !(features.byoModel && guestModel) &&
           <div className="configuration-notice"><a href="/settings">{uiText("Open Settings to configure a model and start chatting.")}</a></div>}
-        <TaskPage support={!health?.connected ? 'offline' : health.selection === false ? 'legacy' : 'ready'}
+        <TaskPage initialTool={view.tool} support={!health?.connected ? 'offline' : health.selection === false ? 'legacy' : 'ready'}
           onDestination={(destination, brief) => setView(destination === 'authoring'
             ? { tab: 'Tools', capabilities: 'authoring', brief }
             : { tab: 'Settings', capabilities: 'packs', settings: 'remote-mcp' })} />
       </>}
-      {active === 'Tools' && <CapabilitiesPage view={view.capabilities} brief={view.brief} onRemote={() => setView({ tab: 'Settings', capabilities: 'packs', settings: 'remote-mcp' })} onView={capabilities => setView({ ...view, capabilities })} />}
+      {active === 'Tools' && <CapabilitiesPage view={view.capabilities} brief={view.brief} connected={health?.connected} onConnectionLost={refresh} tool={view.tool}
+        onSavedLink={(tool, chat) => setView({ tab: chat ? 'Chat' : 'Tools', capabilities: 'packs', tool })}
+        onRemote={() => setView({ tab: 'Settings', capabilities: 'packs', settings: 'remote-mcp' })} onView={capabilities => setView({ ...view, capabilities, tool: undefined })} />}
       {active === 'Evidence' && <EvidencePage />}
       {active === 'Workflows' && <WorkflowsPage />}
       {active === 'Settings' && <div className="settings-layout">
