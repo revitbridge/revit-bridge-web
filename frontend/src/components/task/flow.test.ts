@@ -81,6 +81,20 @@ const conflicted: ReconcileResult = {
 }
 
 describe('the task flow', () => {
+  it('invalidates the composer reading on a changed selection and keeps omission reasons on the sent message', async () => {
+    const selection = { document_id: 'doc', count: 3, stamp: 'old' }
+    const events = async function* (req: HostRequest): AsyncGenerator<HostEvent> {
+      if (req.current_selection?.stamp === 'old')
+        throw new BridgeApiError(409, JSON.stringify({ error: 'selection_changed', message: 'Check it and send again.' }))
+      yield { type: 'mentions', current_selection: { document_id: 'doc', count: 1, omitted: { disabled: 2 } },
+        resolved: [], not_found: [], invalid: [], unresolved: [] }
+    }
+    const flow = createTaskFlow({ events, api: fakeApi() })
+    await flow.send('Inspect', [], undefined, undefined, selection)
+    expect(flow.store.getState().bridge.selectionRevision).toBe(1)
+    await flow.send('Inspect', [], undefined, undefined, { ...selection, stamp: 'new' })
+    expect(flow.store.getState().bridge.messages.at(-2)).toMatchObject({ currentSelection: 1, selectionOmissions: { disabled: 2 } })
+  })
   it('sends only capture visibility on bridge turns, including form answers', async () => {
     const host = scriptedHost([{ type: 'session', id: 's' }, { type: 'view_image', width: 2, height: 1,
       view_name: 'Room', capture_id: 'img', png_base64: 'UE5H' }, { type: 'ask_selection', ask_id: 'q',

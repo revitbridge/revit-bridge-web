@@ -49,6 +49,7 @@ from backend.api import bridge
 from backend.api.bridge import (
     current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
+from backend.selection import uses_current_selection
 from backend.api.direct_reads import reserve_direct_run, selection_for_card, try_read
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
@@ -512,6 +513,12 @@ async def _propose_spec(args: dict, session: Session, *, host_workflow=False) ->
     picks = session.picks_for(current_scope())
     errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
     event = {"spec": normalized, "card": spec.card(), "errors": errors, "reconcile": None}
+    scope = current_scope()
+    _, reference = session.selection_messages.get(scope, (None, None))
+    session.card_selection = None
+    if reference and uses_current_selection(spec, pack):
+        session.card_selection = (scope, reference)
+        event["selection_reference"] = reference.model_dump(exclude_defaults=True)
     if selection := selection_for_card(spec, pack, session):
         event["assistant_selection"] = selection
     try:

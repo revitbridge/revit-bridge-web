@@ -41,6 +41,19 @@ function render(p: Proposal, canConfirm: boolean) {
 describe('SpecCard', () => {
   beforeEach(() => vi.stubGlobal('navigator', { languages: ['zh-CN'] }))
   afterEach(() => vi.unstubAllGlobals())
+  it('shows the referenced selection and waits on the card when the stamp changes', async () => {
+    vi.stubGlobal('navigator', { languages: ['en'] })
+    const selection_reference = { count: 21, document_id: 'doc', stamp: 'many', categories: { Walls: 21 } }
+    const frame = parseSseFrame('event: spec\ndata: ' + JSON.stringify({
+      spec, selection_reference, run: 'confirm', run_reason: 'selection_changed',
+    }))
+    const flow = createTaskFlow({ events: async function* () { yield frame! },
+      api: { confirm: vi.fn(), runTool: vi.fn(), reconcile: vi.fn() } })
+    await flow.send('Rotate')
+    const html = render(flow.store.getState().proposal!, true)
+    expect(html).toContain('Current selection: 21 elements (Walls × 21)')
+    expect(html).toContain('the Revit selection changed')
+  })
   it('shows the assistant selection from the spec event beside the confirmation button', async () => {
     vi.stubGlobal('navigator', { languages: ['en'] })
     const frame = parseSseFrame('event: spec\ndata: ' + JSON.stringify({

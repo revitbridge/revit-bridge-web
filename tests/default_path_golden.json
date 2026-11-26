@@ -907,6 +907,64 @@
    "streams": {}
   }
  },
+ "view_packs_16384": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "326800a7532a2b01aafc4bb8011e0ac6b194cd832a83a0da4475af9da02b9c71",
+    "7": "4c5fc78bda99c11cdadcedebe4bee622129b00b8fc8381653f4a1d46e5aabacd"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {},
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "5": "ab00c6db51580592644c92b7458df211d295933ea510c999ace33ddcf8afb9e3"
+   },
+   "streams": {
+    "2": "ffb698d0d0990497b9ac8c5b85fc4f5f1aa51981a40f26cf14a48956ffa8ea75"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "5": "4daedf3b4ea89a7f29dec3e7c9745001f42445e2a366df510624d13f4ee3e172"
+   },
+   "streams": {
+    "2": "37c9c2eab06183cfe52a628aba4ad750ed91e7ae49ea09f9120c26f7eeedc85c"
+   }
+  }
+ },
+ "view_packs_4096": {
+  "roles-analyst-server": {
+   "requests": {
+    "0": "a37d89972f4877442b8c82c6ec3a6b333b42293be7244690460f5b608043a86e",
+    "7": "807ffd2e088daf09068ec4400f5f33359b013d162a8b58179e6a758d2cacf7f0"
+   },
+   "streams": {}
+  },
+  "roles-server": {
+   "requests": {},
+   "streams": {}
+  },
+  "single-browser": {
+   "requests": {
+    "5": "606984f8d50742f4e507874dfc17599d4442fb87d706b48997af59a3b88ef427"
+   },
+   "streams": {
+    "2": "ffb698d0d0990497b9ac8c5b85fc4f5f1aa51981a40f26cf14a48956ffa8ea75"
+   }
+  },
+  "single-server": {
+   "requests": {
+    "5": "86e7fdb0d108f0d8897fb3834421d6d301d479d8556f39781a1138ade59edfbb"
+   },
+   "streams": {
+    "2": "37c9c2eab06183cfe52a628aba4ad750ed91e7ae49ea09f9120c26f7eeedc85c"
+   }
+  }
+ },
  "workflows_16384": {
   "roles-analyst-server": {
    "requests": {

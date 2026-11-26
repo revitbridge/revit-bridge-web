@@ -17,6 +17,23 @@ class SelectionState(BaseModel):
     stamp: str = Field(min_length=1, max_length=200)
     count: int = Field(strict=True, ge=0)
 
+    def matches(self, other):
+        return self.document_id == other.document_id and self.stamp == other.stamp
+
+
+class SelectionReference(SelectionState):
+    categories: dict[str, int]
+    categories_partial: bool = False
+
+
+def uses_current_selection(spec, pack):
+    if not pack:
+        return False
+    params = spec.execution_projection()["params"]
+    return pack.name == "delete_selected" or any(
+        p["name"] in ("element_id", "element_ids") and p.get("default") == ""
+        and params.get(p["name"]) in (None, "") for p in pack.parameters)
+
 
 async def read(client) -> SelectionState | None:
     try:
@@ -64,6 +81,15 @@ class DeviceSelection:
             elif self.after_write != state:
                 self.assistant = False
         return not self.assistant
+
+    async def verify(self, client, expected):
+        state = await read(client)
+        if state is None:
+            raise ApiError(503, "selection_unavailable")
+        if not state.matches(expected):
+            self.last_read = 0.0  # The next composer poll must read the new selection.
+            raise ApiError(409, "selection_changed")
+        return state
 
     async def poll(self, client, busy):
         async with self.lock:

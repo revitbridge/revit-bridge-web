@@ -8,6 +8,8 @@
    error) and stays as it was. */
 
 import { apiStream } from './client'
+import { MAX_PICKS } from '../types/hostv2'
+import { uiText } from '../utils/strings'
 import { adminHeaders, llmHeaders } from '../store'
 import type {
   DesignerForm, ExecutionResult, HostEvent, HostRequest, MentionProblem, MentionReport, PlanStep, ReconcileResult, SpecError, TaskSpec,
@@ -97,6 +99,12 @@ export function parseSseFrame(frame: string): HostEvent | null {
     }
     if (parsed.run === 'auto' || parsed.run === 'confirm') spec.run = parsed.run
     if (typeof parsed.run_reason === 'string') spec.run_reason = parsed.run_reason
+    const ref = parsed.selection_reference
+    if (isRecord(ref) && typeof ref.document_id === 'string' && typeof ref.stamp === 'string'
+        && count(ref.count) !== null && isCounts(ref.categories)) {
+      spec.selection_reference = { count: Number(ref.count), document_id: ref.document_id, stamp: ref.stamp,
+        categories: ref.categories, categories_partial: ref.categories_partial === true }
+    }
     const selected = parsed.assistant_selection
     if (isRecord(selected) && typeof selected.tool === 'string' && Array.isArray(selected.ids)
       && selected.ids.every(id => typeof id === 'string')) {
@@ -172,6 +180,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /* event: mentions {resolved, not_found, invalid, unresolved, warnings?}; a list that is
    missing or not a list is empty, an entry that is not an object is dropped. */
+function isCounts(value: unknown): value is Record<string, number> {
+  return isRecord(value) && Object.values(value).every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)
+}
+
 function mentionsEvent(parsed: unknown): HostEvent | null {
   if (!isRecord(parsed)) return null
   const list = (key: string) => (Array.isArray(parsed[key]) ? parsed[key] : []).filter(isRecord)
@@ -186,7 +198,8 @@ function mentionsEvent(parsed: unknown): HostEvent | null {
     not_found: problems('not_found'), invalid: problems('invalid'), unresolved: problems('unresolved'),
   }
   if (isRecord(parsed.current_selection) && typeof parsed.current_selection.document_id === 'string' && count(parsed.current_selection.count) !== null)
-    event.current_selection = { document_id: parsed.current_selection.document_id, count: Number(parsed.current_selection.count) }
+    event.current_selection = { document_id: parsed.current_selection.document_id, count: Number(parsed.current_selection.count),
+      ...(isCounts(parsed.current_selection.omitted) ? { omitted: parsed.current_selection.omitted } : {}) }
   if (Array.isArray(parsed.warnings)) event.warnings = parsed.warnings.filter((w): w is string => typeof w === 'string')
   return event
 }
@@ -226,11 +239,16 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.message !== undefined) body.message = request.message
   if (request.execution !== undefined) body.execution = request.execution
   if (request.bridge !== undefined) body.bridge = request.bridge
-  if (request.mentions?.length) body.mentions = request.mentions
+  if (request.mentions?.length) {
+    if (request.mentions.length > MAX_PICKS)
+      throw new Error(uiText("This message picks {0} model items; at most {1} can go with one message. Remove some tags, then send.", request.mentions.length, MAX_PICKS))
+    body.mentions = request.mentions
+  }
   if (request.answers) body.answers = request.answers
   if (request.selection_answer) body.selection_answer = request.selection_answer
   if (request.hidden_captures !== undefined) body.hidden_captures = request.hidden_captures
-  if (request.current_selection) body.current_selection = request.current_selection
+  if (request.current_selection && request.message && request.bridge !== false && !request.answers
+      && !request.selection_answer && !request.execution) body.current_selection = request.current_selection
   if (request.mode !== undefined) body.mode = request.mode
   if (request.run !== undefined) body.run = request.run
   const resp = await apiStream('/api/chat', body, { ...llmHeaders(), ...(request.run === 'auto' ? adminHeaders() : {}) }, signal)

@@ -91,6 +91,41 @@ it('takes legacy selection manually, without polling', async () => {
   await click('Send')
   expect(onSend).toHaveBeenCalledWith('@element:Door#7', [picked])
 })
+it('refreshes the chip on a stale send and attaches only the new identity', async () => {
+  const state = { count: 21, stamp: 'walls', document_id: 'doc' }
+  const latest = { ...state, stamp: 'doors', count: 33 }
+  const fetch = vi.spyOn(client, 'apiFetch').mockResolvedValueOnce(state).mockResolvedValueOnce(latest)
+  render([], { support: 'ready' })
+  await tick()
+  edit()
+  await click('Send')
+  expect(onSend).toHaveBeenCalledWith('Inspect', [], state)
+  render([], { support: 'ready', transcript: { messages: [], sessionId: 'session', streaming: false, selectionRevision: 1 } })
+  expect(container.textContent).not.toContain('21 selected')
+  await tick()
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(container.textContent).toContain('33 selected in Revit')
+  edit()
+  await click('Send')
+  expect(onSend).toHaveBeenLastCalledWith('Inspect', [], latest)
+})
+it('keeps the live selection out of a submitted form and reconciler option', async () => {
+  vi.spyOn(client, 'apiFetch').mockResolvedValue({ count: 5, stamp: 'walls', document_id: 'doc' })
+  const submit = vi.fn(), option = vi.fn()
+  const options = [{ label: 'North', value: 1 }, { label: 'South', value: 2 }]
+  const q = { id: 'dir', text: 'Direction?', options, multiple: false, allow_other: false }
+  render([{ role: 'assistant', content: '', form: { ask_id: 'q', questions: [q] } }],
+    { support: 'ready', onSubmitForm: submit })
+  await tick()
+  expect(container.textContent).toContain('5 selected in Revit')
+  act(() => container.querySelector<HTMLInputElement>('input[type=radio]')!.click())
+  act(() => container.querySelector<HTMLButtonElement>('form button')!.click())
+  expect(submit.mock.calls[0]).toHaveLength(2)
+  render([{ role: 'assistant', content: '' }], { support: 'ready', questions: [{ ...q, param: 'dir', why: '' }],
+    questionMessage: 0, onAnswer: option })
+  await click('North')
+  expect(option.mock.calls[0]).toHaveLength(2)
+})
 it('starts a planner watch automatically and answers the same question via legacy fallback', async () => {
   const select = vi.fn()
   const fetch = vi.spyOn(client, 'apiFetch').mockResolvedValueOnce({ error: 'unsupported_addin' })
@@ -112,6 +147,25 @@ it.each(['Cancel', 'unmount', 'pagehide'])('stops the watch on %s', async end =>
   else await act(async () => { window.dispatchEvent(new Event('pagehide')) })
   expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(true)
   expect(fetch.mock.calls[1][1]?.method).toBe('DELETE')
+})
+it.each(['timed_out', 'document_changed', 'cancelled', 'Cancel'])('keeps the watch when hidden and retries after %s', async end => {
+  let finish!: (reply: object) => void
+  const fetch = vi.spyOn(client, 'apiFetch').mockImplementationOnce((_url, init) =>
+    new Promise((resolve, reject) => { finish = resolve; init?.signal?.addEventListener('abort', reject) }))
+    .mockImplementation(async (_url, init) => init?.method === 'DELETE' ? {} : { items: [picked] })
+  const select = vi.fn()
+  render([question()], { onSelectionAnswer: select })
+  await tick()
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+  act(() => document.dispatchEvent(new Event('visibilitychange')))
+  expect(fetch.mock.calls[0][1]?.signal?.aborted).toBe(false)
+  hidden.mockReturnValue(false)
+  act(() => document.dispatchEvent(new Event('visibilitychange')))
+  if (end === 'Cancel') await click(end)
+  else await act(async () => finish({ [end]: true }))
+  await click('Watch again')
+  expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(2)
+  expect(select).toHaveBeenCalledWith('q', [picked])
 })
 it.each(['Escape', 'outside', 'button'])('opens the viewport modal and restores focus and scroll on %s', async end => {
   const hide = vi.fn()

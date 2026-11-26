@@ -10,7 +10,7 @@
 import { uiText } from '../../utils/strings'
 import { createStore } from 'zustand/vanilla'
 import type {
-  AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
+  SelectionReference, AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   PlanStatus, SpecError, TaskPlan, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
@@ -27,7 +27,7 @@ export type EventSource = (request: HostRequest, signal?: AbortSignal) => AsyncI
 export interface FlowApi {
   clearCaptures?(sessionId: string): Promise<unknown>
   reconcile(spec: TaskSpec, sessionId: string | null): Promise<ReconcileResult>
-  confirm(spec: TaskSpec, sessionId: string | null): Promise<ConfirmResponse>
+  confirm(spec: TaskSpec, sessionId: string | null, selection?: SelectionReference): Promise<ConfirmResponse>
   runTool(name: string, params: Record<string, unknown>, token: string): Promise<ExecutionResult>
 }
 
@@ -44,6 +44,7 @@ export interface Transcript {
   messages: ChatMessage[]
   sessionId: string | null
   streaming: boolean
+  selectionRevision?: number
 }
 
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
@@ -51,6 +52,7 @@ export interface Proposal {
   run?: 'auto' | 'confirm'
   runReason?: string
   assistantSelection?: AssistantSelection
+  selectionReference?: SelectionReference
   awaitingReceipt?: boolean
   ended?: boolean
   planStep?: { planId: string; stepId: string; status: PlanStatus }
@@ -182,7 +184,8 @@ function reportPicks(t: Transcript, report: MentionsEvent): Transcript {
   const message = t.messages[at]
   if (!message || (!message.mentions && !report.current_selection)) return t
   const messages = t.messages.slice()
-  messages[at] = { ...message, currentSelection: report.current_selection?.count, mentions: withReport(message.mentions ?? [], report) }
+  messages[at] = { ...message, currentSelection: report.current_selection?.count, selectionOmissions: report.current_selection?.omitted,
+    mentions: withReport(message.mentions ?? [], report) }
   return { ...t, messages }
 }
 function updatePlan(t: Transcript, plan: TaskPlan, execution?: ExecutionResult): Transcript {
@@ -329,6 +332,9 @@ export function createTaskFlow(deps: FlowDeps) {
       }
     } catch (e: unknown) {
       const askId = request.answers?.ask_id ?? request.selection_answer
+      if (request.current_selection && e instanceof BridgeApiError && e.code === 'selection_changed') {
+        patch(side, t => ({ ...t, selectionRevision: (t.selectionRevision ?? 0) + 1 }))
+      }
       if (askId && e instanceof BridgeApiError && e.status === 422 && e.code === 'invalid_answers') {
         patch(side, t => ({ ...t, messages: t.messages.map(m =>
           m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
@@ -361,7 +367,7 @@ export function createTaskFlow(deps: FlowDeps) {
         execution: s.execution, confirmation: s.confirmation }] : s.archived,
       proposal: {
         ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
-        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection,
+        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection, selectionReference: evt.selection_reference,
         spec: evt.spec,
         card: evt.card,
         errors: evt.errors ?? [],
@@ -406,7 +412,7 @@ export function createTaskFlow(deps: FlowDeps) {
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
     if (answers) request.answers = answers
     if (selectionAnswer) request.selection_answer = selectionAnswer
-    if (selection) request.current_selection = selection
+    if (selection && !askId) request.current_selection = selection
     if (picked) request.mentions = mentionRefs(mentions)
     const jobs = [consume('bridge', withMode(request), onSpec, closeForm)]
     if (s.compare) {
@@ -417,8 +423,8 @@ export function createTaskFlow(deps: FlowDeps) {
   }
 
   /* A clicked option answers the model's question in the chat. */
-  const answer = (question: Question, option: { label: string; value: unknown }, selection?: HostRequest['current_selection']) =>
-    send(`${question.param} = ${String(option.value)}`, [], undefined, undefined, selection)
+  const answer = (question: Question, option: { label: string; value: unknown }) =>
+    send(`${question.param} = ${String(option.value)}`)
 
   /* Ticking an interpretation changes the draft, and the draft is reconciled again. */
   async function toggleInterpretation(text: string, confirmed: boolean) {
@@ -456,7 +462,9 @@ export function createTaskFlow(deps: FlowDeps) {
     }
     setState({ confirming: true, confirmation: null, confirmErrors: [] })
     try {
-      const issued = await deps.api.confirm(spec, s.bridge.sessionId)
+      const issued = s.proposal.selectionReference
+        ? await deps.api.confirm(spec, s.bridge.sessionId, s.proposal.selectionReference)
+        : await deps.api.confirm(spec, s.bridge.sessionId)
       if (getState().proposal !== s.proposal) return
       setState({
         confirmation: { ...issued, spec, used: false },

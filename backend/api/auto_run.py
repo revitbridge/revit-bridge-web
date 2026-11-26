@@ -11,6 +11,7 @@ from backend.api import bridge
 from backend.api.direct_reads import BuiltinStore, selection_for_card
 from backend.api.errors import ApiError
 from backend.mention_check import evidence_keys
+from backend.selection import uses_current_selection
 from backend.questions import DesignerForm
 from backend.plans import same_json
 
@@ -91,7 +92,7 @@ def _supported(binding, session, words, answers, parameter_type=None, unit=None)
     keys = evidence_keys(binding.evidence)
     if keys:
         picks = session.picks_for(bridge.current_scope())
-        return all(key in picks for key in keys)  # propose_spec already checked the values as well
+        return all(key in picks and picks[key].get("selection_turn", session.turns) == session.turns for key in keys)
     for entry in answers:
         items = entry.get("answers")
         if isinstance(items, list):
@@ -201,6 +202,10 @@ class AutoRun:
                                           for param, text in sorted(assumptions, key=lambda pair: (pair[0] or "", pair[1]))]
         if not report.get("ready") or event["errors"]:
             return "not_ready", None
+        origin = session.selection_messages.get(bridge.current_scope())
+        if origin and uses_current_selection(spec, pack) and (origin[0] != session.turns or origin[1] is None):
+            # Small attachments authorize their verified IDs. Only a fresh reference authorizes a live target.
+            return "unverified_evidence", None
         if selection_for_card(spec, pack, session):
             return "unverified_evidence", None
         words = (plan.original_request if plan and plan.current else session.request_text) + "\n" + self.user_message
@@ -251,35 +256,46 @@ class AutoRun:
             return "unverified_evidence", None
         return None, None
 
-    async def execute(self, spec):
+    async def execute(self, spec, selection_checked=None):
         self.session.auto_count += 1
-
         try:
             bridge.bridge_write_rate_limit(self.request)
             store = BuiltinStore()
             confirmation = await bridge.issue_spec(bridge.ConfirmRequest(spec=spec, session_id=self.session.session_id,
                                                                          confirmed_by="designer:auto-run"), store)
+            if selection_checked is not None:
+                selection_checked.set_result(None)
             projection = TaskSpec.model_validate(spec).execution_projection()
             req = bridge.RunToolRequest(params=projection["params"], token=confirmation["token"])
             return await bridge.execute_pack(projection["tool"], req, store)
         except ApiError as exc:
+            if selection_checked is not None and not selection_checked.done():
+                self.session.auto_count -= 1
+                selection_checked.set_result(exc.payload["error"])
+                return None
             return {"success": False, **exc.payload}
         except Exception:
+            if selection_checked is not None and not selection_checked.done():
+                self.session.auto_count -= 1
+                selection_checked.set_result("selection_unavailable")
+                return None
             return {"success": False, "error": "execution_failed", "message": "Check the model before retrying."}
 
-    def start(self, spec):
-        task = asyncio.create_task(self.execute(spec))
+    def start(self, spec, selection_checked=None):
+        task = asyncio.create_task(self.execute(spec, selection_checked))
         self.session.auto_worker = task
         plan = self.session.plan
         single_step = not (plan and plan.current)
         scope = bridge.current_scope()
         def finished(worker):
             self.session.auto_worker = None
-            if single_step and not worker.cancelled():
+            if worker.cancelled() or worker.result() is None:
+                return
+            if single_step:
                 self.session.pending_auto_receipt = (scope, worker.result())
             elif plan and plan.confirmed and plan.receipt is not None:
                 plan.auto_receipt_pending = True
-            if not worker.cancelled() and worker.result().get("success") is not True:
+            if worker.result().get("success") is not True:
                 self.paused = True
                 if not single_step:
                     self.session.auto_pause_reason = "previous_failure"

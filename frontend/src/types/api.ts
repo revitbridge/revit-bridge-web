@@ -182,6 +182,7 @@ export interface ChatMessage {
   images?: ViewImage[]
   missingTool?: MissingTool
   currentSelection?: number
+  selectionOmissions?: Record<string, number>
   imageNotice?: string
   plan?: TaskPlan
   stepResults?: Record<string, ExecutionResult>
@@ -222,7 +223,7 @@ export interface MentionProblem {
 
 /* event: mentions - the turn's first frame when the message carried picks. */
 export interface MentionReport {
-  current_selection?: {count: number; document_id: string}
+  current_selection?: {count: number; document_id: string; omitted?: Record<string, number>}
   resolved: (MentionItem & Record<string, unknown>)[]
   not_found: MentionProblem[]
   invalid: MentionProblem[]
@@ -351,7 +352,7 @@ export type HostEvent =
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
-      run?: 'confirm' | 'auto'; run_reason?: string; assistant_selection?: AssistantSelection;
+      run?: 'confirm' | 'auto'; run_reason?: string; selection_reference?: SelectionReference; assistant_selection?: AssistantSelection;
       reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
   | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
@@ -360,6 +361,7 @@ export type HostEvent =
   | { type: 'done' }
 
 export interface SelectionState { document_id: string; stamp: string; count: number }
+export interface SelectionReference extends SelectionState { categories: Record<string, number>; categories_partial?: boolean }
 export interface MissingTool { request: string; question: string; choices: Record<'authoring' | 'remote_mcp' | 'dismiss', string> }
 export interface SelectionQuestion { prompt: string; mode: 'single' | 'multiple' | 'box'; category?: string }
 export interface AssistantSelection { tool: string; count: number | null; ids: string[] }

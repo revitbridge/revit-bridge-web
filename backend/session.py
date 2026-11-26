@@ -32,6 +32,7 @@ from backend.captures import CaptureContext
 from backend.llm import ProviderMemory, call_keys
 from backend.mention_check import mention_evidence
 from backend.plans import Plan
+from backend.selection import SelectionReference
 from revit_bridge.spec.gate import GateError
 
 if TYPE_CHECKING:                     # backend.roles imports the model's tools, which import this
@@ -96,6 +97,10 @@ class Session:
     read_results: dict[tuple[str, str], object] = field(default_factory=dict)
     # Last direct selection change in this request, by device. Only the host sets this.
     assistant_selections: dict[str, dict] = field(default_factory=dict)
+    # Last automatic attachment per device, tagged with the chat message that supplied it.
+    selection_messages: dict[str, tuple[int, SelectionReference | None]] = field(default_factory=dict)
+    # The guard belongs to the displayed card even if a later message brings a new selection.
+    card_selection: tuple[str, SelectionReference] | None = None
     auto_pause_reason: str | None = None  # Lasts through plan closure until a new designer request.
     auto_count: int = 0
     auto_assumptions: tuple | None = None
@@ -118,13 +123,17 @@ class Session:
             self.role_prompts[role] = build(role)
         return self.role_prompts[role]
 
-    def remember_picks(self, scope: str, items: list[dict]) -> None:
+    def remember_picks(self, scope: str, items: list[dict], *, automatic_ids=(), turn=None) -> None:
         """Keep verified picks of the device ``scope`` for this turn and every later one; a pick
         verified again takes its new reading (a renamed level), and past ``MAX_SESSION_PICKS``
         the oldest goes."""
         for item in items:
             key = (scope, mention_evidence(item.get("kind"), item.get("id")))
-            self.picks.pop(key, None)
+            previous = self.picks.pop(key, None)
+            if item.get("kind") == "element" and item.get("id") in automatic_ids:
+                # An unchanged explicit @ pick also has an independent, session-long origin.
+                if previous != item:
+                    item = {**item, "selection_turn": turn}
             self.picks[key] = item
         while len(self.picks) > MAX_SESSION_PICKS:
             del self.picks[next(iter(self.picks))]

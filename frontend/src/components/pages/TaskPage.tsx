@@ -65,7 +65,7 @@ export default function TaskPage({ events, support, onDestination }: { events?: 
         <p className="section-copy small" style={{ marginTop: 0 }}>{uiText("One sentence, as a designer would say it. With the bridge the model reads the snapshot and must ask before it proposes; the questions come with the real options. The no-bridge session (")}<code>{uiText("bridge=false")}</code>{uiText(") has no tools and no skills and cannot execute anything: it shows how the same brief would be filled in blindly.")}</p>
         <div className={`task-columns${state.compare ? ' two' : ''}`}>
           <ChatPanel title={uiText("With the bridge")} transcript={state.bridge} questions={questions} questionMessage={state.cardMessage}
-            highlight={state.highlight} onSubmitForm={(text, answers, selection) => flow.send(text, [], answers, undefined, selection)}
+            highlight={state.highlight} onSubmitForm={(text, answers) => flow.send(text, [], answers)}
             support={support} onDestination={onDestination}
             onDismiss={index => flow.store.setState(s => ({ bridge: { ...s.bridge,
               messages: s.bridge.messages.map((m, i) => i === index ? { ...m, missingTool: undefined } : m) } }))}

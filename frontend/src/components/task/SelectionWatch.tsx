@@ -16,6 +16,7 @@ type Reply = Partial<MentionCandidates> & {
 
 interface Props {
   askId?: string
+  onStart?: () => void
   onFinish?: () => void
   sessionId: string | null; question?: SelectionQuestion; legacy?: boolean; disabled?: boolean; onPick: (items: Mention[]) => void
 }
@@ -29,7 +30,7 @@ export default function SelectionWatch(props: Props) {
   return <WatchControl key={JSON.stringify([props.sessionId, device])} {...props} />
 }
 
-function WatchControl({ sessionId, question, disabled, onPick, legacy, onFinish, askId }: Props) {
+function WatchControl({ sessionId, question, disabled, onPick, legacy, onStart, onFinish, askId }: Props) {
   const [draftSession] = useState(newId)
   const mode = question?.mode ?? 'multiple'
   const category = question?.category ?? ''
@@ -60,6 +61,7 @@ function WatchControl({ sessionId, question, disabled, onPick, legacy, onFinish,
         { method: 'DELETE', headers, keepalive: true }).catch(() => {})
     }
     controller.signal.addEventListener('abort', cancel, { once: true })
+    onStart?.()
     setWatching(true)
     setMessage('')
     try {
@@ -116,7 +118,6 @@ function WatchControl({ sessionId, question, disabled, onPick, legacy, onFinish,
     if (!question || disabled || fallback || started.has(question)) return
     const start = () => {
       if (!document.hidden && !started.has(question)) { started.add(question); startWatch() }
-      if (document.hidden) active.current?.abort()
     }
     const timer = setTimeout(start, 0)
     document.addEventListener('visibilitychange', start)
@@ -130,8 +131,10 @@ function WatchControl({ sessionId, question, disabled, onPick, legacy, onFinish,
       ? uiText("Click one new element in Revit.")
       : uiText("Ctrl-click or drag a box in Revit, then pause.")}</p>
       <button type="button" onClick={() => active.current?.abort()}>{uiText("Cancel")}</button></>
-      : fallback && <button type="button" disabled={disabled} onClick={() => void select(true)}>
-        {uiText("Take current selection")}</button>}
+      : fallback ? <button type="button" disabled={disabled} onClick={() => void select(true)}>
+        {uiText("Take current selection")}</button>
+      : question && started.has(question) && <button type="button" disabled={disabled} onClick={() => void select()}>
+        {uiText("Watch again")}</button>}
     {message && <p role="status">{message}</p>}
   </div>
 }

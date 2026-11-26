@@ -5,8 +5,8 @@ import type { SelectionState } from '../../types/api'
 type Reading = SelectionState & { assistant_set?: boolean }
 export type SelectionSupport = 'ready' | 'legacy' | 'offline'
 
-export function useSelectionState(device: string, support: SelectionSupport, paused: boolean) {
-  const [result, setResult] = useState<{device: string; value?: Reading; legacy?: boolean}>()
+export function useSelectionState(device: string, support: SelectionSupport, paused: boolean, revision = 0) {
+  const [result, setResult] = useState<{device: string; revision: number; value?: Reading; legacy?: boolean}>()
   const unsupported = useRef<string | null>(null)
   useEffect(() => {
     if (support === 'offline' || unsupported.current !== device) unsupported.current = null
@@ -28,16 +28,16 @@ export function useSelectionState(device: string, support: SelectionSupport, pau
         if ('error' in value) {
           if (value.error === 'unsupported_addin') {
             unsupported.current = device
-            setResult({ device, legacy: true })
+            setResult({ device, revision, legacy: true })
             return
           }
           throw new Error(value.error)
         }
-        setResult({ device, value })
+        setResult({ device, revision, value })
         delay = 2000
       } catch {
         if (run.signal.aborted) return
-        setResult({ device })
+        setResult({ device, revision })
         delay = Math.min(delay * 2, 30000)
       }
       timer = setTimeout(poll, delay)
@@ -51,6 +51,6 @@ export function useSelectionState(device: string, support: SelectionSupport, pau
     timer = setTimeout(poll, 0)
     document.addEventListener('visibilitychange', changed)
     return () => { stop(); document.removeEventListener('visibilitychange', changed) }
-  }, [device, paused, support])
-  return !paused && support === 'ready' && result?.device === device ? result : undefined
+  }, [device, paused, support, revision])
+  return !paused && support === 'ready' && result?.device === device && result.revision === revision ? result : undefined
 }

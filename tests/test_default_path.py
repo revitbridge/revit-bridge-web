@@ -5,7 +5,7 @@ forms add one planner tool and new card directions, so v3 has its own
 request records at both output limits. These scripted conversations do not
 ask a question; their SSE streams must still match the original records.
 
-Regenerate the workflow delta records after an intentional prompt or tool change:
+Regenerate the current catalogue delta records after an intentional tool change:
     REGEN_DEFAULT_PATH_GOLDEN=1 uv run pytest tests/test_default_path.py
 """
 from __future__ import annotations
@@ -208,17 +208,20 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "trial_fixes_4096"
+VIEW_PACKS = {"set_view_detail_level", "set_view_display_style"}
+PLAN_4096 = "view_packs_4096"
 
 
 def current_section() -> str:
-    return f"trial_fixes_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"view_packs_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
     records = json.loads(GOLDEN.read_text(encoding="utf-8"))
     section = section or current_section()
-    if section.startswith("trial_fixes_"):
+    if section.startswith("view_packs_"):
+        base = recorded(name, section.replace("view_packs_", "trial_fixes_"))
+    elif section.startswith("trial_fixes_"):
         base = recorded(name, section.replace("trial_fixes_", "workflows_"))
     elif section.startswith("workflows_"):
         base = recorded(name, section.replace("workflows_", "selection_capture_"))
@@ -262,7 +265,7 @@ def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env
     added = {"clear_selection", "connect_pipes", "create_duct", "create_pipe", "create_pipes_by_points",
              "link_cad", "link_revit_model", "list_mep_types", "load_family", "place_family_instance",
              "select_by_filter", "select_elements", "select_in_box", "set_section_box", "set_view_orientation",
-             "zoom_to_elements"}
+             "zoom_to_elements"} | VIEW_PACKS
     list_tools = ToolStore.list_tools
     monkeypatch.setattr(ToolStore, "list_tools", lambda store: [p for p in list_tools(store) if p.name not in added])
     new_functions = {"ask_selection", "open_view", "capture_view_image", "use_workflow"}
@@ -299,6 +302,9 @@ def test_historical_catalogue_still_produces_the_recorded_bytes(name, limit, env
 @pytest.mark.parametrize("limit", [4096, 16384])
 @pytest.mark.parametrize("name", list(SCENARIOS))
 def test_workflow_bytes(name, limit, env, revit, recorder, monkeypatch):
+    from revit_bridge.capabilities import ToolStore
+    list_tools = ToolStore.list_tools
+    monkeypatch.setattr(ToolStore, "list_tools", lambda store: [p for p in list_tools(store) if p.name not in VIEW_PACKS])
     monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
     requests, streams = run_scenario(name, env, revit, recorder)
     assert_catalogue_streams(name, streams)
@@ -309,6 +315,18 @@ def test_workflow_bytes(name, limit, env, revit, recorder, monkeypatch):
     current_description = "The host immediately observes their normal selection in Revit."
     assert hashes([r.replace(current_description, prior_description) for r in requests]) == prior["requests"]
     assert all(len(actual[k]) == len(prior[k]) for k in actual)
+    assert actual == recorded(name, f"trial_fixes_{limit}")
+
+
+@pytest.mark.parametrize("limit", [4096, 16384])
+@pytest.mark.parametrize("name", list(SCENARIOS))
+def test_view_pack_catalogue_bytes(name, limit, env, revit, recorder, monkeypatch):
+    monkeypatch.setattr(llm_module, "DEFAULT_MAX_TOKENS", limit)
+    requests, streams = run_scenario(name, env, revit, recorder)
+    assert_catalogue_streams(name, streams)
+    actual = {"requests": hashes(requests), "streams": hashes(streams)}
+    prior = recorded(name, f"trial_fixes_{limit}")
+    assert all(len(values) == len(prior[kind]) for kind, values in actual.items())
     if REGENERATE:
         data = json.loads(GOLDEN.read_text(encoding="utf-8"))
         data.setdefault(current_section(), {})[name] = {

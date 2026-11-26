@@ -427,6 +427,7 @@ class ReconcileRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     spec: dict
+    selection_reference: selection.SelectionState | None = Field(default=None, description="Observed selection identity on this chat card")
     confirmed_by: str = "designer"
     session_id: str | None = Field(default=None, max_length=64, description=SESSION_ID_DOC)
 
@@ -1161,7 +1162,7 @@ async def reconcile_spec(req: ReconcileRequest):
 
 
 @router.post("/spec/confirm", dependencies=[Depends(bridge_write_rate_limit)],
-             responses=responses(403, 422, 429, 503, 504))
+             responses=responses(403, 409, 422, 429, 503, 504))
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
     Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -
@@ -1170,7 +1171,8 @@ async def confirm_spec(req: ConfirmRequest):
     spec that binds picks has them read again from the open model first (``recheck_picks``):
     one gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
-    needs no Revit here. The token belongs to the browser session and never enters the model
+    needs no Revit here unless it uses a selection reference. The host checks its document and stamp
+    before issuing a token and returns 409 selection_changed if they differ. The token belongs to the browser session and never enters the model
     context."""
     if req.confirmed_by.strip().casefold() == "designer:auto-run":
         raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
@@ -1191,6 +1193,17 @@ async def issue_spec(req, store):
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in changed])
     refuse_unknown_mentions(spec, pack, req.session_id)
     session = picks_session(req.session_id)
+    guard = session.card_selection if session and selection.uses_current_selection(spec, pack) else None
+    if req.selection_reference and (not guard or not req.selection_reference.matches(guard[1])):
+        raise ApiError(409, "selection_changed")
+    if guard:
+        scope, reference = guard
+        if scope != current_scope():
+            raise ApiError(409, "selection_changed")
+        owner = device_selection()
+        latest = await owner.verify(await get_revit_client(), reference)
+        if session.card_selection is not guard or not owner.designer(latest):
+            raise ApiError(409, "selection_changed")
     plan = session.plan if session else None
     proposal = plan.proposed if plan else None
     given = spec.model_dump(mode="json")

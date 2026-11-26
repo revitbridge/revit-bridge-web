@@ -5,7 +5,7 @@
    line by line. Folded into api/bridge.ts with the device helpers. */
 
 import type {
-  ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport, TaskSpec,
+  ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, SelectionState, RevalidateReport, TaskSpec,
 } from '../../types/api'
 import { del, get, post } from '../shared/http'
 import type { FlowApi } from './flow'
@@ -25,8 +25,9 @@ export const taskApi = {
     post<ReconcileResult>(`${B}/spec/reconcile`, { spec, snapshot: snapshot ?? null, ...session(sessionId) }),
 
   /* The designer confirmed the card: a one-time token bound to exactly this spec. */
-  confirm: (spec: TaskSpec, confirmedBy = 'designer', sessionId?: string | null) =>
-    post<ConfirmResponse>(`${B}/spec/confirm`, { spec, confirmed_by: confirmedBy, ...session(sessionId) }),
+  confirm: (spec: TaskSpec, confirmedBy = 'designer', sessionId?: string | null, selection?: SelectionState) =>
+    post<ConfirmResponse>(`${B}/spec/confirm`, { spec, confirmed_by: confirmedBy, ...session(sessionId),
+      ...(selection ? { selection_reference: { document_id: selection.document_id, stamp: selection.stamp, count: selection.count } } : {}) }),
 
   /* Confirmed execution: values as they are in the spec (the projection hash must match). */
   runTool: (name: string, params: Record<string, unknown>, token: string) =>
@@ -44,6 +45,6 @@ export type TaskApi = typeof taskApi
 export const flowApi: FlowApi = {
   clearCaptures: id => del(`/api/chat/${enc(id)}/captures`),
   reconcile: (spec, sessionId) => taskApi.reconcile(spec, undefined, sessionId),
-  confirm: (spec, sessionId) => taskApi.confirm(spec, 'designer', sessionId),
+  confirm: (spec, sessionId, selection) => taskApi.confirm(spec, 'designer', sessionId, selection),
   runTool: (name, params, token) => taskApi.runTool(name, params, token),
 }

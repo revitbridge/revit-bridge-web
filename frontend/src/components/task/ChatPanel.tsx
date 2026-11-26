@@ -36,14 +36,14 @@ interface Props {
   onDestination?: (destination: 'authoring' | 'remote_mcp', request: string) => void
   onDismiss?: (index: number) => void
   renderCards?: (message: number) => ReactNode
-  onSubmitForm?: (text: string, answers: DesignerAnswers, selection?: SelectionState) => void
+  onSubmitForm?: (text: string, answers: DesignerAnswers) => void
   highlight?: number
   title: string
   transcript: Transcript
   questionMessage?: number
   questions?: Question[]
   onSend?: (text: string, mentions: Mention[], selection?: SelectionState) => void   // absent: a read-only mirror (the no-bridge side)
-  onAnswer?: (question: Question, option: { label: string; value: unknown }, selection?: SelectionState) => void
+  onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
   onReset?: () => void
   disabled?: boolean
   placeholder?: string
@@ -57,6 +57,12 @@ function ToolQuestion({ form, choose }: { form: MissingTool; choose: (action: ke
   return <fieldset className="inline-form"><legend>{form.question}</legend>
     {(['authoring', 'remote_mcp', 'dismiss'] as const).map(key => <button key={key} type="button"
       onClick={() => choose(key)}>{form.choices[key]}</button>)}</fieldset>
+}
+
+function omissionReason(reason: string) {
+  if (reason === 'disabled') return uiText("unavailable for selection")
+  if (reason === 'not_found') return uiText("no longer in the model")
+  return uiText("could not be verified ({0})", reason)
 }
 
 function SentMentions({ mentions }: { mentions: SentMention[] }) {
@@ -81,7 +87,8 @@ export default function ChatPanel({ title, transcript, questionMessage, question
   const device = useSessionStore(s => s.deviceId)
   const asking = transcript.messages.findLast(m => m.form?.selection && !m.answered)?.form
   const [finishedWatch, setFinishedWatch] = useState<string>()
-  const reading = useSelectionState(device, support, !onSend || !!disabled || transcript.streaming || (!!asking && finishedWatch !== asking.ask_id))
+  const reading = useSelectionState(device, support,
+    !onSend || !!disabled || transcript.streaming || (!!asking && finishedWatch !== asking.ask_id), transcript.selectionRevision)
   const selected = reading?.value
   const [removed, setRemoved] = useState('')
   const identity = JSON.stringify([device, selected?.document_id, selected?.stamp])
@@ -151,7 +158,9 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                 if (action !== 'dismiss') onDestination?.(action, m.missingTool!.request)
                 onDismiss?.(i)
               }} />}
-              {m.currentSelection && <span className="chat-mention">{uiText('Current selection')} · {m.currentSelection}</span>}
+              {m.currentSelection !== undefined && <span className="chat-mention">{uiText('Current selection')} · {m.currentSelection}</span>}
+              {Object.entries(m.selectionOmissions ?? {}).map(([reason, count]) =>
+                <p key={reason} role="status">{uiText("{0} selected elements left out: {1}", count, omissionReason(reason))}</p>)}
               {m.imageNotice && <p role="status">{m.imageNotice === 'vision_unavailable'
                 ? uiText("Image input is disabled for this planner. Your text was sent.")
                 : uiText('Capture context is disabled')}</p>}
@@ -171,7 +180,7 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                         {q.options.length > 0
                           ? <div className="option-row">
                               {q.options.map((o, i) => (
-                                <button key={i} className="option-button" disabled={disabled} onClick={() => { onAnswer(q, o, current); setRemoved('') }} title={o.source ? uiText("from {0}", o.source) : undefined}>
+                                <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? uiText("from {0}", o.source) : undefined}>
                                   {o.label}
                                 </button>
                               ))}
@@ -183,10 +192,10 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                 </div>
               )}
               {m.form?.selection ? (!m.answered && <SelectionWatch key={m.form.ask_id} sessionId={transcript.sessionId}
-                askId={m.form.ask_id} question={m.form.selection} onFinish={() => setFinishedWatch(m.form!.ask_id)} disabled={disabled} legacy={support === 'legacy'}
+                askId={m.form.ask_id} question={m.form.selection} onStart={() => setFinishedWatch(undefined)} onFinish={() => setFinishedWatch(m.form!.ask_id)} disabled={disabled} legacy={support === 'legacy'}
                 onPick={items => onSelectionAnswer?.(m.form!.ask_id, items)} />)
                 : m.form && onSubmitForm && <QuestionForm key={m.form.ask_id} form={m.form} answered={m.answered}
-                  disabled={disabled} onAnswer={(text, answers) => { onSubmitForm(text, answers, current); setRemoved('') }} />}
+                  disabled={disabled} onAnswer={onSubmitForm} />}
             </div>
           </Fragment>
         ))}

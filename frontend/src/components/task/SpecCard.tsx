@@ -75,6 +75,7 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
   const openQuestions = reconcile?.questions.length ?? 0
   const ready = reconcile?.ready === true
   const selection = proposal.assistantSelection
+  const reference = proposal.selectionReference
 
   return (
     <section ref={card} className="card section spec-card" data-ready={ready} data-active-card={!archived}>
@@ -148,6 +149,10 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
           {confirmErrors.map((e, i) => <li key={i}>{uiText("Confirm refused: ")}<code>{e.code}</code>{e.param ? <>{uiText(" on ")}<code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
+      {reference && <p role="status">{uiText("Current selection: {0} elements", reference.count)}
+        {' ('}{Object.entries(reference.categories).map(([category, n]) => `${category} × ${n}`).join(', ')}
+        {reference.categories_partial && uiText("… partial category counts")}{')'}
+      </p>}
       {selection && <p role="status">
         {uiText("Selection was set by the assistant: ")}
         {selection.count === null ? uiText("count unknown") : uiText("{0} element{1}", selection.count, selection.count === 1 ? '' : 's')}
@@ -157,6 +162,8 @@ export default function SpecCard({ proposal, canConfirm, confirming, confirmErro
       </p>}
       {proposal.runReason && <p role="status">{uiText("Manual confirmation: ") + (
         ({ excluded_tool: uiText("tool requires a separate confirmation"),
+           selection_changed: uiText("the Revit selection changed"),
+           selection_unavailable: uiText("the Revit selection could not be verified"),
            previous_failure: uiText("a previous step failed"),
            workflow_changed: uiText("the workflow was revised"),
            step_limit: uiText("step limit reached"),

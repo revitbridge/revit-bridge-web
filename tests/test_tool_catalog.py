@@ -1,9 +1,13 @@
 import pytest
+from tests.conftest import builtin_pack_names
 from tests.fake_revit import FakeRevit
 
 
 def test_offline_catalog_keeps_metadata_and_validator_contract(client):
     tools = client.get("/api/v1/bridge/tools").json()
+    builtins = {tool["name"] for tool in tools if tool["builtin"]}
+    assert builtins == builtin_pack_names()
+    assert {"set_view_detail_level", "set_view_display_style"} <= builtins
     wall = next(tool for tool in tools if tool["name"] == "create_wall")
     detail = client.get("/api/v1/bridge/tools/create_wall").json()
     assert wall["display_name"] == detail["display_name"]

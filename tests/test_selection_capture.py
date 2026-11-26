@@ -3,6 +3,7 @@ import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -29,6 +30,16 @@ WATCH = f"{B}/watch-selection"
 WATCH_ARGS = {"session_id": "tab", "watch_id": "watch", "mode": "single", "timeout_s": 4}
 STATE = "get_selection_state_in_revit"
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCowAAAAASUVORK5CYII="
+
+
+@pytest.mark.parametrize("document", ["README.md", "CHANGELOG.md"])
+def test_public_capture_and_selection_contract(client, document):
+    schemas = client.app.openapi()["components"]["schemas"]
+    assert "capture" not in schemas["ChatRequest"]["properties"] and "CaptureAttachment" not in schemas
+    guide = " ".join(Path(document).read_text(encoding="utf-8").casefold().split())
+    for term in ("chatrequest.capture", "captureattachment", "two images per planner round", "full tool route",
+                 "analyst", "remote mcp", "stdio mcp", "user tools", "workbench"):
+        assert term in guide
 
 
 def native(fake, commands):

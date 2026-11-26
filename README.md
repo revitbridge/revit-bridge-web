@@ -48,18 +48,28 @@ The target pack must accept the binding's source and scalar type. A missing resu
 The composer shows how many elements are selected in Revit. While the page is
 visible and connected, it reads the count every two seconds. Sending a message
 verifies the selection against the current document and gives the planner its
-count, categories and element references. Click the × beside **Current selection**
-to leave it out. A selection made by an assistant tool requires a designer change
-before the host treats it as a new selection.
+verified IDs up to a combined limit of 20 with your `@` picks. Above that limit,
+the planner receives a reference with the count, category counts, document and
+selection stamp. A card targeting that selection displays the counts. The host
+checks the stamp and document again before confirmation or automatic execution.
+Automatic selections support automatic execution only for the message that carried
+them. Click the × beside **Current selection** to leave it out of that message.
+
+The host tracks selection changes made by its built-in chat tools. Selections
+made through remote MCP, stdio MCP, user tools or the workbench appear to the
+host just like selections made by the designer.
 
 When the planner asks you to select elements, the page starts observing and asks
-Revit to bring its window forward. Select normally or cancel in the chat. The
+Revit to bring its window forward. Select normally or cancel in the chat.
+Use **Watch again** on the question after a cancellation, timeout or document change. The
 verified elements answer that question. Older add-ins offer **Take current selection**.
 
 Click a captured view to enlarge it. Press Escape, click outside the image or use
 the upper-right close button to return to the conversation. A vision-enabled
-planner receives the two most recent session captures on subsequent turns. Each
-image is limited to 1 MiB. Older captures contribute a line with the view name
+planner receives up to two images per planner round, each limited to 1 MiB.
+Captures are session context. The former `ChatRequest.capture` field and
+`CaptureAttachment` type were removed. While a capture is visible to the planner,
+the session uses the full tool route and skips the analyst step. Older captures contribute a line with the view name
 and dimensions. **Hide from model** excludes that capture. The caption explains
 whether it is in use, hidden, older, or disabled by the planner or deployment.
 The host keeps two images and up to 32 capture records per session in memory.

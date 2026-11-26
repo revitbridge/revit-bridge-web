@@ -98,7 +98,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. ask_selection starts a selection watch in the active page. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. capture_context reports per-image visibility; image_notice explains disabled image input. missing_tool offers local navigation choices. A new planner stage can propose the next step in the same stream.",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. A card targeting a large current selection includes selection_reference with its count, categories, stamp and document_id. The mentions event reports omitted automatic picks by reason in current_selection.omitted. ask_selection starts a selection watch in the active page. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. capture_context reports per-image visibility; image_notice explains disabled image input. missing_tool offers local navigation choices. A new planner stage can propose the next step in the same stream.",
             "content": {
               "text/event-stream": {}
             }
@@ -2827,7 +2827,7 @@
           "bridge"
         ],
         "summary": "Confirm Spec",
-        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here. The token belongs to the browser session and never enters the model\ncontext.",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here unless it uses a selection reference. The host checks its document and stamp\nbefore issuing a token and returns 409 selection_changed if they differ. The token belongs to the browser session and never enters the model\ncontext.",
         "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
         "requestBody": {
           "content": {
@@ -2850,6 +2850,16 @@
           },
           "403": {
             "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4765,7 +4775,7 @@
                 "type": "null"
               }
             ],
-            "description": "Observed selection to verify and include on send"
+            "description": "Selection observed with a designer-typed bridge message. The host verifies IDs or attaches a stamped reference above the combined 20-pick limit."
           },
           "selection_answer": {
             "anyOf": [
@@ -4971,6 +4981,17 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Spec"
+          },
+          "selection_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Observed selection identity on this chat card"
           },
           "confirmed_by": {
             "type": "string",
