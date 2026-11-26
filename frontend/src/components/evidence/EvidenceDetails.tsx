@@ -1,5 +1,6 @@
 /* One ledger record, every field; the Validate button re-runs its assertion. */
 
+import { uiText } from '../../utils/strings'
 import type { EvidenceRecord } from '../../types/api'
 import type { Revalidation } from './evidenceFlow'
 import { fieldsOf, showField } from './fields'
@@ -28,14 +29,14 @@ export default function EvidenceDetails({ record, revalidation, onValidate }: Pr
       </dl>
       <div className="flex gap-2 items-center flex-wrap" style={{ marginTop: 10 }}>
         <button className="btn-secondary" onClick={() => onValidate(record.id)} disabled={revalidation?.status === 'running'}
-          title={canValidate ? 'Re-run the recorded assertion against the model now' : 'Only run_tool executions with a validator can be re-checked'}>
-          {revalidation?.status === 'running' ? 'Validating...' : 'Validate'}
+          title={canValidate ? uiText("Re-run the recorded assertion against the model now") : uiText("Only run_tool executions with a validator can be re-checked")}>
+          {revalidation?.status === 'running' ? uiText("Validating...") : uiText("Validate")}
         </button>
-        {!canValidate && <span className="muted small-mono">no validator on this record: the server will say so</span>}
+        {!canValidate && <span className="muted small-mono">{uiText("no validator on this record: the server will say so")}</span>}
       </div>
       {revalidation?.status === 'done' && (
         <div className={`execution-banner ${revalidation.report.passed ? 'ok' : 'validation-failed'}`} style={{ marginTop: 8 }}>
-          {revalidation.report.passed ? 'Still holds' : 'No longer holds'}: {revalidation.report.validator} on {revalidation.report.tool}
+          {revalidation.report.passed ? uiText("Still holds") : uiText("No longer holds")}: {revalidation.report.validator} {uiText("on")} {revalidation.report.tool}
           <ul className="validation-checks">
             {revalidation.report.checks.map((c, i) => (
               <li key={i} className={c.passed === false ? 'check-failed' : 'check-passed'}>
@@ -46,7 +47,7 @@ export default function EvidenceDetails({ record, revalidation, onValidate }: Pr
         </div>
       )}
       {revalidation?.status === 'failed' && (
-        <p className="spec-conflict">Cannot validate: <code>{revalidation.error}</code> {revalidation.message}</p>
+        <p className="spec-conflict">{uiText("Cannot validate:")} <code>{revalidation.error}</code> {revalidation.message}</p>
       )}
     </div>
   )

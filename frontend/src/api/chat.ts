@@ -122,13 +122,22 @@ export function parseSseFrame(frame: string): HostEvent | null {
       && (category === undefined || typeof category === 'string'))
       return { type: 'ask_selection', ask_id: parsed.ask_id, selection: { prompt, mode, category } }
   }
+  if (event === 'missing_tool' && isRecord(parsed) && typeof parsed.request === 'string' && typeof parsed.question === 'string'
+    && isRecord(parsed.choices)) {
+    const { authoring, remote_mcp, dismiss } = parsed.choices
+    if (typeof authoring === 'string' && typeof remote_mcp === 'string' && typeof dismiss === 'string')
+      return { type: 'missing_tool', request: parsed.request, question: parsed.question, choices: { authoring, remote_mcp, dismiss } }
+  }
   if (event === 'view_image' && isRecord(parsed)) {
     const { capture_id, width, height, view_name, png_base64 } = parsed
     if (typeof capture_id === 'string' && typeof view_name === 'string' && typeof png_base64 === 'string'
       && png_base64.length <= 1398104 && typeof width === 'number' && width > 0 && width <= 1600
       && typeof height === 'number' && height > 0)
-      return { type: 'view_image', capture_id, width, height, view_name, png_base64 }
+      return { type: 'view_image', ...(typeof parsed.context_reason === 'string' ? {context_reason: parsed.context_reason} : {}), capture_id, width, height, view_name, png_base64 }
   }
+  if (event === 'capture_context' && isRecord(parsed) && isRecord(parsed.states))
+    return { type: 'capture_context', states: Object.fromEntries(Object.entries(parsed.states).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string')) }
   if (event === 'image_notice' && isRecord(parsed) && typeof parsed.reason === 'string')
     return { type: 'image_notice', reason: parsed.reason }
   if (event === 'questions') {
@@ -176,6 +185,8 @@ function mentionsEvent(parsed: unknown): HostEvent | null {
     resolved: list('resolved') as unknown as MentionReport['resolved'],
     not_found: problems('not_found'), invalid: problems('invalid'), unresolved: problems('unresolved'),
   }
+  if (isRecord(parsed.current_selection) && typeof parsed.current_selection.document_id === 'string' && count(parsed.current_selection.count) !== null)
+    event.current_selection = { document_id: parsed.current_selection.document_id, count: Number(parsed.current_selection.count) }
   if (Array.isArray(parsed.warnings)) event.warnings = parsed.warnings.filter((w): w is string => typeof w === 'string')
   return event
 }
@@ -218,7 +229,8 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   if (request.mentions?.length) body.mentions = request.mentions
   if (request.answers) body.answers = request.answers
   if (request.selection_answer) body.selection_answer = request.selection_answer
-  if (request.capture) body.capture = request.capture
+  if (request.hidden_captures !== undefined) body.hidden_captures = request.hidden_captures
+  if (request.current_selection) body.current_selection = request.current_selection
   if (request.mode !== undefined) body.mode = request.mode
   if (request.run !== undefined) body.run = request.run
   const resp = await apiStream('/api/chat', body, { ...llmHeaders(), ...(request.run === 'auto' ? adminHeaders() : {}) }, signal)

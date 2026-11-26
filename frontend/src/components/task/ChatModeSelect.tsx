@@ -2,6 +2,7 @@
    browser pick (features.chatModes), Auto naming what it runs here. Nothing is drawn with fewer
    than two modes to pick. */
 
+import { uiText } from '../../utils/strings'
 import type { ChatMode, RuntimeFeatures } from '../../config'
 import { isChatMode, modeLabel, pickableModes } from './chatMode'
 
@@ -17,8 +18,8 @@ export default function ChatModeSelect({ features, mode, onChange, disabled }: P
   if (modes.length === 0) return null
   const value = modes.includes(mode) ? mode : 'auto'
   return (
-    <label className="chat-mode" title="How the chat runs your requests: one model, or roles with their own models">
-      <span className="chat-mode-label">Mode</span>
+    <label className="chat-mode" title={uiText("How the chat runs your requests: one model, or roles with their own models")}>
+      <span className="chat-mode-label">{uiText("Mode")}</span>
       <select className="chat-mode-select" value={value} disabled={disabled}
         onChange={e => { if (isChatMode(e.target.value)) onChange(e.target.value) }}>
         {modes.map(m => <option key={m} value={m}>{modeLabel(m, features.chatModeDefault)}</option>)}

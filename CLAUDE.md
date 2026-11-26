@@ -195,14 +195,22 @@ share pending confirmation files, so the web gate in that configuration uses
 0.11.0's `revit_bridge.mcp_app._DeviceGate` as well. Check the cross-entry-point
 single-use test in `tests/test_remote_mcp.py` when updating the wheel.
 
-Selection watches call `RevitQueryExecutor.watch_selection` only from the browser's
-dedicated bridge endpoint. A planner's `ask_selection` waits for a designer click.
-Native view function descriptors come from `list_host_functions()`. Captures have a
-dedicated image SSE event and a session/device signature. Only an explicit signed
-attachment on a designer message can supply pixels to a vision-enabled planner.
-The `selection_capture_4096` and `selection_capture_16384` golden sections record
-changed hashes relative to the tool-authoring records. The historical catalogue
-replay continues to check those original records.
+Passive selection polling uses only `get_selection_state_in_revit`. A planner's
+`ask_selection` starts the watch in the visible page. Validate the device,
+document, selection stamp and assistant-write provenance before recording picks.
+The watch and cancel endpoints continue to accept the earlier requests.
+
+Capture bytes live in the session's bounded in-memory capture store. The
+`view_image` event carries them to the page. Planner-only context frames are
+anchored after existing messages. Never put image data into session history,
+provider state, the ledger, usage or logs. The `capture_context` event describes
+delivery. The `missing_tool` event contains navigation choices and the original
+designer brief. A click opens the destination locally.
+
+Historical selection and workflow goldens retain their original bytes. The
+`trial_fixes_4096` and `trial_fixes_16384` request deltas cover the updated
+`ask_selection` tool description. The single-step and multi-step SSE goldens
+still apply.
 
 `backend/api/workflows.py` exposes the package workflow store. `backend/workflow_run.py`
 binds a designer invocation to a plan and resolves its cards. The `workflows_4096` and

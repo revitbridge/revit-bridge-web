@@ -99,7 +99,7 @@ describe('SpecCard', () => {
     expect(html).toMatch(/<button class="btn-primary">确认并执行<\/button>/)
     expect(html).toContain('data-ready="true"')
     vi.stubGlobal('navigator', { languages: ['en-US'] })
-    expect(render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null }), true)).toContain('Confirm and run · 确认并执行')
+    expect(render(proposalFrom({ type: 'spec', spec, card: 'c', errors: [], reconcile: null }), true)).toContain('Confirm and run')
   })
 
   it('a spec that is not a saved tool says it is not offered here and shows no code', () => {

@@ -1,6 +1,7 @@
 /* Skills: Markdown protocols for writing Revit code. They are guidance for the coding
    frameworks; the chat's model here writes no code and its prompt has no skills. */
 
+import { uiText } from '../../utils/strings'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { skillsApi } from '../../api/skills'
 import { getConfig } from '../../config'
@@ -25,7 +26,7 @@ export default function SkillsView() {
   const refresh = useCallback(async () => {
     setLoading(true)
     try { setSkills(await skillsApi.list()); setNotice('') }
-    catch (e: unknown) { setNotice(`Cannot list skills: ${getErrorMessage(e)}`) }
+    catch (e: unknown) { setNotice(uiText("Cannot list skills: {0}", getErrorMessage(e))) }
     finally { setLoading(false) }
   }, [])
 
@@ -66,16 +67,15 @@ export default function SkillsView() {
   return (
     <div className="space-y-4">
       <p className="section-copy small">
-        {builtin} built-in · {custom} custom · {active} enabled. Skills are guidance for writing code; they are not part of the chat's prompt.
-        {!local && admin && !adminToken && ' Enter the admin password in Settings to add or change skills.'}
+        {builtin} {uiText("built-in ·")} {custom} {uiText("custom ·")} {active} {uiText("enabled. Skills are guidance for writing code; they are not part of the chat's prompt.")}{!local && admin && !adminToken && ' Enter the admin password in Settings to add or change skills.'}
         {!local && !admin && ' This host has no admin password configured; skills are read-only here.'}
       </p>
 
       {canEdit && (
         <div className="flex gap-2 flex-wrap">
-          <button className="btn-primary" onClick={() => setShowAdd(true)}>+ Add skill</button>
-          <button className="btn-secondary" onClick={() => setShowImport(true)}>Import from GitHub</button>
-          <button className="btn-secondary" onClick={() => fileRef.current?.click()}>Upload .md</button>
+          <button className="btn-primary" onClick={() => setShowAdd(true)}>{uiText("+ Add skill")}</button>
+          <button className="btn-secondary" onClick={() => setShowImport(true)}>{uiText("Import from GitHub")}</button>
+          <button className="btn-secondary" onClick={() => fileRef.current?.click()}>{uiText("Upload .md")}</button>
           <input ref={fileRef} type="file" accept=".md" style={{ display: 'none' }} onChange={upload} />
         </div>
       )}
@@ -83,15 +83,11 @@ export default function SkillsView() {
       {notice && <p className="tool-warning-status">{notice}</p>}
 
       {loading ? (
-        <p className="section-copy small">Loading...</p>
+        <p className="section-copy small">{uiText("Loading...")}</p>
       ) : skills.length === 0 ? (
         <div className="empty-state">
-          <h3 className="heading-display" style={{ fontSize: 15 }}>No skills yet</h3>
-          <p className="section-copy">
-            The package's own skills are listed unless <code>SKILLS_DIR</code> points at a directory without any;
-            unset it to get them back, or add company standards and personal preferences here. They shape how the
-            model asks and answers.
-          </p>
+          <h3 className="heading-display" style={{ fontSize: 15 }}>{uiText("No skills yet")}</h3>
+          <p className="section-copy">{uiText("The package's own skills are listed unless")} <code>SKILLS_DIR</code> {uiText("points at a directory without any; unset it to get them back, or add company standards and personal preferences here. They shape how the model asks and answers.")}</p>
         </div>
       ) : (
         <div className="card-grid">
@@ -100,9 +96,9 @@ export default function SkillsView() {
               try { setView(await skillsApi.get(s.id)) } catch (e: unknown) { setNotice(getErrorMessage(e)) }
             }}>
               {s.readonly
-                ? <span className="skill-badge">BUILT-IN</span>
+                ? <span className="skill-badge">{uiText("BUILT-IN")}</span>
                 : canEdit && (
-                  <button className={`toggle${s.enabled ? ' on' : ''}`} aria-label="Enable or disable"
+                  <button className={`toggle${s.enabled ? ' on' : ''}`} aria-label={uiText("Enable or disable")}
                     onClick={e => { e.stopPropagation(); guard(() => skillsApi.toggle(s.id, !s.enabled)) }}>
                     <span />
                   </button>
@@ -113,7 +109,7 @@ export default function SkillsView() {
                 <span className={`pill ${s.source}`}>{s.source}</span>
                 {s.layer && <span className="pill">{s.layer}</span>}
                 {s.version && s.version !== '-' && <span>v{s.version}</span>}
-                {s.author && <span>by {s.author}</span>}
+                {s.author && <span>{uiText("by")} {s.author}</span>}
               </div>
             </div>
           ))}
@@ -130,10 +126,10 @@ export default function SkillsView() {
             <div className="flex gap-2">
               {!view.readonly && canEdit && (
                 <button className="btn-ghost danger" onClick={() => {
-                  if (window.confirm(`Delete skill '${view.name}'?`)) guard(() => skillsApi.remove(view.id)).then(() => setView(null))
-                }}>Delete</button>
+                  if (window.confirm(uiText("Delete skill '{0}'?", view.name))) guard(() => skillsApi.remove(view.id)).then(() => setView(null))
+                }}>{uiText("Delete")}</button>
               )}
-              <button className="btn-ghost" onClick={() => setView(null)}>Close</button>
+              <button className="btn-ghost" onClick={() => setView(null)}>{uiText("Close")}</button>
             </div>
           </div>
           {view.description && <p className="section-copy">{view.description}</p>}
@@ -178,18 +174,18 @@ function AddSkillModal({ onClose, onSaved }: { onClose: () => void; onSaved: () 
 
   return (
     <Modal onClose={onClose} width={680}>
-      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 16 }}>New skill</h3>
+      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 16 }}>{uiText("New skill")}</h3>
       <div className="form-grid">
-        <label><span className="label-text">Name *</span><input className="input-field" value={name} onChange={e => setName(e.target.value)} placeholder="e.g. office-layout" /></label>
-        <label><span className="label-text">Author</span><input className="input-field" value={author} onChange={e => setAuthor(e.target.value)} /></label>
-        <label className="form-wide"><span className="label-text">Description</span><input className="input-field" value={desc} onChange={e => setDesc(e.target.value)} /></label>
-        <label className="form-wide"><span className="label-text">Content (Markdown)</span>
-          <textarea className="code-editor" value={content} onChange={e => setContent(e.target.value)} placeholder="# Rules the model must follow..." /></label>
+        <label><span className="label-text">{uiText("Name *")}</span><input className="input-field" value={name} onChange={e => setName(e.target.value)} placeholder={uiText("e.g. office-layout")} /></label>
+        <label><span className="label-text">{uiText("Author")}</span><input className="input-field" value={author} onChange={e => setAuthor(e.target.value)} /></label>
+        <label className="form-wide"><span className="label-text">{uiText("Description")}</span><input className="input-field" value={desc} onChange={e => setDesc(e.target.value)} /></label>
+        <label className="form-wide"><span className="label-text">{uiText("Content (Markdown)")}</span>
+          <textarea className="code-editor" value={content} onChange={e => setContent(e.target.value)} placeholder={uiText("# Rules the model must follow...")} /></label>
       </div>
       {error && <p className="tool-warning-status">{error}</p>}
       <div className="flex justify-end gap-2" style={{ marginTop: 12 }}>
-        <button className="btn-secondary" onClick={onClose}>Cancel</button>
-        <button className="btn-primary" onClick={save} disabled={saving || !name.trim()}>{saving ? 'Saving...' : 'Save skill'}</button>
+        <button className="btn-secondary" onClick={onClose}>{uiText("Cancel")}</button>
+        <button className="btn-primary" onClick={save} disabled={saving || !name.trim()}>{saving ? uiText("Saving...") : uiText("Save skill")}</button>
       </div>
     </Modal>
   )
@@ -211,16 +207,16 @@ function ImportSkillModal({ onClose, onDone }: { onClose: () => void; onDone: ()
 
   return (
     <Modal onClose={onClose} width={560}>
-      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 8 }}>Import from GitHub</h3>
+      <h3 className="heading-display" style={{ fontSize: 14, marginBottom: 8 }}>{uiText("Import from GitHub")}</h3>
       {!result ? (
         <>
-          <p className="section-copy small">A repository (its <code>skills/&lt;repo&gt;/SKILL.md</code> or root <code>SKILL.md</code>), a blob link or a raw link.</p>
+          <p className="section-copy small">{uiText("A repository (its")} <code>skills/&lt;repo&gt;/SKILL.md</code> {uiText("or root")} <code>SKILL.md</code>{uiText("), a blob link or a raw link.")}</p>
           <input className="input-field" value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && run()}
             placeholder="https://github.com/revitbridge/revit-bridge" style={{ margin: '12px 0' }} />
           {error && <p className="tool-warning-status">{error}</p>}
           <div className="flex justify-end gap-2">
-            <button className="btn-secondary" onClick={onClose}>Cancel</button>
-            <button className="btn-primary" onClick={run} disabled={busy || !url.trim()}>{busy ? 'Importing...' : 'Import'}</button>
+            <button className="btn-secondary" onClick={onClose}>{uiText("Cancel")}</button>
+            <button className="btn-primary" onClick={run} disabled={busy || !url.trim()}>{busy ? uiText("Importing...") : uiText("Import")}</button>
           </div>
         </>
       ) : (
@@ -229,7 +225,7 @@ function ImportSkillModal({ onClose, onDone }: { onClose: () => void; onDone: ()
             <div className="skill-name">{result.name}</div>
             <p className="skill-desc">{result.description || 'No description'}</p>
           </div>
-          <div className="flex justify-end"><button className="btn-primary" onClick={onDone}>Done</button></div>
+          <div className="flex justify-end"><button className="btn-primary" onClick={onDone}>{uiText("Done")}</button></div>
         </>
       )}
     </Modal>

@@ -5,6 +5,7 @@
    modes to pick (a cloud host for a visitor, an older host) there is no choice: nothing is sent
    and the host runs its default. */
 
+import { uiText } from '../../utils/strings'
 import { create } from 'zustand'
 import { CHAT_MODES, getConfig, type ChatMode, type ResolvedMode, type RuntimeFeatures } from '../../config'
 
@@ -54,8 +55,8 @@ export function requestMode(features: Pick<RuntimeFeatures, 'chatModes'>, picked
 
 /* An option's label; Auto names what it runs on this host. */
 export function modeLabel(mode: ChatMode, resolved: ResolvedMode | null): string {
-  if (mode === 'auto') return resolved ? `${MODE_LABELS.auto} (${MODE_LABELS[resolved]})` : MODE_LABELS.auto
-  return MODE_LABELS[mode]
+  if (mode === 'auto') return resolved ? `${uiText(MODE_LABELS.auto)} (${uiText(MODE_LABELS[resolved])})` : uiText(MODE_LABELS.auto)
+  return uiText(MODE_LABELS[mode])
 }
 
 interface ChatModeState {

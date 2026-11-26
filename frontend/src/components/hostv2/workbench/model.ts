@@ -1,3 +1,4 @@
+import { uiText } from '../../../utils/strings'
 import type { ToolDraft, ToolParamDraft, WorkbenchApi } from '../../../types/hostv2'
 import { dryRunNotSent, normalizeCode, readCheck, readDryRun, type CheckReply, type DryRunReply } from './results'
 
@@ -78,38 +79,38 @@ export type Parsed = { value: unknown } | { error: string }
 export function parseValue(type: ToolParamDraft['type'], raw: unknown): Parsed {
   if (raw === undefined) return { value: undefined }
   if (raw === null) return { value: null }
-  if (type === 'string') return typeof raw === 'string' ? { value: raw === '' ? undefined : raw } : { error: 'must be text' }
+  if (type === 'string') return typeof raw === 'string' ? { value: raw === '' ? undefined : raw } : { error: uiText("must be text") }
   if (type === 'bool') {
     if (typeof raw === 'boolean') return { value: raw }
     if (raw === 'true' || raw === 'false') return { value: raw === 'true' }
-    return raw === '' ? { value: undefined } : { error: 'must be true or false' }
+    return raw === '' ? { value: undefined } : { error: uiText("must be true or false") }
   }
   if (typeof raw === 'number') {
-    if (!Number.isFinite(raw)) return { error: 'must be a finite number' }
-    return type === 'int' && !Number.isInteger(raw) ? { error: `${raw} is not a whole number` } : { value: raw }
+    if (!Number.isFinite(raw)) return { error: uiText("must be a finite number") }
+    return type === 'int' && !Number.isInteger(raw) ? { error: uiText("{0} is not a whole number", raw) } : { value: raw }
   }
-  if (typeof raw !== 'string') return { error: `must be ${type === 'int' ? 'a whole number' : 'a number'}` }
+  if (typeof raw !== 'string') return { error: uiText("must be {0}", type === 'int' ? uiText("a whole number") : uiText("a number")) }
   const text = raw.trim()
   if (text === '') return { value: undefined }
   if (type === 'int') {
     const value = Number(text)
-    return WHOLE.test(text) && Number.isSafeInteger(value) ? { value } : { error: `"${raw}" is not a whole number` }
+    return WHOLE.test(text) && Number.isSafeInteger(value) ? { value } : { error: uiText("\"{0}\" is not a whole number", raw) }
   }
   const value = Number(text)
-  return DECIMAL.test(text) && Number.isFinite(value) ? { value } : { error: `"${raw}" is not a number` }
+  return DECIMAL.test(text) && Number.isFinite(value) ? { value } : { error: uiText("\"{0}\" is not a number", raw) }
 }
 
 export function parameterProblem(parameters: ToolParamDraft[]): string | null {
   const names = new Set<string>()
   for (const param of parameters) {
-    if (!param.name.trim()) return 'Every parameter needs a name.'
-    if (names.has(param.name)) return `Duplicate parameter: ${param.name}`
+    if (!param.name.trim()) return uiText("Every parameter needs a name.")
+    if (names.has(param.name)) return uiText("Duplicate parameter: {0}", param.name)
     names.add(param.name)
-    if ((param.source === 'family_types' || param.source === 'elements') && !param.category?.startsWith('OST_')) return `${param.name}: select a category using its OST_* name.`
+    if ((param.source === 'family_types' || param.source === 'elements') && !param.category?.startsWith('OST_')) return uiText("{0}: select a category using its OST_* name.", param.name)
     const parsed = parseValue(param.type, param.default)
-    if ('error' in parsed) return `${param.name}: the default ${parsed.error}.`
+    if ('error' in parsed) return uiText("{0}: the default {1}.", param.name, parsed.error)
     // The package refuses both (capabilities/schema.py): a default means "not required".
-    if (parsed.value !== undefined && param.required) return `${param.name}: a parameter with a default is not required.`
+    if (parsed.value !== undefined && param.required) return uiText("{0}: a parameter with a default is not required.", param.name)
   }
   return null
 }
@@ -145,9 +146,9 @@ const typedDraft = (draft: ToolDraft): ToolDraft => ({ ...clone(draft), paramete
 /* The status line of a dry run that did not succeed. An empty error (a compile failure) is not
    an empty line; a refusal before anything was sent is not a rollback to worry about. */
 export function dryRunFailure(result: DryRunReply): string {
-  if (dryRunNotSent(result)) return `Nothing was sent to Revit: ${result.error}.`
-  const reason = result.error || (result.diagnostics.length ? 'Dry run failed. See diagnostics.' : 'Dry run failed.')
-  return result.rolled_back === true ? reason : `${reason.replace(/\.?$/, '.')} Rollback is not confirmed. Check the model before continuing.`
+  if (dryRunNotSent(result)) return uiText("Nothing was sent to Revit: {0}.", result.error)
+  const reason = result.error || (result.diagnostics.length ? uiText("Dry run failed. See diagnostics.") : uiText("Dry run failed."))
+  return result.rolled_back === true ? reason : uiText("{0} Rollback is not confirmed. Check the model before continuing.", reason.replace(/\.?$/, '.'))
 }
 
 function validType(type: ToolParamDraft['type'], value: unknown): boolean {
@@ -157,16 +158,16 @@ function validType(type: ToolParamDraft['type'], value: unknown): boolean {
 }
 
 export function saveDisabledReason(state: WorkbenchState): string | null {
-  if (!state.canEdit) return state.editNote || 'This host does not let this page save tools.'
-  if (state.actions.save?.status === 'running') return 'Wait for the current save to finish before saving again.'
-  if (state.replace !== null) return `Answer whether to replace ${state.replace.name} first.`
-  if (state.builtin) return 'Built-in tools are read-only. Use Copy as mine first.'
+  if (!state.canEdit) return state.editNote || uiText("This host does not let this page save tools.")
+  if (state.actions.save?.status === 'running') return uiText("Wait for the current save to finish before saving again.")
+  if (state.replace !== null) return uiText("Answer whether to replace {0} first.", state.replace.name)
+  if (state.builtin) return uiText("Built-in tools are read-only. Use Copy as mine first.")
   const problem = parameterProblem(state.draft.parameters)
   if (problem) return problem
-  if (state.dryRunRevision !== state.revision) return 'Dry-run the current code and parameter declarations successfully before saving.'
-  if (!state.draft.name.trim()) return 'Enter a tool name before saving.'
-  if (state.actions.list?.status !== 'success') return 'Refresh the tool list before saving.'
-  if (state.tools.some(tool => tool.builtin && tool.name === state.draft.name.trim())) return 'Choose a name different from a built-in tool.'
+  if (state.dryRunRevision !== state.revision) return uiText("Dry-run the current code and parameter declarations successfully before saving.")
+  if (!state.draft.name.trim()) return uiText("Enter a tool name before saving.")
+  if (state.actions.list?.status !== 'success') return uiText("Refresh the tool list before saving.")
+  if (state.tools.some(tool => tool.builtin && tool.name === state.draft.name.trim())) return uiText("Choose a name different from a built-in tool.")
   return null
 }
 
@@ -267,27 +268,27 @@ export class WorkbenchModel {
     while (this.state.tools.some(tool => tool.name === draft.name)) draft.name = `${base}_${suffix++}`
     this.replaceDraft(draft, false)
     this.tickets.load = (this.tickets.load ?? 0) + 1
-    this.status('load', 'success', 'Copied to an editable draft. Dry-run it before saving.')
+    this.status('load', 'success', uiText("Copied to an editable draft. Dry-run it before saving."))
   }
 
   async refresh() {
-    const ticket = this.begin('list', 'Loading tools...')
+    const ticket = this.begin('list', uiText("Loading tools..."))
     try {
       const tools = await this.api.list()
-      if (this.current('list', ticket)) { this.update({ tools: clone(tools) }); this.status('list', 'success', `${tools.length} tools loaded.`) }
+      if (this.current('list', ticket)) { this.update({ tools: clone(tools) }); this.status('list', 'success', uiText("{0} tools loaded.", tools.length)) }
     } catch (error) { if (this.current('list', ticket)) this.fail('list', error) }
   }
   async open(name: string) {
     const entry = this.state.tools.find(tool => tool.name === name)
     if (!entry) { this.fail('load', 'Refresh the tool list before opening this tool.'); return }
     const version = this.draftVersion
-    const ticket = this.begin('load', `Loading ${name}...`)
+    const ticket = this.begin('load', uiText("Loading {0}...", name))
     try {
       const draft = await this.api.load(name)
       if (!this.current('load', ticket)) return
       if (version !== this.draftVersion) { this.fail('load', 'The draft changed while loading. Open the tool again when ready.'); return }
       this.replaceDraft(draft, entry.builtin)
-      this.status('load', 'success', `Opened ${name}${entry.builtin ? ' (read-only)' : ''}.`)
+      this.status('load', 'success', uiText("Opened {0}{1}.", name, entry.builtin ? uiText(" (read-only)") : ''))
       await this.loadChoices()
     } catch (error) { if (this.current('load', ticket)) this.fail('load', error) }
   }
@@ -297,7 +298,7 @@ export class WorkbenchModel {
     const problem = parameterProblem(this.state.draft.parameters)
     if (problem) { this.fail('choices', problem); return false }
     const params = typedParameters(this.state.draft.parameters)
-    const ticket = this.begin('choices', 'Loading model options...')
+    const ticket = this.begin('choices', uiText("Loading model options..."))
     const results = await Promise.all(params.filter(param => param.source !== 'designer').map(async param => {
       try { return { name: param.name, items: await this.api.choices(param), error: '' } }
       catch (error) { return { name: param.name, items: [] as Choice[], error: `${param.name}: ${errorMessage(error)}` } }
@@ -307,7 +308,7 @@ export class WorkbenchModel {
     const errors = results.map(result => result.error).filter(Boolean)
     if (errors.length) { this.fail('choices', errors.join('; ')); return false }
     this.choicesRevision = revision
-    this.status('choices', 'success', 'Model options loaded. Choose values below.')
+    this.status('choices', 'success', uiText("Model options loaded. Choose values below."))
     return true
   }
 
@@ -315,7 +316,7 @@ export class WorkbenchModel {
     const revision = this.state.revision
     const problem = parameterProblem(this.state.draft.parameters)
     if (problem) { this.fail(action, problem); return null }
-    if (!this.state.draft.code.trim()) { this.fail(action, 'Enter code first.'); return null }
+    if (!this.state.draft.code.trim()) { this.fail(action, uiText("Enter code first.")); return null }
     if (this.state.draft.parameters.some(param => param.source !== 'designer') && this.choicesRevision !== this.state.revision && !await this.loadChoices()) {
       if (revision === this.state.revision) this.fail(action, 'Load model options before continuing.')
       return null
@@ -333,13 +334,13 @@ export class WorkbenchModel {
       if ('error' in parsed) { this.fail(action, `${param.name}: ${parsed.error}.`); return null }
       const value = parsed.value
       if (empty(value)) {
-        if (param.required) { this.fail(action, `Fill a value for ${param.name}.`); return null }
+        if (param.required) { this.fail(action, uiText("Fill a value for {0}.", param.name)); return null }
         continue
       }
-      if (!validType(param.type, value)) { this.fail(action, `${param.name} must be ${param.type}.`); return null }
+      if (!validType(param.type, value)) { this.fail(action, uiText("{0} must be {1}.", param.name, param.type)); return null }
       const choices = Object.hasOwn(this.state.choices, param.name) ? this.state.choices[param.name] : []
       if (param.source !== 'designer' && !choices.some(choice => JSON.stringify(choice.value) === JSON.stringify(value))) {
-        this.fail(action, `Choose a model option for ${param.name}.`); return null
+        this.fail(action, uiText("Choose a model option for {0}.", param.name)); return null
       }
       values.push([param.name, clone(value)])
     }
@@ -348,41 +349,41 @@ export class WorkbenchModel {
 
   async check() {
     const problem = parameterProblem(this.state.draft.parameters)
-    if (problem || !this.state.draft.code.trim()) { this.fail('check', problem ?? 'Enter code first.'); return }
+    if (problem || !this.state.draft.code.trim()) { this.fail('check', problem ?? uiText("Enter code first.")); return }
     const draft = typedDraft(this.state.draft)
-    const ticket = this.begin('check', 'Checking...')
+    const ticket = this.begin('check', uiText("Checking..."))
     this.update({ check: null })
     try {
       const result = readCheck(await this.api.check(draft.code, draft.parameters))
       if (!this.current('check', ticket)) return
       this.update({ check: result })
       this.status('check', result.checked && result.compiled && !result.blocked ? 'success' : 'error',
-        result.checked && result.compiled && !result.blocked ? 'Compilation succeeded.' : result.reason || (result.blocked ? 'Code was blocked.' : result.checked ? 'Compilation failed. See diagnostics.' : 'Code was not checked.'))
+        result.checked && result.compiled && !result.blocked ? uiText("Compilation succeeded.") : result.reason || (result.blocked ? uiText("Code was blocked.") : result.checked ? uiText("Compilation failed. See diagnostics.") : uiText("Code was not checked.")))
     } catch (error) { if (this.current('check', ticket)) this.fail('check', error) }
   }
 
   async dryRun() {
     if (this.state.actions.dryRun?.status === 'running') return
-    const ticket = this.begin('dryRun', 'Preparing dry run...')
+    const ticket = this.begin('dryRun', uiText("Preparing dry run..."))
     this.update({ dryRunRevision: null, dryRun: null })
     const revision = this.state.revision
     try {
       const values = await this.valuesFor('dryRun')
       if (!values || !this.current('dryRun', ticket) || revision !== this.state.revision) return
       const draft = typedDraft(this.state.draft)
-      this.status('dryRun', 'running', 'Dry-running...')
+      this.status('dryRun', 'running', uiText("Dry-running..."))
       const result = readDryRun(await this.api.dryRun(draft.code, draft.parameters, values))
       if (!this.current('dryRun', ticket) || revision !== this.state.revision) return
       const success = result.success && result.rolled_back === true
       this.update({ dryRun: result, dryRunRevision: success ? revision : null })
-      this.status('dryRun', success ? 'success' : 'error', success ? 'Dry run succeeded. Model was not changed.' : dryRunFailure(result))
+      this.status('dryRun', success ? 'success' : 'error', success ? uiText("Dry run succeeded. Model was not changed.") : dryRunFailure(result))
     } catch (error) { if (this.current('dryRun', ticket)) this.fail('dryRun', error) }
     finally { this.settle('dryRun', ticket) }
   }
 
   async run(onRun: OnRun) {
     if (this.state.actions.run?.status === 'running') return
-    const ticket = this.begin('run', 'Preparing run...')
+    const ticket = this.begin('run', uiText("Preparing run..."))
     const revision = this.state.revision
     try {
       const values = await this.valuesFor('run')
@@ -391,7 +392,7 @@ export class WorkbenchModel {
       if (revision !== this.state.revision) { this.fail('run', 'The draft changed while the run was being prepared. Review the values and run again.'); return }
       if (!values) return
       await onRun(typedDraft(this.state.draft), values)
-      if (this.current('run', ticket)) this.status('run', 'success', 'Run requested. Confirmation and execution are handled by the host.')
+      if (this.current('run', ticket)) this.status('run', 'success', uiText("Run requested. Confirmation and execution are handled by the host."))
     } catch (error) { if (this.current('run', ticket)) this.fail('run', error) }
     finally { this.settle('run', ticket) }
   }
@@ -409,7 +410,7 @@ export class WorkbenchModel {
     draft.name = draft.name.trim()
     const version = this.draftVersion
     this.saveInFlight = true
-    const ticket = this.begin('save', `Looking for a tool named ${draft.name}...`)
+    const ticket = this.begin('save', uiText("Looking for a tool named {0}...", draft.name))
     let existing: Awaited<ReturnType<WorkbenchApi['lookup']>>
     try { existing = await this.api.lookup(draft.name) }
     catch (error) {
@@ -433,10 +434,10 @@ export class WorkbenchModel {
     if (pending.step === 'replace' && pending.dropped.length) { this.update({ replace: { ...pending, step: 'drop' } }); return }
     this.update({ replace: null })
     const reason = saveDisabledReason(this.state)
-    if (reason || pending.name !== this.state.draft.name.trim()) { this.fail('save', reason ?? 'The name changed. Save again.'); return }
+    if (reason || pending.name !== this.state.draft.name.trim()) { this.fail('save', reason ?? uiText("The name changed. Save again.")); return }
     const draft = typedDraft(this.state.draft)
     draft.name = pending.name
-    await this.write(draft, this.draftVersion, this.begin('save', `Replacing ${pending.name}...`))
+    await this.write(draft, this.draftVersion, this.begin('save', uiText("Replacing {0}...", pending.name)))
   }
   cancelReplace() {
     if (this.state.replace === null) return
@@ -448,7 +449,7 @@ export class WorkbenchModel {
     try {
       const result = await this.api.save(draft)
       await this.refresh()
-      if (this.current('save', ticket)) this.status('save', 'success', `Saved ${result.name}.${version === this.draftVersion ? '' : ' The current draft has not been saved.'}`)
+      if (this.current('save', ticket)) this.status('save', 'success', uiText("Saved {0}.{1}", result.name, version === this.draftVersion ? '' : uiText(" The current draft has not been saved.")))
     } catch (error) { if (this.current('save', ticket)) this.fail('save', error) }
     finally { this.saveInFlight = false; this.settle('save', ticket) }
   }
@@ -465,24 +466,24 @@ export class WorkbenchModel {
     if (!name || this.state.actions.remove?.status === 'running') return
     const tool = this.state.tools.find(item => item.name === name)
     if (!this.state.canEdit || !tool || tool.builtin) { this.fail('remove', 'Built-in or unknown tools cannot be deleted.'); return }
-    const ticket = this.begin('remove', `Deleting ${name}...`)
+    const ticket = this.begin('remove', uiText("Deleting {0}...", name))
     try {
       await this.api.remove(name)
       if (!this.current('remove', ticket)) return
       this.update({ deleteName: null })
-      this.status('remove', 'success', `Deleted ${name}.`)
+      this.status('remove', 'success', uiText("Deleted {0}.", name))
       await this.refresh()
     } catch (error) { if (this.current('remove', ticket)) this.fail('remove', error) }
     finally { this.settle('remove', ticket) }
   }
 
   async exportTool(name: string, download: (name: string, text: string) => void) {
-    const ticket = this.begin('export', `Exporting ${name}...`)
+    const ticket = this.begin('export', uiText("Exporting {0}...", name))
     try {
       const text = await this.api.exportYaml(name)
       if (!this.current('export', ticket)) return
       download(name, text)
-      this.status('export', 'success', `Exported ${name}.`)
+      this.status('export', 'success', uiText("Exported {0}.", name))
     } catch (error) { if (this.current('export', ticket)) this.fail('export', error) }
     finally { this.settle('export', ticket) }
   }
@@ -493,19 +494,19 @@ export class WorkbenchModel {
     if (this.state.actions.import?.status === 'running') return
     if (!this.state.canEdit) { this.fail('import', this.state.editNote || 'This host does not let this page import tools.'); return }
     this.update({ importReplace: null })
-    const ticket = this.begin('import', 'Importing tool...')
+    const ticket = this.begin('import', uiText("Importing tool..."))
     let yaml = ''
     try {
       yaml = await text
       const result = await this.api.importYaml(yaml)
       if (!this.current('import', ticket)) return
-      this.status('import', 'success', `Imported ${result.name}${result.replaced ? ' (replaced)' : ''}.`)
+      this.status('import', 'success', uiText("Imported {0}{1}.", result.name, result.replaced ? uiText(" (replaced)") : ''))
       await this.refresh()
     } catch (error) {
       if (!this.current('import', ticket)) return
       if (errorCode(error) === 'pack_exists') {
         const tool = bodyOf(error)?.tool
-        this.update({ importReplace: { name: typeof tool === 'string' ? tool : 'this tool', text: yaml } })
+        this.update({ importReplace: { name: typeof tool === 'string' ? tool : uiText("this tool"), text: yaml } })
         this.status('import', 'idle', '')
       } else this.fail('import', error)
     } finally { this.settle('import', ticket) }
@@ -514,11 +515,11 @@ export class WorkbenchModel {
     const pending = this.state.importReplace
     if (!pending || this.state.actions.import?.status === 'running') return
     this.update({ importReplace: null })
-    const ticket = this.begin('import', `Replacing ${pending.name}...`)
+    const ticket = this.begin('import', uiText("Replacing {0}...", pending.name))
     try {
       const result = await this.api.importYaml(pending.text, { overwrite: true })
       if (!this.current('import', ticket)) return
-      this.status('import', 'success', `Imported ${result.name}${result.replaced ? ' (replaced)' : ''}.`)
+      this.status('import', 'success', uiText("Imported {0}{1}.", result.name, result.replaced ? uiText(" (replaced)") : ''))
       await this.refresh()
     } catch (error) { if (this.current('import', ticket)) this.fail('import', error) }
     finally { this.settle('import', ticket) }

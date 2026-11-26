@@ -1,5 +1,6 @@
 /* The admin view: every device this host knows, not only the ones this browser paired. */
 
+import { uiText } from '../../utils/strings'
 import type { DeviceStatus } from '../../types/api'
 import { lastSeen } from './format'
 
@@ -16,20 +17,17 @@ export default function AdminDevices({ devices, error, busy, onLoad, onRevoke, n
   return (
     <section className="card section">
       <div className="panel-head">
-        <h3 className="heading-display section-title">All devices (admin)</h3>
-        <button className="btn-secondary" onClick={onLoad}>{devices ? 'Refresh' : 'Load'}</button>
+        <h3 className="heading-display section-title">{uiText("All devices (admin)")}</h3>
+        <button className="btn-secondary" onClick={onLoad}>{devices ? uiText("Refresh") : uiText("Load")}</button>
       </div>
-      <p className="section-copy small" style={{ marginTop: 0 }}>
-        Needs the admin password from the section below. Revoking here closes that add-in's connection and
-        invalidates both its token and the browser key that paired it.
-      </p>
+      <p className="section-copy small" style={{ marginTop: 0 }}>{uiText("Needs the admin password from the section below. Revoking here closes that add-in's connection and invalidates both its token and the browser key that paired it.")}</p>
       {error && <p className="tool-warning-status">{error}</p>}
-      {devices && devices.length === 0 && <p className="section-copy small">No device has been paired on this host.</p>}
+      {devices && devices.length === 0 && <p className="section-copy small">{uiText("No device has been paired on this host.")}</p>}
       {devices && devices.length > 0 && (
         <div className="table-scroll">
           <table className="evidence-table">
             <thead>
-              <tr><th>Device</th><th>Label</th><th>State</th><th>Last seen</th><th>Requests</th><th>Add-in</th><th></th></tr>
+              <tr><th>{uiText("Device")}</th><th>{uiText("Label")}</th><th>{uiText("State")}</th><th>{uiText("Last seen")}</th><th>{uiText("Requests")}</th><th>{uiText("Add-in")}</th><th></th></tr>
             </thead>
             <tbody>
               {devices.map(d => (
@@ -38,8 +36,8 @@ export default function AdminDevices({ devices, error, busy, onLoad, onRevoke, n
                   <td>{d.label || <span className="muted">-</span>}</td>
                   <td>
                     {d.revoked
-                      ? <span className="outcome failed">revoked</span>
-                      : <span className={`outcome ${d.online ? 'ok' : ''}`}>{d.online ? 'online' : 'offline'}</span>}
+                      ? <span className="outcome failed">{uiText("revoked")}</span>
+                      : <span className={`outcome ${d.online ? 'ok' : ''}`}>{d.online ? uiText("online") : uiText("offline")}</span>}
                   </td>
                   <td>{lastSeen(d.last_seen, now)}</td>
                   <td>{d.requests ?? 0}</td>

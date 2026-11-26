@@ -45,25 +45,32 @@ The target pack must accept the binding's source and scalar type. A missing resu
 
 ## Selection and view images
 
-Beside the composer, choose **Single**, **Multiple**, or **Box**, optionally enter
-a category such as `OST_Walls`, then click **Select in Revit**. Select normally in
-Revit. Single mode takes one changed element. Multiple and box modes wait for the
-selection to settle. Review the resulting element tags in the composer and click
-**Send** when ready. Cancelling or closing the page stops observation. On an older
-add-in, select the elements first and click **Take current selection**.
+The composer shows how many elements are selected in Revit. While the page is
+visible and connected, it reads the count every two seconds. Sending a message
+verifies the selection against the current document and gives the planner its
+count, categories and element references. Click the × beside **Current selection**
+to leave it out. A selection made by an assistant tool requires a designer change
+before the host treats it as a new selection.
 
-The planner can ask for a selection with a button in its reply. Clicking that
-button starts observation and submits the verified picks as the answer to that
-question. Each element retains its document identity during verification.
+When the planner asks you to select elements, the page starts observing and asks
+Revit to bring its window forward. Select normally or cancel in the chat. The
+verified elements answer that question. Older add-ins offer **Take current selection**.
 
-The tool drawer lists the native functions `open_view` and `capture_view_image`.
-Click a captured PNG to enlarge it. **Attach to model (next message)** starts off.
-Enabling it sends the image with the next designer message to the planner when
-its selected `models.yml` entry has `vision: true`. Otherwise the chat explains
-the text-only delivery. Attaching a capture skips the analyst for that message
-and gives the planner the full tool route. The page holds the PNG and its session/device signature
-in memory. The maximum is 1600 pixels wide and
-1 MiB per image. The ledger stores the image hash and dimensions.
+Click a captured view to enlarge it. Press Escape, click outside the image or use
+the upper-right close button to return to the conversation. A vision-enabled
+planner receives the two most recent session captures on subsequent turns. Each
+image is limited to 1 MiB. Older captures contribute a line with the view name
+and dimensions. **Hide from model** excludes that capture. The caption explains
+whether it is in use, hidden, older, or disabled by the planner or deployment.
+The host keeps two images and up to 32 capture records per session in memory.
+Starting a new session releases the device's previous captures. Image bytes stay
+out of history, logs, usage records and the ledger.
+
+The language switch at the upper right defaults to the browser language and
+remembers your choice. If the planner finds no suitable tool, its question offers
+to open tool authoring with your request, open **Settings → Remote MCP**, or dismiss
+the question. You can also reach Remote MCP from **Tools**. Opening either page
+does not start a model request.
 
 ## Start on your machine
 
@@ -464,6 +471,7 @@ name and key in Settings → Models while the original tab is open.
 | Variable | Default | Purpose |
 |---|---|---|
 | `DEPLOY_MODE` | `local` | `local`: this machine only. The host refuses to start when other machines could reach it (see `HOST` and `BIND_ADDRESS`) or when `ADMIN_PASSWORD` or `CORS_ORIGINS` is set, and answers only a browser on this machine talking to it directly (403 `local_mode_no_proxy`, `local_mode_host`, `local_mode_origin`; see *Start on your machine*); the relay, pairing and device routes are not there (they answer 404 `cloud_mode_only`), device headers are not read, and every admin check passes without a password. `cloud`: the relay, pairing, the device list and `ADMIN_PASSWORD`, which is then required (no start without it). `/config.json` reports it as `features.mode`. |
+| `CAPTURE_CONTEXT` | `on` | Set to `off` to disable planner capture context for this deployment. Each planner also requires `vision: true`. |
 | `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | unset | Environment settings take precedence over saved settings. Browser headers fill remaining fields. Credentials stay bound to the endpoint for which they were supplied. |
 | `REVIT_BRIDGE_WEB_HOME` | user config directory above | Dedicated directory for the host's credential store. |
 | `ALLOW_BROWSER_KEYS` | cloud `on`, local `off` | Allow guest-supplied model credentials. With `off`, sending `X-LLM-Key` to a model route returns 400. |
@@ -526,7 +534,7 @@ model (see *Models by role*); the analyst runs in mode `roles_analyst` only:
 | Role | Does | Sees | Tools |
 |---|---|---|---|
 | analyst | routes the message: `chat` (talk, answer), `query` (read the model), `tool` (use a saved tool) or `none` (no tool does it); lists the facts still needed | the message with its `@` selections, a digest of the open model (the package's `snapshot_digest`, at most 1200 characters), the tool list (a name and one line each), the open task (its route and tool and the last message you got) | none |
-| planner | reads the model, picks tools, asks and proposes the spec | the session conversation, routing, its tool results and the current message's attached image | Query route offers `query`, `get_project_snapshot`, `ask_designer`, `ask_selection`, `open_view` and `capture_view_image`. The tool route also offers `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` and `set_plan`. |
+| planner | reads the model, picks tools, asks and proposes the spec | the session conversation, routing, its tool results and visible session captures for a vision-enabled planner | Query route offers `query`, `get_project_snapshot`, `ask_designer`, `ask_selection`, `open_view` and `capture_view_image`. The tool route also offers `list_tools`, `get_tool_choices`, `missing_params`, `reconcile`, `propose_spec` and `set_plan`. |
 | supervisor | reports a run truthfully; on a failure sends the task back to the planner or asks you | the spec the page confirmed for this run (or, when it confirmed none in this session, the planner's last proposal, labelled as proposed), a summary of the execution result, the validator's checks (the failed ones first), how often the task went back | `query` (read-only) |
 
 In mode `roles_analyst` (`ROLES_ANALYST=on`, or a request's `mode`; the default mode `roles` has no
@@ -619,7 +627,7 @@ roles:
 
   | Field | Values | Default | What it does |
   |---|---|---|---|
-  | `vision` | `true`, `false` | `false` | Enables explicit PNG attachments for this endpoint and model, on either API. |
+  | `vision` | `true`, `false` | `false` | Enables session PNG context for this planner on either API. |
   | `api` | `chat`, `responses` | `chat` | `responses` calls `<base_url>/responses` (OpenAI's Responses API) instead of `<base_url>/chat/completions` - for models that take tools only there. The call is not streamed: its text reaches the page in one piece when the model is done; the page's events are the same. Stateless (`store: false`); with `reasoning_effort` set the request asks for the encrypted reasoning, and the host sends it back with the function calls in the following calls (kept in memory with the chat session, never on disk or in a log). `max_tokens` goes as `max_output_tokens`; `temperature` only when the entry sets it; the tools in the flat form, `strict: false`. Usage: `input_tokens` is the input, `input_tokens_details.cached_tokens` the cache read (and `cache_write_tokens` the cache write when reported), `output_tokens` the output, reasoning included. |
   | `max_tokens_param` | `max_tokens`, `max_completion_tokens` | `max_tokens` | The name the output limit goes under on the chat api (OpenAI's newer models refuse `max_tokens`). Chat api only. |
   | `reasoning_effort` | `low`, `medium`, `high`, `xhigh` | not sent | `reasoning_effort` on the chat api, `reasoning.effort` on the responses api. |
@@ -739,8 +747,10 @@ is the package's `success: false` without consuming the token), and a refusal by
 precondition or a failed validation is 200 with `success: false`; error bodies are
 `{error, message?, ...}` with the MCP tools' codes, declared per route in the export.
 
+`GET /selection-state` returns `document_id`, `stamp`, `count` and `assistant_set` from a single lightweight read. It returns a busy response during a chat stream or watch. Chat accepts `current_selection` for verification, and `hidden_captures` to update the session exclusions. `DELETE /api/chat/{session_id}/captures` releases captures for the current device.
+
 `POST /watch-selection` accepts `session_id`, a fresh `watch_id`, `mode` and an optional
-`category`. A page can cancel with `DELETE /watch-selection/{session_id}/{watch_id}`.
+`category`. A planner question can also supply `ask_id` and `prompt`. A page can cancel with `DELETE /watch-selection/{session_id}/{watch_id}`.
 `GET /host-functions` lists the native view functions and their parameters.
 
 The chat picker calls `GET /mentions` with `kind` (level, type, link or element), optional `q`,

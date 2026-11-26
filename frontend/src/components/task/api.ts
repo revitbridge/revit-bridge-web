@@ -7,7 +7,7 @@
 import type {
   ConfirmResponse, EvidenceRecord, ExecutionResult, Question, ReconcileResult, RevalidateReport, TaskSpec,
 } from '../../types/api'
-import { get, post } from '../shared/http'
+import { del, get, post } from '../shared/http'
 import type { FlowApi } from './flow'
 
 const B = '/api/v1/bridge'
@@ -42,6 +42,7 @@ export type TaskApi = typeof taskApi
 
 /* The task page's flow (components/task/flow.ts): the chat session goes with every spec. */
 export const flowApi: FlowApi = {
+  clearCaptures: id => del(`/api/chat/${enc(id)}/captures`),
   reconcile: (spec, sessionId) => taskApi.reconcile(spec, undefined, sessionId),
   confirm: (spec, sessionId) => taskApi.confirm(spec, 'designer', sessionId),
   runTool: (name, params, token) => taskApi.runTool(name, params, token),

@@ -1,5 +1,6 @@
 /* The ledger record's fields and how one is shown. */
 
+import { uiText } from '../../utils/strings'
 import type { EvidenceRecord } from '../../types/api'
 
 /* In the ledger's order (revit_bridge.evidence.ledger.RECORD_FIELDS). */
@@ -18,7 +19,7 @@ export function fieldsOf(record: EvidenceRecord): Array<keyof EvidenceRecord> {
    nothing was kept; the error is the pack's own text); else the error. */
 export function outcomeOf(record: Pick<EvidenceRecord, 'success' | 'error' | 'refused'>): { tone: 'ok' | 'refused' | 'failed'; text: string } {
   if (record.success) return { tone: 'ok', text: 'success' }
-  if (record.refused === true) return { tone: 'refused', text: `refused by the tool: ${record.error ?? 'no reason given'}` }
+  if (record.refused === true) return { tone: 'refused', text: uiText("refused by the tool: {0}", record.error ?? uiText("no reason given")) }
   return { tone: 'failed', text: record.error ?? 'failed' }
 }
 

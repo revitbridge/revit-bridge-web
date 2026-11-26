@@ -9,6 +9,7 @@
    tool again and refuses when it is no longer that draft. While a confirmed run is in progress
    Run is refused and its result is always shown when it comes. */
 
+import { uiText } from '../../utils/strings'
 import { draftParameter } from '../../api/workbench'
 import type { ExecutionResult, SpecError, TaskSpec, ToolChoiceItem, ToolDetail } from '../../types/api'
 import type { ToolDraft, ToolParamDraft } from '../../types/hostv2'
@@ -50,13 +51,13 @@ function draftValidator(text: string | undefined): string {
 /* Why the draft is not the saved tool, naming the part, or null when it is: the same code (line
    ends aside), the same parameter declarations, the same validator (as JSON, key order aside). */
 export function differsFromSaved(draft: ToolDraft, saved: ToolDetail): string | null {
-  if (normalizeCode(draft.code) !== normalizeCode(saved.code_template)) return 'its code differs'
+  if (normalizeCode(draft.code) !== normalizeCode(saved.code_template)) return uiText("its code differs")
   const mine = typedParameters(draft.parameters)
   const theirs = typedParameters((saved.parameters ?? []).map(draftParameter))
-  if (mine.length !== theirs.length) return `it declares ${mine.length} parameter(s), the saved tool ${theirs.length}`
+  if (mine.length !== theirs.length) return uiText("it declares {0} parameter(s), the saved tool {1}", mine.length, theirs.length)
   const index = mine.findIndex((param, i) => shape(param) !== shape(theirs[i]))
-  if (index >= 0) return `its parameter ${mine[index].name || index + 1} differs`
-  if (draftValidator(draft.validator) !== JSON.stringify(canonical(saved.validator ?? null))) return 'its validator differs'
+  if (index >= 0) return uiText("its parameter {0} differs", mine[index].name || index + 1)
+  if (draftValidator(draft.validator) !== JSON.stringify(canonical(saved.validator ?? null))) return uiText("its validator differs")
   return null
 }
 
@@ -71,16 +72,16 @@ export interface RunCard { spec: TaskSpec; defaults: DefaultUsed[] }
 export async function workbenchSpec(api: Pick<WorkbenchRunApi, 'getTool'>, draft: ToolDraft,
                                     values: Record<string, unknown>): Promise<RunCard> {
   const name = draft.name.trim()
-  if (!name) throw new Error(`The draft has no name. ${SAVE_FIRST}`)
+  if (!name) throw new Error(uiText("The draft has no name. {0}", uiText(SAVE_FIRST)))
   let saved: ToolDetail
   try {
     saved = await api.getTool(name)
   } catch (e: unknown) {
-    if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') throw new Error(`There is no saved tool named ${name}. ${SAVE_FIRST}`)
+    if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') throw new Error(uiText("There is no saved tool named {0}. {1}", name, uiText(SAVE_FIRST)))
     throw e
   }
   const difference = differsFromSaved(draft, saved)
-  if (difference) throw new Error(`This draft is not the saved ${name}: ${difference}. ${SAVE_FIRST}`)
+  if (difference) throw new Error(uiText("This draft is not the saved {0}: {1}. {2}", name, difference, uiText(SAVE_FIRST)))
   const params = saved.parameters ?? []
   const texts: Record<string, string> = {}
   const picked: Record<string, ToolChoiceItem[]> = {}
@@ -112,11 +113,11 @@ export async function confirmRun(api: WorkbenchRunApi, spec: TaskSpec, draft: To
     try {
       saved = await api.getTool(name)
     } catch (e: unknown) {
-      if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') return { kind: 'stale', message: `${name} is no longer saved. Nothing was run.` }
+      if (e instanceof BridgeApiError && e.status === 404 && e.code === 'unknown_tool') return { kind: 'stale', message: uiText("{0} is no longer saved. Nothing was run.", name) }
       throw e
     }
     const difference = differsFromSaved(draft, saved)
-    if (difference) return { kind: 'stale', message: `The saved ${name} changed after its card was shown (${difference}). Nothing was run; run again.` }
+    if (difference) return { kind: 'stale', message: uiText("The saved {0} changed after its card was shown ({1}). Nothing was run; run again.", name, difference) }
     const outcome = await confirmAndRun(api, spec)
     return outcome.status === 'rejected'
       ? { kind: 'rejected', errors: outcome.errors }
@@ -156,12 +157,12 @@ export class WorkbenchRun {
 
   /* The workbench's Run. Throws the reason it refuses (the workbench shows it on its Run line). */
   onRun = async (draft: ToolDraft, values: Record<string, unknown>) => {
-    if (this.confirming) throw new Error(RUN_IN_PROGRESS)
+    if (this.confirming) throw new Error(uiText(RUN_IN_PROGRESS))
     const generation = this.generation
     this.update({ card: null, notice: null })
     const card = await workbenchSpec(this.api, draft, values)
     if (generation !== this.generation) throw new Error('The draft changed while the run was being prepared. Run again.')
-    if (this.confirming) throw new Error(RUN_IN_PROGRESS)
+    if (this.confirming) throw new Error(uiText(RUN_IN_PROGRESS))
     this.update({ card: { ...card, draft: structuredClone(draft), running: false, outcome: null } })
   }
 

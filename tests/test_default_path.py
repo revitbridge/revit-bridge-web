@@ -208,17 +208,19 @@ def hashes(texts: list[str]) -> list[str]:
 # The record's section taken from aa5556c (never regenerated) and the one of the current default.
 AA5556C_LIMIT = 4096
 AA5556C_SECTION = f"max_tokens_{AA5556C_LIMIT}"
-PLAN_4096 = "workflows_4096"
+PLAN_4096 = "trial_fixes_4096"
 
 
 def current_section() -> str:
-    return f"workflows_{llm_module.DEFAULT_MAX_TOKENS}"
+    return f"trial_fixes_{llm_module.DEFAULT_MAX_TOKENS}"
 
 
 def recorded(name: str, section: str | None = None) -> dict:
     records = json.loads(GOLDEN.read_text(encoding="utf-8"))
     section = section or current_section()
-    if section.startswith("workflows_"):
+    if section.startswith("trial_fixes_"):
+        base = recorded(name, section.replace("trial_fixes_", "workflows_"))
+    elif section.startswith("workflows_"):
         base = recorded(name, section.replace("workflows_", "selection_capture_"))
     elif section.startswith("selection_capture_"):
         base = records[section.replace("selection_capture_", "tool_authoring_")][name]
@@ -301,12 +303,11 @@ def test_workflow_bytes(name, limit, env, revit, recorder, monkeypatch):
     requests, streams = run_scenario(name, env, revit, recorder)
     assert_catalogue_streams(name, streams)
     actual = {"requests": hashes(requests), "streams": hashes(streams)}
-    prior = recorded(name, f"selection_capture_{limit}")
+    prior = recorded(name, f"workflows_{limit}")
     assert actual["streams"] == prior["streams"]
-    from backend.api.model_tools import TOOL_DEFINITIONS
-    workflow = next(t for t in TOOL_DEFINITIONS if t["function"]["name"] == "use_workflow")
-    encoded = json.dumps(workflow, ensure_ascii=False, separators=(",", ":"))
-    assert hashes([r.replace("," + encoded, "") for r in requests]) == prior["requests"]
+    prior_description = "Only their click starts observation."
+    current_description = "The host immediately observes their normal selection in Revit."
+    assert hashes([r.replace(current_description, prior_description) for r in requests]) == prior["requests"]
     assert all(len(actual[k]) == len(prior[k]) for k in actual)
     if REGENERATE:
         data = json.loads(GOLDEN.read_text(encoding="utf-8"))

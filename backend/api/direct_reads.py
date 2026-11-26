@@ -2,16 +2,14 @@
 from starlette.concurrency import run_in_threadpool
 
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.execution import run_pack
 from revit_bridge.spec.gate import GateError
 from revit_bridge.spec.rules import reconcile, validate_spec
 
 from backend.api import bridge
 from backend.config import get_settings
 from backend.mention_check import mention_errors
+from backend.selection import SELECTION_WRITERS
 
-
-SELECTION_WRITERS = {"select_elements", "select_in_box", "select_by_filter", "clear_selection"}
 MAX_CARD_IDS = 20
 
 
@@ -88,8 +86,9 @@ async def try_read(spec, session, store, *, step=None):
                                            channel=bridge.CONFIRM_CHANNEL, scope=scope)
     projection = spec.execution_projection()
     try:
-        result = await run_pack(store=readers, gate=gate, ledger=bridge.get_ledger(), client=client, name=name,
-                                params=projection["params"], token=confirmation.token, host=bridge.HOST, scope=scope)
+        result = await bridge.run_pack_on_device(store=readers, gate=gate, ledger=bridge.get_ledger(), client=client,
+                                                 name=name, params=projection["params"], token=confirmation.token,
+                                                 host=bridge.HOST, scope=scope)
         payload = bridge._execution_payload(result)
         if pack.ui_only:
             payload["ui_only"] = True

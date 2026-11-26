@@ -81,21 +81,21 @@ const conflicted: ReconcileResult = {
 }
 
 describe('the task flow', () => {
-  it('attaches the signed PNG only on the next bridge message, including a form answer', async () => {
+  it('sends only capture visibility on bridge turns, including form answers', async () => {
     const host = scriptedHost([{ type: 'session', id: 's' }, { type: 'view_image', width: 2, height: 1,
       view_name: 'Room', capture_id: 'img', png_base64: 'UE5H' }, { type: 'ask_selection', ask_id: 'q',
       selection: { mode: 'single', prompt: 'Select a door' } }], [{ type: 'done' }])
     const flow = createTaskFlow({ events: host.events, api: fakeApi() })
     await flow.send('Capture and ask')
-    expect(flow.store.getState().attachment).toBeNull()
+    expect(flow.store.getState().hiddenCaptures).toEqual([])
     flow.setCompare(true)
-    flow.store.setState({ attachment: 'img' })
+    flow.store.setState({ hiddenCaptures: ['img'] })
     await flow.send('Selected', [{ kind: 'element', id: 7, name: 'Door', document_id: 'doc' }], undefined, 'q')
     await flow.send('Continue')
-    expect(host.requests.map(r => r.capture)).toEqual([undefined, { capture_id: 'img', png_base64: 'UE5H' }, undefined, undefined, undefined])
+    expect(host.requests.map(r => r.hidden_captures)).toEqual([undefined, ['img'], undefined, ['img'], undefined])
     expect(host.requests[1]).toMatchObject({ selection_answer: 'q', mentions: [{ document_id: 'doc', id: 7 }] })
     expect(flow.store.getState().bridge.messages.find(m => m.form)?.answered).toBe('form')
-    expect(JSON.stringify(host.requests.filter((_r, i) => i !== 1))).not.toContain('UE5H')
+    expect(JSON.stringify(host.requests)).not.toContain('UE5H')
   })
   it('uses the host receipt for automatic execution without calling the manual gate', async () => {
     const api = fakeApi()

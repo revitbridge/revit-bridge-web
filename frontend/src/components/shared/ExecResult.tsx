@@ -1,5 +1,6 @@
 /* Execution outcome from Revit: flat objects as a table, anything else as JSON. */
 
+import { uiText } from '../../utils/strings'
 import type { ReactNode } from 'react'
 
 export interface ExecOutcome {
@@ -12,8 +13,7 @@ export default function ExecResult({ result }: { result: ExecOutcome }) {
   if (!result.ok) {
     return (
       <div style={{ marginTop: 8, padding: 12, background: 'rgba(179, 59, 46, 0.1)', border: '1px solid var(--danger)', borderRadius: 'var(--radius-sm)' }}>
-        <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>
-          Failed: {result.error || 'unknown error'}
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--danger)', whiteSpace: 'pre-wrap' }}>{uiText("Failed:")} {result.error || 'unknown error'}
         </span>
       </div>
     )
@@ -21,7 +21,7 @@ export default function ExecResult({ result }: { result: ExecOutcome }) {
 
   const data = result.data
   if (data === null || data === undefined) {
-    return <p style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--mid)', marginTop: 8 }}>Success (no return data)</p>
+    return <p style={{ fontFamily: 'var(--mono)', fontSize: 12, color: 'var(--mid)', marginTop: 8 }}>{uiText("Success (no return data)")}</p>
   }
 
   if (typeof data === 'object' && !Array.isArray(data)) {

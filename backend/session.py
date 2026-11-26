@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 from typing import TYPE_CHECKING
 
+from backend.captures import CaptureContext
 from backend.llm import ProviderMemory, call_keys
 from backend.mention_check import mention_evidence
 from backend.plans import Plan
@@ -53,6 +54,7 @@ class Session:
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
     # OpenAI-shaped messages: {"role": "user"|"assistant"|"tool", "content": ..., ...}
+    captures: CaptureContext = field(default_factory=CaptureContext, repr=False)
     history: list[dict] = field(default_factory=list)
     snapshot_fingerprint: str | None = None
     spec: dict | None = None
@@ -89,6 +91,7 @@ class Session:
     bridge_turn: threading.Lock = field(default_factory=threading.Lock, repr=False)
     proposed_in_request: bool = False
     direct_reads: int = 0
+    language: str | None = None  # Explicit page preference; older clients retain their spec language.
     chinese: bool = False
     read_results: dict[tuple[str, str], object] = field(default_factory=dict)
     # Last direct selection change in this request, by device. Only the host sets this.

@@ -2,6 +2,7 @@
    confirm and run under a token; edit or delete your own with the admin password
    (shared/packAdmin) - the built-in packs are read-only. */
 
+import { uiText } from '../../utils/strings'
 import { useCallback, useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import type { ExecutionResult, SpecError, ToolChoiceItem, ToolInfo, ToolParam } from '../../types/api'
@@ -41,7 +42,7 @@ export default function ToolLibrary() {
   const [saveStatus, setSaveStatus] = useState('')
 
   const refresh = useCallback(async () => {
-    try { setTools(await bridgeApi.listTools()) } catch (e: unknown) { setNotice(`Cannot list packs: ${getErrorMessage(e)}`) }
+    try { setTools(await bridgeApi.listTools()) } catch (e: unknown) { setNotice(uiText("Cannot list packs: {0}", getErrorMessage(e))) }
   }, [])
 
   useEffect(() => { refresh() }, [refresh])
@@ -65,13 +66,13 @@ export default function ToolLibrary() {
       let ch: Record<string, ToolChoiceItem[]> = {}
       if (all.some(p => p.choices_from)) {
         try { ch = await bridgeApi.getToolChoices(name) }
-        catch (e: unknown) { setNotice(`Choices from Revit unavailable: ${getErrorMessage(e)}. Fill the values by hand or connect Revit first.`) }
+        catch (e: unknown) { setNotice(uiText("Choices from Revit unavailable: {0}. Fill the values by hand or connect Revit first.", getErrorMessage(e))) }
       }
       setChoices(ch)
       setValues(initialValues(all, ch))
       setStep(3)
     } catch (e: unknown) {
-      setNotice(`Cannot load pack: ${getErrorMessage(e)}`)
+      setNotice(uiText("Cannot load pack: {0}", getErrorMessage(e)))
     } finally {
       setLoading(false)
     }
@@ -103,7 +104,7 @@ export default function ToolLibrary() {
       const p = JSON.parse(edit.params)
       if (!Array.isArray(p)) throw new Error('parameters must be an array')
       parsed = p
-    } catch (e: unknown) { setSaveStatus(`Parameters JSON: ${getErrorMessage(e)}`); return }
+    } catch (e: unknown) { setSaveStatus(uiText("Parameters JSON: {0}", getErrorMessage(e))); return }
     setLoading(true); setSaveStatus('Saving...')
     try {
       const u = await bridgeApi.updateTool(selected, {
@@ -114,19 +115,19 @@ export default function ToolLibrary() {
         version: u.version, preconditions: u.preconditions || [], validator: u.validator ?? null })
       setParams(u.parameters || [])
       setEditMode(false)
-      setSaveStatus(`Saved${u.revit_synced ? ' and registered in Revit' : ''}.`)
+      setSaveStatus(uiText("Saved{0}.", u.revit_synced ? uiText(" and registered in Revit") : ''))
       refresh()
     } catch (e: unknown) {
-      setSaveStatus(`Save failed: ${getErrorMessage(e)}`)
+      setSaveStatus(uiText("Save failed: {0}", getErrorMessage(e)))
     } finally {
       setLoading(false)
     }
   }
 
   const remove = async (name: string) => {
-    if (!window.confirm(`Delete pack '${name}'?`)) return
+    if (!window.confirm(uiText("Delete pack '{0}'?", name))) return
     try { await bridgeApi.deleteTool(name); if (selected === name) select(''); refresh() }
-    catch (e: unknown) { setNotice(`Delete failed: ${getErrorMessage(e)}`) }
+    catch (e: unknown) { setNotice(uiText("Delete failed: {0}", getErrorMessage(e))) }
   }
 
   return (
@@ -134,8 +135,8 @@ export default function ToolLibrary() {
       <StepIndicator steps={STEPS} current={step} />
 
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={refresh} className="btn-secondary">Refresh</button>
-        <span className="section-copy small">{tools.length} pack{tools.length === 1 ? '' : 's'}{gate.note && `. ${gate.note}`}</span>
+        <button onClick={refresh} className="btn-secondary">{uiText("Refresh")}</button>
+        <span className="section-copy small">{tools.length} {uiText(tools.length === 1 ? 'pack' : 'packs')}{gate.note && `. ${uiText(gate.note)}`}</span>
       </div>
       {!selected && notice && <p className="tool-warning-status">{notice}</p>}
 
@@ -144,12 +145,12 @@ export default function ToolLibrary() {
           <table className="w-full" style={{ fontFamily: 'var(--mono)', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--bg2)' }}>
-                <th className="px-3 py-2 text-left label-text">Name</th>
-                <th className="px-3 py-2 text-left label-text">Description</th>
-                <th className="px-3 py-2 text-left label-text w-16">Version</th>
-                <th className="px-3 py-2 text-left label-text">Validator</th>
-                <th className="px-3 py-2 text-left label-text">Preconditions</th>
-                <th className="px-3 py-2 text-left label-text w-16">Uses</th>
+                <th className="px-3 py-2 text-left label-text">{uiText("Name")}</th>
+                <th className="px-3 py-2 text-left label-text">{uiText("Description")}</th>
+                <th className="px-3 py-2 text-left label-text w-16">{uiText("Version")}</th>
+                <th className="px-3 py-2 text-left label-text">{uiText("Validator")}</th>
+                <th className="px-3 py-2 text-left label-text">{uiText("Preconditions")}</th>
+                <th className="px-3 py-2 text-left label-text w-16">{uiText("Uses")}</th>
                 <th className="px-3 py-2 w-16"></th>
               </tr>
             </thead>
@@ -160,11 +161,11 @@ export default function ToolLibrary() {
                   <td className="px-3 py-1.5" style={{ fontWeight: 500 }}>{t.name}</td>
                   <td className="px-3 py-1.5" style={{ fontFamily: 'var(--serif)', fontSize: 13, color: 'var(--mid)' }}>{t.description}</td>
                   <td className="px-3 py-1.5">{t.version}</td>
-                  <td className="px-3 py-1.5">{t.validator ?? <span style={{ color: 'var(--faint)' }}>none</span>}</td>
+                  <td className="px-3 py-1.5">{t.validator ?? <span style={{ color: 'var(--faint)' }}>{uiText("none")}</span>}</td>
                   <td className="px-3 py-1.5" style={{ color: 'var(--mid)' }}>{describePreconditions(t.preconditions)}</td>
                   <td className="px-3 py-1.5">{t.used}</td>
                   <td className="px-3 py-1.5">
-                    {gate.canEdit && !t.builtin && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>Delete</button>}
+                    {gate.canEdit && !t.builtin && <button className="btn-ghost danger" onClick={e => { e.stopPropagation(); remove(t.name) }}>{uiText("Delete")}</button>}
                   </td>
                 </tr>
               ))}
@@ -176,17 +177,17 @@ export default function ToolLibrary() {
       {selected && (
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="label-text" style={{ margin: 0 }}>Selected:</span>
+            <span className="label-text" style={{ margin: 0 }}>{uiText("Selected:")}</span>
             <span style={{ fontFamily: 'var(--mono)', fontSize: 13, color: 'var(--accent)' }}>{detail?.display_name || selected}</span>
-            <button onClick={() => load(selected)} disabled={loading} className="btn-primary">{loading ? 'Loading...' : 'Load pack'}</button>
-            {detail && <button onClick={() => setShowCode(!showCode)} className="btn-secondary">{showCode ? 'Hide code' : 'View code'}</button>}
-            {detail && gate.canEdit && !tools.find(t => t.name === selected)?.builtin && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">Edit pack</button>}
+            <button onClick={() => load(selected)} disabled={loading} className="btn-primary">{loading ? uiText("Loading...") : uiText("Load pack")}</button>
+            {detail && <button onClick={() => setShowCode(!showCode)} className="btn-secondary">{showCode ? uiText("Hide code") : uiText("View code")}</button>}
+            {detail && gate.canEdit && !tools.find(t => t.name === selected)?.builtin && <button onClick={() => { setShowCode(true); setEditMode(true); setSaveStatus('') }} disabled={loading} className="btn-secondary">{uiText("Edit pack")}</button>}
           </div>
           {detail?.description && step >= 3 && <p className="section-copy">{detail.description}</p>}
           {detail && step >= 3 && (
             <p className="section-copy small" style={{ margin: 0 }}>
-              v{detail.version} | validator: {detail.validator ? <code>{JSON.stringify(detail.validator)}</code> : 'none'}
-              {' | '}preconditions: {detail.preconditions.length ? describePreconditions(detail.preconditions) : 'none'}
+              v{detail.version} {uiText("| validator:")} {detail.validator ? <code>{JSON.stringify(detail.validator)}</code> : uiText("none")}
+              {' | '}{uiText("preconditions:")} {detail.preconditions.length ? describePreconditions(detail.preconditions) : uiText("none")}
             </p>
           )}
           {detail && detail.tags.length > 0 && step >= 3 && <div className="tool-tag-row">{detail.tags.map(tag => <span key={tag}>{tag}</span>)}</div>}
@@ -195,16 +196,16 @@ export default function ToolLibrary() {
       )}
 
       {showCode && detail && (
-        <Accordion title={editMode ? 'Edit pack' : 'Pack code'} defaultOpen>
+        <Accordion title={editMode ? uiText("Edit pack") : uiText("Pack code")} defaultOpen>
           {editMode && (
             <div className="form-grid">
-              <label><span className="label-text">Display name</span>
+              <label><span className="label-text">{uiText("Display name")}</span>
                 <input className="input-field" value={edit.display_name} onChange={e => setEdit({ ...edit, display_name: e.target.value })} /></label>
-              <label><span className="label-text">Tags</span>
+              <label><span className="label-text">{uiText("Tags")}</span>
                 <input className="input-field" value={edit.tags} onChange={e => setEdit({ ...edit, tags: e.target.value })} /></label>
-              <label className="form-wide"><span className="label-text">Description</span>
+              <label className="form-wide"><span className="label-text">{uiText("Description")}</span>
                 <input className="input-field" value={edit.description} onChange={e => setEdit({ ...edit, description: e.target.value })} /></label>
-              <label className="form-wide"><span className="label-text">Source query</span>
+              <label className="form-wide"><span className="label-text">{uiText("Source query")}</span>
                 <input className="input-field" value={edit.source_query} onChange={e => setEdit({ ...edit, source_query: e.target.value })} /></label>
             </div>
           )}
@@ -212,17 +213,17 @@ export default function ToolLibrary() {
             onChange={e => setEdit({ ...edit, code: e.target.value })} spellCheck={false} />
           {editMode && (
             <label style={{ display: 'block', marginTop: 10 }}>
-              <span className="label-text">Parameters JSON</span>
+              <span className="label-text">{uiText("Parameters JSON")}</span>
               <textarea className="code-editor small" value={edit.params} onChange={e => setEdit({ ...edit, params: e.target.value })} spellCheck={false} />
             </label>
           )}
           <div className="tool-edit-actions">
             {editMode ? (
               <>
-                <button onClick={save} className="btn-primary" disabled={loading}>Save pack</button>
-                <button onClick={() => setEditMode(false)} className="btn-ghost" disabled={loading}>Cancel</button>
+                <button onClick={save} className="btn-primary" disabled={loading}>{uiText("Save pack")}</button>
+                <button onClick={() => setEditMode(false)} className="btn-ghost" disabled={loading}>{uiText("Cancel")}</button>
               </>
-            ) : <span className="tool-code-note">Placeholders in braces are filled from the parameters below.</span>}
+            ) : <span className="tool-code-note">{uiText("Placeholders in braces are filled from the parameters below.")}</span>}
           </div>
           {saveStatus && <p className="tool-review-status">{saveStatus}</p>}
         </Accordion>
@@ -234,27 +235,24 @@ export default function ToolLibrary() {
       )}
 
       {spec && (
-        <Accordion title="Spec card (what the token binds to)" defaultOpen>
+        <Accordion title={uiText("Spec card (what the token binds to)")} defaultOpen>
           <SpecTable spec={spec} />
-          <p className="section-copy small">
-            Confirm issues a one-time token for exactly these values and runs the pack under it; the result and the
-            validator's checks are recorded in the evidence ledger.
-          </p>
+          <p className="section-copy small">{uiText("Confirm issues a one-time token for exactly these values and runs the pack under it; the result and the validator's checks are recorded in the evidence ledger.")}</p>
           <button onClick={run} disabled={loading || spec.parameters.length < params.filter(p => p.required).length} className="btn-primary">
-            {loading ? 'Running...' : 'Confirm and run in Revit'}
+            {loading ? uiText("Running...") : uiText("Confirm and run in Revit")}
           </button>
         </Accordion>
       )}
 
       {result?.kind === 'rejected' && (
         <ul className="spec-errors">
-          {result.errors.map((e, i) => <li key={i}>Confirm refused: <code>{e.code}</code>{e.param ? <> on <code>{e.param}</code></> : null}: {e.message}</li>)}
+          {result.errors.map((e, i) => <li key={i}>{uiText("Confirm refused:")} <code>{e.code}</code>{e.param ? <> {uiText("on")} <code>{e.param}</code></> : null}: {e.message}</li>)}
         </ul>
       )}
       {result?.kind === 'failed' && <p className="tool-warning-status">{result.message}</p>}
       {result?.kind === 'executed' && (
         <div>
-          <span className="token-chip">token <code>{tokenPrefix(result.token)}</code> | expires {result.expires_at}</span>
+          <span className="token-chip">{uiText("token")} <code>{tokenPrefix(result.token)}</code> {uiText("| expires")} {result.expires_at}</span>
           <ExecutionView execution={result.result} />
         </div>
       )}

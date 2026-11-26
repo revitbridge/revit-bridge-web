@@ -1,5 +1,6 @@
 /* Dynamic tool parameter editor: a select when Revit supplied choices, a text field otherwise */
 
+import { uiText } from '../../utils/strings'
 import type { ToolParam, ToolChoiceItem } from '../../types/api'
 
 interface Props {
@@ -11,7 +12,7 @@ interface Props {
 
 export default function ToolParamEditor({ params, choices, values, onChange }: Props) {
   if (!params.length) {
-    return <p style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', fontSize: 14, color: 'var(--faint)' }}>Tool has no parameters -- click Run directly</p>
+    return <p style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', fontSize: 14, color: 'var(--faint)' }}>{uiText("Tool has no parameters -- click Run directly")}</p>
   }
 
   return (
@@ -30,7 +31,7 @@ export default function ToolParamEditor({ params, choices, values, onChange }: P
                 value={values[p.name] ?? ''}
                 onChange={e => onChange(p.name, e.target.value)}
               >
-                <option value="">-- select --</option>
+                <option value="">{uiText("-- select --")}</option>
                 {items.map((item, i) => (
                   <option key={i} value={item.value}>{item.label}</option>
                 ))}

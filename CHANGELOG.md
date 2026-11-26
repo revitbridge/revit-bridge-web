@@ -16,11 +16,19 @@ with `REMOTE_MCP=on` and issue revocable tokens for individual paired devices.
 Settings shows recent execution evidence. Tool authoring can load a successful
 remote rollback and take it through the existing compile, trial and save steps.
 
-The host uses revit-bridge 0.11.0. Designers can observe a normal Revit selection
-from the composer or answer a planner selection question. Built-in UI-only packs
-run directly and share the reader budget. The tool drawer includes native view
-activation and PNG capture. Captures appear in chat, with an opt-in switch for
-attaching one to the next planner message on a vision-enabled model.
+The composer now shows the live Revit selection and verifies it on send.
+Planner selection questions start observing immediately and can be cancelled.
+Older add-ins offer the current-selection fallback. Built-in UI-only packs share
+the reader budget and the tool drawer includes native view activation and capture.
+
+Captured views open in a keyboard-accessible full-screen viewer. A vision planner
+uses the last two captures as conversation context. Each image can be hidden, and
+deployments can disable the feature with `CAPTURE_CONTEXT=off`. The host keeps
+pixels in session memory and clears them with the session.
+
+The header now remembers the designer's Chinese or English preference. Missing
+tools offer a choice of a prefilled authoring page, Remote MCP settings or dismissal.
+Tools navigation also links to Remote MCP. The host uses revit-bridge 0.11.0.
 
 Settings → Models now saves shared or per-role credentials on the host with user-only file
 permissions. Rotation takes effect on the next request. Cloud administrators manage these

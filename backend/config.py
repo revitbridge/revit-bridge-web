@@ -177,6 +177,7 @@ class WebSettings:
     admin_password: str = ""
     max_devices: int = 0
     chat_rate_limit: int = DEFAULT_CHAT_RATE_LIMIT
+    capture_context: bool = True
     auto_run: bool = True
     remote_mcp: bool = True
     auto_run_max_steps: int = 8
@@ -217,6 +218,7 @@ class WebSettings:
         settings = cls(
             mode=mode,
             remote_mcp=_choice(env.get("REMOTE_MCP"), "REMOTE_MCP", ("off", "on") if cloud else ("on", "off")) == "on",
+            capture_context=_choice(env.get("CAPTURE_CONTEXT"), "CAPTURE_CONTEXT", ("on", "off")) == "on",
             auto_run=_choice(env.get("AUTO_RUN"), "AUTO_RUN", ("off", "on") if cloud else ("on", "off")) == "on",
             auto_run_max_steps=_int(env.get("AUTO_RUN_MAX_STEPS"), 8, "AUTO_RUN_MAX_STEPS"),
             direct_run_limit=_int(env.get("DIRECT_RUN_LIMIT"), 10, "DIRECT_RUN_LIMIT"),
