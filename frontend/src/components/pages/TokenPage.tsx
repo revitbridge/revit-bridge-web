@@ -3,6 +3,7 @@
    host gives them; pick two to see them side by side with the differences. Unknown counts
    show as '-'; a total with an unknown in it is unknown. Admin only on a cloud host. */
 
+import { uiText } from '../../utils/strings'
 import { useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { usageApi } from '../../api/usage'
@@ -41,19 +42,19 @@ function RunRows({ run, picked, onToggle }: { run: UsageRun; picked: number; onT
       <tr className={`token-run${picked >= 0 ? ' is-open' : ''}`} data-run={run.run_label}>
         <td>
           <label className="token-pick">
-            <input type="checkbox" checked={picked >= 0} onChange={onToggle} aria-label={`compare ${run.run_label}`} />
+            <input type="checkbox" checked={picked >= 0} onChange={onToggle} aria-label={uiText("compare {0}", run.run_label)} />
             {picked >= 0 ? (picked === 0 ? ' A' : ' B') : ''}
           </label>
         </td>
         <td className="mono">{run.run_label}</td>
-          <td className="token-mode">{modeOf(run)}{run.run === 'auto' && ' · Auto execution'}</td>
+          <td className="token-mode">{uiText(modeOf(run))}{run.run === 'auto' && uiText(" · Auto execution")}</td>
         <td>{runTime(run)}</td>
         <CountCells counts={countsOf(run)} />
       </tr>
       {roleTotals(run).map(part => (
         <tr key={part.role} className="token-role-row" data-role={part.role}>
           <td />
-          <td colSpan={3}>{part.role} <span className="mono">({part.models.join(', ')})</span></td>
+          <td colSpan={3}>{uiText(part.role)} <span className="mono">({part.models.join(', ')})</span></td>
           <CountCells counts={part.counts} />
         </tr>
       ))}
@@ -65,11 +66,11 @@ function CompareTable({ rows, a, b }: { rows: CompareRow[]; a: string; b: string
   return (
     <div className="table-scroll">
       <table className="evidence-table token-compare">
-        <thead><tr><th />{[a, b].map((label, i) => <th key={i}>{label}</th>)}<th>B - A</th></tr></thead>
+        <thead><tr><th />{[a, b].map((label, i) => <th key={i}>{label}</th>)}<th>{uiText("B - A")}</th></tr></thead>
         <tbody>
           {rows.map(row => (
             <tr key={row.key} data-metric={row.key}>
-              <td>{row.label}</td><td>{row.a}</td><td>{row.b}</td>
+              <td>{uiText(row.label)}</td><td>{row.a}</td><td>{row.b}</td>
               <td className={`token-diff ${row.direction}`}>{row.diff}</td>
             </tr>
           ))}
@@ -83,10 +84,10 @@ function Comparison({ a, b }: { a: UsageRun; b: UsageRun }) {
   const roles = compareRoles(a, b)
   return (
     <section className="card section token-comparison">
-      <h3 className="heading-display section-title">A: {a.run_label} ({modeOf(a)}) - B: {b.run_label} ({modeOf(b)})</h3>
+      <h3 className="heading-display section-title">{uiText("A:")} {a.run_label} ({uiText(modeOf(a))}{uiText(") - B:")} {b.run_label} ({uiText(modeOf(b))})</h3>
       <CompareTable rows={compareRows(countsOf(a), countsOf(b))} a={`A: ${a.run_label}`} b={`B: ${b.run_label}`} />
       {roles.map(role => (
-        <div key={role.role} className="token-role-compare" data-role={role.role}>
+        <div key={uiText(role.role)} className="token-role-compare" data-role={role.role}>
           <h4 className="label-text">{role.role}</h4>
           <CompareTable rows={role.rows} a={`A (${role.modelsA})`} b={`B (${role.modelsB})`} />
         </div>
@@ -111,32 +112,28 @@ export function TokenView({ state, pair, gate, adminToken, onRefresh, onToggle, 
     <div className="page">
       <section className="card section">
         <div className="panel-head">
-          <h3 className="heading-display section-title">Token</h3>
+          <h3 className="heading-display section-title">{uiText("Token")}</h3>
           <button className="btn-secondary" onClick={onRefresh} disabled={state.loading || !gate.canRead}>
-            {state.loading ? 'Loading...' : 'Refresh'}
+            {state.loading ? uiText("Loading...") : uiText("Refresh")}
           </button>
         </div>
-        <p className="section-copy small" style={{ marginTop: 0 }}>
-          The runs measured with a run label (the <code>X-Run-Label</code> header the token bench sends): calls and
-          tokens per run, and per role and model. Read-only. A count the provider did not report shows as -, and so
-          does any total that includes one. Pick two runs to compare them.
-        </p>
+        <p className="section-copy small" style={{ marginTop: 0 }}>{uiText("The runs measured with a run label (the")} <code>{uiText("X-Run-Label")}</code> {uiText("header the token bench sends): calls and tokens per run, and per role and model. Read-only. A count the provider did not report shows as -, and so does any total that includes one. Pick two runs to compare them.")}</p>
         {gate.askToken && (
           <input type="password" className="input-field" value={adminToken} onChange={e => onAdminToken(e.target.value)}
-            placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
+            placeholder={uiText("Admin password")} autoComplete="off" style={{ maxWidth: 320 }} />
         )}
-        {gate.note && <div className="status-line">{gate.note}</div>}
+        {gate.note && <div className="status-line">{uiText(gate.note)}</div>}
         {state.notice && <div className="status-line">{state.notice}</div>}
         {state.runs && state.runs.length === 0 && (
-          <p className="section-copy small">No measured runs yet: chats sent without a run label are not listed here.</p>
+          <p className="section-copy small">{uiText("No measured runs yet: chats sent without a run label are not listed here.")}</p>
         )}
         {state.runs && state.runs.length > 0 && (
           <div className="table-scroll">
             <table className="evidence-table token-runs">
               <thead>
                 <tr>
-                  <th>Compare</th><th>Run</th><th>Mode</th><th>Time</th><th>Calls</th><th>Input</th><th>Cache read</th>
-                  <th>Cache write</th><th>Output</th><th>Time (ms)</th>
+                  <th>{uiText("Compare")}</th><th>{uiText("Run")}</th><th>{uiText("Mode")}</th><th>{uiText("Time")}</th><th>{uiText("Calls")}</th><th>{uiText("Input")}</th><th>{uiText("Cache read")}</th>
+                  <th>{uiText("Cache write")}</th><th>{uiText("Output")}</th><th>{uiText("Time (ms)")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -148,7 +145,7 @@ export function TokenView({ state, pair, gate, adminToken, onRefresh, onToggle, 
             </table>
           </div>
         )}
-        {state.selected.length === 1 && <p className="section-copy small">Pick one more run to compare.</p>}
+        {state.selected.length === 1 && <p className="section-copy small">{uiText("Pick one more run to compare.")}</p>}
       </section>
       {pair && <Comparison a={pair[0]} b={pair[1]} />}
     </div>

@@ -1,5 +1,6 @@
 /* Step progress bar */
 
+import { uiText } from '../../utils/strings'
 interface Props {
   steps: string[]
   current: number // 1-based
@@ -24,7 +25,7 @@ export default function StepIndicator({ steps, current }: Props) {
                 textUnderlineOffset: '4px',
               }}
             >
-              {isDone ? '\u2713' : isActive ? '\u25B6' : ''} {step}.{label}
+              {isDone ? '\u2713' : isActive ? '\u25B6' : ''} {step}.{uiText(label)}
             </span>
           </span>
         )

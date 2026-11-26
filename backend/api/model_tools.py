@@ -45,11 +45,11 @@ from revit_bridge.snapshot.query import run_query
 from revit_bridge.spec.models import TaskSpec
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
-from backend import captures
 from backend.api import bridge
 from backend.api.bridge import (
     current_scope, get_revit_client, list_packs, pack_for, parse_snapshot, require_tool_name, snapshot_now,
 )
+from backend.selection import uses_current_selection
 from backend.api.direct_reads import reserve_direct_run, selection_for_card, try_read
 from backend.api.errors import ApiError
 from backend.mention_check import mention_errors
@@ -192,7 +192,7 @@ TOOL_DEFINITIONS: list[dict] = [
 ]
 
 TOOL_DEFINITIONS.append({"type": "function", "function": {
-    "name": "ask_selection", "description": "Ask the designer to select elements. Only their click starts observation.",
+    "name": "ask_selection", "description": "Ask the designer to select elements. The host immediately observes their normal selection in Revit.",
     "parameters": {"type": "object", "additionalProperties": False, "required": ["prompt", "mode"],
                    "properties": {"prompt": {"type": "string"},
                                   "mode": {"type": "string", "enum": ["single", "multiple", "box"]},
@@ -294,7 +294,7 @@ async def _view(name: str, args: dict, session: Session) -> ToolOutcome:
         if success:
             result.update(width=reply["width"], height=reply["height"])
             image = {k: reply[k] for k in ("width", "height", "view_name", "png_base64")}
-            image["capture_id"] = captures.capture_id(session.session_id, scope, reply["png_base64"])
+            image["capture_id"] = session.captures.add(scope, image)
         else:
             result["error"] = reply["error"] if reply["error"] in ("invalid_args", "unsupported_addin") else "capture_failed"
     else:
@@ -429,13 +429,15 @@ async def _missing_params(args: dict, session: Session) -> ToolOutcome:
             snapshot = await take_snapshot(await get_revit_client())
         except Exception:  # noqa: BLE001 - best effort: questions still go out, without options
             snapshot = None
-    language = str(args.get("language") or "zh")
+    language = session.language or str(args.get("language") or "zh")
     return ToolOutcome([q.model_dump(mode="json") for q in missing_params(pack, known, snapshot, language)])
 
 
 async def _reconcile(args: dict, session: Session) -> ToolOutcome:
     try:
         draft = TaskSpec.model_validate(args.get("spec"))
+        if session.language:
+            draft = draft.model_copy(update={"language": session.language})
     except ValidationError as exc:
         return ToolOutcome({"error": "invalid_spec", "message": str(exc)})
     pack = pack_for(draft, ToolStore())          # a bad tool name is refused before Revit is asked
@@ -468,6 +470,8 @@ async def _propose_spec(args: dict, session: Session, *, host_workflow=False) ->
     given = args.get("spec")
     try:
         spec = TaskSpec.model_validate(given)
+        if session.language:
+            spec = spec.model_copy(update={"language": session.language})
     except ValidationError as exc:
         # Nothing the page could render, nothing worth keeping: the verdict goes to
         # the model only and the session's last spec stays what it was.
@@ -489,7 +493,7 @@ async def _propose_spec(args: dict, session: Session, *, host_workflow=False) ->
         read = await try_read(spec, session, store, step=read_step)
         if read is not None:
             return _direct_outcome(spec.action.tool, read, session, read_step,
-                                   chinese=spec.language == "zh", recorded=read.get("result"))
+                                   chinese=session.chinese, recorded=read.get("result"))
     if step and "step_id" not in args:
         return _refused("invalid_step", f"Propose only the current unconfirmed plan step {step.id}.")
     if step:
@@ -509,6 +513,12 @@ async def _propose_spec(args: dict, session: Session, *, host_workflow=False) ->
     picks = session.picks_for(current_scope())
     errors = [e.model_dump() for e in validate_spec(spec, pack) + mention_errors(spec, pack, picks)]
     event = {"spec": normalized, "card": spec.card(), "errors": errors, "reconcile": None}
+    scope = current_scope()
+    _, reference = session.selection_messages.get(scope, (None, None))
+    session.card_selection = None
+    if reference and uses_current_selection(spec, pack):
+        session.card_selection = (scope, reference)
+        event["selection_reference"] = reference.model_dump(exclude_defaults=True)
     if selection := selection_for_card(spec, pack, session):
         event["assistant_selection"] = selection
     try:

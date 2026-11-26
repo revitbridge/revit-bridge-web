@@ -3,6 +3,7 @@
 import type { Mention, MentionItem, StageEvent, ToolEvent, TraceEvent, UsageEvent } from './hostv2'
 
 export interface RevitHealthResponse {
+  selection_state_supported?: boolean | null
   revit_connected: boolean
   user_tools_allowed?: boolean | null
   latency_ms: number | null
@@ -179,6 +180,9 @@ export interface TaskPlan {
 
 export interface ChatMessage {
   images?: ViewImage[]
+  missingTool?: MissingTool
+  currentSelection?: number
+  selectionOmissions?: Record<string, number>
   imageNotice?: string
   plan?: TaskPlan
   stepResults?: Record<string, ExecutionResult>
@@ -219,6 +223,7 @@ export interface MentionProblem {
 
 /* event: mentions - the turn's first frame when the message carried picks. */
 export interface MentionReport {
+  current_selection?: {count: number; document_id: string; omitted?: Record<string, number>}
   resolved: (MentionItem & Record<string, unknown>)[]
   not_found: MentionProblem[]
   invalid: MentionProblem[]
@@ -323,7 +328,8 @@ export interface DesignerAnswers {
 
 export interface HostRequest {
   selection_answer?: string
-  capture?: Pick<ViewImage, 'capture_id' | 'png_base64'>
+  hidden_captures?: string[]
+  current_selection?: SelectionState
   run?: 'confirm' | 'auto'
   answers?: DesignerAnswers
   message?: string
@@ -336,15 +342,17 @@ export interface HostRequest {
 
 /* The SSE events of one turn, as chatEvents() yields them. */
 export type HostEvent =
+  | ({ type: 'missing_tool' } & MissingTool)
   | { type: 'ask_selection'; ask_id: string; selection: SelectionQuestion }
   | ({ type: 'view_image' } & ViewImage)
+  | { type: 'capture_context'; states: Record<string, string> }
   | { type: 'image_notice'; reason: string }
   | ({ type: 'plan' } & TaskPlan)
   | ({ type: 'questions' } & DesignerForm)
   | { type: 'session'; id: string }
   | { type: 'token'; text: string }
   | { type: 'spec'; spec: TaskSpec; card: string; errors: SpecError[]; reconcile: ReconcileResult | null;
-      run?: 'confirm' | 'auto'; run_reason?: string; assistant_selection?: AssistantSelection;
+      run?: 'confirm' | 'auto'; run_reason?: string; selection_reference?: SelectionReference; assistant_selection?: AssistantSelection;
       reconcile_error?: { error: string; message?: string } }
   | { type: 'execution'; execution: ExecutionResult }
   | ({ type: 'mentions' } & MentionReport)   // what the host found for the message's picks
@@ -352,9 +360,12 @@ export type HostEvent =
   | { type: 'error'; detail: string }
   | { type: 'done' }
 
+export interface SelectionState { document_id: string; stamp: string; count: number }
+export interface SelectionReference extends SelectionState { categories: Record<string, number>; categories_partial?: boolean }
+export interface MissingTool { request: string; question: string; choices: Record<'authoring' | 'remote_mcp' | 'dismiss', string> }
 export interface SelectionQuestion { prompt: string; mode: 'single' | 'multiple' | 'box'; category?: string }
 export interface AssistantSelection { tool: string; count: number | null; ids: string[] }
-export interface ViewImage { capture_id: string; png_base64: string; width: number; height: number; view_name: string }
+export interface ViewImage { context_reason?: string; capture_id: string; png_base64: string; width: number; height: number; view_name: string }
 
 export interface HostFunction {
   name: string

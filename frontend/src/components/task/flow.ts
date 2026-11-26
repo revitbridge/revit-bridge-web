@@ -7,10 +7,10 @@
    this store only: never in localStorage or sessionStorage. Only saved tools
    run here (run_tool): the model in this host proposes no code. */
 
-import { browserLanguage } from '../../utils/language'
+import { uiText } from '../../utils/strings'
 import { createStore } from 'zustand/vanilla'
 import type {
-  AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
+  SelectionReference, AssistantSelection, ChatMessage, ConfirmResponse, DesignerAnswers, ExecutionResult, HostEvent, HostRequest, Interpretation, Question, ReconcileResult,
   PlanStatus, SpecError, TaskPlan, TaskSpec,
 } from '../../types/api'
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
@@ -25,8 +25,9 @@ export type EventSource = (request: HostRequest, signal?: AbortSignal) => AsyncI
 /* reconcile and confirm carry the chat session the spec comes from: a parameter bound to
    one of the designer's picks is accepted only for a pick checked in that session. */
 export interface FlowApi {
+  clearCaptures?(sessionId: string): Promise<unknown>
   reconcile(spec: TaskSpec, sessionId: string | null): Promise<ReconcileResult>
-  confirm(spec: TaskSpec, sessionId: string | null): Promise<ConfirmResponse>
+  confirm(spec: TaskSpec, sessionId: string | null, selection?: SelectionReference): Promise<ConfirmResponse>
   runTool(name: string, params: Record<string, unknown>, token: string): Promise<ExecutionResult>
 }
 
@@ -43,6 +44,7 @@ export interface Transcript {
   messages: ChatMessage[]
   sessionId: string | null
   streaming: boolean
+  selectionRevision?: number
 }
 
 /* The model's latest propose_spec, and the designer's copy of it (draft) with the interpretations ticked. */
@@ -50,6 +52,7 @@ export interface Proposal {
   run?: 'auto' | 'confirm'
   runReason?: string
   assistantSelection?: AssistantSelection
+  selectionReference?: SelectionReference
   awaitingReceipt?: boolean
   ended?: boolean
   planStep?: { planId: string; stepId: string; status: PlanStatus }
@@ -71,7 +74,7 @@ export interface Confirmation extends ConfirmResponse {
 export type Tamper = { param: string; value: string }
 
 export interface TaskState {
-  attachment: string | null
+  hiddenCaptures: string[]
   cardMessage: number
   highlight: number
   archived: { message: number; proposal: Proposal; execution: ExecutionResult | null; confirmation: Confirmation | null }[]
@@ -90,7 +93,7 @@ export interface TaskState {
 const emptyTranscript = (): Transcript => ({ messages: [], sessionId: null, streaming: false })
 
 export const initialState = (): TaskState => ({
-  attachment: null,
+  hiddenCaptures: [],
   cardMessage: -1, highlight: 0, archived: [],
   bridge: emptyTranscript(),
   baseline: emptyTranscript(),
@@ -169,7 +172,7 @@ export function canConfirm(s: TaskState): boolean {
 
 export function confirmLabel(execution?: ExecutionResult | null, errors: SpecError[] = []): string {
   const retry = Boolean(execution || errors.length)
-  return browserLanguage() === 'zh' ? (retry ? '重试执行' : '确认并执行') : (retry ? 'Retry execution' : 'Confirm and run · 确认并执行')
+  return uiText(retry ? 'Retry execution' : 'Confirm and run')
 }
 
 type SpecEvent = Extract<HostEvent, { type: 'spec' }>
@@ -179,9 +182,10 @@ type MentionsEvent = Extract<HostEvent, { type: 'mentions' }>
 function reportPicks(t: Transcript, report: MentionsEvent): Transcript {
   const at = t.messages.findLastIndex(m => m.role === 'user')
   const message = t.messages[at]
-  if (!message?.mentions) return t
+  if (!message || (!message.mentions && !report.current_selection)) return t
   const messages = t.messages.slice()
-  messages[at] = { ...message, mentions: withReport(message.mentions, report) }
+  messages[at] = { ...message, currentSelection: report.current_selection?.count, selectionOmissions: report.current_selection?.omitted,
+    mentions: withReport(message.mentions ?? [], report) }
   return { ...t, messages }
 }
 function updatePlan(t: Transcript, plan: TaskPlan, execution?: ExecutionResult): Transcript {
@@ -212,7 +216,10 @@ export function createTaskFlow(deps: FlowDeps) {
   const withMode = (request: HostRequest): HostRequest => {
     const mode = deps.mode?.()
     const run = deps.run?.()
-    return { ...request, ...(mode ? { mode } : {}), ...(run === 'auto' ? { run } : {}) }
+    const state = getState()
+    const retained = state.bridge.messages.flatMap(m => m.images ?? []).slice(-32)
+    const hidden = retained.map(image => image.capture_id).filter(id => state.hiddenCaptures.includes(id))
+    return { ...request, ...(retained.length ? { hidden_captures: hidden } : {}), ...(mode ? { mode } : {}), ...(run === 'auto' ? { run } : {}) }
   }
 
   const push = (side: Side, message: ChatMessage) =>
@@ -281,8 +288,19 @@ export function createTaskFlow(deps: FlowDeps) {
           update(m => ({ ...m, images: [...(m.images ?? []), evt] }))
           continue
         }
+        if (evt.type === 'capture_context') {
+          patch(side, t => ({ ...t, messages: t.messages.map(m => m.images ? { ...m, images: m.images.map(image => ({
+            ...image, context_reason: evt.states[image.capture_id] ?? 'unavailable'
+          })) } : m) }))
+          continue
+        }
         if (evt.type === 'image_notice') {
           update(m => ({ ...m, imageNotice: evt.reason }))
+          continue
+        }
+        if (evt.type === 'missing_tool') {
+          sawForm = true
+          update(m => ({ ...m, missingTool: evt }))
           continue
         }
         if (evt.type === 'questions' || evt.type === 'ask_selection') {
@@ -306,7 +324,7 @@ export function createTaskFlow(deps: FlowDeps) {
         }
         if (evt.type === 'mentions') { patch(side, t => reportPicks(t, evt)); continue }
         if (evt.type === 'error') {
-          reply += `${reply ? '\n\n' : ''}**Model error:** ${evt.detail}`
+          reply += `${reply ? '\n\n' : ''}**${uiText("Model error:")}** ${evt.detail}`
           show(reply)
           break
         }
@@ -314,19 +332,22 @@ export function createTaskFlow(deps: FlowDeps) {
       }
     } catch (e: unknown) {
       const askId = request.answers?.ask_id ?? request.selection_answer
+      if (request.current_selection && e instanceof BridgeApiError && e.code === 'selection_changed') {
+        patch(side, t => ({ ...t, selectionRevision: (t.selectionRevision ?? 0) + 1 }))
+      }
       if (askId && e instanceof BridgeApiError && e.status === 422 && e.code === 'invalid_answers') {
         patch(side, t => ({ ...t, messages: t.messages.map(m =>
           m.form?.ask_id === askId ? { ...m, answered: 'invalid' } : m) }))
       }
       if (!isAbortError(e)) {
-        reply += `${reply ? '\n\n' : ''}**Model error:** ${getErrorMessage(e)}`
+        reply += `${reply ? '\n\n' : ''}**${uiText("Model error:")}** ${e instanceof BridgeApiError && e.body?.message ? e.body.message : getErrorMessage(e)}`
         show(reply)
       }
     }
     if (side === 'bridge' && getState().proposal?.run === 'auto' && !getState().execution) {
       setState(s => s.proposal ? { proposal: { ...s.proposal, awaitingReceipt: true } } : {})
     }
-    if (!reply && !sawForm && !sawPlan && !sawImage) show(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE)
+    if (!reply && !sawForm && !sawPlan && !sawImage) show(uiText(sawSpec ? SPEC_ONLY_REPLY : NO_RESPONSE))
     // However the stream ended (done, error, abort, broken off): a tool or stage still open
     // will never be closed by the server now - mark it interrupted.
     patch(side, t => {
@@ -346,7 +367,7 @@ export function createTaskFlow(deps: FlowDeps) {
         execution: s.execution, confirmation: s.confirmation }] : s.archived,
       proposal: {
         ...(plan && step ? { planStep: { planId: plan.plan_id, stepId: step.id, status: step.status } } : {}),
-        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection,
+        run: evt.run, runReason: evt.run_reason, assistantSelection: evt.assistant_selection, selectionReference: evt.selection_reference,
         spec: evt.spec,
         card: evt.card,
         errors: evt.errors ?? [],
@@ -364,7 +385,7 @@ export function createTaskFlow(deps: FlowDeps) {
 
   /* The designer's message, with the model items picked in it (bridge side only: the
      comparison has no model to check them against, and gets the text as typed). */
-  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers, selectionAnswer?: string) {
+  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers, selectionAnswer?: string, selection?: HostRequest['current_selection']) {
     const s = getState()
     const message = text.trim()
     if (!message || s.bridge.streaming || s.baseline.streaming || s.confirming || s.running) return
@@ -378,11 +399,10 @@ export function createTaskFlow(deps: FlowDeps) {
         setState({ proposal: { ...s.proposal, ended: true } })
       }
     }
-    if (!s.attachment && open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
+    if (open < 0 && canConfirm(s) && !mentions.length && /^(同意|确认|yes|ok)[.!。！]?$/iu.test(message)) {
       push('bridge', { role: 'user', content: message })
       push('bridge', { role: 'assistant',
-        content: browserLanguage() === 'zh' ? `卡片在我上一条提交它的回复里。请点击卡片上的“${confirmLabel(s.execution, s.confirmErrors)}”。`
-          : `The card is in the reply where I proposed it. Click “${confirmLabel(s.execution, s.confirmErrors)}” on that card.` })
+        content: uiText("The card is in the reply where I proposed it. Click “{0}” on that card.", confirmLabel(s.execution, s.confirmErrors)) })
       setState({ highlight: s.highlight + 1 })
       return
     }
@@ -392,11 +412,7 @@ export function createTaskFlow(deps: FlowDeps) {
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
     if (answers) request.answers = answers
     if (selectionAnswer) request.selection_answer = selectionAnswer
-    if (s.attachment) {
-      const image = s.bridge.messages.flatMap(m => m.images ?? []).find(img => img.capture_id === s.attachment)
-      if (image) request.capture = { capture_id: image.capture_id, png_base64: image.png_base64 }
-      setState({ attachment: null })
-    }
+    if (selection && !askId) request.current_selection = selection
     if (picked) request.mentions = mentionRefs(mentions)
     const jobs = [consume('bridge', withMode(request), onSpec, closeForm)]
     if (s.compare) {
@@ -446,7 +462,9 @@ export function createTaskFlow(deps: FlowDeps) {
     }
     setState({ confirming: true, confirmation: null, confirmErrors: [] })
     try {
-      const issued = await deps.api.confirm(spec, s.bridge.sessionId)
+      const issued = s.proposal.selectionReference
+        ? await deps.api.confirm(spec, s.bridge.sessionId, s.proposal.selectionReference)
+        : await deps.api.confirm(spec, s.bridge.sessionId)
       if (getState().proposal !== s.proposal) return
       setState({
         confirmation: { ...issued, spec, used: false },
@@ -499,8 +517,8 @@ export function createTaskFlow(deps: FlowDeps) {
     const s = getState()
     if (!s.execution || !s.bridge.sessionId || s.bridge.streaming || s.reported) return
     setState({ reported: true })
-    const label = s.execution.evidence_id ? `evidence ${s.execution.evidence_id}` : s.execution.error ?? 'result'
-    push('bridge', { role: 'host', content: `Execution result sent to the model (${label}).` })
+    const label = s.execution.evidence_id ? uiText("evidence {0}", s.execution.evidence_id) : s.execution.error ?? 'result'
+    push('bridge', { role: 'host', content: uiText("Execution result sent to the model ({0}).", label) })
     controller = new AbortController()
     await consume('bridge', withMode({ execution: s.execution, session_id: s.bridge.sessionId }), onSpec)
     const current = getState()
@@ -521,7 +539,7 @@ export function createTaskFlow(deps: FlowDeps) {
     if (!c?.used || !c.spec.action.tool) return null
     const params = paramsOf(c.spec)
     const value = coerceLike(tamper.value, params[tamper.param])
-    if (value === params[tamper.param]) return { success: false, error: 'Choose a different value.' }
+    if (value === params[tamper.param]) return { success: false, error: uiText("Choose a different value.") }
     try {
       return await deps.api.runTool(c.spec.action.tool, { ...params, [tamper.param]: value }, c.token)
     } catch (e: unknown) {
@@ -545,6 +563,9 @@ export function createTaskFlow(deps: FlowDeps) {
 
   function reset() {
     if (getState().confirming || getState().running) return
+    const { bridge } = getState()
+    if (bridge.sessionId)
+      void deps.api.clearCaptures?.(bridge.sessionId).catch(() => {}) // Idle sessions also expire on the host.
     abort()
     setState({ ...initialState(), compare: getState().compare })
   }

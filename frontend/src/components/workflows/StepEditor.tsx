@@ -1,3 +1,4 @@
+import { uiText } from '../../utils/strings'
 import { useEffect, useId, useState } from 'react'
 import { workflowApi, type Binding, type WorkflowInput, type WorkflowStep } from '../../api/workflows'
 import type { ToolParam } from '../../types/api'
@@ -9,11 +10,10 @@ interface ParamProps {
   earlier: WorkflowStep[]
   change: (value?: Binding) => void
   describe: (name: string, description: string) => void
-  zh: boolean
 }
 
-function ResultPath({ tool, path, change, zh }: {
-  tool?: string; path: string; change: (path: string) => void; zh: boolean
+function ResultPath({ tool, path, change }: {
+  tool?: string; path: string; change: (path: string) => void
 }) {
   const id = useId()
   const [paths, setPaths] = useState<string[]>([])
@@ -23,13 +23,13 @@ function ResultPath({ tool, path, change, zh }: {
       .catch(() => { if (active) setPaths([]) })
     return () => { active = false }
   }, [tool])
-  return <label>{zh ? '结果路径' : 'Result path'}
+  return <label>{uiText("Result path")}
     <input list={id} value={path} onChange={e => change(e.target.value)} placeholder="ElementId" />
     <datalist id={id}>{paths.map(p => <option key={p} value={p} />)}</datalist>
   </label>
 }
 
-export function ParameterEditor({ param, binding, inputs, earlier, change, describe, zh }: ParamProps) {
+export function ParameterEditor({ param, binding, inputs, earlier, change, describe }: ParamProps) {
   const id = useId()
   const mode = binding === undefined ? 'omit' : typeof binding !== 'object' ? 'fixed' : 'input' in binding ? 'input' : 'from'
   const bool = ['bool', 'boolean'].includes(param.type ?? '')
@@ -44,33 +44,33 @@ export function ParameterEditor({ param, binding, inputs, earlier, change, descr
     }
   }
   return <fieldset className="workflow-param"><legend><code>{param.name}</code> {param.unit}</legend>
-    <label>{zh ? '参数来源' : 'Value source'}
+    <label>{uiText("Value source")}
       <select value={mode} onChange={e => setMode(e.target.value)}>
-        {(!param.required || mode === 'omit') && <option value="omit">{zh ? '未指定' : 'Unspecified'}</option>}
-        <option value="fixed">{zh ? '固定值' : 'Fixed value'}</option>
-        <option value="input">{zh ? '运行时询问' : 'Ask at run time'}</option>
-        <option value="from" disabled={!earlier.length}>{zh ? '前一步的结果' : 'Earlier result'}</option>
+        {(!param.required || mode === 'omit') && <option value="omit">{uiText("Unspecified")}</option>}
+        <option value="fixed">{uiText("Fixed value")}</option>
+        <option value="input">{uiText("Ask at run time")}</option>
+        <option value="from" disabled={!earlier.length}>{uiText("Earlier result")}</option>
       </select></label>
-    {mode === 'fixed' && <label>{zh ? '固定值' : 'Fixed value'}
+    {mode === 'fixed' && <label>{uiText("Fixed value")}
       {bool ? <select value={String(binding)} onChange={e => change(e.target.value === 'true')}>
         <option value="true">true</option><option value="false">false</option></select> :
         <input type={numeric ? 'number' : 'text'} step="any" value={String(binding ?? '')} onChange={e =>
           change(numeric && e.target.value !== '' ? e.target.valueAsNumber : e.target.value)} />}
     </label>}
-    {typeof binding === 'object' && 'input' in binding && <><label>{zh ? '输入名称' : 'Input name'}
+    {typeof binding === 'object' && 'input' in binding && <><label>{uiText("Input name")}
       <input list={id} value={binding.input} onChange={e => change({ input: e.target.value })} />
       <datalist id={id}>{inputs.filter(i => i.type === param.type).map(i => <option key={i.name} value={i.name} />)}</datalist>
-    </label><label>{zh ? '运行时问题' : 'Run-time question'}
+    </label><label>{uiText("Run-time question")}
       <input value={inputs.find(i => i.name === binding.input)?.description ?? ''}
         onChange={e => describe(binding.input, e.target.value)} />
     </label></>}
     {typeof binding === 'object' && 'from' in binding && <>
-      <label>{zh ? '来源步骤' : 'Source step'}<select value={binding.from} onChange={e => change({ from: e.target.value, path: '' })}>
+      <label>{uiText("Source step")}<select value={binding.from} onChange={e => change({ from: e.target.value, path: '' })}>
         {!earlier.some(s => s.id === binding.from) && <option value={binding.from}>{binding.from || '—'}</option>}
         {earlier.map(s => <option key={s.id} value={s.id}>{s.title} · {s.id}</option>)}
       </select></label>
       <ResultPath key={binding.from} tool={earlier.find(s => s.id === binding.from)?.tool} path={binding.path}
-        change={path => change({ ...binding, path })} zh={zh} />
+        change={path => change({ ...binding, path })} />
     </>}
   </fieldset>
 }

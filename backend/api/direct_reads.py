@@ -2,16 +2,15 @@
 from starlette.concurrency import run_in_threadpool
 
 from revit_bridge.capabilities import ToolStore
-from revit_bridge.execution import run_pack
 from revit_bridge.spec.gate import GateError
 from revit_bridge.spec.rules import reconcile, validate_spec
 
 from backend.api import bridge
+from backend.api.errors import ApiError
 from backend.config import get_settings
 from backend.mention_check import mention_errors
+from backend.selection import SELECTION_WRITERS, uses_current_selection
 
-
-SELECTION_WRITERS = {"select_elements", "select_in_box", "select_by_filter", "clear_selection"}
 MAX_CARD_IDS = 20
 
 
@@ -32,17 +31,8 @@ def selection_record(name, params, result):
 
 
 def selection_for_card(spec, pack, session):
-    record = session.assistant_selections.get(bridge.current_scope())
-    if not record or not pack:
-        return None
-    if pack.name == "delete_selected":
-        return record
-    params = spec.execution_projection()["params"]
-    for p in pack.parameters:
-        if (p["name"] in ("element_id", "element_ids") and p.get("default") == ""
-                and params.get(p["name"]) in (None, "")):
-            return record
-    return None
+    if uses_current_selection(spec, pack):
+        return session.assistant_selections.get(bridge.current_scope())
 
 
 def reserve_direct_run(session):
@@ -82,14 +72,27 @@ async def try_read(spec, session, store, *, step=None):
     report = reconcile(spec, await bridge.snapshot_now(client), pack)
     if not report.ready:
         return {"error": "not_ready", "reconcile": report.model_dump(mode="json")}
+    origin = session.selection_messages.get(scope)
+    if origin and origin[1] and uses_current_selection(spec, pack):
+        turn, reference = origin
+        if turn != session.turns:
+            return None  # Present a card for confirmation.
+        owner = bridge.device_selection()
+        try:
+            latest = await owner.verify(client, reference)
+        except ApiError:
+            return None
+        if not owner.designer(latest):
+            return None
     gate = bridge.get_gate()
     confirmer = "host:ui-only" if pack.ui_only else "host:read-only"
     confirmation = await run_in_threadpool(gate.issue, spec, confirmed_by=confirmer,
                                            channel=bridge.CONFIRM_CHANNEL, scope=scope)
     projection = spec.execution_projection()
     try:
-        result = await run_pack(store=readers, gate=gate, ledger=bridge.get_ledger(), client=client, name=name,
-                                params=projection["params"], token=confirmation.token, host=bridge.HOST, scope=scope)
+        result = await bridge.run_pack_on_device(store=readers, gate=gate, ledger=bridge.get_ledger(), client=client,
+                                                 name=name, params=projection["params"], token=confirmation.token,
+                                                 host=bridge.HOST, scope=scope)
         payload = bridge._execution_payload(result)
         if pack.ui_only:
             payload["ui_only"] = True

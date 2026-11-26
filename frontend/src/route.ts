@@ -6,6 +6,7 @@ export type Tab = typeof TABS[number]
 export type CapabilitiesView = 'packs' | 'workbench' | 'authoring' | 'skills'
 export type SettingsView = 'models' | 'connection' | 'usage' | 'remote-mcp'
 export interface View {
+  brief?: string
   tab: Tab
   capabilities: CapabilitiesView
   settings?: SettingsView

@@ -15,6 +15,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from backend.language import prefers_chinese
+
 BRIDGE_PREFIX = "/api/v1/bridge"
 
 
@@ -79,6 +81,16 @@ def device_store_responses(*statuses: int) -> dict:
     return declared
 
 
+_SELECTION_MESSAGES = {
+    "selection_changed": ("The Revit selection changed. Check it and send again.", "Revit 中的选择已变化，请核对后重新发送。"),
+    "selection_too_large": ("Narrow the selection or remove it from this message.", "请缩小选择范围或从消息中移除当前选择。"),
+    "selection_busy": ("Selection is paused during a conversation or watch.", "对话或观察期间已暂停读取选择。"),
+    "selection_unavailable": ("The Revit selection is unavailable.", "暂时无法读取 Revit 选择。"),
+    "selection_question_changed": ("This selection question is no longer active.", "此选择问题已失效。"),
+    "watch_in_progress": ("A selection watch is already running on this device.", "该设备已在观察选择。"),
+}
+
+
 class ApiError(Exception):
     """Raise anywhere under a route; the handler turns it into the JSON response."""
 
@@ -104,14 +116,20 @@ def revit_unreachable(exc: BaseException | None = None, **extra) -> ApiError:
 def install(app: FastAPI) -> None:
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status, content=exc.payload)
+        message = _SELECTION_MESSAGES.get(exc.payload["error"])
+        language = request.headers.get("accept-language")
+        if language and message:
+            payload = {**exc.payload, "message": message[1 if prefers_chinese(language) else 0]}
+        else:
+            payload = exc.payload
+        return JSONResponse(status_code=exc.status, content=payload)
 
     @app.exception_handler(RequestValidationError)
     async def _invalid_args(request: Request, exc: RequestValidationError) -> JSONResponse:
         """A body or query that does not fit a bridge route: the MCP tools call it
         invalid_args. Every other route keeps FastAPI's ``{detail: [...]}``."""
-        if request.url.path == "/api/chat" and isinstance(exc.body, dict) and "capture" in exc.body:
-            return JSONResponse(status_code=422, content={"error": "invalid_args", "message": "Invalid chat request with an image attachment."})
+        if request.url.path == "/api/chat" and isinstance(exc.body, dict) and ("capture" in exc.body or "hidden_captures" in exc.body):
+            return JSONResponse(status_code=422, content={"error": "invalid_args"})
         if request.url.path == "/api/v1/settings/models":
             from backend.config import get_settings
             settings = get_settings()

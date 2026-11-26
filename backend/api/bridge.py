@@ -101,8 +101,10 @@ from revit_bridge.spec.gate import Gate, GateError, confirmation_invalid, confir
 from revit_bridge.spec.models import TaskSpec, projection_hash
 from revit_bridge.spec.rules import missing_params, reconcile, validate_spec
 
+from backend import selection
 from backend.api import devices as devices_api
 from backend.api.errors import ApiError, admin_responses, responses, revit_unreachable
+from backend.language import prefers_chinese
 from backend.config import get_settings
 from backend.mention_check import bound_picks, changed_pick, mention_errors, mention_evidence
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
@@ -203,11 +205,19 @@ def get_ledger() -> Ledger:
     return _ledger
 
 
+_device_selections: dict[str, selection.DeviceSelection] = {}
+
+
+def device_selection():
+    return _device_selections.setdefault(current_scope(), selection.DeviceSelection())
+
+
 def reset_bridge_state() -> None:
     """Drop the gate and ledger (tests change the data root between cases)."""
     global _gate, _ledger
     _gate = None
     _ledger = None
+    _device_selections.clear()
 
 
 async def get_revit_client():
@@ -417,6 +427,7 @@ class ReconcileRequest(BaseModel):
 
 class ConfirmRequest(BaseModel):
     spec: dict
+    selection_reference: selection.SelectionState | None = Field(default=None, description="Observed selection identity on this chat card")
     confirmed_by: str = "designer"
     session_id: str | None = Field(default=None, max_length=64, description=SESSION_ID_DOC)
 
@@ -564,6 +575,8 @@ def host_functions() -> list[dict]:
 class WatchRequest(SelectionOptions):
     session_id: Identifier
     watch_id: Identifier
+    ask_id: Identifier | None = None
+    prompt: str | None = Field(default=None, max_length=500)
     timeout_s: float = Field(default=120, gt=0, le=120)
 
 
@@ -577,6 +590,21 @@ def bridge_write_rate_limit(request: Request) -> None:
         raise ApiError(429, "rate_limited", "Too many requests from this address; try again in a minute")
 
 
+@router.get("/selection-state", responses=responses(403, 409, 503))
+async def selection_state(request: Request, response: Response):
+    """Count, document and stamp only. Concurrent browsers share one device read per two seconds."""
+    state = device_selection()
+    scope = current_scope()
+
+    def busy():
+        return state.streams or state.writes or scope in request.app.state.selection_watches
+
+    if busy():
+        raise ApiError(409, "selection_busy")
+    response.headers["Cache-Control"] = "no-store"
+    return await state.poll(await get_revit_client(), busy)
+
+
 @router.post("/watch-selection", dependencies=[Depends(bridge_write_rate_limit)], responses=responses(403, 409, 422, 429, 503))
 async def watch_selection(req: WatchRequest, request: Request):
     """Observe normal selection on this device. Returns the element mention page (items carry
@@ -587,13 +615,26 @@ async def watch_selection(req: WatchRequest, request: Request):
     HTTP request cancels observation."""
     watches = request.app.state.selection_watches
     scope = current_scope()
+    if device_selection().writes:
+        raise ApiError(409, "selection_busy")
     if scope in watches:
         raise ApiError(409, "watch_in_progress", "A selection watch is already running on this device.")
     session = get_session_store().get(req.session_id)
+    if req.ask_id:
+        pending = session.pending_form if session else None
+        if not pending or pending.get("ask_id") != req.ask_id or pending.get("scope") != scope or "selection" not in pending:
+            raise ApiError(409, "selection_question_changed")
+        question = pending["selection"]
+        req.mode, req.category, req.prompt = question["mode"], question.get("category"), question["prompt"]
+    device = device_selection()
+    generation = device.generation
     previous = session.assistant_selections.get(scope) if session else None
 
     async def observe():
-        executor = RevitQueryExecutor(await get_revit_client())
+        client = await get_revit_client()
+        if req.prompt:
+            client = selection.WatchClient(client, req.prompt)
+        executor = RevitQueryExecutor(client)
         return await executor.watch_selection(req.mode, req.category, timeout_s=req.timeout_s)
 
     watch = asyncio.create_task(observe())
@@ -604,10 +645,15 @@ async def watch_selection(req: WatchRequest, request: Request):
         if disconnected.done() or watch.cancelled():
             return {"cancelled": True}
         result = watch.result()
+        if "items" in result:
+            device.last_read = 0.0
+            if generation != device.generation:
+                raise ApiError(409, "selection_changed", "The assistant changed the selection. Select again.")
         if session and "items" in result:
             current = session.assistant_selections.get(scope)
             if current is not None and current is not previous:
                 raise ApiError(409, "selection_changed", "The assistant changed the selection. Select again.")
+            device.assistant = False
             session.assistant_selections.pop(scope, None)
         return result
     except OSError as exc:
@@ -924,7 +970,7 @@ async def get_tool_choices(name: str):
 
 
 @router.post("/tools/{name}/missing-params", responses=responses(403, 404, 422))
-async def tool_missing_params(name: str, req: MissingParamsRequest):
+async def tool_missing_params(name: str, req: MissingParamsRequest, request: Request):
     """``missing_params``: the questions still open for the pack given ``known`` values,
     with the real options from ``snapshot`` (or one taken now, best effort)."""
     pack = ToolStore().load(require_tool_name(name))
@@ -936,7 +982,10 @@ async def tool_missing_params(name: str, req: MissingParamsRequest):
             snapshot = await take_snapshot(await get_revit_client())
         except Exception:  # noqa: BLE001 - the questions still go out, without options
             snapshot = None
-    return [q.model_dump(mode="json") for q in missing_params(pack, req.known, snapshot, req.language)]
+    language = req.language
+    if "language" not in req.model_fields_set and (header := request.headers.get("accept-language")):
+        language = "zh" if prefers_chinese(header) else "en"
+    return [q.model_dump(mode="json") for q in missing_params(pack, req.known, snapshot, language)]
 
 
 @router.post("/tools/{name}/run", responses=responses(400, 403, 404, 422, 503))
@@ -947,6 +996,27 @@ async def run_tool(name: str, req: RunToolRequest):
     token, execution failures including ``unknown_tool`` and ``revit_unreachable`` return
     HTTP 200 with ``success: false`` so the supervisor can handle the step's receipt."""
     return await execute_pack(name, req, ToolStore())
+
+
+async def run_pack_on_device(*, client, name, **kwargs):
+    if name not in selection.SELECTION_WRITERS:
+        return await run_pack(client=client, name=name, **kwargs)
+    device = device_selection()
+    device.writes += 1
+    device.generation += 1
+    device.last_read = 0.0
+    try:
+        result = await run_pack(client=client, name=name, **kwargs)
+        if result.success:
+            await device.mark_write(client)
+        return result
+    except (Exception, asyncio.CancelledError):
+        # The command may already have run. Require an observed change to claim designer origin.
+        device.assistant, device.after_write = True, None
+        raise
+    finally:
+        device.writes -= 1
+        device.last_read = 0.0
 
 
 async def execute_pack(name, req, store):
@@ -965,7 +1035,7 @@ async def execute_pack(name, req, store):
         if store.load(name) is None:
             raise unknown_tool(name)
         client = await get_revit_client()
-        result = await run_pack(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
+        result = await run_pack_on_device(store=store, gate=get_gate(), ledger=get_ledger(), client=client,
                                 name=name, params=req.params, token=token, host=HOST, scope=scope)
         payload = _execution_payload(result)
         if plan:
@@ -1092,7 +1162,7 @@ async def reconcile_spec(req: ReconcileRequest):
 
 
 @router.post("/spec/confirm", dependencies=[Depends(bridge_write_rate_limit)],
-             responses=responses(403, 422, 429, 503, 504))
+             responses=responses(403, 409, 422, 429, 503, 504))
 async def confirm_spec(req: ConfirmRequest):
     """``validate_spec`` + ``Gate.issue(channel="host_ui")``: the designer confirmed the card.
     Returns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -
@@ -1101,7 +1171,8 @@ async def confirm_spec(req: ConfirmRequest):
     spec that binds picks has them read again from the open model first (``recheck_picks``):
     one gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503
     ``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks
-    needs no Revit here. The token belongs to the browser session and never enters the model
+    needs no Revit here unless it uses a selection reference. The host checks its document and stamp
+    before issuing a token and returns 409 selection_changed if they differ. The token belongs to the browser session and never enters the model
     context."""
     if req.confirmed_by.strip().casefold() == "designer:auto-run":
         raise ApiError(422, "invalid_confirmer", "This identity belongs to automatic execution.")
@@ -1122,6 +1193,17 @@ async def issue_spec(req, store):
         raise ApiError(422, "invalid_spec", errors=[e.model_dump() for e in changed])
     refuse_unknown_mentions(spec, pack, req.session_id)
     session = picks_session(req.session_id)
+    guard = session.card_selection if session and selection.uses_current_selection(spec, pack) else None
+    if req.selection_reference and (not guard or not req.selection_reference.matches(guard[1])):
+        raise ApiError(409, "selection_changed")
+    if guard:
+        scope, reference = guard
+        if scope != current_scope():
+            raise ApiError(409, "selection_changed")
+        owner = device_selection()
+        latest = await owner.verify(await get_revit_client(), reference)
+        if session.card_selection is not guard or not owner.designer(latest):
+            raise ApiError(409, "selection_changed")
     plan = session.plan if session else None
     proposal = plan.proposed if plan else None
     given = spec.model_dump(mode="json")
@@ -1399,15 +1481,15 @@ async def trigger_selection():
 
 # -- health --------------------------------------------------------------------
 
-async def _user_tools_allowed():
+async def _health_features():
     try:
         caps = await discover(await get_revit_client(), refresh=True, timeout=2)
         tools = caps.info.get("user_tools")
-        if isinstance(tools, dict) and type(tools.get("allowed")) is bool:
-            return tools["allowed"]
+        return {"user_tools_allowed": tools.get("allowed") if isinstance(tools, dict) else None,
+                "selection_state_supported": caps.has_method(selection.STATE_METHOD) if caps.state != "unknown" else None}
     except Exception:
         pass  # Older add-ins may answer health but lack the capabilities method.
-    return None
+    return {"user_tools_allowed": None, "selection_state_supported": None}
 
 
 @router.get("/revit-health", responses=responses(403, 422))
@@ -1429,7 +1511,7 @@ async def revit_health():
         t0 = time.monotonic()
         ok = await WebSocketRevitClient(relay, device_id, timeout=10).ping()
         return {
-            "user_tools_allowed": await _user_tools_allowed() if ok else None,
+            **(await _health_features() if ok else {"user_tools_allowed": None}),
             "revit_connected": ok,
             "latency_ms": round((time.monotonic() - t0) * 1000) if ok else None,
             "mode": "websocket",
@@ -1443,7 +1525,7 @@ async def revit_health():
     latency = round((time.monotonic() - t0) * 1000)
     if status["reachable"]:
         return {
-            "user_tools_allowed": await _user_tools_allowed(),
+            **await _health_features(),
             "revit_connected": True, "latency_ms": latency, "mode": "tcp",
             "detail": "Local add-in responded",
             "endpoint": f"{status['host']}:{status['port']}",

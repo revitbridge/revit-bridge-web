@@ -4,6 +4,7 @@
    host found gone or not valid is marked in the input when it is used again. Nothing
    here decides what an item is or what the model gets: the host and the package do. */
 
+import { uiText } from '../../utils/strings'
 import type { ChatMessage, MentionRef, MentionReport, SentMention } from '../../types/api'
 import type { FetchCandidates, Mention, MentionCandidates, MentionKind, MentionOptions } from '../../types/hostv2'
 import { MAX_PICKS } from '../../types/hostv2'
@@ -43,7 +44,7 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: MentionOpt
     if (e instanceof BridgeApiError && e.status === 503) {
       const reason = e.body?.message ?? e.message
       throw new Error(browserLanguage() === 'zh' ? `未连接 Revit，无法选择模型项：${reason}`
-        : `Revit is not connected, so there is nothing to pick: ${reason}`)
+        : uiText("Revit is not connected, so there is nothing to pick: {0}", reason))
     }
     throw new Error(getErrorMessage(e))
   } finally {
@@ -72,7 +73,7 @@ export function tooManyPicks(mentions: Mention[]): string | null {
   const count = distinctMentions(mentions).length
   if (count > MAX_PICKS && browserLanguage() === 'zh') return `已选择 ${count} 个模型项，每条消息最多 ${MAX_PICKS} 个。请移除部分标签后发送。`
   return count > MAX_PICKS
-    ? `This message picks ${count} model items; at most ${MAX_PICKS} can go with one message. Remove some tags, then send.`
+    ? uiText("This message picks {0} model items; at most {1} can go with one message. Remove some tags, then send.", count, MAX_PICKS)
     : null
 }
 
@@ -130,16 +131,16 @@ const zhReasons: Record<string, string> = {
 export function mentionNote(m: SentMention): string {
   const zh = browserLanguage() === 'zh'
   switch (m.status) {
-    case 'resolved': return zh ? '已与模型核对' : 'checked against the model'
+    case 'resolved': return uiText("checked against the model")
     case 'not_found': {
       const reason = m.reason ?? 'not_found'
-      return zh ? `未使用：${zhReasons[reason] ?? reason}` : `not used: ${reason.replace(/_/g, ' ')}`
+      return zh ? `未使用：${zhReasons[reason] ?? reason}` : uiText("not used: {0}", reason.replace(/_/g, ' '))
     }
-    case 'invalid': return zh ? '未使用：无效的模型项' : 'not used: not a model item'
+    case 'invalid': return uiText("not used: not a model item")
     case 'unresolved': {
       const reason = m.reason ?? 'unresolved'
-      return zh ? `未核对：${zhReasons[reason] ?? reason}` : `not checked: ${reason.replace(/_/g, ' ')}`
+      return zh ? `未核对：${zhReasons[reason] ?? reason}` : uiText("not checked: {0}", reason.replace(/_/g, ' '))
     }
-    default: return zh ? '待核对' : 'not checked yet'
+    default: return uiText("not checked yet")
   }
 }

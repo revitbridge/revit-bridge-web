@@ -1,35 +1,38 @@
-"""Authenticate browser-held view exports without retaining their pixels on the host."""
-import hashlib
-import hmac
+"""Bounded, ephemeral view context owned by a single chat session."""
+from collections import deque
+from dataclasses import dataclass, field
 import secrets
 
-from pydantic import BaseModel, Field, SecretStr
 
-_signing_key = secrets.token_bytes(32)
-MAX_ENCODED = 4 * ((1024 * 1024 + 2) // 3)
-
-
-def _signature(session_id: str, scope: str, nonce: str, png: str) -> str:
-    # Only called on validated package output or bounded ASCII input. Session IDs are
-    # server-minted UUIDs. The PNG string cannot contain the NUL field delimiter.
-    mac = hmac.new(_signing_key, digestmod=hashlib.sha256)
-    mac.update(f"{session_id}\0{scope}\0{nonce}\0".encode())
-    mac.update(png.encode("ascii"))
-    return mac.hexdigest()
+@dataclass
+class Capture:
+    id: str
+    scope: str
+    summary: str
+    png: str | None = field(repr=False)
+    hidden: bool = False
+    anchor: dict | None = field(default=None, repr=False)
 
 
-def capture_id(session_id: str, scope: str, png: str) -> str:
-    nonce = secrets.token_hex(8)
-    return nonce + "." + _signature(session_id, scope, nonce, png)
+class CaptureContext:
+    def __init__(self):
+        self.entries: deque[Capture] = deque(maxlen=32)
 
+    def add(self, scope: str, image: dict) -> str:
+        # The package has already validated dimensions, PNG signature and byte length.
+        # Never copy encoded pixels from an untrusted view name into text.
+        png = image["png_base64"]
+        name = " ".join(image["view_name"].split())[:200]
+        if any(name[i:i + 16] in png for i in range(len(name) - 15)):
+            name = "Revit"
+        item = Capture(secrets.token_hex(16), scope, f"{name} ({image['width']} x {image['height']})", png)
+        self.entries.append(item)
+        for previous in list(self.entries)[:-2]:
+            previous.png = None
+        return item.id
 
-class CaptureAttachment(BaseModel):
-    capture_id: str = Field(pattern=r"^[0-9a-f]{16}\.[0-9a-f]{64}$")
-    png_base64: SecretStr = Field(max_length=MAX_ENCODED, repr=False)
+    def for_scope(self, scope: str):
+        return [item for item in self.entries if item.scope == scope]
 
-    def verified_png(self, session_id: str, scope: str) -> str | None:
-        png = self.png_base64.get_secret_value()
-        nonce, signature = self.capture_id.split(".")
-        if png.isascii() and hmac.compare_digest(signature, _signature(session_id, scope, nonce, png)):
-            return png
-        return None
+    def clear_scope(self, scope: str):
+        self.entries = deque((item for item in self.entries if item.scope != scope), maxlen=self.entries.maxlen)

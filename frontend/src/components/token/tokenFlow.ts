@@ -1,6 +1,7 @@
 /* The Token page's state: the runs, the two picked for comparison. Transport injected, so
    the page's moves run under vitest without fetch. */
 
+import { uiText } from '../../utils/strings'
 import { createStore } from 'zustand/vanilla'
 import type { UsageRun } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
@@ -29,7 +30,7 @@ export function createTokenFlow(api: UsageApi) {
       // A picked run that is gone (aged out of the log) is no longer picked.
       setState(s => ({ runs, selected: s.selected.filter(label => labels.has(label)), notice: '', loading: false }))
     } catch (e: unknown) {
-      setState({ notice: `Cannot read the runs: ${getErrorMessage(e)}`, loading: false })
+      setState({ notice: uiText("Cannot read the runs: {0}", getErrorMessage(e)), loading: false })
     }
   }
 

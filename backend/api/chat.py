@@ -133,6 +133,7 @@ import logging
 import re
 import time
 import unicodedata
+from collections import Counter
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
@@ -143,18 +144,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from revit_bridge import host_instructions, list_host_functions
-from revit_bridge.mentions import MAX_MENTIONS, mention_block, resolve_mentions
+from revit_bridge.mentions import MAX_MENTIONS, mention_block, mention_candidates, resolve_mentions
 from revit_bridge.snapshot import RevitQueryExecutor, snapshot_digest
 from revit_bridge.snapshot.query import RevitQueryError
 
-from backend import captures, roles
+from backend import roles, selection as selection_state
 from backend.api.auto_run import AutoRun
-from backend.api.bridge import current_scope, get_revit_client, list_packs, set_device_context, snapshot_now
-from backend.api.errors import ApiError
+from backend.api.bridge import current_scope, device_selection, get_revit_client, list_packs, set_device_context, snapshot_now
+from backend.api.errors import ApiError, responses
+from backend.language import prefers_chinese
 from backend.api.model_tools import (
     TOOL_DEFINITIONS, WORKBENCH_LINK, ToolOutcome, call_tool, parse_arguments, workflow_card,
 )
-from backend.api.direct_reads import SELECTION_WRITERS, selection_record
+from backend.api.direct_reads import selection_record
+from backend.selection import SELECTION_WRITERS
 from backend.workflow_run import catalogue as workflow_catalogue
 from backend.config import ROLES_ANALYST as MODE_ROLES_ANALYST, SINGLE as MODE_SINGLE, get_settings
 from backend import llm as llm_client
@@ -167,7 +170,7 @@ from backend.mention_check import mention_evidence
 from backend.models_file import NO_MODEL_FROM_FILE, ModelTarget, get_models, resolve as resolve_model
 from backend.ratelimit import chat_limiter, client_key
 from backend.session import Session, get_session_store
-from backend.questions import DesignerAnswers, DesignerForm
+from backend.questions import DesignerAnswers, DesignerForm, Identifier
 
 router = APIRouter(prefix="/api", tags=["chat"])
 _log = logging.getLogger("backend.chat")
@@ -282,8 +285,9 @@ class ChatMention(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    current_selection: selection_state.SelectionState | None = Field(default=None, description="Selection observed with a designer-typed bridge message. The host verifies IDs or attaches a stamped reference above the combined 20-pick limit.")
     selection_answer: str | None = Field(default=None, max_length=100, description="ask_id answered by document-scoped element mentions")
-    capture: captures.CaptureAttachment | None = Field(default=None, description="Attach a signed PNG from a view_image event to this designer message")
+    hidden_captures: list[Identifier] | None = Field(default=None, max_length=32, description="Exclude these session captures from planner context")
     run: Literal["confirm", "auto"] = "confirm"
     answers: DesignerAnswers | None = None
     message: str | None = Field(default=None, max_length=8000)
@@ -454,6 +458,96 @@ async def check_mentions(mentions: list[ChatMention]) -> dict:
     return report
 
 
+async def selection_page(executor, count):
+    """A reference needs only the category index. Read details only for a small ID attachment."""
+    large = count > MAX_MENTIONS
+    page = await mention_candidates(executor, "element", source="selection",
+                                    offset=count if large else 0, limit=1 if large else MAX_MENTIONS)
+    if large or page.get("error") != "revit_error" or count < 2:
+        return page
+    # The package can discard a whole detail page when just one row is unreadable.
+    # Bisect that bounded page and keep verified siblings under one deadline.
+    rows = []
+    pending = [(0, count // 2), (count // 2, count - count // 2)]
+    try:
+        async with asyncio.timeout(MENTION_CHECK_TIMEOUT):
+            while pending:
+                offset, size = pending.pop()
+                part = await mention_candidates(executor, "element", source="selection", offset=offset, limit=size)
+                if not part.get("error"):
+                    rows.extend(part["items"])
+                elif size > 1:
+                    half = size // 2
+                    pending.extend([(offset, half), (offset + half, size - half)])
+    except TimeoutError:
+        pass
+    return {**page, "items": rows}
+
+
+async def verified_selection_picks(explicit, observed):
+    client = await get_revit_client()
+    owner = device_selection()
+    generation = owner.generation
+    observed = await owner.verify(client, observed)
+    if not owner.designer(observed):
+        return (await check_mentions(explicit) if explicit else None), set(), None
+
+    large = observed.count > MAX_MENTIONS
+    page = await selection_page(RevitQueryExecutor(client), observed.count)
+    rows = page.get("items", [])
+    if any(row.get("document_id") and row["document_id"] != observed.document_id for row in rows):
+        owner.last_read = 0.0
+        raise ApiError(409, "selection_changed")
+    eligible = {row["id"] for row in rows if row.get("document_id") == observed.document_id and not row.get("disabled")}
+    explicit_ids = {m.id for m in explicit if m.kind == "element" and m.document_id in (None, observed.document_id)}
+    automatic = [ChatMention(kind="element", id=i, document_id=observed.document_id) for i in sorted(eligible)
+                 if i not in explicit_ids]
+    reference = None
+    if large or len(explicit) + len(automatic) > MAX_MENTIONS:
+        categories = {f["category"]: f["count"] for f in page.get("facets", [])[:MAX_MENTIONS]}
+        partial = bool(page.get("facets_partial")) or sum(categories.values()) != observed.count
+        reference = selection_state.SelectionReference(**observed.model_dump(), categories=categories, categories_partial=partial)
+        automatic = []
+    picks = await check_mentions(explicit + automatic) if explicit or automatic else unresolved([], "")
+    latest = await owner.verify(client, observed)
+    if owner.generation != generation or not owner.designer(latest):
+        # An assistant acquired the selection while the details were being read.
+        return (await check_mentions(explicit) if explicit else None), set(), None
+    if reference:
+        picks["current_selection"] = reference.model_dump(exclude_defaults=True)
+    else:
+        selected = [row for row in picks["resolved"] if row["kind"] == "element" and row["id"] in eligible]
+        omitted = Counter(row.get("reason") or "disabled" for row in rows if row.get("disabled"))
+        for group in ("not_found", "invalid", "unresolved"):
+            omitted.update(row.get("reason") or group for row in picks[group]
+                           if row["kind"] == "element" and row["id"] in eligible)
+        missing = observed.count - len(selected) - sum(omitted.values())
+        if missing > 0:
+            omitted[page.get("error") or "unresolved"] += missing
+        picks["current_selection"] = {"count": len(selected), "document_id": observed.document_id,
+                                      "categories": dict(Counter(row.get("category") or "(unknown)" for row in selected))}
+        if omitted:
+            picks["current_selection"]["omitted"] = dict(omitted)
+    return picks, {m.id for m in automatic}, reference
+
+
+async def message_picks(explicit: list[ChatMention], observed: selection_state.SelectionState | None):
+    """Verify the browser observation around all model reads, before recording any provenance."""
+    if not observed or not observed.count:
+        return (await check_mentions(explicit) if explicit else None), set(), None
+    try:
+        return await verified_selection_picks(explicit, observed)
+    except ApiError as exc:
+        if exc.status not in (503, 504):
+            raise
+        reason = exc.payload["error"]
+    except (OSError, RevitQueryError):
+        reason = "selection_unavailable"
+    picks = await check_mentions(explicit) if explicit else unresolved([], "")
+    picks["current_selection"] = {"count": 0, "document_id": observed.document_id, "omitted": {reason: observed.count}}
+    return picks, set(), None
+
+
 def kept_tool_message(message: dict, keep: int = TOOL_RESULT_KEEP) -> dict:
     """The tool message as the session stores it: a snapshot or an element listing can
     run to hundreds of KB, and every later turn would carry it again. The turn that
@@ -517,8 +611,7 @@ class Turn:
         self.card: str | None = None
         self.auto: AutoRun | None = None
         self.question_tools = False
-        self.attachment: str | None = None
-        self.attachment_message: dict | None = None
+        self.capture_context = []
         self.calls_log = get_log_store()
         self.round = 0
         self.open: tuple[str, str] | None = None        # (role, model) of the stage now open
@@ -529,6 +622,18 @@ class Turn:
         model, the limit as it was sent, what of the task is still there (``limit_state``) and how
         the limit can be raised (``limit_advice``). The turn ends there: no repair call, no
         fallback."""
+        if self.session.chinese:
+            label = {roles.PLANNER: "规划员", roles.ANALYST: "分析员", roles.SUPERVISOR: "监督员"}.get(role, role)
+            if self.execution is not None:
+                state = "页面保留了执行结果，可以在下一条消息中说明执行情况。"
+            elif self.card == "ready":
+                state = "本轮任务卡已保留，仍可确认并执行。"
+            elif self.card:
+                state = "本轮任务卡已保留，仍需处理待解决的问题。"
+            else:
+                state = "本轮未生成任务卡。"
+            return (f"{label}（{target.model}）已用完输出额度（{exc.param} {exc.limit}）。{state} "
+                    "可调高模型配置的 max_tokens 或宿主的 LLM_MAX_TOKENS 后重试。")
         head = (f"Output limit used up: the {role} ({target.model}) spent its whole output limit ({exc.param} "
                 f"{exc.limit}) before it wrote a reply or called a tool - most likely on thinking, which "
                 f"counts toward the limit.")
@@ -603,11 +708,19 @@ class Turn:
                                 plan_id=plan.id if step else None, step_id=step.id if step else None)
         return format_sse_event("usage", {"role": role, "model": model, "round": round_no, **counts, "ms": ms})
 
+    def missing_tool(self):
+        zh = self.session.chinese
+        return format_sse_event("missing_tool", {
+            "request": self.session.request_text or self.session.designer_message,
+            "question": "没有现成的工具能完成这件事，要现在添加吗？" if zh else "No existing tool can do this. Add one now?",
+            "choices": {"authoring": "去工具编写页" if zh else "Open tool authoring",
+                        "remote_mcp": "用远程 MCP 让外部代理试写" if zh else "Draft with an external agent via Remote MCP",
+                        "dismiss": "不添加" if zh else "Not now"},
+        })
+
     def add_designer_message(self, text: str):
         message = {"role": "user", "content": text}
         self.session.add(message)
-        if self.attachment:
-            self.attachment_message = message
 
     def model_context(self, role: str, messages: list[dict]) -> list[dict]:
         """Apply the host context to a copy. Session history contains only text."""
@@ -632,23 +745,33 @@ class Turn:
                     " For a value from a read in this message or a completed step in this plan, cite "
                     "result:<evidence_id>#<path> (e.g. result:ev_123#Items.0.Mid.X). Use the exact leaf "
                     "value and source tool. Designer and answer need the designer's words or form answer.")
-        if self.attachment_message is not None and role == roles.PLANNER:
-            # A later planner stage can follow a supervisor report in this same turn.
-            index = next((i for i, m in enumerate(messages) if m is self.attachment_message), None)
-            if index is None:  # The history window rolled past the attached request.
-                index = 1
-                context.insert(index, self.attachment_message)
-            message = context[index]
-            context[index] = {**message, "content": [
-                {"type": "text", "text": message["content"]},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + self.attachment}},
-            ]}
+        if role == roles.PLANNER and self.capture_context:
+            # Context frames are ephemeral. Anchor each at the first planner turn
+            # that saw it, so later messages append to the same prefix.
+            positions = {id(message): i for i, message in enumerate(messages)}
+            frames = {}
+            for item, parts in self.capture_context:
+                index = positions.get(id(item.anchor), len(messages) - 1)
+                item.anchor = messages[index]
+                frames.setdefault(index, []).append({"role": "user", "content": parts})
+            expanded = []
+            for index, message in enumerate(context):
+                expanded.append(message)
+                expanded.extend(frames.get(index, ()))
+            context = expanded
         return context
 
-    async def execute_auto_card(self, spec):
+    async def execute_auto_card(self, event):
         if await self.auto.request.is_disconnected():
             return
-        worker = self.auto.start(spec)
+        checked = asyncio.get_running_loop().create_future() if event.get("selection_reference") else None
+        worker = self.auto.start(event["spec"], checked)
+        if checked is not None:
+            reason = await asyncio.shield(checked)
+            if reason:
+                yield format_sse_event("spec", {**event, "run": "confirm", "run_reason": reason})
+                return
+            yield format_sse_event("spec", event)
         if self.run_label is None:
             self.run_label = f"auto-{self.session.session_id}-{self.turn}"
         await asyncio.to_thread(self.calls_log.mark_auto, self.session.session_id, self.turn, self.run_label)
@@ -720,11 +843,12 @@ class Turn:
                 return
             self.card = "ready" if outcome.result["accepted"] else "not_ready"
             yield format_sse_event("plan", outcome.plan_event)
-            yield format_sse_event("spec", event)
+            if event.get("run") != "auto" or not event.get("selection_reference"):
+                yield format_sse_event("spec", event)
             if outcome.questions_event:
                 yield self.show_form(outcome.questions_event, workflow_plan=session.plan)
             if event.get("run") == "auto":
-                async for frame in self.execute_auto_card(event["spec"]):
+                async for frame in self.execute_auto_card(event):
                     yield frame
         except (ApiError, ValueError) as exc:
             yield format_sse(str(exc))
@@ -749,9 +873,9 @@ class Turn:
         The last round's text ends in ``out``. ``LLMError`` and a raising tool end the turn."""
         llm = target.llm
         initial_length = len(messages)
-        # Keep the attached designer message byte-identical across tool rounds, including
+        # Keep planner capture frames byte-identical across tool rounds, including
         # when set_plan changes the host context. Its result carries the new plan.
-        prefix = self.model_context(role, messages) if self.attachment and role == roles.PLANNER else None
+        prefix = self.model_context(role, messages) if self.capture_context and role == roles.PLANNER else None
         for round_no in range(max_rounds + 1):
             # The last round goes out without tools so the model has to answer in text.
             round_tools = tools if round_no < max_rounds else None
@@ -790,6 +914,8 @@ class Turn:
                     keep({"role": "assistant", "content": content})
                 break
             if not calls:
+                if self.bridge and role == roles.PLANNER and WORKBENCH_LINK in content:
+                    yield self.missing_tool()
                 if content and keep is not None:
                     keep(assistant_message(content))
                     if self.bridge and role == roles.PLANNER and not (self.session.plan and self.session.plan.current):
@@ -855,7 +981,8 @@ class Turn:
                     closing["error"] = error
                 yield self.tool_event(role, event_id, call.name, shown_args, "error" if error else "ok", **closing)
                 if outcome.image_event:
-                    yield format_sse_event("view_image", outcome.image_event)
+                    reason = "context_disabled" if not get_settings().capture_context else "vision_unavailable" if not target.vision else None
+                    yield format_sse_event("view_image", {**outcome.image_event, "context_reason": reason})
                 if outcome.plan_event is not None:
                     yield format_sse_event("plan", outcome.plan_event)
                 if outcome.spec_event is not None:
@@ -863,7 +990,8 @@ class Turn:
                     # A refusal that sends no card (no spec event) leaves it as it was.
                     accepted = isinstance(outcome.result, dict) and outcome.result.get("accepted") is True
                     self.card = "ready" if accepted else "not_ready"
-                    yield format_sse_event("spec", outcome.spec_event)
+                    if outcome.spec_event.get("run") != "auto" or not outcome.spec_event.get("selection_reference"):
+                        yield format_sse_event("spec", outcome.spec_event)
                 # The session keeps at most the head; this turn sees all of it.
                 if keep is not None:
                     keep(kept_tool_message(reply))
@@ -881,7 +1009,7 @@ class Turn:
                         if keep is not None:
                             keep(kept_tool_message(skipped))
                     if outcome.spec_event and outcome.spec_event.get("run") == "auto":
-                        async for frame in self.execute_auto_card(outcome.spec_event["spec"]):
+                        async for frame in self.execute_auto_card(outcome.spec_event):
                             yield frame
                     if workflow_call and not questions:
                         if self.session.pending_workflow:
@@ -986,6 +1114,8 @@ async def message_roles(run: Turn, targets: dict[str, ModelTarget], text: str, s
         yield run.stage(roles.ANALYST, analyst.model, "end")
         if routing.route in roles.ANSWERED_BY_ANALYST:
             yield format_sse(roles.analyst_reply(routing))
+            if routing.route == roles.NONE:
+                yield run.missing_tool()
             return
     else:
         routing = roles.FALLBACK_ROUTING
@@ -1133,24 +1263,6 @@ def selection_block(items: list[dict]) -> str:
     return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, mention_block(items, MENTION_BLOCK_LANGUAGE))
 
 
-def prefers_chinese(accept_language: str) -> bool:
-    """Negotiate the two sets of host labels using the browser's language preferences."""
-    best = 0.0
-    preferred = "en"
-    for entry in accept_language.lower().split(","):
-        tag, _, weight = entry.strip().partition(";")
-        lang = tag.split("-")[0]
-        if lang not in ("zh", "en"):
-            continue
-        try:
-            quality = float(weight.strip().removeprefix("q=")) if weight else 1.0
-        except ValueError:
-            continue
-        if best < quality <= 1:
-            best, preferred = quality, lang
-    return preferred == "zh"
-
-
 def no_model(target: ModelTarget, role: str) -> HTTPException:
     """400 for a role without a model. Without a models file every role is ``LLM_*`` and the
     browser's settings; with one, the browser's settings replace the planner's entry only, so a
@@ -1165,6 +1277,16 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
                               f"model settings replace the planner's entry only.")
 
 
+@router.delete("/chat/{session_id}/captures", responses=responses(403, 422))
+async def clear_captures(session_id: Identifier, request: Request):
+    """Release this device's session captures when the designer starts a new conversation."""
+    await set_device_context(request)
+    session = get_session_store().get(session_id)
+    if session:
+        session.captures.clear_scope(current_scope())
+    return {"cleared": True}
+
+
 @router.post("/chat", dependencies=[Depends(rate_limit)], response_class=StreamingResponse,
              responses={200: {"content": {"text/event-stream": {}},
                               "description": "SSE conversation. The questions event carries ask_id and "
@@ -1174,8 +1296,11 @@ def no_model(target: ModelTarget, role: str) -> HTTPException:
                                              "plan_id and steps with id, title, status and optional evidence_id. "
                                              "A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. "
                                              "A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. "
-                                             "ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. "
-                                             "view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. "
+                                             "A card targeting a large current selection includes selection_reference with its count, categories, stamp and document_id. "
+                                             "The mentions event reports omitted automatic picks by reason in current_selection.omitted. "
+                                             "ask_selection starts a selection watch in the active page. Reply with selection_answer and mentions. "
+                                             "view_image carries the capture_id, PNG, view name and dimensions. capture_context reports per-image visibility; image_notice explains disabled image input. "
+                                             "missing_tool offers local navigation choices. "
                                              "A new planner stage can propose the next step in the same stream."}})
 async def chat(req: ChatRequest, request: Request,
                x_run_label: str | None = Header(None, description=RUN_LABEL_DOC)):
@@ -1185,10 +1310,12 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_args", "message is empty")
     if req.answers and not (req.bridge and req.message and req.session_id):
         raise ApiError(422, "invalid_answers", "answers require a bridge message and its session")
-    if (req.selection_answer or req.capture) and not (req.bridge and req.message and req.session_id):
-        raise ApiError(422, "invalid_args", "Attachments and selection answers require a bridge message and its session.")
+    if req.selection_answer and not (req.bridge and req.message and req.session_id):
+        raise ApiError(422, "invalid_args", "Selection answers require a bridge message and its session.")
     if req.execution is not None and not req.bridge:
         raise ApiError(422, "invalid_args", "execution feedback has no meaning without the bridge")
+    if req.current_selection and not (req.bridge and req.message and not req.selection_answer and not req.answers):
+        raise ApiError(422, "invalid_args", "Current selection requires a designer-typed bridge message.")
     if req.mentions and req.execution is not None:
         raise ApiError(422, "invalid_args", "mentions go with a message, not with an execution report")
     if req.mentions and not req.bridge:
@@ -1212,6 +1339,7 @@ async def chat(req: ChatRequest, request: Request,
     with_roles = mode != MODE_SINGLE
     targets = {}
     session = get_session_store().get_or_create(req.session_id)
+    original_turn = session.turns
     if req.bridge and (session.bridge_turn.locked() or session.auto_worker is not None):
         raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
     plan = session.plan if req.bridge else None
@@ -1252,8 +1380,6 @@ async def chat(req: ChatRequest, request: Request,
     if req.answers and verified is None:
         raise ApiError(422, "invalid_answers", "answers must match this session's open form")
     form_routing = session.form_routing if verified or req.selection_answer else None
-    if req.capture and req.message:
-        form_routing = roles.FALLBACK_ROUTING  # An attachment addresses the planner.
     stop_reply = (session.form_stop_reply if verified and verified[0]["value"] == "stop"
                   and not verified[0].get("other") else None)
     workflow_form = bool(pending and plan and pending.get("workflow_plan_id") == plan.id)
@@ -1271,6 +1397,11 @@ async def chat(req: ChatRequest, request: Request,
         if not llm.configured:
             raise no_model(target, ROLE)
         targets[ROLE] = target
+    context_entries = session.captures.for_scope(current_scope()) if req.bridge and not stop_reply else []
+    hidden = set(req.hidden_captures) if req.hidden_captures is not None else {item.id for item in context_entries if item.hidden}
+    visible_entries = [item for item in context_entries if item.id not in hidden]
+    if visible_entries and req.message and settings.capture_context and target.vision:
+        form_routing = roles.FALLBACK_ROUTING
     if with_roles and not stop_reply:
         # The role that opens this turn: the analyst (a message, in mode roles_analyst) or the
         # supervisor (a report); the planner may follow either.
@@ -1296,15 +1427,14 @@ async def chat(req: ChatRequest, request: Request,
         if has_host_marker(serialized):
             serialized = quote_marked_json(block)
         text += f"\n\n{roles.ANSWERS_PREFIX} {serialized}"
-    picks = None
-    if req.mentions:
-        # Checked before any model is called, in the model of the device this request drives.
-        # The verified picks stay with the session under that device's scope (a spec may bind
-        # them in this turn or a later one), the ones found gone leave it; this turn's verified
-        # picks - all of this scope - go to the model as the package's block after the
-        # designer's words. Nothing else of the picks reaches it.
-        scope = current_scope()
-        picks = await check_mentions(req.mentions)
+    observed = req.current_selection if req.message else None
+    picks, implicit_ids, reference = await message_picks(req.mentions or [], observed)
+    if picks is not None:
+        if reference:
+            text += f"\n\nCurrent selection reference {roles.FROM_HOST}: " + quote_marked_json(reference.model_dump(exclude_defaults=True))
+            text += "\nFor a tool that acts on the current selection, leave element parameters empty."
+        elif selected := picks.get("current_selection"):
+            text += f"\n\nCurrent selection {roles.FROM_HOST}: " + quote_marked_json(selected)
         if req.selection_answer:
             items = picks["resolved"]
             if (len(items) != len(req.mentions) or (selection["mode"] == "single" and len(items) != 1)
@@ -1313,10 +1443,8 @@ async def chat(req: ChatRequest, request: Request,
             verified = [{"id": "selection", "value": item["id"], "document_id": item["document_id"],
                          "evidence": mention_evidence("element", item["id"])} for item in items]
             text += f"\n\n{roles.ANSWERS_PREFIX} " + quote_marked_json({"ask_id": pending["ask_id"], "items": verified})
-        session.remember_picks(scope, picks["resolved"])
-        session.forget_picks(scope, picks["not_found"])
         block = selection_block(picks["resolved"])
-        if any(item["kind"] == "element" for item in picks["resolved"]):
+        if not reference and any(item["kind"] == "element" for item in picks["resolved"]):
             block += ("\nFor element_ids use a comma-separated string of selected element IDs and evidence "
                       "mention:element#<id>[,<id>...] with the same IDs.")
         if block:
@@ -1343,8 +1471,23 @@ async def chat(req: ChatRequest, request: Request,
             text = execution_message(req.execution)
         if evidence:
             session.evidence_id = str(evidence)
-    if req.bridge and not session.bridge_turn.acquire(blocking=False):
+    if req.bridge and (session.turns != original_turn or not session.bridge_turn.acquire(blocking=False)):
         raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
+    device = device_selection() if req.bridge else None
+    if picks is not None:
+        turn_number = original_turn + 1
+        scope = current_scope()
+        if "current_selection" in picks:
+            session.selection_messages[scope] = (turn_number, reference)
+        session.remember_picks(scope, picks["resolved"], automatic_ids=implicit_ids, turn=turn_number)
+        session.forget_picks(scope, picks["not_found"])
+    for item in context_entries:
+        item.hidden = item.id in hidden
+        if item.hidden:
+            item.anchor = None
+    if device:
+        device.streams += 1
+        device.last_read = 0.
     if step and req.execution is not None:
         plan.reporting = True
         if resume_message:
@@ -1353,7 +1496,7 @@ async def chat(req: ChatRequest, request: Request,
     if req.bridge:
         session.designer_message = req.message if req.message and not verified else ""
     if req.bridge and req.message:
-        if picks and any(item["kind"] == "element" for item in picks["resolved"]):
+        if reference or (picks and any(item["kind"] == "element" for item in picks["resolved"])):
             session.assistant_selections.pop(current_scope(), None)
         session.direct_reads = 0
         session.read_results.clear()
@@ -1388,18 +1531,20 @@ async def chat(req: ChatRequest, request: Request,
     if req.bridge:
         session.pending_form = None
         session.chinese = prefers_chinese(request.headers.get("accept-language", ""))
+        session.language = ("zh" if session.chinese else "en") if request.headers.get("accept-language") else None
         session.form_routing = None
         session.form_stop_reply = None
     turn = session.next_turn()
     run = Turn(session, turn, run_label, req.bridge, mode, execution=req.execution)
     image_notice = None
-    if req.capture and req.message and not stop_reply:
-        if target.vision:
-            run.attachment = req.capture.verified_png(session.session_id, current_scope())
-            if not run.attachment:
-                image_notice = "capture_unavailable"
-        else:
-            image_notice = "vision_unavailable"
+    if visible_entries:
+        image_notice = "context_disabled" if not settings.capture_context else "vision_unavailable" if not target.vision else None
+        if not image_notice:
+            for item in visible_entries:
+                parts = [{"type": "text", "text": "Session capture " + roles.FROM_HOST + ": " + quote_marked_json(item.summary)}]
+                if item.png:
+                    parts.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + item.png}})
+                run.capture_context.append((item, parts))
     approved = None
     if session.auto_assumptions and verified and pending and pending["ask_id"] == session.auto_assumptions[0]:
         if verified[0].get("value") == "accept" and not verified[0].get("other"):
@@ -1514,6 +1659,10 @@ async def chat(req: ChatRequest, request: Request,
             yield SSE_DONE
 
     async def with_auto_reports():
+        if context_entries:
+            states = {item.id: ("hidden" if item.hidden else image_notice or ("used" if item.png else "summary"))
+                      for item in context_entries}
+            yield format_sse_event("capture_context", {"states": states})
         if image_notice:
             yield format_sse_event("image_notice", {"reason": image_notice})
         async with aclosing(generate()) as frames:
@@ -1552,10 +1701,12 @@ async def chat(req: ChatRequest, request: Request,
                             session.pending_auto_receipt = None
                             session.confirmed_spec = None
         finally:
-            run.attachment = run.attachment_message = None
+            run.capture_context.clear()
             if step and req.execution is not None:
                 plan.reporting = False
             if req.bridge:
+                device.streams -= 1
+                device.last_read = 0.
                 session.bridge_turn.release()
 
     return StreamingResponse(

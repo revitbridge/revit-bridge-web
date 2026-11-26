@@ -180,16 +180,16 @@ def test_two_steps_are_run_and_recorded_without_clicking(client, model, revit):
     assert client.get("/api/usage/runs").json()["items"][0]["run"] == "auto"
 
 
-def test_attached_view_stays_on_the_designer_message_across_auto_steps(client, model, revit, env, tmp_path):
-    from backend.captures import capture_id
+def test_capture_context_keeps_its_prefix_across_auto_steps(client, model, revit, env, tmp_path):
+    from backend.session import get_session_store
     from tests.test_selection_capture import PNG, configure_vision
     configure_vision(env, tmp_path)
     model.script("analyst", json_turn({"route": "chat", "facts_needed": [], "note": "Hello."}))
     sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
     simulated_wall_counter(revit)
     two(model)
-    reply = client.post("/api/chat", json={"session_id": sid, "run": "auto", "message": BRIEF, "capture": {
-        "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+    get_session_store().get(sid).captures.add("local", {"width": 1, "height": 1, "view_name": "Plan", "png_base64": PNG})
+    reply = client.post("/api/chat", json={"session_id": sid, "run": "auto", "message": BRIEF})
     assert len(events(sse(reply.text), "execution")) == 2
     first, second, continued = [r["messages"] for r in model.requests_of("planner")]
     assert second[:len(first)] == first

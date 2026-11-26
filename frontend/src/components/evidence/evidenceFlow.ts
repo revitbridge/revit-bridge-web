@@ -1,6 +1,7 @@
 /* The evidence page's state: the ledger list, the expanded record, the re-validation
    reports. Transport injected, so the page's moves run under vitest without fetch. */
 
+import { uiText } from '../../utils/strings'
 import { createStore } from 'zustand/vanilla'
 import type { EvidenceRecord, RevalidateReport } from '../../types/api'
 import { getErrorMessage } from '../../utils/errors'
@@ -38,7 +39,7 @@ export function createEvidenceFlow(api: EvidenceApi) {
     try {
       setState({ records: await api.evidence(limit, tool), notice: '', loading: false })
     } catch (e: unknown) {
-      setState({ records: [], notice: `Cannot list the evidence: ${getErrorMessage(e)}`, loading: false })
+      setState({ records: [], notice: uiText("Cannot list the evidence: {0}", getErrorMessage(e)), loading: false })
     }
   }
 

@@ -16,11 +16,32 @@ with `REMOTE_MCP=on` and issue revocable tokens for individual paired devices.
 Settings shows recent execution evidence. Tool authoring can load a successful
 remote rollback and take it through the existing compile, trial and save steps.
 
-The host uses revit-bridge 0.11.0. Designers can observe a normal Revit selection
-from the composer or answer a planner selection question. Built-in UI-only packs
-run directly and share the reader budget. The tool drawer includes native view
-activation and PNG capture. Captures appear in chat, with an opt-in switch for
-attaching one to the next planner message on a vision-enabled model.
+The composer verifies the live Revit selection on designer-typed messages.
+Up to 20 picks including explicit `@` picks travel as IDs. Larger selections
+travel as stamped document references with bounded category counts. Cards using
+a reference show the counts and recheck the selection before confirmation or
+automatic execution. Automatic attachments provide evidence for that message.
+Unavailable elements are omitted with a reason. Selections made by remote MCP,
+stdio MCP, user tools or the workbench are indistinguishable from the designer’s
+own selection.
+
+Planner selection questions keep watching when Revit covers the browser.
+After cancellation, timeout or a document change, choose **Watch again**.
+Older add-ins offer the current-selection fallback. Built-in UI-only packs share
+the reader budget and the tool drawer includes native view activation and capture.
+
+Captured views open in a keyboard-accessible full-screen viewer. A vision planner
+receives session captures as context, up to two images per planner round and
+1 MiB per image. This removes `ChatRequest.capture` and `CaptureAttachment`.
+While a capture is visible to the planner, the session uses the full tool route
+and skips the analyst step. Each image can be hidden, and
+deployments can disable the feature with `CAPTURE_CONTEXT=off`. The host keeps
+pixels in session memory and clears them with the session.
+
+The header now remembers the designer's Chinese or English preference. Missing
+tools offer a choice of a prefilled authoring page, Remote MCP settings or dismissal.
+Tools navigation also links to Remote MCP. The host uses revit-bridge 0.11.1.
+Its 58 built-in packs include `set_view_detail_level` and `set_view_display_style`.
 
 Settings → Models now saves shared or per-role credentials on the host with user-only file
 permissions. Rotation takes effect on the next request. Cloud administrators manage these

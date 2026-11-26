@@ -1,3 +1,5 @@
+import { browserLanguage } from '../../utils/language'
+import { uiText } from '../../utils/strings'
 /* Running a pack from the Capabilities page: the values the designer filled in
    become a TaskSpec (every binding with its source and evidence), which goes
    through the same gate as the Task page - /spec/confirm, then /tools/{name}/run
@@ -24,8 +26,8 @@ export function initialValues(params: ToolParam[], choices: Record<string, ToolC
 export function describePreconditions(items: Array<Record<string, unknown>>): string {
   if (!items.length) return '-'
   return items.map(p => {
-    if (p.kind === 'levels_min') return `levels >= ${String(p.value)}`
-    if (p.kind === 'category_present') return `has ${String(p.category)}`
+    if (p.kind === 'levels_min') return uiText("levels >= {0}", String(p.value))
+    if (p.kind === 'category_present') return uiText("has {0}", String(p.category))
     if (typeof p.text === 'string') return p.text
     return JSON.stringify(p)
   }).join('; ')
@@ -72,11 +74,11 @@ export function specFromForm(
     parameters.push({ name: p.name, value, unit: p.unit ?? null, source, evidence })
   }
   return {
-    task: `Run ${tool.display_name || tool.name} with the values filled in on the capabilities page`,
+    task: uiText("Run {0} with the values filled in on the capabilities page", tool.display_name || tool.name),
     action: { kind: 'run_tool', tool: tool.name },
     parameters,
     interpretations: [],
-    language: 'en',
+    language: browserLanguage(),
   }
 }
 

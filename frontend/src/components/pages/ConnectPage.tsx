@@ -3,6 +3,7 @@
    devices and no admin password: its page is the local add-in's status and the
    model settings only; the pairing and device components render on a cloud host. */
 
+import { uiText } from '../../utils/strings'
 import { useCallback, useEffect, useState } from 'react'
 import { useStore } from 'zustand'
 import { bridgeApi } from '../../api/bridge'
@@ -41,18 +42,18 @@ function useRevitCheck(before?: () => Promise<void>) {
       if (before) await before()
       const h = await bridgeApi.revitHealth()
       if (h.revit_connected) {
-        setStatus(`Connected | ${h.mode}${h.latency_ms != null ? ` | ${h.latency_ms} ms` : ''} | ${h.endpoint || ''} | ${h.timestamp}`)
+        setStatus(uiText("Connected | {0}{1} | {2} | {3}", h.mode, h.latency_ms != null ? ` | ${h.latency_ms} ms` : '', h.endpoint || '', h.timestamp))
         try {
           const snap = await bridgeApi.snapshot([])
-          setUnits(`Project units: ${snap.units.raw || '?'} (${snap.units.length}) | ${snap.document.title}`)
+          setUnits(uiText("Project units: {0} ({1}) | {2}", snap.units.raw || '?', snap.units.length, snap.document.title))
         } catch (e: unknown) {
-          setUnits(`Project units: ${getErrorMessage(e)}`)
+          setUnits(uiText("Project units: {0}", getErrorMessage(e)))
         }
       } else {
-        setStatus(`Disconnected | ${h.detail}`)
+        setStatus(uiText("Disconnected | {0}", h.detail))
       }
     } catch (e: unknown) {
-      setStatus(`Connection failed: ${getErrorMessage(e)}`)
+      setStatus(uiText("Connection failed: {0}", getErrorMessage(e)))
     } finally {
       setChecking(false)
     }
@@ -67,16 +68,13 @@ function LocalConnectPage() {
   return (
     <div className="page">
       <section className="card section">
-        <h3 className="heading-display section-title">Check the connection</h3>
-        <p className="section-copy">
-          This host runs in local mode: it talks to the Revit add-in on this machine over TCP and is reachable
-          from this machine only, so there is nothing to pair and no admin password.
-        </p>
+        <h3 className="heading-display section-title">{uiText("Check the connection")}</h3>
+        <p className="section-copy">{uiText("This host runs in local mode: it talks to the Revit add-in on this machine over TCP and is reachable from this machine only, so there is nothing to pair and no admin password.")}</p>
         <div className="flex items-center gap-2 bridge-status-row">
-          <button onClick={revit.check} disabled={revit.checking} className="btn-primary">{revit.checking ? 'Checking...' : 'Check'}</button>
-          <span className="section-copy small" style={{ margin: 0 }}>Local add-in (TCP)</span>
+          <button onClick={revit.check} disabled={revit.checking} className="btn-primary">{revit.checking ? uiText("Checking...") : uiText("Check")}</button>
+          <span className="section-copy small" style={{ margin: 0 }}>{uiText("Local add-in (TCP)")}</span>
         </div>
-        <div className="status-line">{revit.status}</div>
+        <div className="status-line">{uiText(revit.status)}</div>
         {revit.units && <div className="status-line">{revit.units}</div>}
       </section>
 
@@ -123,15 +121,15 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
         error={pairing.listError} onSelect={id => flow.select(id)} onRevoke={d => flow.revoke(d)} onRefresh={refresh} now={now} />
 
       <section className="card section">
-        <h3 className="heading-display section-title">Check the connection</h3>
+        <h3 className="heading-display section-title">{uiText("Check the connection")}</h3>
         <div className="flex items-center gap-2 bridge-status-row">
-          <button onClick={revit.check} disabled={revit.checking} className="btn-primary">{revit.checking ? 'Checking...' : 'Check'}</button>
+          <button onClick={revit.check} disabled={revit.checking} className="btn-primary">{revit.checking ? uiText("Checking...") : uiText("Check")}</button>
           <span className="section-copy small" style={{ margin: 0 }}>
-            {deviceId ? `Device ${deviceId}` : 'Local add-in (TCP)'}
-            {capacity ? ` | ${capacity.connected} of ${capacity.max_devices} devices connected` : ''}
+            {deviceId ? uiText("Device {0}", deviceId) : uiText("Local add-in (TCP)")}
+            {capacity ? uiText(" | {0} of {1} devices connected", capacity.connected, capacity.max_devices) : ''}
           </span>
         </div>
-        <div className="status-line">{revit.status}</div>
+        <div className="status-line">{uiText(revit.status)}</div>
         {revit.units && <div className="status-line">{revit.units}</div>}
       </section>
 
@@ -141,10 +139,10 @@ function CloudConnectPage({ deps }: { deps?: PairingDeps }) {
       {config.features.admin && (
         <>
           <section className="card section">
-            <h3 className="heading-display section-title">Admin</h3>
-            <p className="section-copy">Needed to list every device, to add, edit or delete skills, to edit, delete or save capability packs and to read interaction logs.</p>
+            <h3 className="heading-display section-title">{uiText("Admin")}</h3>
+            <p className="section-copy">{uiText("Needed to list every device, to add, edit or delete skills, to edit, delete or save capability packs and to read interaction logs.")}</p>
             <input type="password" className="input-field" value={adminToken} onChange={e => setAdminToken(e.target.value)}
-              placeholder="Admin password" autoComplete="off" style={{ maxWidth: 320 }} />
+              placeholder={uiText("Admin password")} autoComplete="off" style={{ maxWidth: 320 }} />
           </section>
           {adminToken && (
             <AdminDevices devices={pairing.admin} error={pairing.adminError} busy={pairing.busy}

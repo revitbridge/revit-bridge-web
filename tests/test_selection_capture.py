@@ -3,6 +3,7 @@ import asyncio
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -12,14 +13,13 @@ from revit_bridge import list_host_functions
 from revit_bridge.capabilities import ToolStore
 
 from backend import llm
-from backend.captures import capture_id
 from backend.api import bridge
 from backend.log_store import get_log_store
 from backend.models_file import reset_models
 from backend.session import get_session_store
 from tests.fake_model import json_turn, text_turn, tool_turn
 from tests.fake_revit import FakeRevit
-from tests.test_api_v1 import B, spec_for
+from tests.test_api_v1 import B, confirm, spec_for
 from tests.test_host_loop import HEADERS, events, model, sse, tokens
 from tests.test_mentions import picker
 from tests.test_models_file import ONE_MODEL
@@ -30,6 +30,16 @@ WATCH = f"{B}/watch-selection"
 WATCH_ARGS = {"session_id": "tab", "watch_id": "watch", "mode": "single", "timeout_s": 4}
 STATE = "get_selection_state_in_revit"
 PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jCowAAAAASUVORK5CYII="
+
+
+@pytest.mark.parametrize("document", ["README.md", "CHANGELOG.md"])
+def test_public_capture_and_selection_contract(client, document):
+    schemas = client.app.openapi()["components"]["schemas"]
+    assert "capture" not in schemas["ChatRequest"]["properties"] and "CaptureAttachment" not in schemas
+    guide = " ".join(Path(document).read_text(encoding="utf-8").casefold().split())
+    for term in ("chatrequest.capture", "captureattachment", "two images per planner round", "full tool route",
+                 "analyst", "remote mcp", "stdio mcp", "user tools", "workbench"):
+        assert term in guide
 
 
 def native(fake, commands):
@@ -55,7 +65,7 @@ def select_one(picker, changed=False):
     native(picker["fake"], {STATE: state})
 
 
-def test_click_watch_then_submit_verified_answer(client, model, picker):
+def test_watch_then_submit_verified_answer(client, model, picker):
     select_one(picker)
     question = {"prompt": "Choose the wall", "mode": "single", "category": "OST_Walls"}
     model.turns.append(tool_turn(("ask_selection", question), ("watch_selection", {"mode": "single"})))
@@ -168,6 +178,7 @@ def test_watch_only_clears_the_selection_it_started_with(client, revit, monkeypa
     response = client.post(WATCH, json={**WATCH_ARGS, "session_id": session.session_id})
     if assistant_changed:
         assert response.status_code == 409 and response.json()["error"] == "selection_changed"
+        assert "assistant changed the selection" in response.json()["message"]
         assert session.assistant_selections["local"] == after
     else:
         assert response.status_code == 200 and response.json()["items"] == [{"id": 22}]
@@ -254,7 +265,7 @@ def configure_vision(env, tmp_path, vision=True):
 
 
 @pytest.mark.parametrize("vision", [True, False])
-def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path, caplog, vision):
+def test_capture_context_on_following_turns_and_privacy(client, model, revit, env, tmp_path, caplog, vision):
     configure_vision(env, tmp_path, vision)
     native(revit, {"export_view_image_in_revit": lambda args: {"png_base64": PNG, "width": 1, "height": 1, "view_name": "Plan"},
                    "activate_view_in_revit": lambda args: {"view_name": args["name"], "view_type": "Plan", "view_id": 15}})
@@ -265,34 +276,29 @@ def test_capture_attachment_once_and_privacy(client, model, revit, env, tmp_path
     sid = response.headers["X-Session-Id"]
     frames = sse(response.text)
     image, = events(frames, "view_image")
-    attachment = {k: image[k] for k in ("capture_id", "png_base64")}
     assert image["png_base64"] == PNG and image["view_name"] == "Plan"
     assert PNG not in str([(event, value) for event, value in frames if event != "view_image"])
     assert PNG not in json.dumps(model.requests)
-    for attach in (False, True, False):
+    for attach in (True, False, True):
         if attach:
             model.turns.append(tool_turn(("query", {"kind": "levels"})))
         model.turns.append(text_turn("OK"))
         response = client.post("/api/chat", json={"session_id": sid, "message": "Describe the view",
-                                                  **({"capture": attachment} if attach else {})})
+                                                  "hidden_captures": [] if attach else [image["capture_id"]]})
         assert response.status_code == 200
         assert PNG not in response.text
-        assert ("vision_unavailable" in response.text) == (attach and not vision)
+        assert ("vision_unavailable" in response.text) == (not vision and attach)
         assert (PNG in json.dumps(model.requests[-1])) == (attach and vision)
         if attach and vision:
             first, second = [r["messages"] for r in model.requests[-2:]]
             assert second[:len(first)] == first
-            parts = first[-1]["content"]
+            parts, = [m["content"] for m in first if isinstance(m.get("content"), list)]
             assert parts[1] == {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}
             assert llm.responses_input([{"role": "user", "content": parts}])[0]["content"][1] == {
                 "type": "input_image", "image_url": "data:image/png;base64," + PNG}
     if vision:
-        model.turns.append(text_turn("OK"))
-        forged = client.post("/api/chat", json={"session_id": sid, "message": "Another image",
-                                                "capture": {**attachment, "png_base64": PNG + "AAAA"}})
-        assert "capture_unavailable" in forged.text and PNG not in json.dumps(model.requests[-1])
         model.turns.append(text_turn(PNG))
-        echoed = client.post("/api/chat", json={"session_id": sid, "message": "Try again", "capture": attachment})
+        echoed = client.post("/api/chat", json={"session_id": sid, "message": "Try again"})
         assert "Model endpoint echoed the image" in echoed.text and PNG not in echoed.text
     ledger = client.get(f"{B}/evidence").text
     assert "sha256" in ledger and "host:ui-only" in ledger and "host:read-only" in ledger
@@ -306,10 +312,10 @@ def test_partial_image_echo_never_reaches_chat_or_logs(client, model, env, tmp_p
     configure_vision(env, tmp_path)
     model.turns.append(text_turn("Ready"))
     sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
+    get_session_store().get(sid).captures.add("local", {"width": 1, "height": 1, "view_name": "Plan", "png_base64": PNG})
     fragment = PNG[39:73]
     model.turns.append(text_turn(fragment) if surface == "text" else tool_turn(("query", {"kind": fragment})))
-    reply = client.post("/api/chat", json={"message": "Describe", "session_id": sid, "capture": {
-        "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+    reply = client.post("/api/chat", json={"message": "Describe", "session_id": sid})
     assert "Model endpoint echoed the image" in reply.text
     for value in (reply.text, caplog.text, get_session_store().get(sid).history,
                   get_log_store().query(), get_log_store().calls_of_session(sid)):
@@ -324,11 +330,11 @@ def test_capture_on_query_answer_skips_analyst_and_uses_full_tool_route(roles_cl
                        text_turn("Ready"))
     first = roles_client.post("/api/chat", json={"message": "Inspect"})
     sid = first.headers["X-Session-Id"]
+    get_session_store().get(sid).captures.add("local", {"width": 1, "height": 1, "view_name": "Plan", "png_base64": PNG})
     form, = events(sse(first.text), "ask_selection")
     reply = roles_client.post("/api/chat", json={"message": "Use this wall and view",
         "session_id": sid, "selection_answer": form["ask_id"],
-        "mentions": [{"kind": "element", "id": 93, "document_id": "fake-document"}],
-        "capture": {"capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+        "mentions": [{"kind": "element", "id": 93, "document_id": "fake-document"}]})
     assert reply.status_code == 200 and roles_model.roles == ["analyst", "planner", "planner"]
     assert "propose_spec" in [t["function"]["name"] for t in roles_model.requests[-1]["tools"]]
     assert PNG in json.dumps(roles_model.requests[-1]["messages"])
@@ -346,7 +352,7 @@ def test_capture_outside_either_limit_is_not_delivered(client, model, revit, too
     assert encoded[:40] not in client.get(f"{B}/evidence").text
 
 
-def test_responses_planner_receives_pixels_only_on_the_attached_request(env, keys, tmp_path, provider, revit):
+def test_responses_planner_receives_pixels_on_following_requests(env, keys, tmp_path, provider, revit):
     native(revit, {"export_view_image_in_revit": lambda args: {"png_base64": PNG, "width": 1, "height": 1, "view_name": "Plan"}})
     provider.replies.extend([reply(call_item("capture_view_image", {}, "capture")), reply(message_item("Captured")),
                              reply(message_item("Described")), reply(message_item("Done"))])
@@ -354,12 +360,11 @@ def test_responses_planner_receives_pixels_only_on_the_attached_request(env, key
         first = client.post("/api/chat", json={"message": "Capture"})
         sid = first.headers["X-Session-Id"]
         image, = events(sse(first.text), "view_image")
-        attachment = {k: image[k] for k in ("capture_id", "png_base64")}
-        for extra in ({"capture": attachment}, {}):
+        for extra in ({}, {}):
             assert client.post("/api/chat", json={"session_id": sid, "message": "Continue", **extra}).status_code == 200
     first, followup, attached, later = provider.responses_bodies()
     assert attached["input"][-1]["content"][1] == {"type": "input_image", "image_url": "data:image/png;base64," + PNG}
-    assert PNG not in json.dumps([first, followup, later])
+    assert PNG not in json.dumps([first, followup]) and PNG in json.dumps(later)
 
 
 def test_responses_blocks_partial_image_echo_in_tool_arguments(env, keys, tmp_path, provider):
@@ -367,8 +372,168 @@ def test_responses_blocks_partial_image_echo_in_tool_arguments(env, keys, tmp_pa
     provider.replies.extend([reply(message_item("Ready")), reply(call_item("query", {"kind": fragment}, "echo"))])
     with app_client(env, tmp_path, models_text(main=", api: responses, vision: true")) as client:
         sid = client.post("/api/chat", json={"message": "Hello"}).headers["X-Session-Id"]
-        response = client.post("/api/chat", json={"session_id": sid, "message": "Describe", "capture": {
-            "capture_id": capture_id(sid, "local", PNG), "png_base64": PNG}})
+        get_session_store().get(sid).captures.add("local", {"width": 1, "height": 1, "view_name": "Plan", "png_base64": PNG})
+        response = client.post("/api/chat", json={"session_id": sid, "message": "Describe"})
         assert "Model endpoint echoed the image" in response.text
         for value in (response.text, get_log_store().query(), get_session_store().get(sid).history):
             assert fragment not in str(value)
+
+def test_selection_indicator_shares_a_light_read_and_send_verifies_document(client, model, picker):
+    select_one(picker)
+    url = B + "/selection-state"
+    state = client.get(url).json()
+    assert state == {"count": 1, "stamp": "selected", "document_id": "fake-document", "assistant_set": False}
+    cached = client.get(url)
+    assert cached.headers["cache-control"] == "no-store" and cached.json() == state
+    assert [(r["method"], r["params"]) for r in picker["fake"].requests] == [(STATE, {})]
+    model.turns.append(text_turn("Checked"))
+    response = client.post("/api/chat", headers=HEADERS, json={"message": "Inspect", "current_selection": state})
+    assert response.status_code == 200
+    report, = events(sse(response.text), "mentions")
+    assert report["resolved"][0]["id"] == 93 and report["current_selection"]["count"] == 1
+    sent = model.requests[-1]["messages"][-1]["content"]
+    assert 'Current selection (from the host' in sent and '"OST_Walls"' in sent and "Wall" in sent
+    assert get_session_store().get(response.headers["X-Session-Id"]).picks_for("local")["mention:element#93"]["document_id"] == "fake-document"
+    for key in ("document_id", "stamp"):
+        response = client.post("/api/chat", headers={**HEADERS, "Accept-Language": "zh"},
+                               json={"message": "Inspect", "current_selection": {**state, key: "stale"}})
+        assert response.status_code == 409 and response.json()["error"] == "selection_changed"
+        assert "选择已变化" in response.json()["message"]
+    assert len(model.requests) == 1
+
+
+def test_implicit_picks_exclude_a_host_selection_even_in_another_session(client, model, picker):
+    select_one(picker)
+    model.turns.extend([tool_turn(("propose_spec", {"spec": spec_for("select_elements", element_ids="93")})), text_turn("Selected")])
+    first = client.post("/api/chat", headers=HEADERS, json={"message": "Select 93"})
+    assert first.status_code == 200
+    reading = client.get(B + "/selection-state").json()
+    assert reading["assistant_set"] is True
+    model.turns.append(text_turn("Ready"))
+    second = client.post("/api/chat", headers=HEADERS, json={"message": "What is here?", "current_selection": reading})
+    assert second.status_code == 200 and not events(sse(second.text), "mentions")
+    assert not get_session_store().get(second.headers["X-Session-Id"]).picks_for("local")
+
+
+def test_capture_retention_context_limits_and_prefix(client, model, revit, env, tmp_path):
+    configure_vision(env, tmp_path)
+    names = iter(["North", "South", "West"])
+    native(revit, {"export_view_image_in_revit": lambda _: {"png_base64": PNG, "width": 1, "height": 1, "view_name": next(names)}})
+    model.turns.extend([tool_turn(*[("capture_view_image", {}) for _ in range(3)]), text_turn("Captured"),
+                        text_turn("One"), text_turn("Two")])
+    sid = client.post("/api/chat", json={"message": "Capture views"}).headers["X-Session-Id"]
+    for message in ["One?", "Two?"]:
+        assert client.post("/api/chat", json={"message": message, "session_id": sid}).is_success
+    first, second = (r["messages"] for r in model.requests[-2:])
+    assert second[:len(first)] == first
+    assert json.dumps(second).count(PNG) == 2 and all(name in str(second) for name in ("North", "South", "West"))
+    assert all("1 x 1" in str(m) for m in second if isinstance(m["content"], list))
+    assert not get_session_store().get(sid).captures.for_scope("other")
+    env.setenv("CAPTURE_CONTEXT", "off")
+    from backend.config import reset_settings
+    reset_settings()
+    model.turns.append(text_turn("Text only"))
+    off = client.post("/api/chat", json={"message": "Again", "session_id": sid})
+    assert events(sse(off.text), "image_notice") == [{"reason": "context_disabled"}]
+    assert PNG not in str(model.requests[-1]) and "North" not in str(model.requests[-1])
+
+
+@pytest.mark.parametrize("language,question", [("zh", "没有现成的工具能完成这件事，要现在添加吗？"), ("en", "No existing tool can do this. Add one now?")])
+def test_missing_tool_form_uses_request_language(client, model, language, question):
+    from backend.api.model_tools import WORKBENCH_LINK
+    model.turns.append(text_turn("No tool fits. " + WORKBENCH_LINK))
+    response = client.post("/api/chat", headers={**HEADERS, "Accept-Language": language}, json={"message": "Draft a spiral"})
+    form, = events(sse(response.text), "missing_tool")
+    assert form["request"] == "Draft a spiral" and form["question"] == question
+    assert set(form["choices"]) == {"authoring", "remote_mcp", "dismiss"}
+    assert len(model.requests) == 1
+
+def test_planner_watch_is_bound_to_the_question_device(client, model, picker, device):
+    select_one(picker)
+    model.turns.append(tool_turn(("ask_selection", {"prompt": "选择墙", "mode": "single"})))
+    first = client.post("/api/chat", headers=HEADERS, json={"message": "Inspect"})
+    form, = events(sse(first.text), "ask_selection")
+    args = {**WATCH_ARGS, "session_id": first.headers["X-Session-Id"], "ask_id": form["ask_id"]}
+    assert client.post(WATCH, headers=device[0], json=args).status_code == 409
+    assert not picker["fake"].requests
+    reply = client.post(WATCH, json=args)
+    assert reply.json()["items"][0]["id"] == 93
+    focus, = [r["params"] for r in picker["fake"].requests if r["params"].get("focus")]
+    assert focus["prompt"] == "选择墙"
+
+
+def test_watch_discards_cross_session_assistant_write(client, revit, monkeypatch):
+    store = get_session_store()
+    first, second = store.get_or_create(), store.get_or_create()
+    native(revit, {STATE: lambda _: {"count": 1, "stamp": "host", "document_id": "doc"}})
+
+    async def observe(executor, mode, category, timeout_s):
+        second.assistant_selections["local"] = {"tool": "select_elements", "ids": ["22"], "count": 1}
+        await bridge.device_selection().mark_write(executor.client)
+        return {"items": [{"id": 22}]}
+
+    monkeypatch.setattr(bridge.RevitQueryExecutor, "watch_selection", observe)
+    response = client.post(WATCH, json={**WATCH_ARGS, "session_id": first.session_id})
+    assert response.status_code == 409 and response.json()["error"] == "selection_changed"
+    assert client.get(B + "/selection-state").json()["assistant_set"]
+
+
+def test_hide_survives_omitted_mask_and_new_session_releases_pixels(client, model, env, tmp_path, device):
+    configure_vision(env, tmp_path)
+    session = get_session_store().get_or_create()
+    image = {"width": 1, "height": 1, "view_name": "Plan", "png_base64": PNG}
+    local = session.captures.add("local", image)
+    session.captures.add(device[1], image)
+    for extra in ({"hidden_captures": [local]}, {}):
+        model.turns.append(text_turn("Ready"))
+        response = client.post("/api/chat", json={"session_id": session.session_id, "message": "Describe", **extra})
+        assert events(sse(response.text), "capture_context") == [{"states": {local: "hidden"}}]
+        assert PNG not in str(model.requests[-1])
+    assert client.delete(f"/api/chat/{session.session_id}/captures").is_success
+    assert not session.captures.for_scope("local") and session.captures.for_scope(device[1])
+
+
+def test_other_tabs_cannot_poll_during_a_stream_or_watch(client, revit):
+    native(revit, {STATE: lambda _: {"count": 0, "stamp": "empty", "document_id": "doc"}})
+    state = bridge.device_selection()
+    state.streams = 1
+    assert client.get(B + "/selection-state").status_code == 409
+    state.streams = 0
+    client.app.state.selection_watches["local"] = ("tab", "watch", None)
+    assert client.get(B + "/selection-state").status_code == 409
+    assert not revit.requests
+
+
+def test_confirmed_selector_marks_device_before_a_chat_receipt(client, picker, model):
+    select_one(picker)
+    params = {"element_ids": "93"}
+    token = confirm(client, spec_for("select_elements", **params))
+    result = client.post(f"{B}/tools/select_elements/run", json={"params": params, "token": token})
+    assert result.json()["success"], result.text
+    current = client.get(B + "/selection-state").json()
+    assert current["assistant_set"] is True
+    model.turns.append(text_turn("Ready"))
+    response = client.post("/api/chat", headers=HEADERS, json={"message": "Look here", "current_selection": current})
+    assert response.is_success and not events(sse(response.text), "mentions")
+
+
+def test_newly_visible_older_capture_appends_after_existing_context(client, model, env, tmp_path):
+    configure_vision(env, tmp_path)
+    session = get_session_store().get_or_create()
+    ids = [session.captures.add("local", {"png_base64": PNG, "width": 1, "height": 1, "view_name": name})
+           for name in ("North", "South", "East")]
+    model.turns.extend([text_turn("One"), text_turn("Two")])
+    for message, hidden in [("First", ids[:1]), ("Next", [])]:
+        reply = client.post("/api/chat", json={"message": message, "session_id": session.session_id, "hidden_captures": hidden})
+        assert reply.is_success
+    first, second = [r["messages"] for r in model.requests]
+    assert second[:len(first)] == first
+    assert "North" not in str(first) and "North" in str(second[len(first):])
+
+
+def test_tabs_share_backoff_after_a_failed_state_read(client, revit):
+    native(revit, {STATE: lambda _: {"invalid": True}})
+    for _ in range(2):
+        response = client.get(B + "/selection-state")
+        assert response.status_code == 503 and response.json()["error"] == "selection_unavailable"
+    assert [r["method"] for r in revit.requests] == [STATE]

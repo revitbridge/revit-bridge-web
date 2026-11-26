@@ -9,17 +9,20 @@
    with what the host found for each (the turn's `mentions` event); a pick the host
    found gone or not valid is marked when it is in the input again. */
 
+import { uiText } from '../../utils/strings'
 import { mentionLabel } from '../hostv2/mention/model'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
-import type { DesignerAnswers, Question, SentMention, ViewImage } from '../../types/api'
+import type { DesignerAnswers, Question, SentMention, SelectionState, MissingTool } from '../../types/api'
 import type { FetchCandidates, Mention } from '../../types/hostv2'
 import { MentionInput } from '../hostv2/mention'
 import { TraceTimeline } from '../hostv2/trace'
 import Markdown from '../shared/Markdown'
 import PlanChecklist from './PlanChecklist'
 import ToolDrawer from './ToolDrawer'
-import { browserLanguage } from '../../utils/language'
 import QuestionForm from './QuestionForm'
+import Capture from './Capture'
+import { useSessionStore } from '../../store'
+import { useSelectionState, type SelectionSupport } from './useSelectionState'
 import SelectionWatch from './SelectionWatch'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
@@ -27,8 +30,11 @@ import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooMan
 
 interface Props {
   onSelectionAnswer?: (askId: string, items: Mention[]) => void
-  attachment?: string | null
-  onAttach?: (id: string | null) => void
+  support?: SelectionSupport
+  hiddenCaptures?: string[]
+  onHide?: (id: string) => void
+  onDestination?: (destination: 'authoring' | 'remote_mcp', request: string) => void
+  onDismiss?: (index: number) => void
   renderCards?: (message: number) => ReactNode
   onSubmitForm?: (text: string, answers: DesignerAnswers) => void
   highlight?: number
@@ -36,7 +42,7 @@ interface Props {
   transcript: Transcript
   questionMessage?: number
   questions?: Question[]
-  onSend?: (text: string, mentions: Mention[]) => void   // absent: a read-only mirror (the no-bridge side)
+  onSend?: (text: string, mentions: Mention[], selection?: SelectionState) => void   // absent: a read-only mirror (the no-bridge side)
   onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
   onReset?: () => void
   disabled?: boolean
@@ -47,19 +53,16 @@ interface Props {
   controls?: ReactNode                   // drawn next to the input, above Send (the chat mode)
 }
 
-function Capture({ image, attached, toggle }: { image: ViewImage; attached: boolean; toggle: () => void }) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  const zh = browserLanguage() === 'zh'
-  const src = 'data:image/png;base64,' + image.png_base64
-  return <figure className="chat-capture">
-    <button type="button" aria-label={zh ? '放大视图' : 'Enlarge view'} onClick={() => dialog.current?.showModal()}>
-      <img src={src} alt={image.view_name} /></button>
-    <figcaption>{image.view_name} · {image.width} × {image.height}
-      <label><input type="checkbox" role="switch" checked={attached} onChange={toggle} />
-        {zh ? '附给模型（下一条消息）' : 'Attach to model (next message)'}</label></figcaption>
-    <dialog ref={dialog} aria-label={image.view_name}><button type="button" onClick={() => dialog.current?.close()}>
-      {zh ? '关闭' : 'Close'}</button><img src={src} alt={image.view_name} /></dialog>
-  </figure>
+function ToolQuestion({ form, choose }: { form: MissingTool; choose: (action: keyof MissingTool['choices']) => void }) {
+  return <fieldset className="inline-form"><legend>{form.question}</legend>
+    {(['authoring', 'remote_mcp', 'dismiss'] as const).map(key => <button key={key} type="button"
+      onClick={() => choose(key)}>{form.choices[key]}</button>)}</fieldset>
+}
+
+function omissionReason(reason: string) {
+  if (reason === 'disabled') return uiText("unavailable for selection")
+  if (reason === 'not_found') return uiText("no longer in the model")
+  return uiText("could not be verified ({0})", reason)
 }
 
 function SentMentions({ mentions }: { mentions: SentMention[] }) {
@@ -76,12 +79,23 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
 
 export default function ChatPanel({ title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
   showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
-  onSelectionAnswer, attachment, onAttach }: Props) {
-  const zh = browserLanguage() === 'zh'
+  onSelectionAnswer, hiddenCaptures = [], onHide, support = 'offline', onDestination, onDismiss }: Props) {
   const [input, setInput] = useState('')
   const [mentions, setMentions] = useState<Mention[]>([])
   const [notice, setNotice] = useState('')
   const [composerSession, setComposerSession] = useState(0)
+  const device = useSessionStore(s => s.deviceId)
+  const asking = transcript.messages.findLast(m => m.form?.selection && !m.answered)?.form
+  const [finishedWatch, setFinishedWatch] = useState<string>()
+  const reading = useSelectionState(device, support,
+    !onSend || !!disabled || transcript.streaming || (!!asking && finishedWatch !== asking.ask_id), transcript.selectionRevision)
+  const selected = reading?.value
+  const [removed, setRemoved] = useState('')
+  const identity = JSON.stringify([device, selected?.document_id, selected?.stamp])
+  const attachSelection = selected && selected.count > 0 && !selected.assistant_set && removed !== identity
+  const current = attachSelection ? { count: selected.count, stamp: selected.stamp, document_id: selected.document_id } : undefined
+  const retained = transcript.messages.flatMap(m => m.images ?? []).slice(-32)
+  const recent = retained.slice(-2)
   const scroll = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -107,7 +121,9 @@ export default function ChatPanel({ title, transcript, questionMessage, question
     setNotice('')
     setInput('')
     setMentions([])
-    onSend(message, distinctMentions(picked))
+    if (current) onSend(message, distinctMentions(picked), current)
+    else onSend(message, distinctMentions(picked))
+    setRemoved('')
   }
 
   return (
@@ -115,8 +131,8 @@ export default function ChatPanel({ title, transcript, questionMessage, question
       <div className="chat-head">
         <span className="label-text" style={{ margin: 0 }}>{title}</span>
         <span className="muted small-mono">
-          {transcript.sessionId ? `session ${transcript.sessionId.slice(0, 8)}` : 'no session yet'}
-          {transcript.streaming ? ' | streaming' : ''}
+          {transcript.sessionId ? `${uiText('session')} ${transcript.sessionId.slice(0, 8)}` : uiText("no session yet")}
+          {transcript.streaming ? uiText(" | streaming") : ''}
         </span>
       </div>
       <div className="chat-scroll" ref={scroll}>
@@ -126,21 +142,28 @@ export default function ChatPanel({ title, transcript, questionMessage, question
             {showTrace && m.role === 'assistant' && m.trace && m.trace.length > 0 && <TraceTimeline events={m.trace} />}
             <div className={`chat-bubble ${m.role}`}>
               {m.role === 'assistant'
-                ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan || m.images?.length ? '' : '...')}</Markdown></div>
+                ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan || m.missingTool || m.images?.length ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
               {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details key={evt.id}>
                 <summary>{evt.read.result.ui_only ? (evt.read.result.success === false
-                  ? (zh ? 'Revit 操作失败：' : 'Revit action failed: ') : (zh ? '已在 Revit 中：' : 'Done in Revit: ')) : evt.read.result.success === false
-                  ? (browserLanguage() === 'zh' ? '读取失败：' : 'Read failed: ')
-                  : (browserLanguage() === 'zh' ? '已读取：' : 'Read: ')}{evt.read.name}</summary>
+                  ? uiText("Revit action failed: ") : uiText("Done in Revit: ")) : evt.read.result.success === false
+                  ? uiText("Read failed: ")
+                  : uiText("Read: ")}{evt.read.name}</summary>
                 <pre>{JSON.stringify(evt.read.result, null, 2)}</pre>
               </details>)}
-              {m.images?.map(img => <Capture key={img.capture_id} image={img} attached={attachment === img.capture_id}
-                toggle={() => onAttach?.(attachment === img.capture_id ? null : img.capture_id)} />)}
+              {m.images?.map(img => <Capture key={img.capture_id} image={img} hidden={hiddenCaptures.includes(img.capture_id)}
+                expired={!retained.includes(img)} older={!recent.includes(img)} toggle={() => onHide?.(img.capture_id)} />)}
+              {m.missingTool && <ToolQuestion form={m.missingTool} choose={action => {
+                if (action !== 'dismiss') onDestination?.(action, m.missingTool!.request)
+                onDismiss?.(i)
+              }} />}
+              {m.currentSelection !== undefined && <span className="chat-mention">{uiText('Current selection')} · {m.currentSelection}</span>}
+              {Object.entries(m.selectionOmissions ?? {}).map(([reason, count]) =>
+                <p key={reason} role="status">{uiText("{0} selected elements left out: {1}", count, omissionReason(reason))}</p>)}
               {m.imageNotice && <p role="status">{m.imageNotice === 'vision_unavailable'
-                ? (zh ? '当前规划模型未启用图像输入，已仅发送文字。' : 'Image input is disabled for this planner. Your text was sent.')
-                : (zh ? '截图已不可用，请重新截图。' : 'This capture is unavailable. Capture the view again.')}</p>}
+                ? uiText("Image input is disabled for this planner. Your text was sent.")
+                : uiText('Capture context is disabled')}</p>}
               {m.plan && <PlanChecklist plan={m.plan} results={m.stepResults} />}
               {m.role === 'assistant' && renderCards?.(i)}
               {i === questionMessage && !m.form && questions.length > 0 && onAnswer && (
@@ -157,20 +180,20 @@ export default function ChatPanel({ title, transcript, questionMessage, question
                         {q.options.length > 0
                           ? <div className="option-row">
                               {q.options.map((o, i) => (
-                                <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? `from ${o.source}` : undefined}>
+                                <button key={i} className="option-button" disabled={disabled} onClick={() => onAnswer(q, o)} title={o.source ? uiText("from {0}", o.source) : undefined}>
                                   {o.label}
                                 </button>
                               ))}
                             </div>
-                          : <div className="muted small-mono">no options from the model: answer in the box below</div>}
+                          : <div className="muted small-mono">{uiText("no options from the model: answer in the box below")}</div>}
                       </div>
                     )
                   })}
                 </div>
               )}
-              {m.form?.selection ? <SelectionWatch key={m.form.ask_id} sessionId={transcript.sessionId}
-                question={m.form.selection} disabled={disabled || !!m.answered}
-                onPick={items => onSelectionAnswer?.(m.form!.ask_id, items)} />
+              {m.form?.selection ? (!m.answered && <SelectionWatch key={m.form.ask_id} sessionId={transcript.sessionId}
+                askId={m.form.ask_id} question={m.form.selection} onStart={() => setFinishedWatch(undefined)} onFinish={() => setFinishedWatch(m.form!.ask_id)} disabled={disabled} legacy={support === 'legacy'}
+                onPick={items => onSelectionAnswer?.(m.form!.ask_id, items)} />)
                 : m.form && onSubmitForm && <QuestionForm key={m.form.ask_id} form={m.form} answered={m.answered}
                   disabled={disabled} onAnswer={onSubmitForm} />}
             </div>
@@ -180,25 +203,30 @@ export default function ChatPanel({ title, transcript, questionMessage, question
       </div>
       {onSend && (
         <div className="chat-input-row">
+          {selected && <div className="current-selection" role="status">
+            {uiText("{0} selected in Revit", selected.count)}
+            {attachSelection && <button type="button" aria-label={uiText('Remove current selection')} onClick={() => setRemoved(identity)}>
+              {uiText('Current selection')} ×</button>}
+          </div>}
           <MentionInput value={input} mentions={mentions}
             onChange={(text, picked) => { setInput(text); setMentions(picked); setNotice('') }}
             onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             {controls}
-            <SelectionWatch key={composerSession} sessionId={transcript.sessionId} disabled={disabled} onPick={items => {
+            {!asking && (support === 'legacy' || reading?.legacy) && <SelectionWatch legacy key={composerSession} sessionId={transcript.sessionId} disabled={disabled} onPick={items => {
               const problem = tooManyPicks([...mentions, ...items])
               if (problem) { setNotice(problem); return }
               setInput(text => [text.trimEnd(), ...items.map(mentionLabel)].filter(Boolean).join(' ') + ' ')
               setMentions(picked => [...picked, ...items])
               setNotice('')
-            }} />
+            }} />}
             {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
-            <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? 'Working...' : 'Send'}</button>
+            <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}>{transcript.streaming ? uiText("Working...") : uiText("Send")}</button>
             {onReset && <button className="btn-ghost" onClick={() => {
               setComposerSession(previous => previous + 1)
               onReset()
-            }} disabled={disabled || transcript.streaming}>New session</button>}
+            }} disabled={disabled || transcript.streaming}>{uiText("New session")}</button>}
           </div>
         </div>
       )}

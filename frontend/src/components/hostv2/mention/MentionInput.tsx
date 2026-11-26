@@ -1,9 +1,9 @@
+import { uiText } from '../../../utils/strings'
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
 import type { FetchCandidates, Mention } from '../../../types/hostv2'
 import { MentionController, type MentionState } from './controller'
 import { handleKeyDown, handlePaste, selectionOf, syncSelection } from './dom'
 import { hasLineBreak, matchingKinds } from './model'
-import { browserLanguage } from '../../../utils/language'
 import './mention.css'
 
 export interface MentionInputProps {
@@ -26,7 +26,6 @@ export interface MentionInputProps {
 
 export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandidates,
   disabled = false, placeholder, invalid = [] }: MentionInputProps) {
-  const zh = browserLanguage() === 'zh'
   const [controller] = useState(() => new MentionController(value, mentions,
     { onChange, onSubmit, fetchCandidates }, disabled))
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
@@ -55,7 +54,7 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
     const prefix = state.text.slice(index === 0 ? 0 : spans[index - 1].end, span.start)
     const isInvalid = invalid.some(item => item.kind === span.mention.kind && item.id === span.mention.id)
     return [prefix, <span key={span.index} className={`mention-tag${isInvalid ? ' is-invalid' : ''}`}
-      title={isInvalid ? (zh ? '这个模型项已不可用。' : 'This model item is no longer available.') : undefined}>
+      title={isInvalid ? uiText("This model item is no longer available.") : undefined}>
       {state.text.slice(span.start, span.end)}
     </span>]
   })
@@ -82,9 +81,9 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
       <div className="mention-editor">
         <div ref={backdrop} className="mention-backdrop" aria-hidden="true">{highlighted}{'\n'}</div>
         <textarea ref={input} className="mention-textarea" value={state.text}
-          role="combobox" aria-label={zh ? '消息' : 'Message'} aria-autocomplete="list" aria-controls={state.menu ? listId : undefined}
+          role="combobox" aria-label={uiText("Message")} aria-autocomplete="list" aria-controls={state.menu ? listId : undefined}
           aria-expanded={Boolean(state.menu)} aria-activedescendant={state.menu && hasActive ? `${id}-option-${state.active}` : undefined}
-          aria-describedby={`${id}-hint`} placeholder={placeholder ?? (zh ? '输入消息。输入 @ 引用模型项。' : 'Write a message. Type @ to mention a model item.')} disabled={disabled} rows={3}
+          aria-describedby={`${id}-hint`} placeholder={placeholder ?? uiText("Write a message. Type @ to mention a model item.")} disabled={disabled} rows={3}
           onChange={event => controller.editNative(event.currentTarget.value, selectionOf(event.currentTarget))}
           onSelect={event => syncSelection(controller, event.currentTarget)}
           onKeyDown={event => handleKeyDown(controller, event)}
@@ -109,10 +108,10 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
           />
       </div>
       <div className="mention-hint" id={`${id}-hint`}>
-        {zh ? '按 Enter 发送，Shift+Enter 换行。输入 @ 选择模型项。' : 'Enter to send. Shift+Enter for a new line. Type @ to select a model item.'}
-        {invalidHere && <span className="mention-invalid-note">{zh ? '部分模型项已不可用，请移除或替换标记的标签。' : ' Some model items are unavailable. Remove or replace the marked tags.'}</span>}
-        {dropsUnrepresentable && <span className="mention-invalid-note">{zh ? '名称中含换行的模型项无法作为标签插入，请移除或重命名。' : ' Names with line breaks cannot be represented as tags. Remove or rename those model items.'}</span>}
-        {dropsMissing && <span className="mention-invalid-note">{zh ? '部分已选模型项在文本中找不到，已移除。' : ' Some selected model items were not found in the text and were removed.'}</span>}
+        {uiText("Enter to send. Shift+Enter for a new line. Type @ to select a model item.")}
+        {invalidHere && <span className="mention-invalid-note">{uiText(" Some model items are unavailable. Remove or replace the marked tags.")}</span>}
+        {dropsUnrepresentable && <span className="mention-invalid-note">{uiText(" Names with line breaks cannot be represented as tags. Remove or rename those model items.")}</span>}
+        {dropsMissing && <span className="mention-invalid-note">{uiText(" Some selected model items were not found in the text and were removed.")}</span>}
       </div>
       <MentionSuggestions state={state} controller={controller} id={id} listRef={list} focusInput={() => input.current?.focus()} />
     </div>
@@ -128,7 +127,6 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
   const menu = state.menu
   const candidates = state.candidates
   const checking = menu.mode === 'items' && menu.kind === 'element'
-  const zh = browserLanguage() === 'zh'
   const autoCategories = menu.mode === 'items' && !menu.category ? candidates?.category_matched ?? [] : []
   const categoryName = (key: string) => candidates?.facets?.find(f => f.category === key)?.label || key
   const filter = menu.mode === 'items' ? menu.category || state.elementCategory : null
@@ -146,27 +144,27 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
         {item.label || item.name}{checking && item.name && ' #' + item.id}</span>
       <span className="mention-item-detail">{item.summary || item.detail}</span>
       {item.kind !== 'category' && hasLineBreak(item.name ?? '') &&
-        <span className="mention-item-detail">{zh ? '名称中含换行，无法作为标签插入。' : 'Names with line breaks cannot be inserted as tags.'}</span>}
+        <span className="mention-item-detail">{uiText("Names with line breaks cannot be inserted as tags.")}</span>}
     </button>
   }
   return (
     <div className="mention-popup" onMouseDown={event => event.preventDefault()}>
       <div className="mention-popup-heading">
-        <button type="button" onClick={() => { focusInput?.(); controller.readSelection() }}>{zh ? '取 Revit 当前选择' : 'Get current Revit selection'}</button>
+        <button type="button" onClick={() => { focusInput?.(); controller.readSelection() }}>{uiText("Get current Revit selection")}</button>
         {checking && <button type="button" disabled={!state.checked.length} onClick={() => { focusInput?.(); controller.insertChecked() }}>
-          {zh ? '插入所选' : 'Insert selected'} ({state.checked.length})</button>}
+          {uiText("Insert selected")} ({state.checked.length})</button>}
         {filter && <button type="button" onClick={() => controller.filterCategory('', '')}>
           {menu.mode === 'items' && menu.categoryLabel || categoryName(filter)} ×</button>}
-        {!!autoCategories.length && <button type="button" title={zh ? '移除类别关键词' : 'Remove the matching category terms'}
+        {!!autoCategories.length && <button type="button" title={uiText("Remove the matching category terms")}
           onClick={() => controller.clearMatched()}>{autoCategories.map(categoryName).join(' / ')} ×</button>}
       </div>
       {menu.mode === 'items' && (menu.kind === 'type' || checking) && !!candidates?.facets?.length &&
-        <div className="mention-facets" aria-label={zh ? '按类别筛选' : 'Filter by category'}>
+        <div className="mention-facets" aria-label={uiText("Filter by category")}>
           {candidates.facets.map(f => <button type="button" key={f.category} aria-pressed={filter === f.category}
             onClick={() => controller.filterCategory(filter === f.category ? '' : f.category, f.label)}>
             {f.label} ({f.count})</button>)}
         </div>}
-      <div ref={listRef} className="mention-options" id={id + '-candidates'} role="listbox" aria-label={zh ? '可选模型项' : 'Mention candidates'}
+      <div ref={listRef} className="mention-options" id={id + '-candidates'} role="listbox" aria-label={uiText("Mention candidates")}
         aria-multiselectable={checking || undefined} onScroll={event => {
           const list = event.currentTarget
           if (!state.error && list.scrollTop + list.clientHeight >= list.scrollHeight - 2) controller.loadMore()
@@ -178,18 +176,18 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
             <div className="mention-group-heading">{group.label} ({group.count})</div>
             {group.indices.map(nameOf)}</div> : group.indices.map(nameOf))}
       </div>
-      {(state.status === 'loading' || state.loadingMore) && <div role="status" className="mention-message">{zh ? '正在读取…' : 'Loading candidates...'}</div>}
+      {(state.status === 'loading' || state.loadingMore) && <div role="status" className="mention-message">{uiText("Loading candidates...")}</div>}
       {state.error && <div role="alert" className="mention-error">{state.error}</div>}
       {state.status === 'ready' && !groups.length && <div className="mention-message">
-        {checking ? (zh ? '当前页没有匹配的选中元素。' : 'No matching selected elements on this page.')
-          : (zh ? '没有匹配项。' : 'No matching items. Keep typing to search, or press Enter to send.')}</div>}
-      {checking && controller.availableSlots() <= state.checked.length && <div className="mention-message">{zh ? '每条消息最多引用 20 个构件或模型项。' : 'A message can include up to 20 model items.'}</div>}
+        {checking ? uiText("No matching selected elements on this page.")
+          : uiText("No matching items. Keep typing to search, or press Enter to send.")}</div>}
+      {checking && controller.availableSlots() <= state.checked.length && <div className="mention-message">{uiText("A message can include up to 20 model items.")}</div>}
       {candidates?.warnings?.map((warning, index) => <div role="status" className="mention-message" key={index}>{warning}</div>)}
-      {candidates?.facets_partial && <div className="mention-message">{zh ? '类别数量为已读取的部分。' : 'Category counts cover the items read so far.'}</div>}
+      {candidates?.facets_partial && <div className="mention-message">{uiText("Category counts cover the items read so far.")}</div>}
       {candidates?.truncated && state.nextOffset === null && !candidates.warnings?.length &&
-        <div className="mention-message">{zh ? '结果不完整，可缩小搜索范围。' : 'More items may be available. Narrow the search.'}</div>}
+        <div className="mention-message">{uiText("More items may be available. Narrow the search.")}</div>}
       {state.nextOffset !== null && <button className="mention-more" type="button" disabled={state.loadingMore}
-        onClick={() => controller.loadMore()}>{zh ? '加载更多' : 'Load more'}</button>}
+        onClick={() => controller.loadMore()}>{uiText("Load more")}</button>}
     </div>
   )
 }

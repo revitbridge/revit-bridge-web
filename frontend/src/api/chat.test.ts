@@ -155,6 +155,8 @@ describe('the mentions event and the picks in a request', () => {
       await drain({ message: 'on @level:F2', session_id: null, mentions: [{ kind: 'level', id: 312, label: 'F2' }] })
       await drain({ message: 'plain', session_id: 's1', mentions: [] })
       await drain({ message: 'plain', session_id: 's1' })
+      const mentions = Array.from({ length: 21 }, (_, i) => ({ kind: 'element' as const, id: i + 1 }))
+      await expect(drain({ message: 'oversize', mentions })).rejects.toThrow('at most 20')
     } finally {
       vi.unstubAllGlobals()
     }

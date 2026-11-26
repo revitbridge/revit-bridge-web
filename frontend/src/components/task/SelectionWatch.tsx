@@ -1,20 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
+import { uiText } from '../../utils/strings'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { apiFetch, BridgeApiError } from '../../api/client'
 import { deviceHeaders, useSessionStore } from '../../store'
 import type { SelectionQuestion } from '../../types/api'
 import type { Mention, MentionCandidates } from '../../types/hostv2'
-import { browserLanguage } from '../../utils/language'
 import { elementId } from '../hostv2/mention/controller'
 import { hasLineBreak } from '../hostv2/mention/model'
 import { tooManyPicks } from './mentions'
 
+const started = new WeakSet<SelectionQuestion>()
 const path = '/api/v1/bridge/watch-selection'
 type Reply = Partial<MentionCandidates> & {
   error?: string; timed_out?: boolean; document_changed?: boolean; cancelled?: boolean; filtered_out?: number
 }
 
 interface Props {
-  sessionId: string | null; question?: SelectionQuestion; disabled?: boolean; onPick: (items: Mention[]) => void
+  askId?: string
+  onStart?: () => void
+  onFinish?: () => void
+  sessionId: string | null; question?: SelectionQuestion; legacy?: boolean; disabled?: boolean; onPick: (items: Mention[]) => void
 }
 
 function newId() {
@@ -26,13 +30,13 @@ export default function SelectionWatch(props: Props) {
   return <WatchControl key={JSON.stringify([props.sessionId, device])} {...props} />
 }
 
-function WatchControl({ sessionId, question, disabled, onPick }: Props) {
-  const zh = browserLanguage() === 'zh'
+function WatchControl({ sessionId, question, disabled, onPick, legacy, onStart, onFinish, askId }: Props) {
   const [draftSession] = useState(newId)
-  const [mode, setMode] = useState<SelectionQuestion['mode']>(question?.mode ?? 'single')
-  const [category, setCategory] = useState(question?.category ?? '')
+  const mode = question?.mode ?? 'multiple'
+  const category = question?.category ?? ''
   const [watching, setWatching] = useState(false)
-  const [fallback, setFallback] = useState(false)
+  const [unsupported, setFallback] = useState(false)
+  const fallback = legacy || unsupported
   const [message, setMessage] = useState('')
   const active = useRef<AbortController | null>(null)
   useEffect(() => {
@@ -41,6 +45,8 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
     return () => { stop(); window.removeEventListener('pagehide', stop) }
   }, [])
 
+  useEffect(() => { if (disabled) active.current?.abort() }, [disabled])
+
   async function select(current = false) {
     if (active.current || disabled) return
     const controller = new AbortController()
@@ -48,20 +54,21 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
     const session = sessionId ?? draftSession
     const watch = newId()
     const headers = deviceHeaders()
-    const cancelled = zh ? '已取消选择。' : 'Selection cancelled.'
+    const cancelled = uiText("Selection cancelled.")
     const cancel = () => {
       setMessage(cancelled)
       if (!current) void apiFetch(path + '/' + encodeURIComponent(session) + '/' + watch,
         { method: 'DELETE', headers, keepalive: true }).catch(() => {})
     }
     controller.signal.addEventListener('abort', cancel, { once: true })
+    onStart?.()
     setWatching(true)
     setMessage('')
     try {
       const reply = current ? await apiFetch<Reply>('/api/v1/bridge/mentions?kind=element&source=selection',
-        { signal: controller.signal }) : await apiFetch<Reply>(path, {
+        { signal: controller.signal, headers }) : await apiFetch<Reply>(path, {
         method: 'POST', signal: controller.signal, headers,
-        body: JSON.stringify({ session_id: session, watch_id: watch, mode, category: category.trim() || null }),
+        body: JSON.stringify({ session_id: session, watch_id: watch, mode, category: category.trim() || null, prompt: question?.prompt, ask_id: askId }),
       })
       if (controller.signal.aborted) return
       if (reply.cancelled) {
@@ -72,8 +79,8 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
         setFallback(true)
         return
       }
-      if (reply.timed_out) setMessage(zh ? '等待选择超时。' : 'Selection timed out.')
-      else if (reply.document_changed) setMessage(zh ? '文档已切换，请重新选择。' : 'The document changed. Select again.')
+      if (reply.timed_out) setMessage(uiText("Selection timed out."))
+      else if (reply.document_changed) setMessage(uiText("The document changed. Select again."))
       else if (reply.error) setMessage(reply.error)
       else {
         const items: Mention[] = []
@@ -84,46 +91,50 @@ function WatchControl({ sessionId, question, disabled, onPick }: Props) {
             items.push({ kind: 'element', id, name: row.name ?? '', document_id: row.document_id })
         }
         if (reply.truncated || (question && (tooManyPicks(items) || (mode === 'single' && items.length > 1))))
-          setMessage(zh ? '请缩小选择范围后重试。' : 'Narrow the selection and try again.')
-        else if (!items.length) setMessage(zh ? '没有符合条件的构件。' : 'No matching elements selected.')
+          setMessage(uiText("Narrow the selection and try again."))
+        else if (!items.length) setMessage(uiText("No matching elements selected."))
         else {
           onPick(items)
-          if (reply.filtered_out) setMessage(zh ? `已过滤 ${reply.filtered_out} 个构件。` : `${reply.filtered_out} elements filtered out.`)
+          if (reply.filtered_out) setMessage(uiText("{0} elements filtered out.", reply.filtered_out))
         }
       }
     } catch (error) {
       if (controller.signal.aborted) return
       if (error instanceof BridgeApiError && error.code === 'revit_unreachable')
-        setMessage(zh ? '无法连接 Revit。' : 'Revit is unreachable.')
+        setMessage(uiText("Revit is unreachable."))
       else if (error instanceof BridgeApiError && error.code === 'watch_in_progress')
-        setMessage(zh ? '该设备已在等待选择。' : 'A selection watch is already running on this device.')
+        setMessage(uiText("A selection watch is already running on this device."))
       else setMessage(String(error))
     } finally {
       controller.signal.removeEventListener('abort', cancel)
       active.current = null
       setWatching(false)
+      onFinish?.()
     }
   }
 
+  const startWatch = useEffectEvent(() => { void select() })
+  useEffect(() => {
+    if (!question || disabled || fallback || started.has(question)) return
+    const start = () => {
+      if (!document.hidden && !started.has(question)) { started.add(question); startWatch() }
+    }
+    const timer = setTimeout(start, 0)
+    document.addEventListener('visibilitychange', start)
+    return () => { clearTimeout(timer); document.removeEventListener('visibilitychange', start) }
+  }, [question, disabled, fallback])
+
   return <div className="selection-watch">
-    {question ? <p>{question.prompt}{question.category && <> · {question.category}</>}</p> : <>
-      <select aria-label={zh ? '选择方式' : 'Selection mode'} disabled={disabled || watching}
-        value={mode} onChange={e => setMode(e.target.value as SelectionQuestion['mode'])}>
-        <option value="single">{zh ? '单选' : 'Single'}</option>
-        <option value="multiple">{zh ? '多选' : 'Multiple'}</option>
-        <option value="box">{zh ? '框选' : 'Box'}</option>
-      </select>
-      <input aria-label={zh ? '可选类别' : 'Optional category'} placeholder={zh ? '类别（可选）' : 'Category (optional)'}
-        title="OST_Walls" value={category} onChange={e => setCategory(e.target.value)} disabled={disabled || watching} />
-    </>}
-    {fallback && <p role="status">{zh ? '请升级 Revit 加载项以观察选择。也可选好后点击“取当前选择”。'
-      : 'Upgrade the Revit add-in to watch selection. You can select elements and take the current selection.'}</p>}
+    {question && <p>{question.prompt}{question.category && <> · {question.category}</>}</p>}
+    {fallback && <p role="status">{uiText("Upgrade the Revit add-in to watch selection. You can select elements and take the current selection.")}</p>}
     {watching ? <><p role="status">{mode === 'single'
-      ? (zh ? '请在 Revit 中点选一个新构件。' : 'Click one new element in Revit.')
-      : (zh ? '请在 Revit 中按 Ctrl 加选或拖框，选好后稍候。' : 'Ctrl-click or drag a box in Revit, then pause.')}</p>
-      <button type="button" onClick={() => active.current?.abort()}>{zh ? '取消' : 'Cancel'}</button></>
-      : <button type="button" disabled={disabled} onClick={() => void select(fallback)}>{fallback
-        ? (zh ? '取当前选择' : 'Take current selection') : (zh ? '在 Revit 中选择' : 'Select in Revit')}</button>}
+      ? uiText("Click one new element in Revit.")
+      : uiText("Ctrl-click or drag a box in Revit, then pause.")}</p>
+      <button type="button" onClick={() => active.current?.abort()}>{uiText("Cancel")}</button></>
+      : fallback ? <button type="button" disabled={disabled} onClick={() => void select(true)}>
+        {uiText("Take current selection")}</button>
+      : question && started.has(question) && <button type="button" disabled={disabled} onClick={() => void select()}>
+        {uiText("Watch again")}</button>}
     {message && <p role="status">{message}</p>}
   </div>
 }

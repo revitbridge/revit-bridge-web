@@ -1,3 +1,4 @@
+import { uiText } from '../../../utils/strings'
 import type { Role, UsageEvent } from '../../../types/hostv2'
 import { sumUsage, type UsageTotal } from './events'
 import './trace.css'
@@ -10,13 +11,13 @@ const rate = (value: number | null) => value === null ? '-' : `${(value * 100).t
 function UsageRow({ total, role, showRole }: { total: UsageTotal; role: string; showRole: boolean }) {
   return (
     <tr>
-      {showRole && <th scope="row">{role}</th>}
-      <td data-label="Input">{format(total.input)}</td>
-      <td data-label="Cache read">{format(total.cache_read)}</td>
-      <td data-label="Hit rate">{rate(total.cache_hit_rate)}</td>
-      <td data-label="Cache write">{format(total.cache_write)}</td>
-      <td data-label="Output">{format(total.output)}</td>
-      <td data-label="Calls">{total.calls}</td>
+      {showRole && <th scope="row">{uiText(role)}</th>}
+      <td data-label={uiText("Input")}>{format(total.input)}</td>
+      <td data-label={uiText("Cache read")}>{format(total.cache_read)}</td>
+      <td data-label={uiText("Hit rate")}>{rate(total.cache_hit_rate)}</td>
+      <td data-label={uiText("Cache write")}>{format(total.cache_write)}</td>
+      <td data-label={uiText("Output")}>{format(total.output)}</td>
+      <td data-label={uiText("Calls")}>{total.calls}</td>
     </tr>
   )
 }
@@ -30,15 +31,15 @@ function UsageColumn({ title, events }: { title: string; events: UsageEvent[] })
     <section className="hostv2-token-column" aria-label={title}>
       <h3>{title}</h3>
       <table className="hostv2-token-table">
-        <caption className="hostv2-trace-sr-only">{title} token usage</caption>
+        <caption className="hostv2-trace-sr-only">{title} {uiText("token usage")}</caption>
         <thead><tr>
-          {showRole && <th scope="col">Role</th>}
-          <th scope="col">Input</th>
-          <th scope="col">Cache read</th>
-          <th scope="col">Hit rate</th>
-          <th scope="col">Cache write</th>
-          <th scope="col">Output</th>
-          <th scope="col">Calls</th>
+          {showRole && <th scope="col">{uiText("Role")}</th>}
+          <th scope="col">{uiText("Input")}</th>
+          <th scope="col">{uiText("Cache read")}</th>
+          <th scope="col">{uiText("Hit rate")}</th>
+          <th scope="col">{uiText("Cache write")}</th>
+          <th scope="col">{uiText("Output")}</th>
+          <th scope="col">{uiText("Calls")}</th>
         </tr></thead>
         <tbody>
           {showRole && present.map(role => (
@@ -57,15 +58,12 @@ export function TokenPanel({ turn, session, title = 'Tokens' }: { turn: UsageEve
   return (
     <details className="hostv2-tokens">
       <summary>
-        <strong>{title}</strong>
-        <span className="hostv2-token-summary">
-          This turn: {format(turnTotal.input)} in / {format(turnTotal.output)} out ({turnTotal.calls} calls)
-          {' | '}Session: {format(sessionTotal.input)} in / {format(sessionTotal.output)} out ({sessionTotal.calls} calls)
-        </span>
+        <strong>{uiText(title)}</strong>
+        <span className="hostv2-token-summary">{uiText("This turn:")} {format(turnTotal.input)} {uiText("in /")} {format(turnTotal.output)} {uiText("out (")}{turnTotal.calls} {uiText("calls)")}{' | '}{uiText("Session:")} {format(sessionTotal.input)} {uiText("in /")} {format(sessionTotal.output)} {uiText("out (")}{sessionTotal.calls} {uiText("calls)")}</span>
       </summary>
       <div className="hostv2-token-columns">
-        <UsageColumn title="This turn" events={turn} />
-        <UsageColumn title="This session" events={session} />
+        <UsageColumn title={uiText("This turn")} events={turn} />
+        <UsageColumn title={uiText("This session")} events={session} />
       </div>
     </details>
   )

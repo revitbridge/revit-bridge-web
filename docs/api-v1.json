@@ -6,6 +6,59 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/chat/{session_id}/captures": {
+      "delete": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Clear Captures",
+        "description": "Release this device's session captures when the designer starts a new conversation.",
+        "operationId": "clear_captures_api_chat__session_id__captures_delete",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100,
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat": {
       "post": {
         "tags": [
@@ -45,7 +98,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. ask_selection offers a click-to-watch question. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. image_notice explains a skipped attachment. A new planner stage can propose the next step in the same stream.",
+            "description": "SSE conversation. The questions event carries ask_id and 1-4 questions with id, text, options, allow_other and multiple. A workflow Run form includes workflow_preview with summary and ordered steps (title, tool). Reply with a message and optional answers. The plan event carries plan_id and steps with id, title, status and optional evidence_id. A saved workflow adds its name as plan.workflow. The host builds its next spec from recorded results. A spec using an assistant-set selection includes assistant_selection with tool, count and a bounded list of ids. A card targeting a large current selection includes selection_reference with its count, categories, stamp and document_id. The mentions event reports omitted automatic picks by reason in current_selection.omitted. ask_selection starts a selection watch in the active page. Reply with selection_answer and mentions. view_image carries the capture_id, PNG, view name and dimensions. capture_context reports per-image visibility; image_notice explains disabled image input. missing_tool offers local navigation choices. A new planner stage can propose the next step in the same stream.",
             "content": {
               "text/event-stream": {}
             }
@@ -1346,6 +1399,56 @@
           },
           "422": {
             "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/selection-state": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Selection State",
+        "description": "Count, document and stamp only. Concurrent browsers share one device read per two seconds.",
+        "operationId": "selection_state_api_v1_bridge_selection_state_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2724,7 +2827,7 @@
           "bridge"
         ],
         "summary": "Confirm Spec",
-        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here. The token belongs to the browser session and never enters the model\ncontext.",
+        "description": "``validate_spec`` + ``Gate.issue(channel=\"host_ui\")``: the designer confirmed the card.\nReturns ``{token, spec_hash, expires_at, card}``; an invalid spec is 422 ``{errors}`` -\na parameter bound to a pick that is not one verified in the chat session ``session_id``\nfor this device (or not bound as that pick is) among them, code ``unknown_mention``. A\nspec that binds picks has them read again from the open model first (``recheck_picks``):\none gone, renamed, or changed in element category, family or type name since selection is ``unknown_mention`` too; no Revit to ask is 503\n``revit_unreachable`` (503 ``revit_error``, 504 ``revit_timeout``). A spec without picks\nneeds no Revit here unless it uses a selection reference. The host checks its document and stamp\nbefore issuing a token and returns 409 selection_changed if they differ. The token belongs to the browser session and never enters the model\ncontext.",
         "operationId": "confirm_spec_api_v1_bridge_spec_confirm_post",
         "requestBody": {
           "content": {
@@ -2747,6 +2850,16 @@
           },
           "403": {
             "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4602,28 +4715,6 @@
         "title": "CallRow",
         "description": "One model call."
       },
-      "CaptureAttachment": {
-        "properties": {
-          "capture_id": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{16}\\.[0-9a-f]{64}$",
-            "title": "Capture Id"
-          },
-          "png_base64": {
-            "type": "string",
-            "maxLength": 1398104,
-            "format": "password",
-            "title": "Png Base64",
-            "writeOnly": true
-          }
-        },
-        "type": "object",
-        "required": [
-          "capture_id",
-          "png_base64"
-        ],
-        "title": "CaptureAttachment"
-      },
       "ChatMention": {
         "properties": {
           "kind": {
@@ -4675,6 +4766,17 @@
       },
       "ChatRequest": {
         "properties": {
+          "current_selection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Selection observed with a designer-typed bridge message. The host verifies IDs or attaches a stamped reference above the combined 20-pick limit."
+          },
           "selection_answer": {
             "anyOf": [
               {
@@ -4688,16 +4790,23 @@
             "title": "Selection Answer",
             "description": "ask_id answered by document-scoped element mentions"
           },
-          "capture": {
+          "hidden_captures": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/CaptureAttachment"
+                "items": {
+                  "type": "string",
+                  "maxLength": 100,
+                  "minLength": 1
+                },
+                "type": "array",
+                "maxItems": 32
               },
               {
                 "type": "null"
               }
             ],
-            "description": "Attach a signed PNG from a view_image event to this designer message"
+            "title": "Hidden Captures",
+            "description": "Exclude these session captures from planner context"
           },
           "run": {
             "type": "string",
@@ -4872,6 +4981,17 @@
             "additionalProperties": true,
             "type": "object",
             "title": "Spec"
+          },
+          "selection_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SelectionState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Observed selection identity on this chat card"
           },
           "confirmed_by": {
             "type": "string",
@@ -5610,6 +5730,34 @@
         "title": "RunTotal",
         "description": "The calls of one run label: each token sum is null when any call lacks it."
       },
+      "SelectionState": {
+        "properties": {
+          "document_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Document Id"
+          },
+          "stamp": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Stamp"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "document_id",
+          "stamp",
+          "count"
+        ],
+        "title": "SelectionState"
+      },
       "SessionUsage": {
         "properties": {
           "session_id": {
@@ -6136,6 +6284,31 @@
             "maxLength": 100,
             "minLength": 1,
             "title": "Watch Id"
+          },
+          "ask_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ask Id"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
           },
           "timeout_s": {
             "type": "number",

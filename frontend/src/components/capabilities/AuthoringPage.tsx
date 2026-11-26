@@ -1,3 +1,4 @@
+import { uiText } from '../../utils/strings'
 import { useEffect, useState } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import { llmHeaders, useSessionStore } from '../../store'
@@ -19,13 +20,13 @@ const usableFields = new Set(['schema_version', 'version', 'name', 'code_templat
 function object(text: string): Pack {
   const parsed = JSON.parse(text)
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-    throw new Error(browserLanguage() === 'zh' ? '请输入 JSON 对象。' : 'Expected a JSON object.')
+    throw new Error(uiText("Expected a JSON object."))
   return parsed
 }
 
-function Editor() {
+function Editor({ initialBrief }: { initialBrief?: string }) {
   const zh = browserLanguage() === 'zh'
-  const [brief, setBrief] = useState('')
+  const [brief, setBrief] = useState(initialBrief ?? '')
   const [based, setBased] = useState('')
   const [tools, setTools] = useState<ToolInfo[]>([])
   const [meta, setMeta] = useState('')
@@ -61,7 +62,7 @@ function Editor() {
       setMeta(JSON.stringify({ schema_version: 1, version: '1.0.0', name: 'trial_' + trial.code_sha256.slice(0, 12),
         description: '' }, null, 2))
       setCode(draft.code); setParams('[]'); setValues('{}'); setStage('draft'); setReplace(false)
-      setResult(zh ? '填写工具名称和说明，然后编译检查。' : 'Enter a tool name and description, then run Compile check.')
+      setResult(uiText("Enter a tool name and description, then run Compile check."))
     } catch (e) { setTrialsError(getErrorMessage(e)) } finally { setBusy(false) }
   }
   async function action(kind: Step) {
@@ -80,7 +81,7 @@ function Editor() {
       }
       const pack = { ...object(meta), code_template: code, parameters: JSON.parse(params) } as Pack
       const inputs = object(values)
-      if (!Array.isArray(pack.parameters)) throw new Error(zh ? '参数必须为 JSON 数组。' : 'Parameters must be a JSON array.')
+      if (!Array.isArray(pack.parameters)) throw new Error(uiText("Parameters must be a JSON array."))
       if (kind === 'check') {
         setStage('draft')
         const unsupported = Object.keys(pack).filter(k => !usableFields.has(k))
@@ -88,12 +89,12 @@ function Editor() {
           ? '请在能力包字段中设置 version 为 1.0.0，并移除当前保存接口无法保留的字段：' + unsupported.join(', ')
           : 'In Pack fields set version to 1.0.0 and remove fields the save endpoint cannot retain: ' + unsupported.join(', '))
         if (tools.some(t => t.builtin && t.name.toLowerCase() === String(pack.name).toLowerCase()))
-          throw new Error(zh ? '内置工具只读，请修改名称。' : 'Built-in tools are read-only. Choose a new name.')
+          throw new Error(uiText("Built-in tools are read-only. Choose a new name."))
         const sample = Object.fromEntries(pack.parameters.map(p => [p.name, inputs[p.name] ?? p.default ??
           (['int', 'integer', 'float', 'double', 'number'].includes(p.type) ? 0 : ['bool', 'boolean'].includes(p.type) ? false : '')]))
         const checked = readCheck(await post(base + '/check', { pack, values: sample }))
         setResult([checked.reason, ...checked.diagnostics.map(d => [d.id, d.message].join(' ')), ...checked.warnings]
-          .filter(Boolean).join('\n') || (checked.compiled ? (zh ? '编译通过' : 'Compiled') : (zh ? '编译失败' : 'Compile failed')))
+          .filter(Boolean).join('\n') || (checked.compiled ? uiText("Compiled") : uiText("Compile failed")))
         if (checked.checked && checked.compiled === true && !checked.blocked) setStage('check')
       } else if (kind === 'trial') {
         const trial = readDryRun(await post(base + '/dry-run', { pack, values: inputs }))
@@ -102,51 +103,51 @@ function Editor() {
         if (trial.success && trial.rolled_back === true) setStage('trial')
       } else {
         const existing = (await bridgeApi.listTools()).find(t => t.name.toLowerCase() === String(pack.name).toLowerCase())
-        if (existing?.builtin) throw new Error(zh ? '内置工具只读。' : 'Built-in tools are read-only.')
+        if (existing?.builtin) throw new Error(uiText("Built-in tools are read-only."))
         if (existing && !replace) {
           setReplace(true)
-          setResult((zh ? '已存在同名的我的工具：' : 'A saved user tool has this name: ') + existing.name)
+          setResult(uiText("A saved user tool has this name: ") + existing.name)
           return
         }
         const saved = await post<{ name: string }>(base + '/solidify', { name: pack.name, code,
           description: pack.description, parameters: pack.parameters, source_query: pack.source_query, validator: pack.validator })
-        setStage('saved'); setResult((zh ? '已收入工具清单 · ' : 'Saved to tools · ') + saved.name)
+        setStage('saved'); setResult(uiText("Saved to tools · ") + saved.name)
       }
     } catch (e) { setResult(getErrorMessage(e)) }
     finally { setBusy(false) }
   }
-  return <section className="card authoring-page"><h2>{zh ? '工具编写' : 'Tool authoring'}</h2>
-    <section><h3>{zh ? '最近试跑' : 'Recent trials'}</h3>
-      <button type="button" onClick={() => setRefresh(n => n + 1)}>{zh ? '刷新' : 'Refresh'}</button>
+  return <section className="card authoring-page"><h2>{uiText("Tool authoring")}</h2>
+    <section><h3>{uiText("Recent trials")}</h3>
+      <button type="button" onClick={() => setRefresh(n => n + 1)}>{uiText("Refresh")}</button>
       {trialsError && <p role="alert">{trialsError}</p>}
-      {trials.length ? <ul>{trials.map(t => <li key={t.evidence_id}><time>{t.time}</time> · {zh ? '已回滚' : 'Rolled back'}
+      {trials.length ? <ul>{trials.map(t => <li key={t.evidence_id}><time>{t.time}</time> · {uiText("Rolled back")}
         {' · '}<code>{t.evidence_id}</code> · SHA-256 <code>{t.code_sha256}</code>{' '}
-        <button type="button" disabled={busy} onClick={() => void loadTrial(t)}>{zh ? '转成工具' : 'Turn into a tool'}</button></li>)}</ul>
-        : <p>{zh ? '尚无可加载的远程回滚试跑。' : 'No remote rollback trials available.'}</p>}
+        <button type="button" disabled={busy} onClick={() => void loadTrial(t)}>{uiText("Turn into a tool")}</button></li>)}</ul>
+        : <p>{uiText("No remote rollback trials available.")}</p>}
     </section>
     <fieldset disabled={busy}><div className="authoring-columns">
-      <div><label>{zh ? '描述工具' : 'Describe the tool'}<textarea value={brief} onChange={e => setBrief(e.target.value)} /></label>
-        <label>{zh ? '参考工具' : 'Reference pack'}<select value={based} onChange={e => setBased(e.target.value)}>
-          <option value="">{zh ? '无' : 'None'}</option>{tools.map(t => <option key={t.name} value={t.name}>{t.display_name || t.name}</option>)}
+      <div><label>{uiText("Describe the tool")}<textarea value={brief} onChange={e => setBrief(e.target.value)} /></label>
+        <label>{uiText("Reference pack")}<select value={based} onChange={e => setBased(e.target.value)}>
+          <option value="">{uiText("None")}</option>{tools.map(t => <option key={t.name} value={t.name}>{t.display_name || t.name}</option>)}
         </select></label>
         {catalogError && <p role="alert">{catalogError}</p>}
-        <button type="button" disabled={!brief.trim()} onClick={() => action('draft')}>{zh ? '起草' : 'Generate draft'}</button>
-        {meta && <><label>{zh ? '能力包字段 (JSON)' : 'Pack fields (JSON)'}<textarea value={meta} onChange={e => edited(setMeta, e.target.value)} /></label>
-          <label>{zh ? '参数 (JSON)' : 'Parameters (JSON)'}<textarea value={params} onChange={e => edited(setParams, e.target.value)} /></label>
-          <label>{zh ? '试运行参数值 (JSON)' : 'Trial values (JSON)'}<textarea value={values} onChange={e => edited(setValues, e.target.value)} /></label></>}
+        <button type="button" disabled={!brief.trim()} onClick={() => action('draft')}>{uiText("Generate draft")}</button>
+        {meta && <><label>{uiText("Pack fields (JSON)")}<textarea value={meta} onChange={e => edited(setMeta, e.target.value)} /></label>
+          <label>{uiText("Parameters (JSON)")}<textarea value={params} onChange={e => edited(setParams, e.target.value)} /></label>
+          <label>{uiText("Trial values (JSON)")}<textarea value={values} onChange={e => edited(setValues, e.target.value)} /></label></>}
       </div>
-      <div>{meta && <><label>{zh ? '代码模板' : 'C# template'}<textarea className="authoring-code" spellCheck={false}
+      <div>{meta && <><label>{uiText("C# template")}<textarea className="authoring-code" spellCheck={false}
           value={code} onChange={e => edited(setCode, e.target.value)} /></label>
-        <div className="authoring-actions"><button type="button" onClick={() => action('check')}>{zh ? '编译检查' : 'Compile check'}</button>
-        <button type="button" disabled={stage !== 'check'} onClick={() => action('trial')}>{zh ? '试运行并回滚' : 'Dry run and roll back'}</button>
+        <div className="authoring-actions"><button type="button" onClick={() => action('check')}>{uiText("Compile check")}</button>
+        <button type="button" disabled={stage !== 'check'} onClick={() => action('trial')}>{uiText("Dry run and roll back")}</button>
         <button type="button" disabled={stage !== 'trial'} onClick={() => action('saved')}>
-          {replace ? (zh ? '确认替换我的工具' : 'Confirm replacing my tool') : (zh ? '收入工具清单' : 'Save to tools')}</button></div></>}
+          {replace ? uiText("Confirm replacing my tool") : uiText("Save to tools")}</button></div></>}
         {result && <pre role="status">{result}</pre>}
       </div>
     </div></fieldset></section>
 }
 
-export default function AuthoringPage() {
+export default function AuthoringPage({ brief }: { brief?: string }) {
   const scope = useSessionStore(s => s.deviceId)
-  return <Editor key={scope} />
+  return <Editor key={scope} initialBrief={brief} />
 }

@@ -1,4 +1,5 @@
-import { defineConfig, type ProxyOptions } from 'vite'
+import type { ProxyOptions } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -19,6 +20,7 @@ const asTargetOrigin: ProxyOptions['configure'] = proxy => {
 }
 
 export default defineConfig({
+  test: { setupFiles: ['./src/testSetup.ts'] },
   plugins: [react(), tailwindcss()],
   server: {
     port: DEV_PORT,
