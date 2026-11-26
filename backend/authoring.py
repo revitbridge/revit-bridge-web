@@ -21,6 +21,7 @@ Use schema_version 1, version "1.0.0", a new ASCII snake_case name, description,
 Declare every {parameter} with name, type, description, source and boolean required. Use source "designer" for input or "default" with required false and a typed default.
 Write a short, bounded C# method body for the supplied Revit year. The host variable is document. Quote string placeholders ("{view_name}"), leave numbers bare, and read booleans with bool.Parse("{flag}"). Convert lengths from mm with UnitUtils.ConvertToInternalUnits(value, UnitTypeId.Millimeters).
 The add-in owns the transaction. Avoid dialogs, picks, file and network I/O. Refuse invalid input with throw new InvalidOperationException("REFUSED: <reason and remedy>"). Return an anonymous object.
+A placeholder goes only inside an ordinary "..." literal (strings) or bare (numbers). Never put a placeholder inside an interpolated ($"..."), verbatim (@"...") or raw triple-quoted string, and never leave a string placeholder unquoted.
 Example adapted from create_level (name is string, elevation is double in mm):
 string levelName = "{name}";
 if (string.IsNullOrWhiteSpace(levelName)) throw new InvalidOperationException("REFUSED: Give the new level a name.");
@@ -28,7 +29,7 @@ var level = Level.Create(document, UnitUtils.ConvertToInternalUnits({elevation},
 level.Name = levelName;
 return new { Name = level.Name };"""
 
-REPAIR = "Correct the previous draft using the listed problems. Return the complete pack as JSON only."
+REPAIR = INSTRUCTIONS + "\n\nCorrect the previous draft using the listed problems. Return the complete pack as JSON only."
 MAX_REPAIRS = 2
 MODELLING = re.compile(r"\b(create|add|place|draw|modify|change|set|move|rename|build)\b|创建|新建|添加|绘制|放置|修改|设置|移动|重命名", re.I)
 REFERENCE_FIELDS = ("name", "description", "parameters", "code_template", "validator")
