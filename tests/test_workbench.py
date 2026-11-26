@@ -242,11 +242,12 @@ def test_a_draft_the_package_cannot_fill_is_422_with_its_messages(addin, client)
     assert missing.status_code == 422 and missing.json()["error"] == "render_failed"
     assert missing.json()["errors"] == ["Missing required parameter: height"]
     wrong = client.post(f"{B}/dry-run", json={"pack": pack, "values": {"element_id": 1, "height": "tall"}})
-    assert wrong.json()["errors"] == ["Parameter 'height' expects double, got 'tall'"]
+    assert wrong.json()["errors"] == ["Parameter 'height' expects double, got str"]
     leftover = {**pack, "code_template": pack["code_template"] + "\n// {undeclared}"}
     invalid = client.post(f"{B}/check", json={"pack": leftover, "values": HEIGHT})
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
-    assert invalid.json()["problems"] == ["code_template: placeholder {undeclared} is not a declared parameter"]
+    problems = invalid.json()["problems"]
+    assert len(problems) == 1 and problems[0].startswith("code_template: placeholder {undeclared} is not a declared parameter")
     named = client.post(f"{B}/check", json={"pack": {**pack, "name": "con"}, "values": HEIGHT})
     assert named.status_code == 422 and named.json()["error"] == "invalid_tool_name"
     assert sent(addin, "check_code_in_revit") == [] and sent(addin, "dry_run_code_in_revit") == []

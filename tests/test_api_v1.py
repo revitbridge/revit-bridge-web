@@ -150,7 +150,8 @@ def test_tool_detail_update_and_delete_of_a_user_pack(make_client, env, tmp_path
     invalid = client.put(f"{B}/tools/count_walls", json={"code_template": "var l = \"{level_name}\"; return 1;"},
                          headers=admin)
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
-    assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
+    problems = invalid.json()["problems"]
+    assert len(problems) == 1 and problems[0].startswith("code_template: placeholder {level_name} is not a declared parameter")
     # The refused update wrote nothing: the served pack and the file are what the valid update left.
     assert "{level_name}" not in client.get(f"{B}/tools/count_walls").json()["code_template"]
     assert user_file.read_bytes() == written
@@ -396,7 +397,8 @@ def test_solidify_takes_v1_parameters_and_a_validator(make_client, env, tmp_path
     invalid = client.post(f"{B}/solidify", json={"name": "interpolated", "code": "var l = \"{level_name}\"; return 1;"},
                           headers=admin)
     assert invalid.status_code == 422 and invalid.json()["error"] == "invalid_pack"
-    assert invalid.json()["problems"] == ["code_template: placeholder {level_name} is not a declared parameter"]
+    problems = invalid.json()["problems"]
+    assert len(problems) == 1 and problems[0].startswith("code_template: placeholder {level_name} is not a declared parameter")
 
     blocked = client.post(f"{B}/solidify", json={"name": "evil", "code": "System.IO.File.Delete(\"x\");"}, headers=admin)
     assert blocked.status_code == 400 and blocked.json()["error"] == "blocked"
