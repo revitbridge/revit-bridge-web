@@ -35,6 +35,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   on, with the category, the size and a note that it is approximate. No
   drawing library is added. Needs the `revit-bridge` release that has
   `mention_model`.
+  Curved surfaces in the element preview now shade smoothly and keep their sharp rims.
 
 ### Security
 
