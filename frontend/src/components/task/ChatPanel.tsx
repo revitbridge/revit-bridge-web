@@ -28,6 +28,7 @@ import { useSessionStore } from '../../store'
 import { useSelectionState, type SelectionSupport } from './useSelectionState'
 import SelectionWatch from './SelectionWatch'
 import SketchPad from './SketchPad'
+import { MAX_IMAGE_CHARS } from './sketch'
 import type { SketchDraft } from '../../types/api'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
@@ -53,7 +54,7 @@ interface Props {
   questionMessage?: number
   questions?: Question[]
   onSend?: (text: string, mentions: Mention[], selection?: SelectionState, sketch?: SketchDraft) => void   // absent: a read-only mirror (the no-bridge side)
-  sketching?: boolean                    // offer "Sketch on view" (a line drawn on a capture of the plan view goes with the message)
+  sketching?: boolean                    // offer "Sketch on view" in the composer
   onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
   onReset?: () => void
   disabled?: boolean
@@ -74,6 +75,14 @@ function omissionReason(reason: string) {
   if (reason === 'disabled') return uiText("unavailable for selection")
   if (reason === 'not_found') return uiText("no longer in the model")
   return uiText("could not be verified ({0})", reason)
+}
+
+function SketchCaption({ view, lines, image }: { view: string; lines: number; image: string }) {
+  return <span>{uiText("Sketch on {0}: {1} line(s)", view, lines)}
+    {image.length > MAX_IMAGE_CHARS && <small className="sketch-image-note">
+      {uiText("The picture is too large to send; the model gets the coordinates only.")}
+    </small>}
+  </span>
 }
 
 function SentMentions({ mentions }: { mentions: SentMention[] }) {
@@ -184,7 +193,7 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
               {m.role === 'user' && m.sketch && <div className="chat-sketch">
                 {m.sketch.image && <img src={'data:image/png;base64,' + m.sketch.image} alt={uiText("Sketch on {0}", m.sketch.view_name)} />}
-                <span>{uiText("Sketch on {0}: {1} line(s)", m.sketch.view_name, m.sketch.lines)}</span></div>}
+                <SketchCaption view={m.sketch.view_name} lines={m.sketch.lines} image={m.sketch.image} /></div>}
               {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details className="read-row" key={evt.id}>
                 <summary>{evt.read.result.ui_only ? (evt.read.result.success === false
                   ? uiText("Revit action failed: ") : uiText("Done in Revit: ")) : evt.read.result.success === false
@@ -250,7 +259,7 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
           {(selected || mentions.length > 0 || sketch) && <div className="composer-chips">
             {sketch && <span className="chip composer-sketch">
               {sketch.image && <img src={'data:image/png;base64,' + sketch.image} alt="" />}
-              {uiText("Sketch on {0}: {1} line(s)", sketch.view_name, sketch.lines.length)}
+              <SketchCaption view={sketch.view_name} lines={sketch.lines.length} image={sketch.image} />
               <button type="button" aria-label={uiText("Remove the sketch")} onClick={() => setSketch(null)}>×</button></span>}
             {selected && <div className="current-selection" role="status"><Icon name="select" />
               {uiText("{0} selected in Revit", selected.count)}

@@ -752,16 +752,16 @@ wheels = [
 
 [[package]]
 name = "revit-bridge"
-version = "0.12.0"
+version = "0.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "mcp" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/b2/b8fd6ab460efbd62984ef8842356154dcfa588a8ad60f8ae5118ce9e09f9/revit_bridge-0.12.0.tar.gz", hash = "sha256:d7df655a0aa9826179ced82c2fb56b39fb94d4feaddb379dc536d2decf6e401e", size = 736836, upload-time = "2026-11-27T10:06:33.832Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/30/4eaa17cc62cd9b589ab218233a913bb88b7e39bdabcc096159a0e5cc8300/revit_bridge-0.13.0.tar.gz", hash = "sha256:31d676f5675ff3956456ab54a6777762ead1316aac5c41fdfa1f2d27341a64ab", size = 750366, upload-time = "2026-11-27T13:51:57.474Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a2/1e/4c6d2bab1f124b8bfb6fc34707babf436587209688b6b1057644ed90506a/revit_bridge-0.12.0-py3-none-any.whl", hash = "sha256:149402a521b5ab4d444abe047fd4c95fef20668b3df3b794d4e94440513a1c77", size = 608006, upload-time = "2026-11-27T10:06:32.345Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/19/739337fc9239dd7c0330fd750117d14c34c81b12d9aa29c7136b67ec6dbc/revit_bridge-0.13.0-py3-none-any.whl", hash = "sha256:bf70b0ae7f21d243f177d150acee4a3b5de13b2421e60a80f730914a51da9c64", size = 612465, upload-time = "2026-11-27T13:51:55.76Z" },
 ]
 
 [[package]]
@@ -788,7 +788,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "revit-bridge", specifier = "==0.12.0" },
+    { name = "revit-bridge", specifier = "==0.13.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 

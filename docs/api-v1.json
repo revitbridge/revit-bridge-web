@@ -2027,7 +2027,7 @@
           "bridge"
         ],
         "summary": "Sketch Capture",
-        "description": "A picture of the active plan view for the designer to draw on: ``{capture_id, png_base64,\nwidth, height, view_name, level}``. The host keeps the view's frame with the id (the model\nrectangle the picture shows), so what is drawn can be converted to model coordinates exactly.\nA view that is not a plan is 409 ``unsupported_view``; a view that moved while it was exported\n409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``; 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
+        "description": "A picture of the active plan or orthographic 3D view: ``{capture_id, png_base64,\nwidth, height, view_name, kind, level, levels}``. An axonometric capture lists its levels\nby elevation in millimetres. The host keeps the frame for converting strokes to model coordinates.\nAn unsupported view is 409 ``unsupported_view``; a view that moved while it was exported\n409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``; 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
         "operationId": "sketch_capture_api_v1_bridge_sketch_capture_post",
         "responses": {
           "200": {
@@ -2097,7 +2097,7 @@
           "bridge"
         ],
         "summary": "Sketch Resolve",
-        "description": "What the host understood of the designer's strokes, for the page to show before the\nmessage is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, level,\nelevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, points: [{x, y, snap?}],\npixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:\nthe chat request sends the strokes again and they are read again. An expired capture is 404\n``unknown_sketch``; strokes that are not lines 422 ``invalid_args``; a view that is gone 409\n``view_changed``; 429 ``rate_limited`` past ``/spec/confirm``'s limit.",
+        "description": "What the host understood of the designer's strokes, for the page to show before the\nmessage is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, view_kind, level,\nelevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, closed?, points: [{x, y, snap?}],\npixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:\nthe chat request sends the strokes again and they are read again. An expired capture is 404\n``unknown_sketch``; unreadable strokes or a missing or unknown 3D level 422 ``invalid_args``; a view that is gone 409\n``view_changed``; 429 ``rate_limited`` past ``/spec/confirm``'s limit.",
         "operationId": "sketch_resolve_api_v1_bridge_sketch_resolve_post",
         "requestBody": {
           "content": {
@@ -5190,6 +5190,18 @@
             "minItems": 1,
             "title": "Strokes"
           },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
+          },
           "image": {
             "anyOf": [
               {
@@ -6182,6 +6194,18 @@
             "maxItems": 8,
             "minItems": 1,
             "title": "Strokes"
+          },
+          "level": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level"
           }
         },
         "additionalProperties": false,

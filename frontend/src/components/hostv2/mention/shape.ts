@@ -1,7 +1,7 @@
 /* Drawing a rough element shape on a 2D canvas: no library, a few hundred triangles at most. */
 
 const TILT = 0.45              // the camera looks down by this much (radians)
-const SMOOTH_COS = Math.cos(Math.PI / 6)
+const SMOOTH_COS = Math.cos(31 * Math.PI / 180)
 
 export interface Mesh { vertices: number[]; triangles: number[] }
 
@@ -48,28 +48,19 @@ function meshSurfaces(mesh: Mesh) {
       else sides.set(key, [t * 3 + s])
     }
   }
-  const shadeNormals = normals.slice()
   for (const list of sides.values()) {
     if (list.length === 2) {
       const first = Math.floor(list[0] / 3) * 3, second = Math.floor(list[1] / 3) * 3
       const dot = normals[first] * normals[second] + normals[first + 1] * normals[second + 1] + normals[first + 2] * normals[second + 2]
-      if (Math.abs(dot) > SMOOTH_COS) {
-        // Align each neighbour with this triangle before adding its unit normal.
-        const sign = dot < 0 ? -1 : 1
-        for (let axis = 0; axis < 3; axis++) {
-          shadeNormals[first + axis] += sign * normals[second + axis]
-          shadeNormals[second + axis] += sign * normals[first + axis]
-        }
-        continue
-      }
+      if (Math.abs(dot) > SMOOTH_COS) continue
     }
     for (const side of list) flags[side] = 1
   }
-  return { outline: flags, shadeNormals }
+  return { outline: flags, normals }
 }
 
 /* Which sides of each triangle are the outline of a surface: one flag per side, in the order
-   (a-b, b-c, c-a). A side two triangles share while their normals are less than 30 degrees
+   (a-b, b-c, c-a). A side two triangles share while their normals are less than 31 degrees
    apart is inside a surface and is not drawn: a wall's side reads as one face and a pipe as one
    round surface, while a fold between planes (a corner, the rim of a cylinder) is drawn. */
 export function featureEdges(mesh: Mesh): Uint8Array {
@@ -100,7 +91,7 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   if (!count || !triangles.length || !width || !height) return
   let surface = surfaces.get(shape)
   if (!surface) surfaces.set(shape, surface = meshSurfaces(shape))
-  const { outline, shadeNormals } = surface
+  const { outline, normals } = surface
   const [cx, cy, cz] = size.map(v => v / 2)
   const radius = Math.hypot(cx, cy, cz) || 1
   const scale = Math.min(width, height) * 0.46 / radius
@@ -117,12 +108,11 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   const faces: { index: number; depth: number; light: number }[] = []
   for (let t = 0; t < triangles.length; t += 3) {
     const a = triangles[t], b = triangles[t + 1], c = triangles[t + 2]
-    // Rotate the summed normal into view space. Only screen positions are scaled, so
-    // the projected normal has an extra factor of scale on its depth component.
-    const x = shadeNormals[t], y = shadeNormals[t + 1], z = shadeNormals[t + 2]
+    // Coplanar triangles share a shade even when their other neighbours face different ways.
+    const x = normals[t], y = normals[t + 1], z = normals[t + 2]
     // Screen right is -rx (see the projection above), so the normal's screen x is negated too.
     const nx = -(x * cos - y * sin), ry = x * sin + y * cos
-    const ny = ry * down - z * up, nz = (ry * up + z * down) * scale
+    const ny = ry * down - z * up, nz = ry * up + z * down
     const length = Math.hypot(nx, ny, nz)
     if (!length) continue
     const light = Math.abs(nx * 0.35 + ny * -0.5 + nz * 0.8) / length
@@ -136,8 +126,8 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   context.lineCap = 'round'
   for (const face of faces) {
     const a = triangles[face.index], b = triangles[face.index + 1], c = triangles[face.index + 2]
-    // Two decimals: the triangles of one face get the very same colour, so no seam shows.
-    const shade = tone(base, 255, Math.round(Math.min(1, face.light) * 60) / 100)
+    // Limit contrast between shallow facets. Round only the final colour channels.
+    const shade = tone(base, 255, Math.min(1, face.light) * 0.38)
     context.fillStyle = shade
     context.strokeStyle = shade
     context.lineWidth = 0.75                   // covers the hairline between neighbours

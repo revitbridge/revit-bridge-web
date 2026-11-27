@@ -10,10 +10,12 @@ import zlib
 import pytest
 
 from backend import sketches
+from backend.session import get_session_store
 from tests.fake_model import text_turn
 from tests.fake_revit import FakeRevit, model_handler
 from tests.test_api_v1 import B
 from tests.test_host_loop import HEADERS, events, model, sse  # noqa: F401 - the model fixture
+from tests.test_selection_capture import configure_vision
 
 FEET = 304.8
 # The view shows x from -6000 to 10000 mm and y from -2000 to 6000 mm: 10 mm per pixel at 1600 x 800.
@@ -21,6 +23,11 @@ RAW = {"document_id": "fake-document", "view_id": "32", "view_uid": "fake-view",
        "view_type": "FloorPlan", "level": "L1", "elevation": 0.0,
        "c0": [-6000 / FEET, -2000 / FEET, 0.0], "c1": [10000 / FEET, 6000 / FEET, 0.0],
        "right": [1.0, 0.0, 0.0], "up": [0.0, 1.0, 0.0], "direction": [0.0, 0.0, 1.0]}
+TILTED = {**RAW, "view_type": "ThreeD", "view_name": "Tilted box", "is_3d": True, "is_perspective": False,
+          "level": None, "elevation": None, "levels": [{"name": "Shelf", "elevation": 2000 / FEET},
+                                                       {"name": "Base", "elevation": 0}],
+          "right": [1, 0, 0], "up": [0, .8, .6], "direction": [0, -.6, .8],
+          "c0": [-6000 / FEET, -4000 / FEET, 2000 / FEET], "c1": [10000 / FEET, 2400 / FEET, 6800 / FEET]}
 WALLS = [{"id": "11", "straight": True, "a": [-3000 / FEET, 1000 / FEET], "b": [-3000 / FEET, 5000 / FEET]},
          {"id": "12", "straight": True, "a": [0.0, -1000 / FEET], "b": [0.0, 6000 / FEET]}]
 STROKE = [[310, 108], [590, 90]]      # from the end of wall 11 to wall 12
@@ -49,18 +56,18 @@ def plan_view(env):
         if method == "get_bridge_capabilities":
             return FakeRevit.ok(rid, {"protocol": 2, "methods": ["export_view_image_in_revit", "send_code_to_revit"]})
         if method == "export_view_image_in_revit":
-            return FakeRevit.ok(rid, {"png_base64": PICTURE, "width": 1600, "height": 800, "view_name": "L1"})
+            return FakeRevit.ok(rid, {"png_base64": PICTURE, "width": 1600, "height": 800, "view_name": state["frame"]["view_name"]})
         code = params.get("code", "") if method == "send_code_to_revit" else ""
         if "GetZoomCorners" in code:
             state["frames"] += 1
             if state.get("moves") and state["frames"] % 2 == 0:
                 return FakeRevit.code_result(rid, {**state["frame"], "c1": [10500 / FEET, 6000 / FEET, 0.0]})
             return FakeRevit.code_result(rid, state["frame"])
-        if "OfClass(typeof(Wall))" in code and "straight = location.Curve is Line" in code:
+        if "return new { walls, grids, columns, framing, complete }" in code:
             if state.get("gone"):
                 return FakeRevit.code_result(rid, None, success=False,
                                              error="The view of the sketch is no longer open; capture the view again.")
-            assert params["parameters"] == ["fake-view", "fake-document"]
+            assert params["parameters"] == ["fake-view", "fake-document", state.get("expected_level", "")]
             return FakeRevit.code_result(rid, {"walls": WALLS, "complete": True})
         return base(request)
 
@@ -77,7 +84,8 @@ def capture(client) -> dict:
 
 def test_capture_returns_the_picture_and_keeps_the_frame_on_the_host(plan_view, client):
     shot = capture(client)
-    assert set(shot) == {"capture_id", "png_base64", "width", "height", "view_name", "level"}
+    assert set(shot) == {"capture_id", "png_base64", "width", "height", "view_name", "level", "kind", "levels"}
+    assert shot["kind"] == "plan" and shot["levels"] == []
     assert shot["png_base64"] == PICTURE and (shot["width"], shot["height"]) == (1600, 800)
     assert shot["view_name"] == "L1" and shot["level"] == "L1"
     assert "frame" not in json.dumps(shot) and "fake-view" not in json.dumps(shot)
@@ -103,10 +111,36 @@ def test_resolve_is_the_package_reply(plan_view, client):
     reply = client.post(f"{B}/sketch/resolve", json={"capture_id": shot["capture_id"], "strokes": [STROKE]})
     assert reply.status_code == 200, reply.text
     assert reply.json() == {
-        "view_name": "L1", "view_type": "FloorPlan", "level": "L1", "elevation_mm": 0.0, "tolerance_mm": 250,
+        "view_name": "L1", "view_type": "FloorPlan", "view_kind": "plan", "level": "L1", "elevation_mm": 0.0, "tolerance_mm": 250,
         "warnings": [], "lines": [{"line": 1, "length_mm": 3000, "pixels": [[300.0, 100.0], [600.0, 100.0]], "points": [
             {"x": -3000, "y": 5000, "snap": {"kind": "wall_end", "wall_id": 11}},
             {"x": 0, "y": 5000, "snap": {"kind": "on_wall", "wall_id": 12}}]}]}
+
+
+def test_3d_capture_and_resolve_use_the_packages_levels(plan_view, client):
+    plan_view.update(frame=TILTED, expected_level="Shelf")
+    shot = capture(client)
+    assert shot["kind"] == "axonometric" and shot["level"] is None
+    assert shot["levels"] == [{"name": "Base", "elevation_mm": 0}, {"name": "Shelf", "elevation_mm": 2000}]
+    assert "frame" not in shot and "fake-view" not in json.dumps(shot)
+    body = {"capture_id": shot["capture_id"], "strokes": [[[310, 88], [590, 70]]]}
+    for extra in ({}, {"level": "Missing"}):
+        refused = client.post(f"{B}/sketch/resolve", json={**body, **extra})
+        assert refused.status_code == 422 and refused.json()["error"] == "invalid_args"
+        assert "Base, Shelf" in refused.json()["message"]
+    reply = client.post(f"{B}/sketch/resolve", json={**body, "level": "Shelf"})
+    assert reply.status_code == 200
+    result = reply.json()
+    assert (result["view_kind"], result["level"], result["elevation_mm"]) == ("axonometric", "Shelf", 2000)
+    assert result["lines"][0]["pixels"] == [[300, 80], [600, 80]]
+
+
+def test_a_closed_line_returns_each_corner_once_and_includes_the_closing_edge(plan_view, client):
+    rectangle = [[800, 200], [1000, 200], [1000, 400], [800, 400], [800, 200]]
+    reply = client.post(f"{B}/sketch/resolve", json={"capture_id": capture(client)["capture_id"], "strokes": [rectangle]})
+    assert reply.status_code == 200
+    line, = reply.json()["lines"]
+    assert line["closed"] is True and line["pixels"] == rectangle[:-1] and line["length_mm"] == 8000
 
 
 def test_resolve_refuses_what_it_cannot_read(plan_view, client):
@@ -167,6 +201,14 @@ def test_the_sketch_is_read_again_by_the_host_and_bad_ones_stop_the_turn(plan_vi
     assert model.requests == []                                    # no model was called
 
 
+def test_chat_projects_the_3d_sketch_onto_the_requested_level(plan_view, client, model):
+    plan_view.update(frame=TILTED, expected_level="Shelf")
+    model.turns.append(text_turn("ok"))
+    reply = chat(client, "draw here", sketch={"capture_id": capture(client)["capture_id"], "strokes": [STROKE], "level": "Shelf"})
+    assert reply.status_code == 200
+    assert '3D view "Tilted box", projected onto level "Shelf"' in model.last_messages()[-1]["content"]
+
+
 def test_the_drawn_picture_becomes_a_session_capture_and_never_reaches_a_model_without_vision(plan_view, client, model):
     shot = capture(client)
     drawn = png(1600, 800)
@@ -174,10 +216,36 @@ def test_the_drawn_picture_becomes_a_session_capture_and_never_reaches_a_model_w
     reply = chat(client, "draw a wall here", sketch={"capture_id": shot["capture_id"], "strokes": [STROKE], "image": drawn})
     assert reply.status_code == 200, reply.text
     assert drawn not in json.dumps(model.requests)
-    from backend.session import get_session_store
     session = next(iter(get_session_store()._sessions.values()))
     (entry,) = session.captures.entries
     assert entry.png == drawn and entry.summary == "L1 - designer's sketch (1600 x 800)"
+
+
+def test_late_refusal_does_not_store_a_picture_and_retry_shows_it_to_the_planner(plan_view, roles_env, client, model, tmp_path):
+    from backend.api import chat as chat_module
+
+    configure_vision(roles_env, tmp_path)
+    session = get_session_store().get_or_create()
+    body = {"session_id": session.session_id, "message": "draw here",
+            "sketch": {"capture_id": capture(client)["capture_id"], "strokes": [STROKE], "image": PICTURE}}
+    # Simulate another turn completing while the device read yields, just before the final lock check.
+    async def competing_turn(*args):
+        session.next_turn()
+        return None, set(), None
+
+    with roles_env.context() as patch:
+        patch.setattr(chat_module, "message_picks", competing_turn)
+        refused = client.post("/api/chat", json=body)
+    assert refused.status_code == 409 and refused.json()["error"] == "turn_in_progress"
+    assert not session.captures.entries and not model.requests and PICTURE not in refused.text
+    model.turns.append(text_turn("ok"))
+    accepted = client.post("/api/chat", json=body)
+    assert accepted.status_code == 200 and not events(sse(accepted.text), "error")
+    entry, = session.captures.entries
+    assert events(sse(accepted.text), "capture_context") == [{"states": {entry.id: "used"}}]
+    request, = model.requests
+    assert json.dumps(request["messages"]).count("data:image/png;base64," + PICTURE) == 1
+    assert PICTURE not in accepted.text and PICTURE not in str(session.history)
 
 
 def test_checked_png_reads_only_the_header():
@@ -231,7 +299,7 @@ def test_the_sketch_routes_are_rate_limited_like_confirm(plan_view, client, monk
         assert reply.status_code == 429 and reply.json()["error"] == "rate_limited"
 
 
-@pytest.mark.parametrize("name", ["Plan\q", "Plan\\", 'Plan "A"', "L1"])
+@pytest.mark.parametrize("name", [r"Plan\q", "Plan\\", r'Plan "A"', r"L1"])
 def test_a_view_name_cannot_break_the_text_block(name):
     from backend.api.chat import sketch_block
     drawn = {"view_name": name, "level": "L1", "lines": [{"line": 1, "length_mm": 10, "points": [{"x": 0, "y": 0}, {"x": 10, "y": 0}]}]}

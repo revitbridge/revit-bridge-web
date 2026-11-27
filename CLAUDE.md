@@ -95,7 +95,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, the run's chat `mode` (`mixed` for more than one), and `by_role`: the same per role and model): the `llm_calls` rows read back.
-- `backend/sketches.py` - the frames of the view captures a designer may draw on (`SketchStore`: per device, bounded, 30 minutes; the frame never leaves the host) and `checked_png` (the drawn picture: a PNG of the capture's size, header only). `bridge.py` `sketch_capture` / `sketch_resolve` / `resolved_sketch` are the package's `revit_bridge.sketch`; `chat.py` reads a request's `sketch` again and appends `sketch_block`. Page: `components/task/SketchPad.tsx`, `sketch.ts`.
+- `backend/sketches.py` keeps plan and orthographic 3D capture frames per device for 30 minutes in the bounded `SketchStore`. The page receives the view kind and available levels. The frame stays on the host. `bridge.py` passes the strokes and optional projection level to `revit_bridge.sketch`. `chat.py` resolves them again and appends `sketch_block`. A picture validated by `checked_png` joins the session captures after the turn lock is acquired and is available to the planner on that turn. `components/task/SketchPad.tsx` and `sketch.ts` display the package's open or closed lines and snap targets.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
   Its optional `mention_cache_scope` identifies the live connection for the package's picker cache.
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
@@ -223,8 +223,8 @@ Runtime attribute lookup across the host/package boundary:
   `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge==0.12.0` from PyPI; `uv.lock` pins the exact
-release (0.12.0). When the host needs something newer, bump the constraint and
+`pyproject.toml` requires `revit-bridge==0.13.0` from PyPI; `uv.lock` pins the exact
+release (0.13.0). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
 a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).

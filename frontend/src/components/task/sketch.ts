@@ -1,8 +1,6 @@
-/* A sketch on a capture of the active plan view: the picture to draw on, and what the host
-   understood of the strokes (model millimetres, snapped to walls). Nothing here converts a
-   pixel to a coordinate: the host does, with the frame it kept for the capture. */
+/* Pixel strokes go to the host, where the package reads them using the capture's frame. */
 
-import type { ResolvedSketch, SketchCapture, SketchDraft } from '../../types/api'
+import type { ResolvedSketch, SketchCapture, SketchDraft, SketchLine, SketchPoint } from '../../types/api'
 import { post } from '../shared/http'
 
 const B = '/api/v1/bridge'
@@ -13,13 +11,13 @@ const MAX_POINTS = 600           // a stroke is thinned to this many points befo
 
 export const captureSketchView = () => post<SketchCapture>(`${B}/sketch/capture`, {})
 
-export const resolveSketch = (captureId: string, strokes: number[][][]) =>
-  post<ResolvedSketch>(`${B}/sketch/resolve`, { capture_id: captureId, strokes })
+export const resolveSketch = (captureId: string, strokes: number[][][], level?: string) =>
+  post<ResolvedSketch>(`${B}/sketch/resolve`, { capture_id: captureId, strokes, level })
 
 /* The stroke with at most MAX_POINTS points, the first and the last kept, rounded to a tenth. */
 export function thinned(stroke: number[][]): number[][] {
-  const step = Math.max(1, Math.ceil(stroke.length / MAX_POINTS))
-  const kept = stroke.filter((_, index) => index % step === 0 || index === stroke.length - 1)
+  const kept = stroke.length <= MAX_POINTS ? stroke : Array.from({ length: MAX_POINTS },
+    (_, index) => stroke[Math.round(index * (stroke.length - 1) / (MAX_POINTS - 1))])
   return kept.map(([x, y]) => [Math.round(x * 10) / 10, Math.round(y * 10) / 10])
 }
 
@@ -32,12 +30,22 @@ export function capturePixel(clientX: number, clientY: number, box: { left: numb
 }
 
 /* One line of the host's reading in words: "Line 1: 3100 mm, from the end of wall 11 to wall 12". */
-export function lineText(line: ResolvedSketch['lines'][number], text: (key: string, ...values: unknown[]) => string): string {
-  const where = (point: ResolvedSketch['lines'][number]['points'][number]) =>
-    point.snap?.kind === 'wall_end' ? text("the end of wall {0}", point.snap.wall_id)
-      : point.snap?.kind === 'on_wall' ? text("wall {0}", point.snap.wall_id)
-      : `(${point.x}, ${point.y})`
+export function lineText(line: SketchLine, text: (key: string, ...values: unknown[]) => string): string {
+  const where = ({ x, y, snap }: SketchPoint) => {
+    switch (snap?.kind) {
+      case 'wall_end': return text("the end of wall {0}", snap.wall_id)
+      case 'on_wall': return text("wall {0}", snap.wall_id)
+      case 'grid_intersection': return text("the crossing of grids {0} and {1}", ...snap.grids)
+      case 'column': return text("column {0}", snap.element_id)
+      case 'element_end': return text("the end of element {0}", snap.element_id)
+      case 'on_grid': return text("grid {0}", snap.grid)
+      default: return `(${x}, ${y})`
+    }
+  }
+  if (line.closed) return text("Line {0}: {1} mm, closed, {2} segments", line.line, line.length_mm, line.points.length)
   const first = line.points[0], last = line.points[line.points.length - 1]
+  if (line.points.length > 2) return text("Line {0}: {1} mm, {2} segments, from {3} to {4}",
+    line.line, line.length_mm, line.points.length - 1, where(first), where(last))
   return text("Line {0}: {1} mm, from {2} to {3}", line.line, line.length_mm, where(first), where(last))
 }
 
@@ -49,5 +57,6 @@ export const MAX_IMAGE_CHARS = 1_700_000
 /* What goes with the message: the strokes, and the capture with the strokes drawn on it. */
 export const sketchRequest = (draft: SketchDraft) => ({
   capture_id: draft.capture_id, strokes: draft.strokes,
+  ...(draft.level !== undefined ? { level: draft.level } : {}),
   ...(draft.image && draft.image.length <= MAX_IMAGE_CHARS ? { image: draft.image } : {}),
 })
