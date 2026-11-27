@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ResolvedSketch, SketchCapture, SketchDraft } from '../../types/api'
 import SketchPad from './SketchPad'
-import { capturePixel, lineText, sketchRequest, thinned } from './sketch'
+import { MAX_IMAGE_CHARS, capturePixel, lineText, sketchRequest, thinned } from './sketch'
 
 const container = document.createElement('div')
 let root: ReturnType<typeof createRoot>
@@ -112,4 +112,31 @@ it('converts pointers to capture pixels, thins long strokes, and words a line', 
   expect(sketchRequest({ capture_id: 'c', strokes: [[[1, 2], [3, 4]]], image: '', view_name: 'L1', lines: [] }))
     .toEqual({ capture_id: 'c', strokes: [[[1, 2], [3, 4]]] })
   expect(sketchRequest({ capture_id: 'c', strokes: [], image: 'AAAA', view_name: 'L1', lines: [] }).image).toBe('AAAA')
+})
+
+it('keeps the strokes as they were when an undo cannot be read, and leaves a too large picture out', async () => {
+  let fail = false
+  const resolve = vi.fn(async (_id: string, strokes: number[][][]) => {
+    if (fail) throw new Error('Revit is busy')
+    return reading(strokes.length)
+  })
+  act(() => root.render(<SketchPad onUse={() => {}} onClose={() => {}} capture={async () => shot} resolve={resolve} />))
+  await flush()
+  vi.spyOn(HTMLImageElement.prototype, 'getBoundingClientRect').mockReturnValue(
+    { left: 0, top: 0, width: 1600, height: 800, right: 1600, bottom: 800, x: 0, y: 0, toJSON: () => ({}) })
+  draw([[310, 108], [590, 90]])
+  await flush()
+  draw([[100, 300], [300, 300]])
+  await flush()
+  expect(document.querySelectorAll('.sketch-stroke')).toHaveLength(2)
+  fail = true
+  act(() => button('Undo').click())
+  await flush()
+  expect(document.querySelector('[role=alert]')?.textContent).toContain('Revit is busy')
+  expect(document.querySelectorAll('.sketch-stroke')).toHaveLength(2)      // both strokes are still there
+  expect(document.querySelectorAll('.sketch-read')).toHaveLength(2)        // and so is what was read of them
+
+  const draft = { capture_id: 'c', strokes: [[[1, 2], [3, 4]]], view_name: 'L1', lines: [] }
+  expect(sketchRequest({ ...draft, image: 'A'.repeat(MAX_IMAGE_CHARS) }).image).toHaveLength(MAX_IMAGE_CHARS)
+  expect('image' in sketchRequest({ ...draft, image: 'A'.repeat(MAX_IMAGE_CHARS + 1) })).toBe(false)
 })

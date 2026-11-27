@@ -72,6 +72,7 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 import yaml
 from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket, WebSocketDisconnect
@@ -112,7 +113,7 @@ from backend.mention_check import bound_picks, changed_pick, mention_errors, men
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 from backend.session import get_session_store
-from backend.sketches import SketchCapture, get_sketch_store
+from backend.sketches import MAX_STROKE_POINTS, SketchCapture, get_sketch_store
 from backend.plans import Plan
 from backend.questions import Identifier, SelectionOptions
 
@@ -793,13 +794,20 @@ async def mention_preview(
 
 # -- a sketch on a view capture ---------------------------------------------------
 
+# One stroke: the [x, y] pixels it passes, in the order drawn. Bounded here, before anything
+# is computed: at most as many points as the page sends, each exactly two numbers.
+SketchStroke = Annotated[list[Annotated[list[float], Field(min_length=2, max_length=2)]],
+                         Field(min_length=2, max_length=MAX_STROKE_POINTS)]
+SketchStrokeList = Annotated[list[SketchStroke], Field(min_length=1, max_length=sketch.MAX_STROKES)]
+
+
 class SketchStrokes(BaseModel):
     """What the designer drew on a capture from ``POST /sketch/capture``: each stroke the
-    ``[x, y]`` pixels of the capture it passes, in the order drawn."""
+    ``[x, y]`` pixels of the capture it passes, in the order drawn, at most 600 points."""
     model_config = ConfigDict(extra="forbid")
 
     capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
-    strokes: list[list[list[float]]] = Field(min_length=1, max_length=sketch.MAX_STROKES)
+    strokes: SketchStrokeList
 
 
 async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict]:
@@ -823,13 +831,15 @@ async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict
     return capture, answer
 
 
-@router.post("/sketch/capture", responses=responses(403, 409, 500, 503))
+@router.post("/sketch/capture", dependencies=[Depends(bridge_write_rate_limit)],
+             responses=responses(403, 409, 429, 500, 503))
 async def sketch_capture():
     """A picture of the active plan view for the designer to draw on: ``{capture_id, png_base64,
     width, height, view_name, level}``. The host keeps the view's frame with the id (the model
     rectangle the picture shows), so what is drawn can be converted to model coordinates exactly.
     A view that is not a plan is 409 ``unsupported_view``; a view that moved while it was exported
-    409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``."""
+    409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``; 429 ``rate_limited`` past
+    ``/spec/confirm``'s limit."""
     try:
         client = await get_revit_client()
         reply = await sketch.capture_for_sketch(client, 1600, ledger=get_ledger(), host=HOST, scope=current_scope())
@@ -849,7 +859,8 @@ async def sketch_capture():
             "height": reply["height"], "view_name": reply["view_name"], "level": reply["frame"]["level"]}
 
 
-@router.post("/sketch/resolve", responses=responses(403, 404, 409, 422, 503))
+@router.post("/sketch/resolve", dependencies=[Depends(bridge_write_rate_limit)],
+             responses=responses(403, 404, 409, 422, 429, 503))
 async def sketch_resolve(body: SketchStrokes):
     """What the host understood of the designer's strokes, for the page to show before the
     message is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, level,
@@ -857,7 +868,7 @@ async def sketch_resolve(body: SketchStrokes):
     pixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:
     the chat request sends the strokes again and they are read again. An expired capture is 404
     ``unknown_sketch``; strokes that are not lines 422 ``invalid_args``; a view that is gone 409
-    ``view_changed``."""
+    ``view_changed``; 429 ``rate_limited`` past ``/spec/confirm``'s limit."""
     _, answer = await resolved_sketch(body.capture_id, body.strokes)
     return answer
 

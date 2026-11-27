@@ -109,7 +109,8 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   for (let i = 0; i < count; i++) {
     const x = vertices[i * 3] - cx, y = vertices[i * 3 + 1] - cy, z = vertices[i * 3 + 2] - cz
     const rx = x * cos - y * sin, ry = x * sin + y * cos
-    px[i] = width / 2 + rx * scale
+    // The viewer stands on the +y side looking back at the model: its +x is on the left.
+    px[i] = width / 2 - rx * scale
     py[i] = height / 2 - (z * up - ry * down) * scale
     depth[i] = ry * up + z * down
   }
@@ -119,7 +120,8 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
     // Rotate the summed normal into view space. Only screen positions are scaled, so
     // the projected normal has an extra factor of scale on its depth component.
     const x = shadeNormals[t], y = shadeNormals[t + 1], z = shadeNormals[t + 2]
-    const nx = x * cos - y * sin, ry = x * sin + y * cos
+    // Screen right is -rx (see the projection above), so the normal's screen x is negated too.
+    const nx = -(x * cos - y * sin), ry = x * sin + y * cos
     const ny = ry * down - z * up, nz = (ry * up + z * down) * scale
     const length = Math.hypot(nx, ny, nz)
     if (!length) continue
