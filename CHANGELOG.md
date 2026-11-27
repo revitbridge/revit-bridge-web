@@ -6,6 +6,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Requires `revit-bridge` 0.12.0 (the element search in the whole model, the
+  rough element shape and the sketch on a plan view).
+
 ### Added
 
 - Sketch on a view. **Sketch on view** in the composer captures the active
@@ -20,8 +25,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   message. `image`, the capture with the lines on it, becomes a session
   capture: a planner whose models file entry has `vision: true` sees it,
   no other model does. The coordinates come from the host's conversion,
-  never from a model reading the picture. Needs the `revit-bridge` release
-  that has `sketch`.
+  never from a model reading the picture.
 
 - `@element` searches the whole model when nothing is selected in Revit.
   `GET /api/v1/bridge/mentions?kind=element` without `source` returns the
@@ -33,8 +37,7 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   one element (the package's `element_preview`). The picker draws it,
   slowly turning, beside the list for the row the pointer or the keyboard is
   on, with the category, the size and a note that it is approximate. No
-  drawing library is added. Needs the `revit-bridge` release that has
-  `mention_model`.
+  drawing library is added.
 
 ### Security
 
