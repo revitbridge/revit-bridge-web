@@ -1,7 +1,7 @@
 /* Drawing a rough element shape on a 2D canvas: no library, a few hundred triangles at most. */
 
 const TILT = 0.45              // the camera looks down by this much (radians)
-const FLAT = 0.999             // two triangles whose normals agree this much are one face
+const SMOOTH_COS = Math.cos(Math.PI / 6)
 
 export interface Mesh { vertices: number[]; triangles: number[] }
 
@@ -15,11 +15,8 @@ export function boxMesh(size: number[]): Mesh {
 
 export const sizeText = (size: number[]) => size.map(v => Math.round(v)).join(' × ') + ' mm'
 
-/* Which sides of each triangle are the outline of a face: one flag per side, in the order
-   (a-b, b-c, c-a). A side two triangles share while lying in one plane is inside a face and
-   is not drawn, so a wall's side reads as one surface instead of its triangles. Corners are
-   matched by position: the triangles of different faces come with their own corner numbers. */
-export function featureEdges(mesh: Mesh): Uint8Array {
+/* Match corners by position because adjacent faces can have their own vertex indices. */
+function meshSurfaces(mesh: Mesh) {
   const { vertices, triangles } = mesh
   const count = triangles.length / 3
   const flags = new Uint8Array(count * 3)
@@ -51,19 +48,35 @@ export function featureEdges(mesh: Mesh): Uint8Array {
       else sides.set(key, [t * 3 + s])
     }
   }
+  const shadeNormals = normals.slice()
   for (const list of sides.values()) {
-    let inside = list.length === 2
-    if (inside) {
+    if (list.length === 2) {
       const first = Math.floor(list[0] / 3) * 3, second = Math.floor(list[1] / 3) * 3
       const dot = normals[first] * normals[second] + normals[first + 1] * normals[second + 1] + normals[first + 2] * normals[second + 2]
-      inside = Math.abs(dot) >= FLAT
+      if (Math.abs(dot) > SMOOTH_COS) {
+        // Align each neighbour with this triangle before adding its unit normal.
+        const sign = dot < 0 ? -1 : 1
+        for (let axis = 0; axis < 3; axis++) {
+          shadeNormals[first + axis] += sign * normals[second + axis]
+          shadeNormals[second + axis] += sign * normals[first + axis]
+        }
+        continue
+      }
     }
-    if (!inside) for (const side of list) flags[side] = 1
+    for (const side of list) flags[side] = 1
   }
-  return flags
+  return { outline: flags, shadeNormals }
 }
 
-const outlines = new WeakMap<Mesh, Uint8Array>()
+/* Which sides of each triangle are the outline of a surface: one flag per side, in the order
+   (a-b, b-c, c-a). A side two triangles share while their normals are less than 30 degrees
+   apart is inside a surface and is not drawn: a wall's side reads as one face and a pipe as one
+   round surface, while a fold between planes (a corner, the rim of a cylinder) is drawn. */
+export function featureEdges(mesh: Mesh): Uint8Array {
+  return meshSurfaces(mesh).outline
+}
+
+const surfaces = new WeakMap<Mesh, ReturnType<typeof meshSurfaces>>()
 
 /* "rgb(15, 107, 92)" or "#0f6b5c" as numbers; a colour that cannot be read is the page's accent. */
 export function colourParts(colour: string): [number, number, number] {
@@ -78,16 +91,16 @@ const tone = (base: [number, number, number], towards: number, amount: number) =
   'rgb(' + base.map(v => Math.round(v + (towards - v) * amount)).join(',') + ')'
 
 /* One frame: the mesh turned about the vertical axis, seen a little from above, the far
-   triangles first. Every triangle of a face gets the same solid shade, and only the outline of
-   a face is drawn, so a face is one surface. */
+   triangles first. Each triangle has a solid shade and strokes along its feature edges. */
 export function drawShape(context: CanvasRenderingContext2D, width: number, height: number,
   shape: Mesh, size: number[], angle: number, color: string) {
   context.clearRect(0, 0, width, height)
   const { vertices, triangles } = shape
   const count = vertices.length / 3
-  if (!count || !triangles.length) return
-  let outline = outlines.get(shape)
-  if (!outline) outlines.set(shape, outline = featureEdges(shape))
+  if (!count || !triangles.length || !width || !height) return
+  let surface = surfaces.get(shape)
+  if (!surface) surfaces.set(shape, surface = meshSurfaces(shape))
+  const { outline, shadeNormals } = surface
   const [cx, cy, cz] = size.map(v => v / 2)
   const radius = Math.hypot(cx, cy, cz) || 1
   const scale = Math.min(width, height) * 0.46 / radius
@@ -104,10 +117,12 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   const faces: { index: number; depth: number; light: number }[] = []
   for (let t = 0; t < triangles.length; t += 3) {
     const a = triangles[t], b = triangles[t + 1], c = triangles[t + 2]
-    // The normal in view space; its sign is not trusted (meshes come with either winding).
-    const ux = px[b] - px[a], uy = py[b] - py[a], uz = depth[b] - depth[a]
-    const vx = px[c] - px[a], vy = py[c] - py[a], vz = depth[c] - depth[a]
-    const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx
+    // Rotate the summed normal into view space. Only screen positions are scaled, so
+    // the projected normal has an extra factor of scale on its depth component.
+    const x = shadeNormals[t], y = shadeNormals[t + 1], z = shadeNormals[t + 2]
+    // Screen right is -rx (see the projection above), so the normal's screen x is negated too.
+    const nx = -(x * cos - y * sin), ry = x * sin + y * cos
+    const ny = ry * down - z * up, nz = (ry * up + z * down) * scale
     const length = Math.hypot(nx, ny, nz)
     if (!length) continue
     const light = Math.abs(nx * 0.35 + ny * -0.5 + nz * 0.8) / length

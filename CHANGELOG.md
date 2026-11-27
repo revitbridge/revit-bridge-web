@@ -40,7 +40,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   one element (the package's `element_preview`). The picker draws it,
   slowly turning, beside the list for the row the pointer or the keyboard is
   on, with the category, the size and a note that it is approximate. No
-  drawing library is added.
+  drawing library is added. Curved surfaces (a pipe, an arc wall) are drawn
+  as one round surface: sides between faces less than 30 degrees apart are
+  not outlined and are shaded smoothly.
 
 ### Security
 
