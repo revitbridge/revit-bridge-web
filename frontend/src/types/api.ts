@@ -334,13 +334,23 @@ export interface SketchCapture {
   width: number
   height: number
   view_name: string
+  kind: 'plan' | 'axonometric'
   level: string | null
+  levels: { name: string; elevation_mm: number }[]
 }
-export interface SketchPoint { x: number; y: number; snap?: { kind: 'wall_end' | 'on_wall'; wall_id: number } }
-export interface SketchLine { line: number; length_mm: number; points: SketchPoint[]; pixels: number[][] }
+export interface SketchPoint {
+  x: number
+  y: number
+  snap?: { kind: 'wall_end' | 'on_wall'; wall_id: number }
+    | { kind: 'grid_intersection'; grids: [string, string] }
+    | { kind: 'column' | 'element_end'; element_id: number }
+    | { kind: 'on_grid'; grid: string }
+}
+export interface SketchLine { line: number; length_mm: number; closed?: boolean; points: SketchPoint[]; pixels: number[][] }
 export interface ResolvedSketch {
   view_name: string
   view_type: string
+  view_kind: SketchCapture['kind']
   level: string | null
   elevation_mm: number | null
   tolerance_mm: number
@@ -351,13 +361,14 @@ export interface ResolvedSketch {
 export interface SketchDraft {
   capture_id: string
   strokes: number[][][]
+  level?: string
   image: string                  // the capture with the strokes on it (base64 PNG); '' when it could not be drawn
   view_name: string
   lines: SketchLine[]
 }
 
 export interface HostRequest {
-  sketch?: { capture_id: string; strokes: number[][][]; image?: string }
+  sketch?: { capture_id: string; strokes: number[][][]; level?: string; image?: string }
   selection_answer?: string
   hidden_captures?: string[]
   current_selection?: SelectionState

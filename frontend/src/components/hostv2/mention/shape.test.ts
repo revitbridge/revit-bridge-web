@@ -46,10 +46,10 @@ function prismMesh(sides: number): Mesh {
 }
 
 /* Identify each triangle's fill by its projected path, independent of painter order. */
-function triangleColours(mesh: Mesh, size: number[]) {
+function triangleColours(mesh: Mesh, size: number[], angle = 0.6) {
   function draw(shape: Mesh) {
     const { context, fillByPath } = fakeContext()
-    drawShape(context, 160, 120, shape, size, 0.6, '#000000')
+    drawShape(context, 160, 120, shape, size, angle, '#000000')
     return fillByPath
   }
   const fills = draw(mesh)
@@ -124,7 +124,7 @@ describe('the rough element shape', () => {
     }
   })
 
-  it.each([[32, 0], [10, 1]])('marks the rims and classifies every strip boundary of a %i-sided prism', (sides, vertical) => {
+  it.each([[32, 0], [12, 0], [10, 1]])('marks the rims and classifies every strip boundary of a %i-sided prism', (sides, vertical) => {
     const flags = featureEdges(prismMesh(sides))
     for (let i = 0; i < sides; i++) {
       expect([...flags.slice(i * 12, (i + 1) * 12)]).toEqual([
@@ -149,10 +149,33 @@ describe('the rough element shape', () => {
     expect(Math.max(...steps)).toBeLessThanOrEqual(12) // less than 5% of the grayscale range
   })
 
+  it('keeps each horizontal pipe strip one colour with small steps between strips as the camera turns', () => {
+    const sides = 24
+    const pipe = prismMesh(sides)
+    for (let i = 0; i < pipe.vertices.length; i += 3) {
+      const [x, y, z] = pipe.vertices.slice(i, i + 3)
+      pipe.vertices.splice(i, 3, z * 3, x / 10, y / 10)
+    }
+    let largestStep = 0
+    for (let angle = 0; angle < 12; angle++) {
+      const colours = triangleColours(pipe, [3000, 100, 100], angle * Math.PI / 6)
+      for (let i = 0; i < sides; i++) {
+        expect(colours[4 * i]).toBe(colours[4 * i + 1])
+        // These two triangles meet along the long edge between adjacent strips.
+        const right = colourParts(colours[4 * i])[0]
+        const left = colourParts(colours[4 * ((i + 1) % sides) + 1])[0]
+        largestStep = Math.max(largestStep, Math.abs(right - left))
+      }
+    }
+    expect(largestStep).toBeGreaterThan(0)
+    expect(largestStep).toBeLessThanOrEqual(26)
+  })
+
   it('gives both triangles of each box face exactly the same fill', () => {
     const size = [4000, 200, 3000]
     const colours = triangleColours(boxMesh(size), size)
     for (let i = 0; i < colours.length; i += 2) expect(colours[i]).toBe(colours[i + 1])
+    for (const [a, b] of [[0, 2], [4, 8], [6, 10]]) expect(colours[a]).toBe(colours[b])
   })
 
   it('draws nothing for an empty mesh, and skips a triangle without area', () => {

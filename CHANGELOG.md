@@ -9,18 +9,19 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 ### Changed
 
 - Requires `revit-bridge` 0.12.0 (the element search in the whole model, the
-  rough element shape and the sketch on a plan view).
+  rough element shape and the sketch on a plan view). The 3D sketch and new
+  snap targets below use the unreleased sketch update.
 
 ### Added
 
-- Sketch on a view. **Sketch on view** in the composer captures the active
-  plan view and opens it to draw on; after every stroke the host shows what
-  it read (a straight line in model millimetres, snapped to nearby walls),
-  and the sketch goes with the next message. `POST
-  /api/v1/bridge/sketch/capture` returns the picture and an id (the host
+- **Sketch on view** in the composer captures a plan or orthographic 3D view.
+  In 3D, choose a level to project the strokes onto it. The preview shows
+  open and closed lines, segment counts and snaps to walls, grids, columns
+  and element ends. The sketch goes with the next message. `POST
+  /api/v1/bridge/sketch/capture` returns the picture, its id, kind and levels (the host
   keeps the view's frame for 30 minutes, per device); `POST
   /api/v1/bridge/sketch/resolve` returns the lines read from strokes;
-  `POST /api/chat` takes `sketch: {capture_id, strokes, image?}`, reads the
+  `POST /api/chat` takes `sketch: {capture_id, strokes, level?, image?}`, reads the
   strokes again and appends the package's `sketch_block` to the designer's
   message. `image`, the capture with the lines on it, becomes a session
   capture: a planner whose models file entry has `vision: true` sees it,
@@ -28,7 +29,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   never from a model reading the picture. A stroke takes at most 600
   points of two numbers, the two sketch routes share `/spec/confirm`'s
   rate limit, a device keeps at most 8 captures, and the drawn picture
-  may be 1.3 MB (a larger one stays on the page; the coordinates still go).
+  may be 1.3 MB. When the page omits an oversized picture, the composer and
+  sent message show that the model receives only the coordinates. A refused
+  turn leaves its picture out of the session.
 
 - `@element` searches the whole model when nothing is selected in Revit.
   `GET /api/v1/bridge/mentions?kind=element` without `source` returns the
@@ -40,9 +43,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   one element (the package's `element_preview`). The picker draws it,
   slowly turning, beside the list for the row the pointer or the keyboard is
   on, with the category, the size and a note that it is approximate. No
-  drawing library is added. Curved surfaces (a pipe, an arc wall) are drawn
-  as one round surface: sides between faces less than 30 degrees apart are
-  not outlined and are shaded smoothly.
+  drawing library is added. Curved surfaces keep their rims and omit internal
+  edges between faces less than 31 degrees apart. Preview lighting uses face
+  orientation at every element size. Each flat pipe strip has a single shade
+  as the preview rotates.
 
 ### Security
 

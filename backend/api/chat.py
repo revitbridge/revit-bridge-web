@@ -298,6 +298,7 @@ class ChatSketch(BaseModel):
 
     capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
     strokes: SketchStrokeList
+    level: str | None = Field(default=None, max_length=200)
     image: str | None = Field(default=None, max_length=4 * ((MAX_SKETCH_IMAGE_BYTES + 2) // 3),
                               description="base64 PNG: the capture with the designer's lines on it")
 
@@ -1440,21 +1441,23 @@ async def chat(req: ChatRequest, request: Request,
             raise no_model(target, ROLE)
         targets[ROLE] = target
     sketch_text = ""
+    sketch_picture = None
     if req.sketch and req.message and not single_receipt and resume_message is None:
-        # Read again here, never taken from the page's preview: only pixels come from the request.
-        capture, drawn = await resolved_sketch(req.sketch.capture_id, req.sketch.strokes)
+        # Resolve the original pixels and projection level again with the host's capture frame.
+        capture, drawn = await resolved_sketch(req.sketch.capture_id, req.sketch.strokes, req.sketch.level)
         sketch_text = sketch_block(drawn)
         if req.sketch.image is not None:
             try:
                 png = checked_png(req.sketch.image, capture.width, capture.height)
             except ValueError as exc:
                 raise ApiError(422, "invalid_args", str(exc)) from None
-            session.captures.add(current_scope(), {"png_base64": png, "width": capture.width, "height": capture.height,
-                                                   "view_name": capture.view_name + " - designer's sketch"})
+            sketch_picture = {"png_base64": png, "width": capture.width, "height": capture.height,
+                              "view_name": capture.view_name + " - designer's sketch"}
     context_entries = session.captures.for_scope(current_scope()) if req.bridge and not stop_reply else []
     hidden = set(req.hidden_captures) if req.hidden_captures is not None else {item.id for item in context_entries if item.hidden}
-    visible_entries = [item for item in context_entries if item.id not in hidden]
-    if visible_entries and req.message and settings.capture_context and target.vision:
+    # A new sketch picture is visible for routing even while the turn can still be refused.
+    has_visible_capture = sketch_picture is not None or any(item.id not in hidden for item in context_entries)
+    if has_visible_capture and req.message and settings.capture_context and target.vision:
         form_routing = roles.FALLBACK_ROUTING
     if with_roles and not stop_reply:
         # The role that opens this turn: the analyst (a message, in mode roles_analyst) or the
@@ -1529,6 +1532,11 @@ async def chat(req: ChatRequest, request: Request,
             session.evidence_id = str(evidence)
     if req.bridge and (session.turns != original_turn or not session.bridge_turn.acquire(blocking=False)):
         raise ApiError(409, "turn_in_progress", "Another turn is still running in this session.")
+    if sketch_picture is not None:
+        session.captures.add(current_scope(), sketch_picture)
+        # Adding can evict an older capture. Use the store's retained entries for this turn.
+        context_entries = session.captures.for_scope(current_scope())
+    visible_entries = [item for item in context_entries if item.id not in hidden]
     device = device_selection() if req.bridge else None
     if picks is not None:
         turn_number = original_turn + 1

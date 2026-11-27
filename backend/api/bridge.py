@@ -808,9 +808,10 @@ class SketchStrokes(BaseModel):
 
     capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
     strokes: SketchStrokeList
+    level: str | None = Field(default=None, max_length=200)
 
 
-async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict]:
+async def resolved_sketch(capture_id: str, strokes, level: str | None = None) -> tuple[SketchCapture, dict]:
     """The strokes on one of this device's captures as model lines (the package's
     ``resolve_sketch``); ApiError when the capture is unknown or the lines cannot be read."""
     capture = get_sketch_store().get(current_scope(), capture_id)
@@ -819,7 +820,7 @@ async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict
     try:
         client = await get_revit_client()
         answer = await sketch.resolve_sketch(RevitQueryExecutor(client), capture.frame, capture.width,
-                                             capture.height, strokes)
+                                             capture.height, strokes, level)
     except ApiError:
         raise
     except OSError as exc:
@@ -834,10 +835,10 @@ async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict
 @router.post("/sketch/capture", dependencies=[Depends(bridge_write_rate_limit)],
              responses=responses(403, 409, 429, 500, 503))
 async def sketch_capture():
-    """A picture of the active plan view for the designer to draw on: ``{capture_id, png_base64,
-    width, height, view_name, level}``. The host keeps the view's frame with the id (the model
-    rectangle the picture shows), so what is drawn can be converted to model coordinates exactly.
-    A view that is not a plan is 409 ``unsupported_view``; a view that moved while it was exported
+    """A picture of the active plan or orthographic 3D view: ``{capture_id, png_base64,
+    width, height, view_name, kind, level, levels}``. An axonometric capture lists its levels
+    by elevation in millimetres. The host keeps the frame for converting strokes to model coordinates.
+    An unsupported view is 409 ``unsupported_view``; a view that moved while it was exported
     409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``; 429 ``rate_limited`` past
     ``/spec/confirm``'s limit."""
     try:
@@ -855,21 +856,23 @@ async def sketch_capture():
         # The native diagnostic could echo image data: the code only.
         raise ApiError(500, "capture_failed", "Revit could not export the view.")
     capture = get_sketch_store().add(current_scope(), reply)
+    kind = capture.frame.get("kind", "plan")
     return {"capture_id": capture.id, "png_base64": reply["png_base64"], "width": reply["width"],
-            "height": reply["height"], "view_name": reply["view_name"], "level": reply["frame"]["level"]}
+            "height": reply["height"], "view_name": reply["view_name"], "level": capture.frame["level"],
+            "kind": kind, "levels": capture.frame["levels"] if kind == "axonometric" else []}
 
 
 @router.post("/sketch/resolve", dependencies=[Depends(bridge_write_rate_limit)],
              responses=responses(403, 404, 409, 422, 429, 503))
 async def sketch_resolve(body: SketchStrokes):
     """What the host understood of the designer's strokes, for the page to show before the
-    message is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, level,
-    elevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, points: [{x, y, snap?}],
+    message is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, view_kind, level,
+    elevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, closed?, points: [{x, y, snap?}],
     pixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:
     the chat request sends the strokes again and they are read again. An expired capture is 404
-    ``unknown_sketch``; strokes that are not lines 422 ``invalid_args``; a view that is gone 409
+    ``unknown_sketch``; unreadable strokes or a missing or unknown 3D level 422 ``invalid_args``; a view that is gone 409
     ``view_changed``; 429 ``rate_limited`` past ``/spec/confirm``'s limit."""
-    _, answer = await resolved_sketch(body.capture_id, body.strokes)
+    _, answer = await resolved_sketch(body.capture_id, body.strokes, body.level)
     return answer
 
 

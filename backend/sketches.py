@@ -1,10 +1,9 @@
 """The frames of the view captures a designer may draw on, kept on the host.
 
 A sketch is converted to model coordinates with the frame the package read when the view was
-captured. The page gets the picture and an id; the frame never leaves the host and is never
-taken from a request, so what the page sends can only ever be pixels on a capture the host
-made itself, for the same device. Bounded and short-lived: a capture nobody draws on is
-forgotten.
+captured. The page gets the picture, its id, the view kind and any projection levels.
+Requests carry pixel strokes and an optional level name. The frame stays in this bounded,
+short-lived store and belongs to the device that made the capture.
 """
 from __future__ import annotations
 

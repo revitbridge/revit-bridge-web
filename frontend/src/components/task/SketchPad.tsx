@@ -6,9 +6,7 @@ import { uiText as t } from '../../utils/strings'
 import { MAX_STROKES, SKETCH_COLOUR, capturePixel, captureSketchView, lineText, resolveSketch, thinned } from './sketch'
 import './sketchPad.css'
 
-/* The designer draws on a picture of the active plan view. After every stroke the host says
-   what it read (a straight line in model millimetres, snapped to walls) and that is drawn
-   over the stroke, so what will be sent is seen before it is sent. */
+/* Overlay the model lines read by the host on the designer's strokes. */
 
 const pathOf = (points: number[][]) => points.map(([x, y], index) => (index ? 'L' : 'M') + x + ' ' + y).join(' ')
 
@@ -41,13 +39,14 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
   onUse: (draft: SketchDraft) => void
   onClose: () => void
   capture?: () => Promise<SketchCapture>
-  resolve?: (captureId: string, strokes: number[][][]) => Promise<ResolvedSketch>
+  resolve?: typeof resolveSketch
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const picture = useRef<HTMLImageElement>(null)
   const drawing = useRef<number[][] | null>(null)
   const request = useRef(0)
   const [capture, setCapture] = useState<SketchCapture | null>(null)
+  const [level, setLevel] = useState<string>()
   const [strokes, setStrokes] = useState<number[][][]>([])
   const [live, setLive] = useState<number[][]>([])
   const [reading, setReading] = useState<ResolvedSketch | null>(null)
@@ -58,6 +57,7 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
     const mine = ++request.current
     takeCapture().then(shot => {
       if (mine !== request.current) return
+      setLevel(shot.kind === 'axonometric' ? shot.levels[0]?.name : undefined)
       setCapture(shot); setStatus('ready')
     }, (problem: unknown) => {
       if (mine !== request.current) return
@@ -76,20 +76,22 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
     return () => { modal?.close?.() }
   }, [load])
 
-  const read = (shot: SketchCapture, next: number[][][]) => {
+  const read = (shot: SketchCapture, next: number[][][], nextLevel = level) => {
     const mine = ++request.current
     const before = strokes
+    setLevel(nextLevel)
+    if (nextLevel !== level) setReading(null)
     setStrokes(next)
     if (!next.length) { setReading(null); setStatus('ready'); setError(''); return }
     setStatus('reading'); setError('')
-    resolve(shot.capture_id, next).then(answer => {
+    resolve(shot.capture_id, next, nextLevel).then(answer => {
       if (mine !== request.current) return
       setReading(answer); setStatus('ready')
     }, (problem: unknown) => {
       if (mine !== request.current) return
       // What the host could not read is taken back - a new stroke, an undo or a clear alike -
       // so the strokes, the dark lines and the list stay what will be sent.
-      setStrokes(before); setStatus('ready'); setError(getErrorMessage(problem))
+      setStrokes(before); setLevel(level); setReading(reading); setStatus('ready'); setError(getErrorMessage(problem))
     })
   }
 
@@ -106,9 +108,16 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
       <header>
         <strong>{t("Sketch on the view")}</strong>
         <span className="sketch-pad-view">{capture ? `${capture.view_name}${capture.level ? ' · ' + capture.level : ''}` : ''}</span>
+        {capture?.kind === 'axonometric' && <label className="sketch-pad-level">{t("Level")}
+          <select value={level ?? ''} disabled={status !== 'ready'}
+            onChange={event => read(capture, strokes, event.target.value)}>
+            {capture.levels.map(option => <option key={option.name} value={option.name}>{option.name}</option>)}
+          </select>
+        </label>}
         <button type="button" className="sketch-pad-close" aria-label={t("Close")} onClick={onClose}>×</button>
       </header>
-      <p className="sketch-pad-hint">{t("Draw a line where you mean. The host reads it as a straight line in the model and snaps it to nearby walls; the dark line is what will be sent.")}</p>
+      <p className="sketch-pad-hint">{t("Draw on the view. The dark lines show the model coordinates that will be sent.")}
+        {capture?.kind === 'axonometric' && ' ' + t("The line is projected onto the chosen level.")}</p>
       <div className="sketch-pad-stage">
         {capture && <div className={'sketch-pad-surface' + (canDraw ? ' can-draw' : '')}
           onPointerDown={event => {
@@ -134,7 +143,7 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
             {strokes.map((stroke, index) => <path key={index} className="sketch-stroke" d={pathOf(stroke)} />)}
             {live.length > 1 && <path className="sketch-stroke" d={pathOf(live)} />}
             {reading?.lines.map(line => <g key={line.line}>
-              <path className="sketch-read" d={pathOf(line.pixels)} />
+              <path className="sketch-read" d={pathOf(line.pixels) + (line.closed ? ' Z' : '')} />
               {line.pixels.map(([x, y], index) => <circle key={index} cx={x} cy={y} r={capture.width / 200}
                 className={line.points[index]?.snap ? 'sketch-snap' : 'sketch-end'} />)}
             </g>)}
@@ -159,7 +168,7 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
           onClick={() => {
             if (!capture || !reading) return
             onUse({ capture_id: capture.capture_id, strokes, image: picture.current ? drawnPicture(picture.current, capture, strokes) : '',
-              view_name: capture.view_name, lines: reading.lines })
+              ...(level !== undefined ? { level } : {}), view_name: capture.view_name, lines: reading.lines })
           }}>{t("Use this sketch")}</button>
       </footer>
     </dialog>, document.body)
