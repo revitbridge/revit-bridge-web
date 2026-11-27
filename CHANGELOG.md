@@ -10,9 +10,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 - Workflow validation now shows field requirements on hover or keyboard focus
   and counts the remaining items beside the save controls.
-- Requires `revit-bridge` 0.12.0 (the element search in the whole model, the
-  rough element shape and the sketch on a plan view). The 3D sketch and new
-  snap targets below use the unreleased sketch update.
+- Requires `revit-bridge` 0.13.0: the sketch on orthographic 3D views, the grid,
+  column and framing snaps, and closed and squared polylines (0.12.0 brought
+  the element search in the whole model, the rough element shape and the
+  sketch on a plan view).
 
 ### Added
 

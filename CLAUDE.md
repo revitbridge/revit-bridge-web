@@ -223,8 +223,8 @@ Runtime attribute lookup across the host/package boundary:
   `None` when disconnected. The 0.10 picker looks up
   this exact name to keep cached inventories separate across devices and reconnects.
 
-`pyproject.toml` requires `revit-bridge==0.12.0` from PyPI; `uv.lock` pins the exact
-release (0.12.0). When the host needs something newer, bump the constraint and
+`pyproject.toml` requires `revit-bridge==0.13.0` from PyPI; `uv.lock` pins the exact
+release (0.13.0). When the host needs something newer, bump the constraint and
 `uv lock`. No test counts the built-in packs or names the first one: compare a listing with
 `tests/conftest.py` `builtin_pack_names()` (read from the installed wheel), and give a user pack in
 a test a name no release ships (`count_walls`, not a `create_*` or `list_*` name).
