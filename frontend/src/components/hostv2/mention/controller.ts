@@ -174,14 +174,14 @@ export class MentionController {
     try {
       const page = await this.callbacks.fetchCandidates(menu.kind, {
         ...(menu.category ? { category: menu.category } : {}), q: menu.query,
-        ...(menu.kind === 'element' ? { source: 'selection' as const } : {}), ...(offset ? { offset } : {}),
+        ...(offset ? { offset } : {}),
       })
       if (generation !== this.request) return
       const prior = offset ? this.state.candidates?.items ?? [] : []
       const known = new Set(prior.map(item => item.kind + '#' + item.id))
       const items = [...prior, ...page.items.filter(item => !known.has(item.kind + '#' + item.id))]
       // A partial selection page can omit unreadable rows. Its slot in the selection is still 50 IDs wide.
-      const end = offset + (page.facets_partial ? 50 : page.items.length)
+      const end = offset + (page.facets_partial && page.source !== 'model' ? 50 : page.items.length)
       const nextOffset = page.truncated && page.items.length > 0 && end > offset && end < page.total ? end : null
       const active = offset ? this.state.active : Math.max(0, items.findIndex(item =>
         (!this.state.elementCategory || item.category === this.state.elementCategory) && this.selectable(item)))

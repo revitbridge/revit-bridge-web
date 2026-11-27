@@ -27,9 +27,11 @@ import Capture from './Capture'
 import { useSessionStore } from '../../store'
 import { useSelectionState, type SelectionSupport } from './useSelectionState'
 import SelectionWatch from './SelectionWatch'
+import SketchPad from './SketchPad'
+import type { SketchDraft } from '../../types/api'
 import type { Transcript } from './flow'
 import { questionBadge } from './format'
-import { distinctMentions, fetchCandidates as fetchFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
+import { distinctMentions, fetchCandidates as fetchFromHost, fetchPreview as previewFromHost, mentionNote, tooManyPicks, unavailableInInput } from './mentions'
 
 interface Props {
   initialInput?: string
@@ -50,7 +52,8 @@ interface Props {
   transcript: Transcript
   questionMessage?: number
   questions?: Question[]
-  onSend?: (text: string, mentions: Mention[], selection?: SelectionState) => void   // absent: a read-only mirror (the no-bridge side)
+  onSend?: (text: string, mentions: Mention[], selection?: SelectionState, sketch?: SketchDraft) => void   // absent: a read-only mirror (the no-bridge side)
+  sketching?: boolean                    // offer "Sketch on view" (a line drawn on a capture of the plan view goes with the message)
   onAnswer?: (question: Question, option: { label: string; value: unknown }) => void
   onReset?: () => void
   disabled?: boolean
@@ -85,12 +88,14 @@ function SentMentions({ mentions }: { mentions: SentMention[] }) {
   )
 }
 
-export default function ChatPanel({ initialInput = '', title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint,
+export default function ChatPanel({ initialInput = '', title, transcript, questionMessage, questions = [], onSend, onAnswer, onReset, disabled, placeholder, hint, sketching,
   context, compare = false, footer, stop, showTrace, fetchCandidates = fetchFromHost, controls, renderCards, onSubmitForm, highlight,
   onSelectionAnswer, hiddenCaptures = [], onHide, support = 'offline', onDestination, onDismiss }: Props) {
   const layout = useContextLayout(compare)
   const [input, setInput] = useState(initialInput)
   const [mentions, setMentions] = useState<Mention[]>([])
+  const [sketch, setSketch] = useState<SketchDraft | null>(null)
+  const [sketchOpen, setSketchOpen] = useState(false)
   const [notice, setNotice] = useState('')
   const [composerSession, setComposerSession] = useState(0)
   const device = useSessionStore(s => s.deviceId)
@@ -130,7 +135,10 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
     setNotice('')
     setInput('')
     setMentions([])
-    if (current) onSend(message, distinctMentions(picked), current)
+    const drawn = sketch ?? undefined
+    setSketch(null)
+    if (drawn) onSend(message, distinctMentions(picked), current || undefined, drawn)
+    else if (current) onSend(message, distinctMentions(picked), current)
     else onSend(message, distinctMentions(picked))
     setRemoved('')
   }
@@ -174,6 +182,9 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
                 ? <div className="markdown-body"><Markdown>{m.content || (m.form || m.plan || m.missingTool || m.images?.length ? '' : '...')}</Markdown></div>
                 : m.content}
               {m.role === 'user' && m.mentions && m.mentions.length > 0 && <SentMentions mentions={m.mentions} />}
+              {m.role === 'user' && m.sketch && <div className="chat-sketch">
+                {m.sketch.image && <img src={'data:image/png;base64,' + m.sketch.image} alt={uiText("Sketch on {0}", m.sketch.view_name)} />}
+                <span>{uiText("Sketch on {0}: {1} line(s)", m.sketch.view_name, m.sketch.lines)}</span></div>}
               {m.trace?.map(evt => evt.type === 'tool' && evt.read && <details className="read-row" key={evt.id}>
                 <summary>{evt.read.result.ui_only ? (evt.read.result.success === false
                   ? uiText("Revit action failed: ") : uiText("Done in Revit: ")) : evt.read.result.success === false
@@ -232,7 +243,15 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
       </div>
       {onSend && (
         <div className="chat-input-row">
-          {(selected || mentions.length > 0) && <div className="composer-chips">
+          {sketchOpen && <SketchPad onClose={() => setSketchOpen(false)} onUse={draft => {
+            setSketch(draft); setSketchOpen(false); setNotice('')
+            if (!input.trim()) setInput(uiText("Draw a wall along the sketched line."))
+          }} />}
+          {(selected || mentions.length > 0 || sketch) && <div className="composer-chips">
+            {sketch && <span className="chip composer-sketch">
+              {sketch.image && <img src={'data:image/png;base64,' + sketch.image} alt="" />}
+              {uiText("Sketch on {0}: {1} line(s)", sketch.view_name, sketch.lines.length)}
+              <button type="button" aria-label={uiText("Remove the sketch")} onClick={() => setSketch(null)}>×</button></span>}
             {selected && <div className="current-selection" role="status"><Icon name="select" />
               {uiText("{0} selected in Revit", selected.count)}
               {attachSelection && <button type="button" aria-label={uiText('Remove current selection')} onClick={() => setRemoved(identity)}>
@@ -243,6 +262,7 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
           <MentionInput value={input} mentions={mentions}
             onChange={(text, picked) => { setInput(text); setMentions(picked); setNotice('') }}
             onSubmit={send} fetchCandidates={fetchCandidates} disabled={disabled}
+            fetchPreview={fetchCandidates === fetchFromHost ? previewFromHost : undefined}
             placeholder={placeholder} invalid={unavailableInInput(transcript.messages, mentions)} />
           <div className="chat-buttons">
             <div className="composer-modes">{controls}</div>
@@ -254,6 +274,8 @@ export default function ChatPanel({ initialInput = '', title, transcript, questi
               setNotice('')
             }} />}
             <div className="composer-actions">
+              {sketching && !asking && <button type="button" className="sketch-open" disabled={disabled || transcript.streaming}
+                onClick={() => setSketchOpen(true)}>{sketch ? uiText("Redo sketch") : uiText("Sketch on view")}</button>}
               {showTrace && <ToolDrawer onExample={text => { setInput(text); setMentions([]); setNotice('') }} />}
               <button className="btn-primary" onClick={() => send(input, mentions)} disabled={disabled || !input.trim()}><Icon name="send" />{transcript.streaming ? uiText("Working...") : uiText("Send")}</button>{stop}
             </div>

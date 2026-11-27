@@ -1781,7 +1781,7 @@
           "bridge"
         ],
         "summary": "Mention Items",
-        "description": "Items the designer can pick in chat: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,\noffset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;\nelement lists the current selection with a summary, level, category label and document identity. When\nfacets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
+        "description": "Items the designer can pick in chat: the package's\n``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,\ncategory?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,\noffset, facets, category_matched, facets_partial?, warnings?, source?, selected?}``. An empty type query offers categories. A type search offers matching types;\nelement lists the current selection with a summary, level, category label and document identity, or - when\nnothing is selected - the matching elements of the whole model; ``source`` says which (``selection`` /\n``model``) and ``selected`` how many elements are selected. When\nfacets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A\nkind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit\nreporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask\nis 503 ``revit_unreachable``. The same device rules as every route here.",
         "operationId": "mention_items_api_v1_bridge_mentions_get",
         "parameters": [
           {
@@ -1879,10 +1879,10 @@
                   "type": "null"
                 }
               ],
-              "description": "element requires selection",
+              "description": "element only: selection or model; without it the selection when there is one, else the model",
               "title": "Source"
             },
-            "description": "element requires selection"
+            "description": "element only: selection or model; without it the selection when there is one, else the model"
           }
         ],
         "responses": {
@@ -1916,6 +1916,250 @@
           },
           "500": {
             "description": "The package failed (snapshot_failed, query_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/mentions/preview": {
+      "get": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Mention Preview",
+        "description": "A rough 3D shape of one element, for the picker to draw while the designer chooses: the\npackage's ``element_preview`` reply as it is - ``{kind, id, document_id, name, family, category,\ncategory_label, shape, size_mm, vertices, triangles, partial, approximate}``. ``vertices`` are whole\nmillimetres ``[x, y, z, ...]`` from the lowest corner and ``triangles`` index triples into them;\n``shape`` is ``mesh``, or ``box`` when only the size is known. It is a picture to recognise an\nelement by, never a measurement. An element that is not in the open model is 404 ``not_found``;\nRevit reporting an error is 200 with ``error: revit_error``; no Revit to ask is 503\n``revit_unreachable``. The same device rules as every route here.",
+        "operationId": "mention_preview_api_v1_bridge_mentions_preview_get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "element id",
+              "title": "Id"
+            },
+            "description": "element id"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The package failed (snapshot_failed, query_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/sketch/capture": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Sketch Capture",
+        "description": "A picture of the active plan view for the designer to draw on: ``{capture_id, png_base64,\nwidth, height, view_name, level}``. The host keeps the view's frame with the id (the model\nrectangle the picture shows), so what is drawn can be converted to model coordinates exactly.\nA view that is not a plan is 409 ``unsupported_view``; a view that moved while it was exported\n409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``; 429 ``rate_limited`` past\n``/spec/confirm``'s limit.",
+        "operationId": "sketch_capture_api_v1_bridge_sketch_capture_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The package failed (snapshot_failed, query_failed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No Revit add-in answers (revit_unreachable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/bridge/sketch/resolve": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Sketch Resolve",
+        "description": "What the host understood of the designer's strokes, for the page to show before the\nmessage is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, level,\nelevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, points: [{x, y, snap?}],\npixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:\nthe chat request sends the strokes again and they are read again. An expired capture is 404\n``unknown_sketch``; strokes that are not lines 422 ``invalid_args``; a view that is gone 409\n``view_changed``; 429 ``rate_limited`` past ``/spec/confirm``'s limit.",
+        "operationId": "sketch_resolve_api_v1_bridge_sketch_resolve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SketchStrokes"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "403": {
+            "description": "Slot header missing or wrong (missing_slot, invalid_slot_token)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found (unknown_tool, unknown_evidence)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Would change what must stay (builtin_read_only: built-in packs are read-only; pack_exists: a user pack of that name exists, import with overwrite=true to replace it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4768,6 +5012,17 @@
       },
       "ChatRequest": {
         "properties": {
+          "sketch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatSketch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lines the designer drew on a view capture, with a designer-typed bridge message."
+          },
           "current_selection": {
             "anyOf": [
               {
@@ -4906,6 +5161,57 @@
         },
         "type": "object",
         "title": "ChatRequest"
+      },
+      "ChatSketch": {
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "pattern": "^[0-9a-f]+$",
+            "title": "Capture Id"
+          },
+          "strokes": {
+            "items": {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array",
+                "maxItems": 2,
+                "minItems": 2
+              },
+              "type": "array",
+              "maxItems": 600,
+              "minItems": 2
+            },
+            "type": "array",
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Strokes"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1733336
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image",
+            "description": "base64 PNG: the capture with the designer's lines on it"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capture_id",
+          "strokes"
+        ],
+        "title": "ChatSketch",
+        "description": "Lines the designer drew on a view capture from ``POST /api/v1/bridge/sketch/capture``. The\nhost converts the strokes to model coordinates with the frame it kept for that capture and\nappends them to the message as text; ``image`` (the capture with the lines drawn on it, a PNG\nof the capture's size) is shown to a planner that takes images, and to nothing else."
       },
       "CheckCodeRequest": {
         "properties": {
@@ -5848,6 +6154,44 @@
           "items"
         ],
         "title": "SessionUsage"
+      },
+      "SketchStrokes": {
+        "properties": {
+          "capture_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 8,
+            "pattern": "^[0-9a-f]+$",
+            "title": "Capture Id"
+          },
+          "strokes": {
+            "items": {
+              "items": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array",
+                "maxItems": 2,
+                "minItems": 2
+              },
+              "type": "array",
+              "maxItems": 600,
+              "minItems": 2
+            },
+            "type": "array",
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Strokes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "capture_id",
+          "strokes"
+        ],
+        "title": "SketchStrokes",
+        "description": "What the designer drew on a capture from ``POST /sketch/capture``: each stroke the\n``[x, y]`` pixels of the capture it passes, in the order drawn, at most 600 points."
       },
       "SkillCreateRequest": {
         "properties": {

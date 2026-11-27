@@ -438,7 +438,9 @@ def test_the_contract_lists_the_device_store_503(client):
         (f"{B}/devices/pair", "post"), (f"{B}/devices/redeem", "post"), (f"{B}/devices/{{device_id}}", "delete"),
         (f"{B}/tools/{{name}}", "put"), (f"{B}/tools/{{name}}", "delete"), (f"{B}/solidify", "post"),
         (f"{B}/tools/import", "post"), (f"{B}/check", "post"), (f"{B}/dry-run", "post"), (f"{B}/choices", "post"),
-        (f"{B}/selection-state", "get"), (f"{B}/mentions", "get"), (f"{B}/watch-selection", "post"), (f"{B}/spec/confirm", "post"),
+        (f"{B}/selection-state", "get"), (f"{B}/mentions", "get"), (f"{B}/mentions/preview", "get"),
+        (f"{B}/sketch/capture", "post"), (f"{B}/sketch/resolve", "post"),
+        (f"{B}/watch-selection", "post"), (f"{B}/spec/confirm", "post"),
         (f"{B}/remote-trials", "get"), (f"{B}/remote-trials/{{evidence_id}}", "get"),
     }
     assert before <= with_503

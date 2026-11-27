@@ -68,7 +68,7 @@ export default function TaskPage({ events, support, onDestination, initialTool }
             onConfirm={flow.confirmAndRun} onToggleInterpretation={flow.toggleInterpretation}
             onTamper={flow.demoTamper} />}
         </>}
-        onSend={(t, picked, selection) => flow.send(t, picked, undefined, undefined, selection)} onAnswer={flow.answer} onReset={() => flow.reset()} disabled={busy}
+        onSend={(t, picked, selection, sketch) => flow.send(t, picked, undefined, undefined, selection, sketch)} sketching onAnswer={flow.answer} onReset={() => flow.reset()} disabled={busy}
         placeholder={uiText("For example, place a structural column at (3000, 3000).")}
         hint={uiText("The model sees the snapshot and the packs. It asks what it cannot know, then adds a spec card to its reply. Type @ to pick a level, type, link or selected Revit element. The host verifies each pick against the open model.")}
         showTrace

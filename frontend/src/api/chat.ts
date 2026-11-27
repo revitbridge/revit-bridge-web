@@ -247,6 +247,8 @@ export async function* chatEvents(request: HostRequest, signal?: AbortSignal): A
   }
   if (request.answers) body.answers = request.answers
   if (request.selection_answer) body.selection_answer = request.selection_answer
+  if (request.sketch && request.message && request.bridge !== false && !request.answers && !request.selection_answer)
+    body.sketch = request.sketch
   if (request.hidden_captures !== undefined) body.hidden_captures = request.hidden_captures
   if (request.current_selection && request.message && request.bridge !== false && !request.answers
       && !request.selection_answer && !request.execution) body.current_selection = request.current_selection

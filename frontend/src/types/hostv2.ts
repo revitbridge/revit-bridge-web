@@ -42,7 +42,7 @@ export type TraceEvent = StageEvent | ToolEvent | UsageEvent
 // X3c: mention input contract. The other hostv2 packages append their own types.
 export type MentionKind = 'level' | 'type' | 'link' | 'element'
 export const MAX_PICKS = 20
-export interface MentionOptions { category?: string; q?: string; offset?: number; source?: 'selection' }
+export interface MentionOptions { category?: string; q?: string; offset?: number; source?: 'selection' | 'model' }
 export interface MentionFacet { category: string; label: string; count: number }
 export interface MentionItem {
   document_id?: string
@@ -67,7 +67,28 @@ export interface MentionCandidates {
   offset?: number
   total: number
   truncated: boolean
+  // element only: where the items come from, and how many elements are selected in Revit
+  source?: 'selection' | 'model'
+  selected?: number
 }
+/* A rough shape of one element (GET /api/v1/bridge/mentions/preview): whole millimetres from the
+   lowest corner, triangles as index triples; `box` when only the size is known. Not a measurement. */
+export interface ElementShape {
+  kind: string
+  id: number
+  document_id?: string | null
+  name?: string | null
+  family?: string | null
+  category?: string | null
+  category_label?: string | null
+  shape: 'mesh' | 'box'
+  size_mm: number[]
+  vertices: number[]
+  triangles: number[]
+  partial: boolean
+  approximate: boolean
+}
+export type FetchPreview = (id: number) => Promise<ElementShape>
 export interface Mention { kind: MentionKind; id: number; name: string; document_id?: string }
 export type FetchCandidates =
   (kind: MentionKind, opts: MentionOptions) => Promise<MentionCandidates>

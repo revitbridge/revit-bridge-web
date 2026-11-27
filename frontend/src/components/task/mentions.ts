@@ -6,7 +6,7 @@
 
 import { uiText } from '../../utils/strings'
 import type { ChatMessage, MentionRef, MentionReport, SentMention } from '../../types/api'
-import type { FetchCandidates, Mention, MentionCandidates, MentionKind, MentionOptions } from '../../types/hostv2'
+import type { ElementShape, FetchCandidates, FetchPreview, Mention, MentionCandidates, MentionKind, MentionOptions } from '../../types/hostv2'
 import { MAX_PICKS } from '../../types/hostv2'
 import { getErrorMessage, isAbortError } from '../../utils/errors'
 import { BridgeApiError, request } from '../shared/http'
@@ -53,6 +53,23 @@ export async function fetchMentionCandidates(kind: MentionKind, opts: MentionOpt
 }
 
 export const fetchCandidates: FetchCandidates = (kind, opts) => fetchMentionCandidates(kind, opts)
+
+/* The rough shape of one element, for the picture beside the picker's list. A reply that
+   carries the package's `error` (Revit said no) fails with its message. */
+export const fetchPreview: FetchPreview = async id => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), MENTION_TIMEOUT_MS)
+  try {
+    const reply = await request<ElementShape & { error?: string; message?: string }>(
+      `${B}/mentions/preview?id=${encodeURIComponent(String(id))}`, { signal: controller.signal })
+    if (reply.error) throw new Error(reply.message || reply.error)
+    return reply
+  } catch (e: unknown) {
+    throw new Error(getErrorMessage(e))
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /* The most picks one message may carry (the host refuses more). */
 export { MAX_PICKS } from '../../types/hostv2'

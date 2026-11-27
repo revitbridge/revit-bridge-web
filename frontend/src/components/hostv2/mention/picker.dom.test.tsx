@@ -2,7 +2,7 @@
 import { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { FetchCandidates, Mention, MentionItem } from '../../../types/hostv2'
+import type { FetchCandidates, FetchPreview, Mention, MentionItem } from '../../../types/hostv2'
 import MentionInput from './MentionInput'
 
 const container = document.createElement('div')
@@ -55,7 +55,7 @@ it('keeps checked identities and the category through scrolling and typing, and 
   edit('@')
   click('Get current Revit selection')
   await debounce()
-  expect(fetch).toHaveBeenLastCalledWith('element', { q: '', source: 'selection' })
+  expect(fetch).toHaveBeenLastCalledWith('element', { q: '' })
   click('Walls (2)')
   click('#91')
   edit('@element:200')
@@ -65,7 +65,7 @@ it('keeps checked identities and the category through scrolling and typing, and 
   const list = container.querySelector('[role=listbox]')!
   Object.defineProperties(list, { clientHeight: { value: 200 }, scrollTop: { value: 300 }, scrollHeight: { value: 500 } })
   await act(async () => { list.dispatchEvent(new Event('scroll')) })
-  expect(fetch).toHaveBeenLastCalledWith('element', { q: '200', source: 'selection', offset: 2 })
+  expect(fetch).toHaveBeenLastCalledWith('element', { q: '200', offset: 2 })
   click('#93')
   click('Insert selected (2)')
   const input = container.querySelector('textarea')!
@@ -114,4 +114,52 @@ it('shows the inferred category chip and keeps the remaining search words when c
   await debounce()
   expect(container.querySelector('textarea')!.value).toBe('@type:Basic 200')
   expect(fetch).toHaveBeenLastCalledWith('type', { q: 'Basic 200' })
+})
+
+it('says when the whole model is searched and pictures the element the picker is on', async () => {
+  // jsdom has no canvas: the picture's caption is what is checked here, the drawing in shape.test.ts.
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  const fetch = vi.fn<FetchCandidates>(async kind => ({
+    kind, source: 'model', facets, total: 2, truncated: false, items: [wall(91), { ...wall(92), document_id: 'doc' }],
+  }))
+  const preview = vi.fn<FetchPreview>(async id => ({
+    kind: 'element', id, name: 'Basic 200', category: 'OST_Walls', category_label: 'Walls', shape: 'box',
+    size_mm: [4000, 200, 3000], vertices: [], triangles: [], partial: false, approximate: true,
+  }))
+  function WithPreview() {
+    const [value, setValue] = useState('')
+    const [picks, setPicks] = useState<Mention[]>([])
+    return <MentionInput value={value} mentions={picks} onChange={(text, items) => { setValue(text); setPicks(items) }}
+      fetchCandidates={fetch} fetchPreview={preview} onSubmit={() => {}} />
+  }
+  act(() => root.render(<WithPreview />))
+  edit('@element:')
+  await debounce()
+  expect(fetch).toHaveBeenLastCalledWith('element', { q: '' })
+  expect(container.textContent).toContain('Nothing is selected in Revit: searching the whole model.')
+  // The row the keyboard is on is pictured, after a short wait.
+  expect(container.querySelector('.mention-preview')).toBeTruthy()
+  expect(preview).not.toHaveBeenCalled()
+  await debounce()
+  expect(preview).toHaveBeenCalledTimes(1)
+  expect(preview).toHaveBeenLastCalledWith(91)
+  expect(container.querySelector('.mention-preview-caption')?.textContent).toContain('Walls #91')
+  expect(container.querySelector('.mention-preview-caption')?.textContent).toContain('4000 × 200 × 3000 mm')
+  expect(container.querySelector('.mention-preview-caption')?.textContent).toContain('Approximate size only')
+  // Pointing at another row pictures that one.
+  const second = [...container.querySelectorAll('[role=option]')].find(b => b.textContent?.includes('#92'))!
+  act(() => { second.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+  await debounce()
+  expect(preview).toHaveBeenLastCalledWith(92)
+  expect(container.querySelector('.mention-preview-caption')?.textContent).toContain('Walls #92')
+})
+
+it('shows no picture without a preview function, and the selection wording for a selection', async () => {
+  const fetch = vi.fn<FetchCandidates>(async kind => ({ kind, source: 'selection', selected: 1, facets, total: 0, truncated: false, items: [] }))
+  act(() => root.render(<Editor fetch={fetch} submit={() => {}} />))
+  edit('@element:')
+  await debounce()
+  expect(container.querySelector('.mention-preview')).toBeNull()
+  expect(container.textContent).toContain('No matching selected elements on this page.')
+  expect(container.textContent).not.toContain('searching the whole model')
 })

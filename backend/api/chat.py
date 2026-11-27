@@ -144,13 +144,18 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from revit_bridge import host_instructions, list_host_functions
+from revit_bridge import sketch as package_sketch
 from revit_bridge.mentions import MAX_MENTIONS, mention_block, mention_candidates, resolve_mentions
 from revit_bridge.snapshot import RevitQueryExecutor, snapshot_digest
 from revit_bridge.snapshot.query import RevitQueryError
 
 from backend import roles, selection as selection_state
 from backend.api.auto_run import AutoRun
-from backend.api.bridge import current_scope, device_selection, get_revit_client, list_packs, set_device_context, snapshot_now
+from backend.api.bridge import (
+    SketchStrokeList, current_scope, device_selection, get_revit_client, list_packs, resolved_sketch,
+    set_device_context, snapshot_now,
+)
+from backend.sketches import MAX_IMAGE_BYTES as MAX_SKETCH_IMAGE_BYTES, checked_png
 from backend.api.errors import ApiError, responses
 from backend.language import prefers_chinese
 from backend.api.model_tools import (
@@ -284,7 +289,21 @@ class ChatMention(BaseModel):
     label: str | None = Field(default=None, max_length=500, description="what the page showed; not sent to the model")
 
 
+class ChatSketch(BaseModel):
+    """Lines the designer drew on a view capture from ``POST /api/v1/bridge/sketch/capture``. The
+    host converts the strokes to model coordinates with the frame it kept for that capture and
+    appends them to the message as text; ``image`` (the capture with the lines drawn on it, a PNG
+    of the capture's size) is shown to a planner that takes images, and to nothing else."""
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
+    strokes: SketchStrokeList
+    image: str | None = Field(default=None, max_length=4 * ((MAX_SKETCH_IMAGE_BYTES + 2) // 3),
+                              description="base64 PNG: the capture with the designer's lines on it")
+
+
 class ChatRequest(BaseModel):
+    sketch: ChatSketch | None = Field(default=None, description="Lines the designer drew on a view capture, with a designer-typed bridge message.")
     current_selection: selection_state.SelectionState | None = Field(default=None, description="Selection observed with a designer-typed bridge message. The host verifies IDs or attaches a stamped reference above the combined 20-pick limit.")
     selection_answer: str | None = Field(default=None, max_length=100, description="ask_id answered by document-scoped element mentions")
     hidden_captures: list[Identifier] | None = Field(default=None, max_length=32, description="Exclude these session captures from planner context")
@@ -1263,6 +1282,27 @@ def selection_block(items: list[dict]) -> str:
     return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, mention_block(items, MENTION_BLOCK_LANGUAGE))
 
 
+def sketch_block(drawn: dict) -> str:
+    """The package's text for the designer's sketch, a view or level name that carries a host
+    marker kept as a JSON string literal, as in ``selection_block``."""
+    def escape_marked(match: re.Match) -> str:
+        literal = match.group()
+        try:
+            name = json.loads(literal)
+        except ValueError:
+            name = None                 # not a JSON literal (a stray backslash in a name)
+        if isinstance(name, str) and not has_host_marker(name):
+            return literal
+        return quote_marked_json(name if isinstance(name, str) else literal[1:-1]).replace(
+            "h", r"\u0068").replace("H", r"\u0048")
+
+    # The package writes names between plain double quotes. A backslash in one would make the
+    # quoted spans below ambiguous, and no view or level is found by it: it goes.
+    safe = dict(drawn, view_name=str(drawn.get("view_name") or "").replace("\\", "/"),
+                level=str(drawn.get("level") or "").replace("\\", "/") or None)
+    return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, package_sketch.sketch_block(safe))
+
+
 def no_model(target: ModelTarget, role: str) -> HTTPException:
     """400 for a role without a model. Without a models file every role is ``LLM_*`` and the
     browser's settings; with one, the browser's settings replace the planner's entry only, so a
@@ -1320,6 +1360,8 @@ async def chat(req: ChatRequest, request: Request,
         raise ApiError(422, "invalid_args", "mentions go with a message, not with an execution report")
     if req.mentions and not req.bridge:
         raise ApiError(422, "invalid_args", "mentions have no meaning without the bridge")
+    if req.sketch and not (req.bridge and req.message and not req.answers and not req.selection_answer):
+        raise ApiError(422, "invalid_args", "A sketch goes with a designer-typed bridge message.")
     if req.execution is not None:
         size = len(json.dumps(req.execution, ensure_ascii=False))
         if size > MAX_EXECUTION_CHARS:
@@ -1397,6 +1439,18 @@ async def chat(req: ChatRequest, request: Request,
         if not llm.configured:
             raise no_model(target, ROLE)
         targets[ROLE] = target
+    sketch_text = ""
+    if req.sketch and req.message and not single_receipt and resume_message is None:
+        # Read again here, never taken from the page's preview: only pixels come from the request.
+        capture, drawn = await resolved_sketch(req.sketch.capture_id, req.sketch.strokes)
+        sketch_text = sketch_block(drawn)
+        if req.sketch.image is not None:
+            try:
+                png = checked_png(req.sketch.image, capture.width, capture.height)
+            except ValueError as exc:
+                raise ApiError(422, "invalid_args", str(exc)) from None
+            session.captures.add(current_scope(), {"png_base64": png, "width": capture.width, "height": capture.height,
+                                                   "view_name": capture.view_name + " - designer's sketch"})
     context_entries = session.captures.for_scope(current_scope()) if req.bridge and not stop_reply else []
     hidden = set(req.hidden_captures) if req.hidden_captures is not None else {item.id for item in context_entries if item.hidden}
     visible_entries = [item for item in context_entries if item.id not in hidden]
@@ -1449,6 +1503,8 @@ async def chat(req: ChatRequest, request: Request,
                       "mention:element#<id>[,<id>...] with the same IDs.")
         if block:
             text = f"{text}\n\n{block}"
+    if sketch_text:
+        text = f"{text}\n\n{sketch_text}"
     # A device read can yield. Consume the form only after preflight succeeds
     # and only if another request has not already answered that form.
     if req.bridge and req.message and session.pending_form is not pending:
