@@ -1,5 +1,5 @@
 import { uiText } from '../../utils/strings'
-import { useEffect, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useId, useRef, useState, type ChangeEvent, type DragEvent } from 'react'
 import { bridgeApi } from '../../api/bridge'
 import { workflowApi, type Binding, type Workflow, type WorkflowStep } from '../../api/workflows'
 import { useSessionStore } from '../../store'
@@ -48,6 +48,7 @@ function validationLocation(message: string, steps: WorkflowStep[]) {
 }
 
 function Editor() {
+  const editorId = useId()
   const features = useHostFeatures()
   const writable = features.mode === 'local' || features.authoring
   const [tools, setTools] = useState<ToolInfo[]>([])
@@ -122,9 +123,18 @@ function Editor() {
   const replacing = saved.some(w => w.name === draft.name)
   const errors = check?.draft === draft ? check.errors : null
   function problems(location: string) {
-    const messages = errors?.filter(error => validationLocation(error, draft.steps) === location)
-    return messages?.length ? <ul className="validation-errors">{messages.map((message, i) => <li key={i}>{message}</li>)}</ul> : null
+    return errors?.filter(error => validationLocation(error, draft.steps) === location) ?? []
   }
+  const hintId = (location: string) => editorId + '-hint-' + location
+  function fieldHint(location: string, messages = problems(location)) {
+    if (!messages.length) return null
+    const prefix = location + ': '
+    return <button type="button" className="field-hint" aria-label={uiText("What this field needs")}
+      aria-describedby={hintId(location)}>i<span role="tooltip" id={hintId(location)}>
+        {messages.map((message, i) => <span key={i}>{message.startsWith(prefix) ? message.slice(prefix.length) : message}</span>)}
+      </span></button>
+  }
+  const unscoped = problems('')
   return <div className="page workflows-page">
     <h2>{uiText("Workflows")}</h2>
     <fieldset disabled={busy} className="workflow-editor">
@@ -153,11 +163,20 @@ function Editor() {
       </div>
       <div className="workflow-meta">
         {([['name', uiText("Name")], ['display_name', uiText("Display name")],
-          ['version', uiText("Version")], ['summary', uiText("Summary")]] as const).map(([key, label]) =>
-          <div key={key}><label>{label}<input value={draft[key]} maxLength={key === 'summary' ? 120 : undefined}
-            onChange={e => setDraft({ ...draft, [key]: e.target.value })} /></label>{problems(key)}</div>)}
-        <div><label>{uiText("Description")}<textarea value={draft.description}
-          onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>{problems('description')}</div>
+          ['version', uiText("Version")], ['summary', uiText("Summary")], ['description', uiText("Description")]] as const).map(([key, label]) => {
+          const messages = problems(key)
+          const control = {
+            id: editorId + '-' + key,
+            value: draft[key],
+            'aria-invalid': messages.length > 0 || undefined,
+            'aria-describedby': messages.length ? hintId(key) : undefined,
+            onChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft({ ...draft, [key]: e.target.value }),
+          }
+          return <div key={key}>
+            <div className="workflow-field-heading"><label htmlFor={control.id}>{label}</label>{fieldHint(key, messages)}</div>
+            {key === 'description' ? <textarea {...control} /> : <input {...control} maxLength={key === 'summary' ? 120 : undefined} />}
+          </div>
+        })}
       </div>
       <div className="workflow-columns"><section>
         <h3>{uiText("Tools")}</h3>
@@ -169,10 +188,10 @@ function Editor() {
             <button disabled={draft.steps.length >= 8} onClick={() => add(t)}>{uiText("Add")}</button>
           </li>)}</ul>
       </section><section className="workflow-steps" onDragOver={e => e.preventDefault()} onDrop={e => drop(e, draft.steps.length)}>
-        <h3>{uiText("Steps")}</h3>{problems('steps')}
+        <h3 className="workflow-field-heading">{uiText("Steps")}{fieldHint('steps')}</h3>
         {!draft.steps.length && <p className="empty-state">{uiText("Drag a pack here or choose Add.")}</p>}
         <ol>{draft.steps.map((s, index) => <li key={s.id} onDrop={e => drop(e, index)}>
-          <div className="workflow-step-heading"><strong draggable tabIndex={0} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+          <div className="workflow-step-heading">{fieldHint('step:' + s.id)}<strong draggable tabIndex={0} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
             onDragStart={e => e.dataTransfer.setData('application/x-workflow-step', s.id)} onKeyDown={e => {
               if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
                 e.preventDefault(); move(index, index + (e.key === 'ArrowUp' ? -1 : 1))
@@ -186,10 +205,13 @@ function Editor() {
             binding={Object.hasOwn(s.params, p.name) ? s.params[p.name] : undefined} inputs={draft.inputs}
             describe={(name, description) => setDraft({ ...draft, inputs: draft.inputs.map(i => i.name === name ? { ...i, description } : i) })}
             earlier={draft.steps.slice(0, index)} change={v => bind(s, p.name, v)} />)}
-          {problems('step:' + s.id)}
         </li>)}</ol>
       </section></div>
-      <div className="workflow-validation" aria-live="polite">{errors?.length ? problems('')
+      <div className="workflow-validation" aria-live="polite">{errors?.length ? <>
+        <p>{errors.length === 1 ? uiText("{0} item to complete before saving", errors.length)
+          : uiText("{0} items to complete before saving", errors.length)}</p>
+        {unscoped.length > 0 && <ul>{unscoped.map((message, i) => <li key={i}>{message}</li>)}</ul>}
+      </>
         : <p>{errors ? uiText("Validation passed") : uiText("Validating…")}</p>}</div>
       {writable && <div className="workflow-actions"><label><input type="checkbox" checked={overwrite}
         onChange={e => setOverwrite(e.target.checked)} />{uiText("Allow replacing a saved workflow")}</label>
