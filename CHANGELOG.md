@@ -6,6 +6,36 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Sketch on a view. **Sketch on view** in the composer captures the active
+  plan view and opens it to draw on; after every stroke the host shows what
+  it read (a straight line in model millimetres, snapped to nearby walls),
+  and the sketch goes with the next message. `POST
+  /api/v1/bridge/sketch/capture` returns the picture and an id (the host
+  keeps the view's frame for 30 minutes, per device); `POST
+  /api/v1/bridge/sketch/resolve` returns the lines read from strokes;
+  `POST /api/chat` takes `sketch: {capture_id, strokes, image?}`, reads the
+  strokes again and appends the package's `sketch_block` to the designer's
+  message. `image`, the capture with the lines on it, becomes a session
+  capture: a planner whose models file entry has `vision: true` sees it,
+  no other model does. The coordinates come from the host's conversion,
+  never from a model reading the picture. Needs the `revit-bridge` release
+  that has `sketch`.
+
+- `@element` searches the whole model when nothing is selected in Revit.
+  `GET /api/v1/bridge/mentions?kind=element` without `source` returns the
+  selection when there is one and the matching elements of the model
+  otherwise (`source` in the reply says which; `source=selection` and
+  `source=model` choose one). Before, it was 422 without
+  `source=selection`. The picker says when it is searching the model.
+- `GET /api/v1/bridge/mentions/preview?id=<element id>`: a rough 3D shape of
+  one element (the package's `element_preview`). The picker draws it,
+  slowly turning, beside the list for the row the pointer or the keyboard is
+  on, with the category, the size and a note that it is approximate. No
+  drawing library is added. Needs the `revit-bridge` release that has
+  `mention_model`.
+
 ### Security
 
 - Requires `revit-bridge` 0.11.2: a tool template is refused when a placeholder sits where its value could become code, and values are rendered so they cannot form code in any context. Existing user tools with such templates are listed with the reason and cannot run until repaired.

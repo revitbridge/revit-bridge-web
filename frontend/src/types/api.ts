@@ -179,6 +179,7 @@ export interface TaskPlan {
 }
 
 export interface ChatMessage {
+  sketch?: { image: string; view_name: string; lines: number }   // the sketch sent with a user message
   images?: ViewImage[]
   missingTool?: MissingTool
   currentSelection?: number
@@ -326,7 +327,37 @@ export interface DesignerAnswers {
   items: (DesignerOption & { id: string })[]
 }
 
+/* A sketch on a view capture (POST /api/v1/bridge/sketch/capture and /sketch/resolve). */
+export interface SketchCapture {
+  capture_id: string
+  png_base64: string
+  width: number
+  height: number
+  view_name: string
+  level: string | null
+}
+export interface SketchPoint { x: number; y: number; snap?: { kind: 'wall_end' | 'on_wall'; wall_id: number } }
+export interface SketchLine { line: number; length_mm: number; points: SketchPoint[]; pixels: number[][] }
+export interface ResolvedSketch {
+  view_name: string
+  view_type: string
+  level: string | null
+  elevation_mm: number | null
+  tolerance_mm: number
+  lines: SketchLine[]
+  warnings: string[]
+}
+/* What the designer drew and what the host read of it, held by the composer until it is sent. */
+export interface SketchDraft {
+  capture_id: string
+  strokes: number[][][]
+  image: string                  // the capture with the strokes on it (base64 PNG); '' when it could not be drawn
+  view_name: string
+  lines: SketchLine[]
+}
+
 export interface HostRequest {
+  sketch?: { capture_id: string; strokes: number[][][]; image?: string }
   selection_answer?: string
   hidden_captures?: string[]
   current_selection?: SelectionState

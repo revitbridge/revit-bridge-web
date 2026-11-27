@@ -16,6 +16,8 @@ import type {
 import type { Mention, TraceEvent, UsageEvent } from '../../types/hostv2'
 import { interruptOpen } from '../hostv2/trace/events'
 import { mentionRefs, pendingMentions, withReport } from './mentions'
+import { sketchRequest } from './sketch'
+import type { SketchDraft } from '../../types/api'
 import { NO_RESPONSE } from '../../utils/chatRun'
 import { getErrorMessage, isAbortError, serverReasons } from '../../utils/errors'
 import { BridgeApiError } from '../shared/http'
@@ -385,7 +387,8 @@ export function createTaskFlow(deps: FlowDeps) {
 
   /* The designer's message, with the model items picked in it (bridge side only: the
      comparison has no model to check them against, and gets the text as typed). */
-  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers, selectionAnswer?: string, selection?: HostRequest['current_selection']) {
+  async function send(text: string, mentions: Mention[] = [], answers?: DesignerAnswers, selectionAnswer?: string, selection?: HostRequest['current_selection'],
+    sketch?: SketchDraft) {
     const s = getState()
     const message = text.trim()
     if (!message || s.bridge.streaming || s.baseline.streaming || s.confirming || s.running) return
@@ -408,8 +411,11 @@ export function createTaskFlow(deps: FlowDeps) {
     }
     controller = new AbortController()
     const picked = mentions.length > 0
-    push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}) })
+    const drawn = sketch && !answers && !selectionAnswer ? sketch : undefined
+    push('bridge', { role: 'user', content: message, ...(picked ? { mentions: pendingMentions(mentions) } : {}),
+      ...(drawn ? { sketch: { image: drawn.image, view_name: drawn.view_name, lines: drawn.lines.length } } : {}) })
     const request: HostRequest = { message, session_id: s.bridge.sessionId, bridge: true }
+    if (drawn) request.sketch = sketchRequest(drawn)
     if (answers) request.answers = answers
     if (selectionAnswer) request.selection_answer = selectionAnswer
     if (selection && !askId) request.current_selection = selection

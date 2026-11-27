@@ -91,6 +91,8 @@ from revit_bridge.capabilities.schema import CHOICES_FROM_RE, PLACEHOLDER_RE, va
 from revit_bridge.paths import guidance_dir, guidance_layer_dirs
 from revit_bridge.evidence.ledger import Ledger
 from revit_bridge.execution import ExecutionResult, revalidate, run_code, run_pack
+from revit_bridge import sketch
+from revit_bridge.mention_model import element_preview
 from revit_bridge.mentions import MAX_MENTIONS, mention_candidates, resolve_mentions
 from revit_bridge.revit import RevitClientPool, RevitSettings, sandbox
 from revit_bridge.revit.probe import check_connection
@@ -110,6 +112,7 @@ from backend.mention_check import bound_picks, changed_pick, mention_errors, men
 from backend.ratelimit import client_key, confirm_limiter, handshake_failures
 from backend.relay import WebSocketRevitClient, get_relay
 from backend.session import get_session_store
+from backend.sketches import SketchCapture, get_sketch_store
 from backend.plans import Plan
 from backend.questions import Identifier, SelectionOptions
 
@@ -727,13 +730,17 @@ async def mention_items(
     q: str | None = Query(None, max_length=500, description="rank matches for the search terms"),
     limit: int | None = Query(None, description="at most this many items (1-200, default 50)"),
     offset: int = Query(0, ge=0, description="number of matching items to skip"),
-    source: str | None = Query(None, max_length=32, description="element requires selection"),
+    source: str | None = Query(None, max_length=32,
+                               description="element only: selection or model; without it the selection "
+                                           "when there is one, else the model"),
 ):
     """Items the designer can pick in chat: the package's
     ``mention_candidates`` reply as it is - ``{kind, items: [{kind, id, name, label, detail,
     category?, family?, disabled?, reason?, summary?, level?, category_label?, document_id?}], total, truncated,
-    offset, facets, category_matched, facets_partial?, warnings?}``. An empty type query offers categories. A type search offers matching types;
-    element lists the current selection with a summary, level, category label and document identity. When
+    offset, facets, category_matched, facets_partial?, warnings?, source?, selected?}``. An empty type query offers categories. A type search offers matching types;
+    element lists the current selection with a summary, level, category label and document identity, or - when
+    nothing is selected - the matching elements of the whole model; ``source`` says which (``selection`` /
+    ``model``) and ``selected`` how many elements are selected. When
     facets_partial is true the category counts cover only the rows read. A disconnected link is disabled. A
     kind or category the package refuses is 422 (``unknown_kind``, ``invalid_args``); Revit
     reporting an error is 200 with the package's ``error``, as on ``/query``; no Revit to ask
@@ -750,6 +757,108 @@ async def mention_items(
         raise ApiError(500, "query_failed", f"{type(exc).__name__}: {exc}", kind=kind) from None
     if answer.get("error") in ("unknown_kind", "invalid_args"):
         raise ApiError(422, **answer)
+    return answer
+
+
+@router.get("/mentions/preview", responses=responses(403, 404, 422, 500, 503))
+async def mention_preview(
+    id: int = Query(..., ge=1, description="element id"),
+):
+    """A rough 3D shape of one element, for the picker to draw while the designer chooses: the
+    package's ``element_preview`` reply as it is - ``{kind, id, document_id, name, family, category,
+    category_label, shape, size_mm, vertices, triangles, partial, approximate}``. ``vertices`` are whole
+    millimetres ``[x, y, z, ...]`` from the lowest corner and ``triangles`` index triples into them;
+    ``shape`` is ``mesh``, or ``box`` when only the size is known. It is a picture to recognise an
+    element by, never a measurement. An element that is not in the open model is 404 ``not_found``;
+    Revit reporting an error is 200 with ``error: revit_error``; no Revit to ask is 503
+    ``revit_unreachable``. The same device rules as every route here."""
+    try:
+        client = await get_revit_client()
+        answer = await element_preview(RevitQueryExecutor(client), id)
+    except ApiError as exc:
+        exc.payload.setdefault("kind", "element")
+        raise
+    except OSError as exc:
+        raise revit_unreachable(exc, kind="element") from None
+    except RevitQueryError as exc:
+        return {"error": "revit_error", "kind": "element", "id": id, "message": str(exc)}
+    except Exception as exc:  # noqa: BLE001 - a bug in the reading, never a bad request
+        raise ApiError(500, "query_failed", f"{type(exc).__name__}: {exc}", kind="element") from None
+    if answer.get("error") == "not_found":
+        raise ApiError(404, **answer)
+    if answer.get("error") == "invalid_args":
+        raise ApiError(422, **answer)
+    return answer
+
+
+# -- a sketch on a view capture ---------------------------------------------------
+
+class SketchStrokes(BaseModel):
+    """What the designer drew on a capture from ``POST /sketch/capture``: each stroke the
+    ``[x, y]`` pixels of the capture it passes, in the order drawn."""
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
+    strokes: list[list[list[float]]] = Field(min_length=1, max_length=sketch.MAX_STROKES)
+
+
+async def resolved_sketch(capture_id: str, strokes) -> tuple[SketchCapture, dict]:
+    """The strokes on one of this device's captures as model lines (the package's
+    ``resolve_sketch``); ApiError when the capture is unknown or the lines cannot be read."""
+    capture = get_sketch_store().get(current_scope(), capture_id)
+    if capture is None:
+        raise ApiError(404, "unknown_sketch", "This view capture has expired. Capture the view again.")
+    try:
+        client = await get_revit_client()
+        answer = await sketch.resolve_sketch(RevitQueryExecutor(client), capture.frame, capture.width,
+                                             capture.height, strokes)
+    except ApiError:
+        raise
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    except RevitQueryError as exc:
+        raise ApiError(409, "view_changed", str(exc)) from None
+    if answer.get("error"):
+        raise ApiError(422, "invalid_args", answer.get("message"))
+    return capture, answer
+
+
+@router.post("/sketch/capture", responses=responses(403, 409, 500, 503))
+async def sketch_capture():
+    """A picture of the active plan view for the designer to draw on: ``{capture_id, png_base64,
+    width, height, view_name, level}``. The host keeps the view's frame with the id (the model
+    rectangle the picture shows), so what is drawn can be converted to model coordinates exactly.
+    A view that is not a plan is 409 ``unsupported_view``; a view that moved while it was exported
+    409 ``view_changed``; no Revit to ask 503 ``revit_unreachable``."""
+    try:
+        client = await get_revit_client()
+        reply = await sketch.capture_for_sketch(client, 1600, ledger=get_ledger(), host=HOST, scope=current_scope())
+    except ApiError:
+        raise
+    except OSError as exc:
+        raise revit_unreachable(exc) from None
+    if reply.get("error") in ("unsupported_view", "view_changed"):
+        raise ApiError(409, reply["error"], reply.get("hint"))
+    if reply.get("error") == "unsupported_addin":
+        raise ApiError(409, "unsupported_addin", reply.get("hint"))
+    if reply.get("error"):
+        # The native diagnostic could echo image data: the code only.
+        raise ApiError(500, "capture_failed", "Revit could not export the view.")
+    capture = get_sketch_store().add(current_scope(), reply)
+    return {"capture_id": capture.id, "png_base64": reply["png_base64"], "width": reply["width"],
+            "height": reply["height"], "view_name": reply["view_name"], "level": reply["frame"]["level"]}
+
+
+@router.post("/sketch/resolve", responses=responses(403, 404, 409, 422, 503))
+async def sketch_resolve(body: SketchStrokes):
+    """What the host understood of the designer's strokes, for the page to show before the
+    message is sent: the package's ``resolve_sketch`` reply - ``{view_name, view_type, level,
+    elevation_mm, tolerance_mm, warnings, lines: [{line, length_mm, points: [{x, y, snap?}],
+    pixels}]}``, model millimetres, ``pixels`` the same points on the capture. Nothing is stored:
+    the chat request sends the strokes again and they are read again. An expired capture is 404
+    ``unknown_sketch``; strokes that are not lines 422 ``invalid_args``; a view that is gone 409
+    ``view_changed``."""
+    _, answer = await resolved_sketch(body.capture_id, body.strokes)
     return answer
 
 

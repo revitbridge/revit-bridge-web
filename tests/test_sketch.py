@@ -1,0 +1,188 @@
+"""A sketch on a view capture: the capture and resolve routes, and the chat's ``sketch``. The
+frame, the conversion and the text are the package's; these tests pin what the host does."""
+from __future__ import annotations
+
+import base64
+import json
+import struct
+import zlib
+
+import pytest
+
+from backend import sketches
+from tests.fake_model import text_turn
+from tests.fake_revit import FakeRevit, model_handler
+from tests.test_api_v1 import B
+from tests.test_host_loop import HEADERS, events, model, sse  # noqa: F401 - the model fixture
+
+FEET = 304.8
+# The view shows x from -6000 to 10000 mm and y from -2000 to 6000 mm: 10 mm per pixel at 1600 x 800.
+RAW = {"document_id": "fake-document", "view_id": "32", "view_uid": "fake-view", "view_name": "L1",
+       "view_type": "FloorPlan", "level": "L1", "elevation": 0.0,
+       "c0": [-6000 / FEET, -2000 / FEET, 0.0], "c1": [10000 / FEET, 6000 / FEET, 0.0],
+       "right": [1.0, 0.0, 0.0], "up": [0.0, 1.0, 0.0], "direction": [0.0, 0.0, 1.0]}
+WALLS = [{"id": "11", "straight": True, "a": [-3000 / FEET, 1000 / FEET], "b": [-3000 / FEET, 5000 / FEET]},
+         {"id": "12", "straight": True, "a": [0.0, -1000 / FEET], "b": [0.0, 6000 / FEET]}]
+STROKE = [[310, 108], [590, 90]]      # from the end of wall 11 to wall 12
+
+
+def png(width: int, height: int) -> str:
+    """A real, small PNG of this size."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    rows = (b"\x00" + b"\xff" * width) * height
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0))
+                            + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b"")).decode()
+
+
+PICTURE = png(1600, 800)
+
+
+@pytest.fixture
+def plan_view(env):
+    """A fake add-in with a plan view open: the frame, the export and the view's walls."""
+    state: dict = {"frame": dict(RAW), "frames": 0}
+    base = model_handler()
+
+    def handler(request: dict) -> dict:
+        method, rid, params = request.get("method"), request.get("id"), request.get("params") or {}
+        if method == "get_bridge_capabilities":
+            return FakeRevit.ok(rid, {"protocol": 2, "methods": ["export_view_image_in_revit", "send_code_to_revit"]})
+        if method == "export_view_image_in_revit":
+            return FakeRevit.ok(rid, {"png_base64": PICTURE, "width": 1600, "height": 800, "view_name": "L1"})
+        code = params.get("code", "") if method == "send_code_to_revit" else ""
+        if "GetZoomCorners" in code:
+            state["frames"] += 1
+            if state.get("moves") and state["frames"] % 2 == 0:
+                return FakeRevit.code_result(rid, {**state["frame"], "c1": [10500 / FEET, 6000 / FEET, 0.0]})
+            return FakeRevit.code_result(rid, state["frame"])
+        if "OfClass(typeof(Wall))" in code and "straight = location.Curve is Line" in code:
+            if state.get("gone"):
+                return FakeRevit.code_result(rid, None, success=False,
+                                             error="The view of the sketch is no longer open; capture the view again.")
+            assert params["parameters"] == ["fake-view", "fake-document"]
+            return FakeRevit.code_result(rid, {"walls": WALLS, "complete": True})
+        return base(request)
+
+    with FakeRevit(handler) as fake:
+        env.setenv("REVIT_BRIDGE_PORT", str(fake.port))
+        yield state
+
+
+def capture(client) -> dict:
+    reply = client.post(f"{B}/sketch/capture")
+    assert reply.status_code == 200, reply.text
+    return reply.json()
+
+
+def test_capture_returns_the_picture_and_keeps_the_frame_on_the_host(plan_view, client):
+    shot = capture(client)
+    assert set(shot) == {"capture_id", "png_base64", "width", "height", "view_name", "level"}
+    assert shot["png_base64"] == PICTURE and (shot["width"], shot["height"]) == (1600, 800)
+    assert shot["view_name"] == "L1" and shot["level"] == "L1"
+    assert "frame" not in json.dumps(shot) and "fake-view" not in json.dumps(shot)
+
+
+@pytest.mark.parametrize("change,status,code", [
+    ({"frame": {**RAW, "view_type": "ThreeD"}}, 409, "unsupported_view"),
+    ({"moves": True}, 409, "view_changed")])
+def test_capture_refuses_a_view_that_is_not_a_plan_or_that_moved(plan_view, client, change, status, code):
+    plan_view.update(change)
+    reply = client.post(f"{B}/sketch/capture")
+    assert reply.status_code == status and reply.json()["error"] == code and reply.json()["message"]
+    assert "png_base64" not in reply.text
+
+
+def test_capture_without_revit_is_503(client):
+    reply = client.post(f"{B}/sketch/capture")
+    assert reply.status_code == 503 and reply.json()["error"] == "revit_unreachable"
+
+
+def test_resolve_is_the_package_reply(plan_view, client):
+    shot = capture(client)
+    reply = client.post(f"{B}/sketch/resolve", json={"capture_id": shot["capture_id"], "strokes": [STROKE]})
+    assert reply.status_code == 200, reply.text
+    assert reply.json() == {
+        "view_name": "L1", "view_type": "FloorPlan", "level": "L1", "elevation_mm": 0.0, "tolerance_mm": 250,
+        "warnings": [], "lines": [{"line": 1, "length_mm": 3000, "pixels": [[300.0, 100.0], [600.0, 100.0]], "points": [
+            {"x": -3000, "y": 5000, "snap": {"kind": "wall_end", "wall_id": 11}},
+            {"x": 0, "y": 5000, "snap": {"kind": "on_wall", "wall_id": 12}}]}]}
+
+
+def test_resolve_refuses_what_it_cannot_read(plan_view, client):
+    shot = capture(client)
+    unknown = client.post(f"{B}/sketch/resolve", json={"capture_id": "ab" * 16, "strokes": [STROKE]})
+    assert unknown.status_code == 404 and unknown.json()["error"] == "unknown_sketch"
+    for bad in ({"capture_id": shot["capture_id"], "strokes": []}, {"capture_id": "../x", "strokes": [STROKE]},
+                {"capture_id": shot["capture_id"], "strokes": [STROKE], "frame": RAW},
+                {"capture_id": shot["capture_id"], "strokes": [[[1, 1], [2, 2]]]},
+                {"capture_id": shot["capture_id"], "strokes": [[[0, 0], [5000, 0]]]}):
+        reply = client.post(f"{B}/sketch/resolve", json=bad)
+        assert reply.status_code == 422 and reply.json()["error"] == "invalid_args", bad
+    plan_view.update(gone=True)
+    gone = client.post(f"{B}/sketch/resolve", json={"capture_id": shot["capture_id"], "strokes": [STROKE]})
+    assert gone.status_code == 409 and gone.json()["error"] == "view_changed"
+
+
+def test_a_capture_belongs_to_its_device_and_expires(plan_view, client, monkeypatch):
+    shot = capture(client)
+    store = sketches.get_sketch_store()
+    assert store.get("another-device", shot["capture_id"]) is None
+    monkeypatch.setattr(sketches.time, "monotonic", lambda: 10 ** 9)
+    assert store.get(next(iter(store._items.values())).scope, shot["capture_id"]) is None
+
+
+def chat(client, message, **extra):
+    return client.post("/api/chat", json={"message": message, **extra}, headers=HEADERS)
+
+
+def test_the_chat_gets_the_sketch_as_model_coordinates_after_the_designers_words(plan_view, client, model):
+    shot = capture(client)
+    model.turns.append(text_turn("ok"))
+    reply = chat(client, "draw a wall on the red line", sketch={"capture_id": shot["capture_id"], "strokes": [STROKE]})
+    assert reply.status_code == 200, reply.text
+    assert events(sse(reply.text), "error") == []
+    sent = model.last_messages()[-1]["content"]
+    text = sent if isinstance(sent, str) else " ".join(p.get("text", "") for p in sent)
+    assert text.startswith("draw a wall on the red line\n\nDesigner's sketch (drawn by the designer on a capture of "
+                           "the plan view \"L1\", level \"L1\"")
+    assert "line 1 from (-3000, 5000) [the end of wall id 11] to (0, 5000) [on wall id 12], length 3000 mm" in text
+    assert "source designer" in text
+    # No image went along: none was sent, and this model takes none.
+    assert "image_url" not in json.dumps(model.requests) and PICTURE not in json.dumps(model.requests)
+
+
+def test_the_sketch_is_read_again_by_the_host_and_bad_ones_stop_the_turn(plan_view, client, model):
+    shot = capture(client)
+    good = {"capture_id": shot["capture_id"], "strokes": [STROKE]}
+    for body, status, code in (
+            ({"sketch": {**good, "capture_id": "ab" * 16}}, 404, "unknown_sketch"),
+            ({"sketch": {**good, "strokes": [[[1, 1], [2, 2]]]}}, 422, "invalid_args"),
+            ({"sketch": {**good, "image": "not base64 !"}}, 422, "invalid_args"),
+            ({"sketch": {**good, "image": png(800, 400)}}, 422, "invalid_args"),
+            ({"sketch": {**good, "lines": [{"points": [{"x": 1, "y": 2}]}]}}, 422, "extra_forbidden"),
+            ({"sketch": good, "bridge": False}, 422, "invalid_args")):
+        reply = chat(client, "draw a wall here", **body)
+        assert reply.status_code == status and code in reply.text, (body, reply.text)
+    assert model.requests == []                                    # no model was called
+
+
+def test_the_drawn_picture_becomes_a_session_capture_and_never_reaches_a_model_without_vision(plan_view, client, model):
+    shot = capture(client)
+    drawn = png(1600, 800)
+    model.turns.append(text_turn("ok"))
+    reply = chat(client, "draw a wall here", sketch={"capture_id": shot["capture_id"], "strokes": [STROKE], "image": drawn})
+    assert reply.status_code == 200, reply.text
+    assert drawn not in json.dumps(model.requests)
+    from backend.session import get_session_store
+    session = next(iter(get_session_store()._sessions.values()))
+    (entry,) = session.captures.entries
+    assert entry.png == drawn and entry.summary == "L1 - designer's sketch (1600 x 800)"
+
+
+def test_checked_png_reads_only_the_header():
+    assert sketches.checked_png(PICTURE, 1600, 800) == PICTURE
+    for bad, why in ((png(1600, 801), "size"), ("####", "base64"), (base64.b64encode(b"GIF89a" + bytes(40)).decode(), "PNG"),
+                     ("A" * (4 * sketches.MAX_IMAGE_BYTES), "too large")):
+        with pytest.raises(ValueError, match=why):
+            sketches.checked_png(bad, 1600, 800)

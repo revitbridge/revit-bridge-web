@@ -74,6 +74,14 @@ def picker_handler(state: dict):
             snap = {"view": "fake-view", "members": ids, "total": len(ids),
                     "page": [ids[i] for i in params["parameters"] if i < len(ids)]}
             return FakeRevit.code_result(rid, {**snap, "items": rows, "warnings": []})
+        if "new FilteredElementCollector(document).WhereElementIsNotElementType()" in code:
+            return FakeRevit.code_result(rid, {"items": state.get("model", []), "warnings": [], "complete": True,
+                                               "document_id": state.get("document_id", "fake-document")})
+        if "MeshTriangle" in code:
+            if state.get("preview_error"):
+                return FakeRevit.code_result(rid, None, success=False, error=state["preview_error"])
+            found = [shape for number, shape in state.get("preview", {}).items() if f"new ElementId({number})" in code]
+            return FakeRevit.code_result(rid, found[0] if found else {"found": False})
         if "bool names = true, details = true;" in code:
             rows = [r for r in state.get("elements", []) if f"new ElementId({r['id']})" in code]
             return FakeRevit.code_result(rid, {"view": "fake-view", "items": rows, "warnings": [],
@@ -133,6 +141,49 @@ def test_levels_are_listed_as_the_package_lists_them(picker, client):
     assert [i["id"] for i in cut["items"]] == [1] and cut["total"] == 2 and cut["truncated"] is True
 
 
+def test_nothing_selected_searches_the_whole_model(picker, client):
+    rows = [{"id": 910, "name": "Concrete 200mm", "family": "Basic Wall", "category": "OST_Walls", "shown": "Walls"},
+            {"id": 911, "name": "Single-Flush", "family": "Door", "category": "OST_Doors", "shown": "Doors"}]
+    picker.update(model=rows, elements=[dict(row, level="L1", length=None) for row in rows])
+    page = client.get(f"{B}/mentions", params={"kind": "element"}).json()
+    assert page["source"] == "model" and [i["id"] for i in page["items"]] == [910, 911] and page["total"] == 2
+    assert page["items"][0]["document_id"] == "fake-document" and page["truncated"] is False
+    doors = client.get(f"{B}/mentions", params={"kind": "element", "q": "door"}).json()
+    assert doors["source"] == "model" and [i["id"] for i in doors["items"]] == [911]
+    # A selection is offered instead of the model, also when no selected element matches.
+    picker.update(selection=[dict(rows[0], level="L1", length=None)])
+    selected = client.get(f"{B}/mentions", params={"kind": "element", "q": "door"}).json()
+    assert selected["source"] == "selection" and selected["selected"] == 1 and selected["items"] == []
+    forced = client.get(f"{B}/mentions", params={"kind": "element", "q": "door", "source": "model"}).json()
+    assert forced["source"] == "model" and [i["id"] for i in forced["items"]] == [911]
+
+
+def test_the_preview_is_the_package_reply(picker, client):
+    shape = {"found": True, "name": "Concrete 200mm", "family": "Basic Wall", "category": "OST_Walls",
+             "shown": "Walls", "size": [4000, 200, 3000], "vertices": [0, 0, 0, 4000, 0, 0, 4000, 200, 3000],
+             "triangles": [0, 1, 2], "partial": False, "document_id": "fake-document"}
+    picker.update(preview={910: shape})
+    reply = client.get(f"{B}/mentions/preview", params={"id": 910})
+    assert reply.status_code == 200, reply.text
+    assert reply.json() == {"kind": "element", "id": 910, "document_id": "fake-document", "name": "Concrete 200mm",
+                            "family": "Basic Wall", "category": "OST_Walls", "category_label": "Walls",
+                            "shape": "mesh", "size_mm": [4000, 200, 3000], "vertices": shape["vertices"],
+                            "triangles": [0, 1, 2], "partial": False, "approximate": True}
+    missing = client.get(f"{B}/mentions/preview", params={"id": 999})
+    assert missing.status_code == 404 and missing.json()["error"] == "not_found"
+    for bad in ({}, {"id": 0}, {"id": "abc"}):
+        assert client.get(f"{B}/mentions/preview", params=bad).status_code == 422
+    picker.update(preview_error="Revit is busy")
+    busy = client.get(f"{B}/mentions/preview", params={"id": 910})
+    assert busy.status_code == 200 and busy.json() == {"error": "revit_error", "kind": "element", "id": 910,
+                                                       "message": "Revit is busy"}
+
+
+def test_the_preview_without_revit_is_503(client):
+    reply = client.get(f"{B}/mentions/preview", params={"id": 910})
+    assert reply.status_code == 503 and reply.json()["error"] == "revit_unreachable"
+
+
 def test_types_come_by_category_and_the_categories_first(picker, client):
     categories = client.get(f"{B}/mentions", params={"kind": "type"}).json()
     assert categories["kind"] == "type" and categories["total"] == 2
@@ -159,7 +210,10 @@ def test_current_selection_page_and_element_id_confirm(picker, client, model):
     assert [r["id"] for r in page["items"]] == [901] and "L1" in page["items"][0]["summary"]
     assert page["items"][0]["document_id"] == "fake-document"
     assert page["facets"] == [{"category": "OST_Walls", "label": "Walls", "count": 2}]
-    assert client.get(f"{B}/mentions", params={"kind": "element"}).status_code == 422
+    assert client.get(f"{B}/mentions", params={"kind": "element", "source": "all"}).status_code == 422
+    # Without a source: the selection, because there is one.
+    auto = client.get(f"{B}/mentions", params={"kind": "element"}).json()
+    assert auto["source"] == "selection" and auto["selected"] == 2 and [r["id"] for r in auto["items"]] == [900, 901]
 
     model.turns.append(text_turn("ok"))
     response = chat(client, "@element:Basic#901", [pick("element", 901)])

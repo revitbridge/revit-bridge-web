@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import config, log_store, relay, skill_store, session
+from backend import config, log_store, relay, skill_store, session, sketches
 from backend.api import devices
 
 
@@ -111,6 +111,7 @@ def _reset() -> None:
     log_store.reset_log_store()
     relay.reset_relay()
     devices.reset_device_store()
+    sketches.reset_sketch_store()
     session._store = None
 
 

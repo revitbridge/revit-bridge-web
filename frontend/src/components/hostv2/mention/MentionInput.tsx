@@ -1,7 +1,8 @@
 import { uiText } from '../../../utils/strings'
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type Ref } from 'react'
-import type { FetchCandidates, Mention } from '../../../types/hostv2'
-import { MentionController, type MentionState } from './controller'
+import type { FetchCandidates, FetchPreview, Mention } from '../../../types/hostv2'
+import { ElementPreview } from './ElementPreview'
+import { MentionController, elementId, type MentionState } from './controller'
 import { handleKeyDown, handlePaste, selectionOf, syncSelection } from './dom'
 import { hasLineBreak, matchingKinds } from './model'
 import './mention.css'
@@ -18,13 +19,15 @@ export interface MentionInputProps {
   // Called only from the picker, debounced 200 ms; late answers are dropped.
   // Its identity may change between renders.
   fetchCandidates: FetchCandidates
+  // A rough 3D shape of the element the picker is on; without it no picture is shown.
+  fetchPreview?: FetchPreview
   disabled?: boolean
   placeholder?: string
   // Tags with one of these kind + id pairs are shown as no longer available.
   invalid?: Mention[]
 }
 
-export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandidates,
+export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandidates, fetchPreview,
   disabled = false, placeholder, invalid = [] }: MentionInputProps) {
   const [controller] = useState(() => new MentionController(value, mentions,
     { onChange, onSubmit, fetchCandidates }, disabled))
@@ -113,14 +116,18 @@ export function MentionInput({ value, mentions, onChange, onSubmit, fetchCandida
         {dropsUnrepresentable && <span className="mention-invalid-note">{uiText(" Names with line breaks cannot be represented as tags. Remove or rename those model items.")}</span>}
         {dropsMissing && <span className="mention-invalid-note">{uiText(" Some selected model items were not found in the text and were removed.")}</span>}
       </div>
-      <MentionSuggestions state={state} controller={controller} id={id} listRef={list} focusInput={() => input.current?.focus()} />
+      <MentionSuggestions state={state} controller={controller} id={id} listRef={list} focusInput={() => input.current?.focus()}
+        fetchPreview={fetchPreview} />
     </div>
   )
 }
 
-export function MentionSuggestions({ state, controller, id, listRef, focusInput }: {
+export function MentionSuggestions({ state, controller, id, listRef, focusInput, fetchPreview }: {
   state: MentionState; controller: MentionController; id: string; listRef?: Ref<HTMLDivElement>; focusInput?: () => void
+  fetchPreview?: FetchPreview
 }) {
+  // The row under the pointer, else the row the keyboard is on, is the one pictured.
+  const [hovered, setHovered] = useState<string | null>(null)
   if (!state.menu) return null
   const kinds = state.menu.mode === 'kinds' ? matchingKinds(state.menu.query) : []
   const items = state.menu.mode === 'items' ? state.candidates?.items ?? [] : []
@@ -131,6 +138,9 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
   const categoryName = (key: string) => candidates?.facets?.find(f => f.category === key)?.label || key
   const filter = menu.mode === 'items' ? menu.category || state.elementCategory : null
   const groups = controller.groups()
+  const fromModel = checking && candidates?.source === 'model'
+  const pictured = checking ? items.find(item => item.kind + '#' + item.id === hovered) ?? items[state.active] : undefined
+  const picturedId = pictured && pictured.kind === 'element' ? elementId(pictured) : null
   const nameOf = (index: number) => {
     const item = items[index]
     const checked = state.checked.some(m => m.id === Number(item.id)) ||
@@ -139,6 +149,7 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
       aria-selected={checking ? checked : state.active === index && controller.selectable(item)}
       className={state.active === index ? 'is-active' : undefined}
       aria-disabled={!controller.selectable(item)} disabled={!controller.selectable(item)}
+      onMouseEnter={() => setHovered(item.kind + '#' + item.id)} onMouseLeave={() => setHovered(null)}
       onClick={() => { focusInput?.(); controller.choose(index) }}>
       <span className="mention-item-label">{checking && <span aria-hidden="true">{checked ? '☑ ' : '☐ '}</span>}
         {item.label || item.name}{checking && item.name && ' #' + item.id}</span>
@@ -164,6 +175,9 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
             onClick={() => controller.filterCategory(filter === f.category ? '' : f.category, f.label)}>
             {f.label} ({f.count})</button>)}
         </div>}
+      {fromModel && <div className="mention-message" role="status">
+        {uiText("Nothing is selected in Revit: searching the whole model. Type to narrow the search.")}</div>}
+      <div className={fetchPreview && picturedId ? 'mention-body has-preview' : 'mention-body'}>
       <div ref={listRef} className="mention-options" id={id + '-candidates'} role="listbox" aria-label={uiText("Mention candidates")}
         aria-multiselectable={checking || undefined} onScroll={event => {
           const list = event.currentTarget
@@ -176,10 +190,14 @@ export function MentionSuggestions({ state, controller, id, listRef, focusInput 
             <div className="mention-group-heading">{group.label} ({group.count})</div>
             {group.indices.map(nameOf)}</div> : group.indices.map(nameOf))}
       </div>
+      {fetchPreview && picturedId && <ElementPreview key={picturedId} id={picturedId} documentId={pictured?.document_id}
+        fetchPreview={fetchPreview} />}
+      </div>
       {(state.status === 'loading' || state.loadingMore) && <div role="status" className="mention-message">{uiText("Loading candidates...")}</div>}
       {state.error && <div role="alert" className="mention-error">{state.error}</div>}
       {state.status === 'ready' && !groups.length && <div className="mention-message">
-        {checking ? uiText("No matching selected elements on this page.")
+        {fromModel ? uiText("No matching elements in the model. Try another word, a category or an element id.")
+          : checking ? uiText("No matching selected elements on this page.")
           : uiText("No matching items. Keep typing to search, or press Enter to send.")}</div>}
       {checking && controller.availableSlots() <= state.checked.length && <div className="mention-message">{uiText("A message can include up to 20 model items.")}</div>}
       {candidates?.warnings?.map((warning, index) => <div role="status" className="mention-message" key={index}>{warning}</div>)}
