@@ -98,11 +98,11 @@ summary { cursor: pointer; }
 .success,.is-ready,.outcome.ok,.task-plan [data-status=done] small { color: var(--success); background: var(--success-bg); }
 .warning,.readiness.is-open,.outcome.refused { color: var(--warning); background: var(--warning-bg); }
 .badge.danger,.outcome.failed,.task-plan [data-status=failed] small { color: var(--danger); background: var(--danger-bg); }
-.status-line,.notice,.execution-banner,.tool-warning-status,p[role=alert],.spec-errors,.workflow-validation ul { border-radius: var(--radius-sm); padding: var(--s2) var(--s3); background: var(--bg2); color: var(--mid); overflow-wrap: anywhere; }
+.status-line,.notice,.execution-banner,.tool-warning-status,p[role=alert],.spec-errors { border-radius: var(--radius-sm); padding: var(--s2) var(--s3); background: var(--bg2); color: var(--mid); overflow-wrap: anywhere; }
 .execution-banner.ok { background: var(--success-bg); color: var(--success); }
 p[role=alert],.spec-errors,.spec-conflict,.text-danger,.execution-banner.failed,.execution-banner.validation-failed,.check-failed { color: var(--danger); }
 p[role=alert],.spec-errors,.execution-banner.failed,.execution-banner.validation-failed { background: var(--danger-bg); }
-.tool-warning-status,.execution-banner.refused,.workflow-validation ul { color: var(--warning); background: var(--warning-bg); }
+.tool-warning-status,.execution-banner.refused { color: var(--warning); background: var(--warning-bg); }
 .empty-state { padding: var(--s6); border: 1px dashed var(--subtle); border-radius: var(--radius-sm); color: var(--faint); text-align: center; }
 .list-row,.device-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); padding: var(--s3) 0; border-bottom: 1px solid var(--line); }
 .skeleton { animation: skeleton 1.4s ease-in-out infinite alternate; }

@@ -8,6 +8,8 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
+- Workflow validation now shows field requirements on hover or keyboard focus
+  and counts the remaining items beside the save controls.
 - Requires `revit-bridge` 0.12.0 (the element search in the whole model, the
   rough element shape and the sketch on a plan view).
 

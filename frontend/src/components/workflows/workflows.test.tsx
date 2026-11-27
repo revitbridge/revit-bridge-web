@@ -42,6 +42,14 @@ const validate = async () => {
   await act(async () => vi.advanceTimersByTimeAsync(210))
   return vi.mocked(workflowApi.validate).mock.lastCall![0]
 }
+function hintMessages(marker: HTMLButtonElement) {
+  expect(marker.type).toBe('button')
+  expect(marker.getAttribute('aria-label')).toBe('What this field needs')
+  const tooltip = document.getElementById(marker.getAttribute('aria-describedby')!)!
+  expect(tooltip.getAttribute('role')).toBe('tooltip')
+  expect(marker.contains(tooltip)).toBe(true)
+  return Array.from(tooltip.children, line => line.textContent)
+}
 
 it('adds searched packs, moves steps from the keyboard and removes them', async () => {
   await mount()
@@ -56,7 +64,8 @@ it('adds searched packs, moves steps from the keyboard and removes them', async 
   expect((await validate()).steps.map(s => s.tool)).toEqual(['walls', 'windows'])
   click(buttons('Remove')[0])
   expect((await validate()).steps.map(s => s.tool)).toEqual(['windows'])
-  expect(box.textContent).toContain('steps: expected 2-8 steps')
+  expect(hintMessages(box.querySelector('.workflow-steps h3 .field-hint')!)).toEqual(['expected 2-8 steps'])
+  expect(box.querySelector('.workflow-validation')?.textContent).toBe('1 item to complete before saving')
 })
 
 it('reuses named inputs, sets typed literals and validates a custom path into an earlier result', async () => {
@@ -104,11 +113,12 @@ it('shows host binding errors and keeps Save disabled until the edited draft pas
   vi.spyOn(config, 'getConfig').mockReturnValue({ ...runtime, features: { ...runtime.features, mode: 'local' } })
   await mount()
   click(buttons('Add')[0]); click(buttons('Add')[1])
-  const errors = ["step wall, parameter height: input distance has type string, expected double",
-    "step window: sill_height must be the designer's words, answer or a preference, not tool"]
+  const errors = ["step step_1, parameter height: input distance has type string, expected double",
+    "step step_2: sill_height must be the designer's words, answer or a preference, not tool"]
   vi.mocked(workflowApi.validate).mockResolvedValueOnce({ errors })
   await validate()
-  for (const error of errors) expect(box.textContent).toContain(error)
+  expect(steps().map(step => hintMessages(step.querySelector('.workflow-step-heading .field-hint')!)))
+    .toEqual(errors.map(error => [error]))
   expect(buttons('Save workflow')[0].disabled).toBe(true)
   vi.mocked(workflowApi.validate).mockResolvedValueOnce({ errors: [] })
   select(steps()[0].querySelector('select')!, 'fixed')
@@ -116,4 +126,46 @@ it('shows host binding errors and keeps Save disabled until the edited draft pas
   expect(buttons('Save workflow')[0].disabled).toBe(true)
   await validate()
   expect(buttons('Save workflow')[0].disabled).toBe(false)
+})
+
+it('links empty workflow fields to their hints and counts every validation message', async () => {
+  vi.mocked(workflowApi.validate).mockResolvedValue({ errors: [
+    'name: expected a tool identifier', 'display_name: required, non-empty string',
+    'summary: required, non-empty string', 'summary:missing space', 'description: required, non-empty string',
+    'steps: expected 2-8 steps',
+  ] })
+  await mount()
+  await validate()
+
+  expect(box.querySelector('.validation-errors')).toBeNull()
+  expect(box.querySelectorAll('button.field-hint')).toHaveLength(5)
+  const labels = [...box.querySelectorAll<HTMLLabelElement>('.workflow-meta label')]
+  for (const [name, messages] of [
+    ['Name', ['expected a tool identifier']], ['Display name', ['required, non-empty string']],
+    ['Summary', ['required, non-empty string', 'summary:missing space']], ['Description', ['required, non-empty string']],
+  ] as const) {
+    const label = labels.find(label => label.textContent === name)!
+    const marker = label.parentElement!.querySelector<HTMLButtonElement>('button.field-hint')!
+    expect(hintMessages(marker)).toEqual(messages)
+    expect(label.control?.getAttribute('aria-invalid')).toBe('true')
+    expect(label.control?.getAttribute('aria-describedby')).toBe(marker.getAttribute('aria-describedby'))
+  }
+  expect(hintMessages(box.querySelector('.workflow-steps h3 .field-hint')!)).toEqual(['expected 2-8 steps'])
+  const version = labels.find(label => label.textContent === 'Version')!
+  expect(version.parentElement!.querySelector('.field-hint')).toBeNull()
+  expect(version.control!.hasAttribute('aria-invalid')).toBe(false)
+  expect(version.control!.hasAttribute('aria-describedby')).toBe(false)
+  expect(box.querySelector('.workflow-validation')?.textContent).toBe('6 items to complete before saving')
+})
+
+it('lists unscoped messages in the summary alongside the count of all messages', async () => {
+  const unscoped = 'inputs: two inputs have the same name'
+  vi.mocked(workflowApi.validate).mockResolvedValue({ errors: ['version: expected a version number', unscoped] })
+  await mount()
+  await validate()
+
+  const summary = box.querySelector('.workflow-validation')!
+  expect(summary.querySelector('p')?.textContent).toBe('2 items to complete before saving')
+  expect(Array.from(summary.querySelectorAll('li'), item => item.textContent)).toEqual([unscoped])
+  expect(hintMessages(box.querySelector('.workflow-meta .field-hint')!)).toEqual(['expected a version number'])
 })
