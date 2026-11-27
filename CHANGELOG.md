@@ -25,7 +25,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   message. `image`, the capture with the lines on it, becomes a session
   capture: a planner whose models file entry has `vision: true` sees it,
   no other model does. The coordinates come from the host's conversion,
-  never from a model reading the picture.
+  never from a model reading the picture. A stroke takes at most 600
+  points of two numbers, the two sketch routes share `/spec/confirm`'s
+  rate limit, a device keeps at most 8 captures, and the drawn picture
+  may be 1.3 MB (a larger one stays on the page; the coordinates still go).
 
 - `@element` searches the whole model when nothing is selected in Revit.
   `GET /api/v1/bridge/mentions?kind=element` without `source` returns the

@@ -15,9 +15,16 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-MAX_CAPTURES = 64
+MAX_CAPTURES = 64                          # on this host
+MAX_CAPTURES_PER_SCOPE = 8                 # of one device: it cannot push the others' captures out
 TTL_SECONDS = 30 * 60
-MAX_IMAGE_BYTES = 2 * 1024 * 1024          # the capture with the designer's lines drawn on it
+# The capture with the designer's lines drawn on it. As base64 inside the chat request it must
+# stay under the 2 MB body limit a reverse proxy in front of a cloud host commonly has.
+MAX_IMAGE_BYTES = 1_300_000
+# A stroke as the page sends it: the page thins a stroke to 600 points. Simplifying a stroke
+# costs time that grows with the square of its points, on the event loop, so the request
+# model refuses more before anything is computed.
+MAX_STROKE_POINTS = 600
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -42,6 +49,10 @@ class SketchStore:
                              reply["view_name"], time.monotonic())
         with self._lock:
             self._expire()
+            mine = sorted((key for key, kept in self._items.items() if kept.scope == scope),
+                          key=lambda key: self._items[key].created)
+            for key in mine[:max(0, len(mine) - MAX_CAPTURES_PER_SCOPE + 1)]:
+                del self._items[key]
             while len(self._items) >= MAX_CAPTURES:
                 del self._items[min(self._items, key=lambda key: self._items[key].created)]
             self._items[item.id] = item

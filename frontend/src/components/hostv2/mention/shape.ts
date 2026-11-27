@@ -96,7 +96,8 @@ export function drawShape(context: CanvasRenderingContext2D, width: number, heig
   for (let i = 0; i < count; i++) {
     const x = vertices[i * 3] - cx, y = vertices[i * 3 + 1] - cy, z = vertices[i * 3 + 2] - cz
     const rx = x * cos - y * sin, ry = x * sin + y * cos
-    px[i] = width / 2 + rx * scale
+    // The viewer stands on the +y side looking back at the model: its +x is on the left.
+    px[i] = width / 2 - rx * scale
     py[i] = height / 2 - (z * up - ry * down) * scale
     depth[i] = ry * up + z * down
   }

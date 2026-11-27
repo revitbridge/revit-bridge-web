@@ -41,7 +41,13 @@ export function lineText(line: ResolvedSketch['lines'][number], text: (key: stri
   return text("Line {0}: {1} mm, from {2} to {3}", line.line, line.length_mm, where(first), where(last))
 }
 
+/* The longest picture (base64) that goes with a message: the host takes 1.3 MB of PNG, and a
+   reverse proxy in front of a cloud host commonly takes a 2 MB body. A larger one stays on
+   the page: the coordinates, which are what the model works from, go without it. */
+export const MAX_IMAGE_CHARS = 1_700_000
+
 /* What goes with the message: the strokes, and the capture with the strokes drawn on it. */
 export const sketchRequest = (draft: SketchDraft) => ({
-  capture_id: draft.capture_id, strokes: draft.strokes, ...(draft.image ? { image: draft.image } : {}),
+  capture_id: draft.capture_id, strokes: draft.strokes,
+  ...(draft.image && draft.image.length <= MAX_IMAGE_CHARS ? { image: draft.image } : {}),
 })

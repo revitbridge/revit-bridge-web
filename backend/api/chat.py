@@ -152,7 +152,8 @@ from revit_bridge.snapshot.query import RevitQueryError
 from backend import roles, selection as selection_state
 from backend.api.auto_run import AutoRun
 from backend.api.bridge import (
-    current_scope, device_selection, get_revit_client, list_packs, resolved_sketch, set_device_context, snapshot_now,
+    SketchStrokeList, current_scope, device_selection, get_revit_client, list_packs, resolved_sketch,
+    set_device_context, snapshot_now,
 )
 from backend.sketches import MAX_IMAGE_BYTES as MAX_SKETCH_IMAGE_BYTES, checked_png
 from backend.api.errors import ApiError, responses
@@ -296,7 +297,7 @@ class ChatSketch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     capture_id: str = Field(min_length=8, max_length=64, pattern=r"^[0-9a-f]+$")
-    strokes: list[list[list[float]]] = Field(min_length=1, max_length=package_sketch.MAX_STROKES)
+    strokes: SketchStrokeList
     image: str | None = Field(default=None, max_length=4 * ((MAX_SKETCH_IMAGE_BYTES + 2) // 3),
                               description="base64 PNG: the capture with the designer's lines on it")
 
@@ -1286,12 +1287,20 @@ def sketch_block(drawn: dict) -> str:
     marker kept as a JSON string literal, as in ``selection_block``."""
     def escape_marked(match: re.Match) -> str:
         literal = match.group()
-        name = json.loads(literal)
-        if not has_host_marker(name):
+        try:
+            name = json.loads(literal)
+        except ValueError:
+            name = None                 # not a JSON literal (a stray backslash in a name)
+        if isinstance(name, str) and not has_host_marker(name):
             return literal
-        return quote_marked_json(name).replace("h", r"\u0068").replace("H", r"\u0048")
+        return quote_marked_json(name if isinstance(name, str) else literal[1:-1]).replace(
+            "h", r"\u0068").replace("H", r"\u0048")
 
-    return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, package_sketch.sketch_block(drawn))
+    # The package writes names between plain double quotes. A backslash in one would make the
+    # quoted spans below ambiguous, and no view or level is found by it: it goes.
+    safe = dict(drawn, view_name=str(drawn.get("view_name") or "").replace("\\", "/"),
+                level=str(drawn.get("level") or "").replace("\\", "/") or None)
+    return re.sub(r'"(?:\\.|[^"\\])*"', escape_marked, package_sketch.sketch_block(safe))
 
 
 def no_model(target: ModelTarget, role: str) -> HTTPException:

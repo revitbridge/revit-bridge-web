@@ -78,6 +78,7 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
 
   const read = (shot: SketchCapture, next: number[][][]) => {
     const mine = ++request.current
+    const before = strokes
     setStrokes(next)
     if (!next.length) { setReading(null); setStatus('ready'); setError(''); return }
     setStatus('reading'); setError('')
@@ -86,8 +87,9 @@ export default function SketchPad({ onUse, onClose, capture: takeCapture = captu
       setReading(answer); setStatus('ready')
     }, (problem: unknown) => {
       if (mine !== request.current) return
-      // A stroke the host could not read is taken back: what is shown is what will be sent.
-      setStrokes(next.slice(0, -1)); setStatus('ready'); setError(getErrorMessage(problem))
+      // What the host could not read is taken back - a new stroke, an undo or a clear alike -
+      // so the strokes, the dark lines and the list stay what will be sent.
+      setStrokes(before); setStatus('ready'); setError(getErrorMessage(problem))
     })
   }
 

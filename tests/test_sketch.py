@@ -160,7 +160,7 @@ def test_the_sketch_is_read_again_by_the_host_and_bad_ones_stop_the_turn(plan_vi
             ({"sketch": {**good, "strokes": [[[1, 1], [2, 2]]]}}, 422, "invalid_args"),
             ({"sketch": {**good, "image": "not base64 !"}}, 422, "invalid_args"),
             ({"sketch": {**good, "image": png(800, 400)}}, 422, "invalid_args"),
-            ({"sketch": {**good, "lines": [{"points": [{"x": 1, "y": 2}]}]}}, 422, "extra_forbidden"),
+            ({"sketch": {**good, "lines": [{"points": [{"x": 1, "y": 2}]}]}}, 422, "invalid_args"),
             ({"sketch": good, "bridge": False}, 422, "invalid_args")):
         reply = chat(client, "draw a wall here", **body)
         assert reply.status_code == status and code in reply.text, (body, reply.text)
@@ -186,3 +186,55 @@ def test_checked_png_reads_only_the_header():
                      ("A" * (4 * sketches.MAX_IMAGE_BYTES), "too large")):
         with pytest.raises(ValueError, match=why):
             sketches.checked_png(bad, 1600, 800)
+
+
+# -- what a request may ask for (review of the first version) -----------------------------
+
+def test_a_stroke_has_at_most_the_points_the_page_sends_and_a_point_two_numbers(plan_view, client):
+    shot = capture(client)
+    most = [[300 + i * 0.4, 100] for i in range(sketches.MAX_STROKE_POINTS)]
+    assert client.post(f"{B}/sketch/resolve", json={"capture_id": shot["capture_id"], "strokes": [most]}).status_code == 200
+    for bad in ([most + [[600, 100]]], [[[310, 108, 5], [590, 90]]], [[[310], [590, 90]]], [[[310, 108]]],
+                [STROKE] * 9):
+        reply = client.post(f"{B}/sketch/resolve", json={"capture_id": shot["capture_id"], "strokes": bad})
+        assert reply.status_code == 422 and reply.json()["error"] == "invalid_args"
+        refused = client.post("/api/chat", json={"message": "draw", "sketch": {"capture_id": shot["capture_id"], "strokes": bad}},
+                              headers=HEADERS)
+        assert refused.status_code == 422
+
+
+def test_a_refused_chat_sketch_does_not_echo_the_picture(plan_view, client):
+    shot = capture(client)
+    huge = "A" * (4 * sketches.MAX_IMAGE_BYTES)
+    reply = client.post("/api/chat", json={"message": "draw", "sketch": {
+        "capture_id": shot["capture_id"], "strokes": [STROKE], "image": huge}}, headers=HEADERS)
+    assert reply.status_code == 422 and reply.json() == {"error": "invalid_args"}
+    assert "AAAA" not in reply.text
+
+
+def test_one_device_keeps_a_few_captures_and_cannot_push_out_anothers():
+    store = sketches.SketchStore()
+    reply = {"frame": {}, "width": 1600, "height": 800, "view_name": "L1"}
+    other = store.add("device-b", reply)
+    mine = [store.add("device-a", reply) for _ in range(sketches.MAX_CAPTURES + 5)]
+    assert store.get("device-b", other.id) is other
+    kept = [item for item in mine if store.get("device-a", item.id)]
+    assert kept == mine[-sketches.MAX_CAPTURES_PER_SCOPE:]
+
+
+def test_the_sketch_routes_are_rate_limited_like_confirm(plan_view, client, monkeypatch):
+    from backend.api import bridge
+    shot = capture(client)
+    monkeypatch.setattr(bridge.confirm_limiter, "allow", lambda *args, **kwargs: False)
+    for path, body in ((f"{B}/sketch/capture", None), (f"{B}/sketch/resolve", {"capture_id": shot["capture_id"], "strokes": [STROKE]})):
+        reply = client.post(path, json=body)
+        assert reply.status_code == 429 and reply.json()["error"] == "rate_limited"
+
+
+@pytest.mark.parametrize("name", ["Plan\q", "Plan\\", 'Plan "A"', "L1"])
+def test_a_view_name_cannot_break_the_text_block(name):
+    from backend.api.chat import sketch_block
+    drawn = {"view_name": name, "level": "L1", "lines": [{"line": 1, "length_mm": 10, "points": [{"x": 0, "y": 0}, {"x": 10, "y": 0}]}]}
+    text = sketch_block(drawn)
+    assert text.startswith("Designer's sketch (") and "\\" not in text.split("; the host converted")[0]
+    assert ', level "L1"; the host converted' in text
