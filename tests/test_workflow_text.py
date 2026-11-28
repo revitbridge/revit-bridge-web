@@ -189,9 +189,9 @@ def test_invalid_envelope_has_a_safe_error(client, model, definition, language):
 
 
 def test_hidden_format_characters_are_removed(client, model):
-    hidden = "\u202e\u200b\u2028\u2066\ufeff\x07"
+    hidden = "\u202e\u200b\u2066\ufeff\x07"
     model.turns.append(json_turn({"summary": "List" + hidden + " the levels.",
-                                  "description": "Read the levels." + hidden + "\nList their names."}))
+                                  "description": "Read the levels." + hidden + "\u2028List their names."}))
     response = post(client)
     assert response.status_code == 200
     assert response.json()["summary"] == "List the levels."
@@ -206,4 +206,28 @@ def test_an_oversized_body_is_refused_before_it_is_parsed(client, model, monkeyp
     body = b'{"language":"en","definition":{"description":"' + b"x" * (workflow_text.MAX_REQUEST_BYTES + 1) + b'"}}'
     response = client.post(URL, content=body, headers={**HEADERS, "Content-Type": "application/json"})
     assert response.status_code == 413 and response.json()["error"] == "definition_too_large"
+    assert model.requests == []
+
+
+def test_a_definition_of_the_largest_size_is_accepted_however_the_client_writes_it(client, model):
+    # About 64 KiB of compact UTF-8, sent with escaped non-ASCII text and with indentation.
+    definition = {"description": "\u5899" * 21800}
+    assert len(json.dumps(definition, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= workflow_text.MAX_DEFINITION_BYTES
+    for body in (json.dumps({"language": "zh", "definition": definition}),
+                 json.dumps({"language": "zh", "definition": definition}, ensure_ascii=False, indent=8)):
+        model.turns.append(json_turn(SUGGESTION))
+        response = client.post(URL, content=body.encode("utf-8"), headers={**HEADERS, "Content-Type": "application/json"})
+        assert response.status_code == 200, response.text
+
+
+def test_an_oversized_chunked_body_and_a_malformed_length_are_refused(client, model):
+    def chunks():
+        for _ in range(workflow_text.MAX_REQUEST_BYTES // 65536 + 1):
+            yield b" " * 65536
+        yield b"{}"
+
+    response = client.post(URL, content=chunks(), headers={**HEADERS, "Content-Type": "application/json"})
+    assert response.status_code == 413 and response.json()["error"] == "definition_too_large"
+    response = client.post(URL, content=b"{}", headers={**HEADERS, "Content-Type": "application/json", "Content-Length": "abc"})
+    assert response.status_code == 422 and "abc" not in response.text
     assert model.requests == []

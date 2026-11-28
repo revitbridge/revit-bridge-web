@@ -165,7 +165,7 @@ class TextSuggestion(BaseModel):
     "application/json": {"schema": OptimizeTextRequest.model_json_schema()}}}})
 async def optimize_text(request: Request) -> TextSuggestion:
     """Suggest wording for an unsaved workflow using only its text, step metadata and parameter names."""
-    too_large = ApiError(413, "definition_too_large", "The workflow definition exceeds 64 KiB.")
+    too_large = ApiError(413, "definition_too_large", "The request is larger than a 64 KiB workflow definition can be.")
     declared = request.headers.get("content-length", "0")
     if not declared.isdecimal() or int(declared) > workflow_text.MAX_REQUEST_BYTES:
         raise too_large if declared.isdecimal() else ApiError(422, "invalid_args", "Invalid Content-Length.")

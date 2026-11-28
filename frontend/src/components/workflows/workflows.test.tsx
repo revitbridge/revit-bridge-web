@@ -269,7 +269,7 @@ function optimizerHost(serverModel = true, byoModel = false, optimizer: string |
   const runtime = config.getConfig()
   vi.spyOn(config, 'getConfig').mockReturnValue({
     ...runtime, features: { ...runtime.features, mode: 'local', serverModel, byoModel,
-      models: { ...runtime.features.models, optimizer } },
+      modelSelection: { ...runtime.features.modelSelection, optimizer } },
   })
 }
 
@@ -293,10 +293,17 @@ it('enables optimization for a configured host or an allowed browser model', asy
     optimizerHost(true, false)
     await mount()
     expect(buttons('Optimize text')[0].disabled).toBe(false)
-    // The optimizer has its own model while the planner has none.
+    // The optimizer has its own selected entry while the planner has none.
     optimizerHost(false, false, 'copy-editor')
     await mount()
     expect(buttons('Optimize text')[0].disabled).toBe(false)
+    // A model name without a selection or a key (features.models) does not enable it.
+    const runtime = config.getConfig()
+    vi.spyOn(config, 'getConfig').mockReturnValue({ ...runtime, features: { ...runtime.features,
+      modelSelection: { ...runtime.features.modelSelection, optimizer: null },
+      models: { ...runtime.features.models, optimizer: 'named-only' } } })
+    await mount()
+    expect(buttons('Optimize text')[0].disabled).toBe(true)
   } finally {
     act(() => useSessionStore.setState({ llmModel: '' }))
   }

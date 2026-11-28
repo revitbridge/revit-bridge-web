@@ -21,15 +21,23 @@ Never invent a step, parameter, number or capability. Parameter names alone do n
 Write in the requested language (en: English, zh: Simplified Chinese). Keep tool names, parameter names and ids verbatim."""
 
 MAX_DEFINITION_BYTES = 64 * 1024
-# The envelope around a definition of the largest size: the request is refused before it is read past this.
-MAX_REQUEST_BYTES = MAX_DEFINITION_BYTES + 4096
+# The request is refused before it is read past this. A definition of the largest size can take
+# three times its UTF-8 bytes on the wire when a client escapes non-ASCII text, plus indentation.
+MAX_REQUEST_BYTES = 4 * MAX_DEFINITION_BYTES
 # Control, format (bidirectional overrides, zero-width marks) and line or paragraph separator
 # characters: a reader must see the text that is saved.
 HIDDEN = ("Cc", "Cf", "Zl", "Zp")
 
 
 def visible(text):
-    return "".join(c for c in text if c == "\n" or unicodedata.category(c) not in HIDDEN)
+    kept = []
+    for c in text:
+        category = unicodedata.category(c)
+        if c == "\n" or category not in HIDDEN:
+            kept.append(c)
+        elif category in ("Zl", "Zp"):
+            kept.append("\n")
+    return "".join(kept)
 
 
 def workflow_data(definition):
