@@ -42,8 +42,8 @@ function validationLocation(message: string, steps: WorkflowStep[]) {
   if (field) return field[1]
   const indexed = /^steps\[(\d+)\]/.exec(message)
   if (indexed && steps[Number(indexed[1])]) return 'step:' + steps[Number(indexed[1])].id
-  const bound = steps.find(step => message.startsWith('step ' + step.id + ':') ||
-    message.startsWith('step ' + step.id + ','))
+  const bound = steps.find(({ id }) => [id, `'${id}'`, `"${id}"`].some(token =>
+    message.startsWith(`step ${token}:`) || message.startsWith(`step ${token},`)))
   return bound ? 'step:' + bound.id : ''
 }
 
@@ -57,6 +57,9 @@ function Editor() {
   const [draft, setDraft] = useState<Workflow>(blank)
   const [query, setQuery] = useState('')
   const [check, setCheck] = useState<{ draft: Workflow; errors: string[] }>()
+  const [hint, setHint] = useState<{ location: string; pinned: boolean } | null>(null)
+  const openLocation = hint?.location
+  const hintButton = useRef<HTMLButtonElement>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [overwrite, setOverwrite] = useState(false)
@@ -77,6 +80,21 @@ function Editor() {
     }, 200)
     return () => { active = false; clearTimeout(timer) }
   }, [draft])
+  useEffect(() => {
+    if (!openLocation) return
+    function outside(event: MouseEvent) {
+      if (event.target instanceof Node && !hintButton.current?.contains(event.target)) setHint(null)
+    }
+    function escape(event: KeyboardEvent) {
+      if (event.key === 'Escape') setHint(null)
+    }
+    document.addEventListener('click', outside, true)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('click', outside, true)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [openLocation])
   function select(w?: Workflow) {
     setDraft(w ?? blank()); setSelected(w?.name ?? ''); setNotice(''); setOverwrite(false)
   }
@@ -125,12 +143,28 @@ function Editor() {
   function problems(location: string) {
     return errors?.filter(error => validationLocation(error, draft.steps) === location) ?? []
   }
+  if (openLocation && !problems(openLocation).length) setHint(null)
   const hintId = (location: string) => editorId + '-hint-' + location
   function fieldHint(location: string, messages = problems(location)) {
     if (!messages.length) return null
     const prefix = location + ': '
+    const open = openLocation === location
+    function preview() {
+      if (!open) setHint({ location, pinned: false })
+    }
+    function endPreview() {
+      if (open && !hint?.pinned) setHint(null)
+    }
     return <button type="button" className="field-hint" aria-label={uiText("What this field needs")}
-      aria-describedby={hintId(location)}>i<span role="tooltip" id={hintId(location)}>
+      ref={open ? hintButton : undefined} aria-expanded={open} aria-describedby={hintId(location)}
+      onPointerEnter={e => { if (e.pointerType !== 'touch') preview() }}
+      onPointerLeave={e => { if (!e.currentTarget.matches(':focus-visible')) endPreview() }}
+      onFocus={e => { if (e.currentTarget.matches(':focus-visible')) preview() }}
+      onBlur={e => { if (!e.currentTarget.matches(':hover')) endPreview() }}
+      onClick={e => {
+        if (e.target === e.currentTarget) setHint(open && hint?.pinned ? null : { location, pinned: true })
+      }}>i<span role="tooltip" id={hintId(location)} data-open={open || undefined}
+        className={location === 'version' ? 'field-hint-align-end' : undefined}>
         {messages.map((message, i) => <span key={i}>{message.startsWith(prefix) ? message.slice(prefix.length) : message}</span>)}
       </span></button>
   }

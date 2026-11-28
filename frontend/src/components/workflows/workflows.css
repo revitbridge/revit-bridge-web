@@ -6,20 +6,25 @@
 .workflow-meta { display: grid; grid-template-columns: 1fr 1fr minmax(100px,.5fr); gap: var(--s3); }
 .workflow-meta > div:nth-last-child(-n+2) { grid-column: span 3; }
 .workflow-meta textarea { min-height: 64px; }
-.workflow-field-heading { display: flex; align-items: center; gap: var(--s1); }
+.workflow-field-heading { position: relative; display: flex; align-items: flex-end; gap: var(--s1); }
 .workflow-meta .workflow-field-heading { margin-bottom: var(--s1); }
-.workflow-field-heading,.workflow-step-heading { position: relative; }
+.workflow-step-heading .field-hint { position: relative; }
 .field-hint {
   flex: none; width: 1.125rem; height: 1.125rem; min-height: 0; padding: 0; border: 1px solid var(--subtle);
   border-radius: 50%; background: var(--panel); color: var(--faint); font: 600 var(--xs)/1 var(--font); cursor: help;
 }
 .field-hint [role=tooltip] {
+  --hint-max-width: min(22rem, calc(100vw - 4rem));
   display: none; position: absolute; inset-block-start: 100%; inset-inline-start: 0; z-index: 2;
-  width: max-content; max-width: min(22rem,100%); padding: var(--s2) var(--s3); border: 1px solid var(--line);
+  width: max-content; min-width: min(14rem,var(--hint-max-width)); max-width: var(--hint-max-width);
+  padding: var(--s2) var(--s3); border: 1px solid var(--line);
   border-radius: var(--radius-sm); background: var(--panel); color: var(--mid); box-shadow: var(--shadow-card);
   font: 400 var(--sm)/1.5 var(--font); text-align: start; overflow-wrap: anywhere;
 }
-.field-hint:hover [role=tooltip],.field-hint:focus-visible [role=tooltip] { display: grid; }
+.field-hint [role=tooltip][data-open] { display: grid; }
+@media (width > 740px) {
+  .field-hint .field-hint-align-end { inset-inline: auto 0; }
+}
 .workflow-columns { display: grid; grid-template-columns: minmax(220px,1fr) minmax(0,2.3fr); align-items: start; gap: var(--s4); }
 .workflow-columns > section > h3 { margin-bottom: var(--s3); font-size: var(--xl); }
 .workflow-packs { max-height: 60dvh; overflow-y: auto; margin-top: var(--s3); }

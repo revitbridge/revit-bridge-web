@@ -8,8 +8,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
-- Workflow validation now shows field requirements on hover or keyboard focus
-  and counts the remaining items beside the save controls.
+- Workflow validation shows field requirements on hover, focus, click, or tap.
+  Hints stay visible as the pointer moves onto them and close with Escape.
+  Host errors with quoted step IDs appear beside the matching step. The save
+  controls show the remaining item count.
 - Requires `revit-bridge` 0.13.0: the sketch on orthographic 3D views, the grid,
   column and framing snaps, and closed and squared polylines (0.12.0 brought
   the element search in the whole model, the rough element shape and the
