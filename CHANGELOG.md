@@ -13,6 +13,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 - The `secrets.json` size limit for a store with library entries increased from 128 KiB to
   512 KiB to fit 20 entries and four groups. An older host reports the store as unavailable
   if it contains library entries or role selections.
+- Remote MCP settings show the `mcpServers` JSON first, then one tab per client
+  (Claude Code, Codex CLI, Cursor, VS Code) with that client's own syntax; no
+  client is presented as required.
 - Requires `revit-bridge` 0.13.1: grid and level names in the sketch text stand
   between quotes, so a name from the model cannot pose as a host marker, and
   squaring a sketch never adds a self-crossing. 0.13.0 brought the sketch on
