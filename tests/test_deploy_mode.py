@@ -296,7 +296,9 @@ def test_a_local_host_publishes_no_relay(make_client, local_env):
         "authoring": True,
         "roles": False, "chatModes": ["auto", "single", "roles", "roles_analyst"], "chatModeDefault": "single",
         "slotTokenRequired": False, "maxSlots": 0,
-        "models": {"analyst": None, "planner": None, "supervisor": None}, "modelsFile": False}
+        "models": {"analyst": None, "planner": None, "supervisor": None, "optimizer": None}, "modelsFile": False,
+        "modelLibrary": [],
+        "modelSelection": {"analyst": None, "planner": None, "supervisor": None, "optimizer": None}}
     assert client.get(f"{B}/slots").json() == {"max_devices": 0, "connected": 0}
     service = client.get(f"{B}/service-health").json()
     assert service == {"status": "ok", "remote_relay_ready": False, "connected_devices": 0,

@@ -210,7 +210,8 @@ def test_a_mixed_file_is_read_and_the_planner_runs_on_its_entry(revit, make_clie
     assert (models.entries["small"].max_tokens, models.entries["small"].temperature) == (512, 0.0)
 
     features = client.get("/config.json").json()["features"]
-    assert features["models"] == {"analyst": "small-model", "planner": "main-model", "supervisor": "small-model"}
+    assert features["models"] == {"analyst": "small-model", "planner": "main-model", "supervisor": "small-model",
+                                  "optimizer": "main-model"}   # no mapping: the planner's
     assert features["modelsFile"] is True and features["serverModel"] is True
 
     recorder.model.turns += [tool_turn(("query", {"kind": "levels"}), usage=USAGE_SHAPES["openai"][0]),

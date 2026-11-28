@@ -486,6 +486,11 @@ roles or for an individual role. Open the local host at its loopback address. In
 with the host admin password to read details or make changes. Saving, rotating or clearing a
 group takes effect on the next request. Clearing a role restores its shared or deployment defaults.
 
+The **Model library** lists read-only entries from `models.yml` and up to 20 named entries saved
+on the host. Open the model button at the top right to choose an entry for each role, or choose
+**Default** to restore its usual settings. A selected entry supplies its own endpoint, key, API and
+image support. The optional optimizer inherits the planner unless it has a selection or a file mapping.
+
 The host stores these credentials in `secrets.json` under `REVIT_BRIDGE_WEB_HOME`. Choose a
 private directory outside the checkout and web root for this override. The defaults are
 `%APPDATA%/revit-bridge-web` on Windows, `~/Library/Application Support/revit-bridge-web`
@@ -502,8 +507,20 @@ groups. Each contains `base_url`, `model`, `key_set` and `key_tail` (last four c
 null for a key shorter than 16 characters). PUT accepts `role` (default `shared`), `base_url`, `model`
 and optional write-only `api_key`. Omitting the key retains the saved credential at the same
 endpoint. DELETE with `?role=planner`, for example, clears that group. DELETE without a role
-clears the model profiles. An intact store preserves remote MCP tokens. Responses carry masked summaries.
+clears the model profiles, saved library and role selections. An intact store preserves remote MCP tokens. Responses carry masked summaries.
 Use `X-Admin-Token` for these operations on a cloud host.
+
+The detailed GET also returns the `library` and each role's `selection`. The following
+routes under `/api/v1/settings/models` return the same masked details on success.
+
+| Method and path | Effect | Errors |
+|---|---|---|
+| `PUT /library/{name}` | Create or update a saved entry with `base_url`, `model`, optional write-only `api_key`, `api` and `vision`. An omitted key is retained at the same endpoint. | 409 `file_entry` for a file-owned name, 409 `library_full` when adding a 21st entry, 422 `invalid_args` for invalid input. |
+| `DELETE /library/{name}` | Delete the saved entry and clear roles using it. Selections of a same-name file entry stay active. | 404 `unknown_entry` if no saved entry has that name. |
+| `PUT /selection` | Send `role` and `entry` to select a model for the next request. A file entry wins a duplicate name. Send `null` for `entry` to restore the role default. | 404 `unknown_entry` for an unknown name, 422 `invalid_args` for invalid input. |
+
+These routes require the admin token on cloud hosts (403) and return 503 if the settings
+store is unavailable.
 
 Visitors can enter a key in Settings when browser keys are enabled and the host has no configured
 planner. The next page load removes a legacy browser model key and displays a one-time notice
@@ -638,7 +655,7 @@ gives the planner all seven tools on every route (to measure it). The interactio
 
 ### Models by role (`models.yml`)
 
-Without a models file every role uses `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` and the
+With no library selection or models file, each role uses `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` and the
 saved profiles and eligible browser settings - "one model for everything". With one, each role has
 its own entry:
 
@@ -704,9 +721,10 @@ roles:
   model used without the browser's model settings. Without a models file (and `LLM_MAX_TOKENS`
   unset) every request is the chat api with `max_tokens` 16384, `temperature` 0.3 and a 300 s read
   timeout (it was 120 s).
-- **Roles** are `analyst`, `planner` and `supervisor`. `planner` is required; a role left out uses
-  the planner's entry.
-- **Saved settings and browser headers.** A saved role group takes precedence over the shared
+- **Roles** include `analyst`, `planner`, `supervisor` and the optional `optimizer`. Only
+  `planner` is required. Omitted chat roles use the planner's file entry, and an unmapped
+  optimizer inherits the planner's effective model unless the optimizer has its own selection.
+- **Saved settings and browser headers.** Without a library selection, a saved role group takes precedence over the shared
   group. It can select an endpoint and model above the YAML entry. At the entry's endpoint the
   named environment key takes precedence over the saved key. Provider options apply when both
   the endpoint and model still match the entry. Eligible guest headers address only the planner

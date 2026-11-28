@@ -131,11 +131,13 @@ def install(app: FastAPI) -> None:
         if request.url.path == "/api/chat" and isinstance(exc.body, dict) and (
                 "capture" in exc.body or "hidden_captures" in exc.body or "sketch" in exc.body):
             return JSONResponse(status_code=422, content={"error": "invalid_args"})
-        if request.url.path == "/api/v1/settings/models":
+        if request.url.path == "/api/v1/settings/models" or request.url.path.startswith("/api/v1/settings/models/"):
             from backend.config import get_settings
             settings = get_settings()
             if settings.cloud and not settings.admin_token_ok(request.headers.get("x-admin-token")):
                 return JSONResponse(status_code=403, content={"detail": "Unauthorized"})
+            if request.url.path.startswith("/api/v1/settings/models/"):
+                return JSONResponse(status_code=422, content={"error": "invalid_args"})
             return JSONResponse(status_code=422, content={"detail": "Invalid model settings"})
         if request.url.path.startswith("/api/v1/settings/remote-mcp"):
             return JSONResponse(status_code=422, content={"detail": "Invalid Remote MCP settings"})

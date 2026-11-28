@@ -1,16 +1,16 @@
 import { useEffect, useId, useState } from 'react'
 import { apiFetch, BridgeApiError } from '../../api/client'
-import { getConfig, ROLES, updateModels, type RoleName } from '../../config'
-import { canUseBrowserModel, cleanBrowserKey, useSessionStore } from '../../store'
+import { getConfig, ROLES, SELECTOR_ROLES } from '../../config'
+import { canUseBrowserModel, useSessionStore } from '../../store'
 import { browserLanguage } from '../../utils/language'
-
-const endpoint = '/api/v1/settings/models'
-type Scope = 'shared' | RoleName
-type Summary = { base_url: string; model: string; key_set: boolean; key_tail: string | null }
-type Details = { configured: boolean; saved: Partial<Record<Scope, Summary>>; models: Record<RoleName, Summary> }
+import { ModelSelectors } from '../connect/ModelPopover'
+import { applyModelDetails, endpoint, subscribeModelDetails, type LibraryModel, type ModelDetails as Details, type Scope } from '../connect/modelLibrary'
 
 const labels = {
   en: { shared: 'All roles', planner: 'Planner', analyst: 'Analyst', supervisor: 'Supervisor',
+    optimizer: 'Optimizer', library: 'Model library', name: 'Entry name', api: 'API', images: 'Can read images',
+    file: 'models file', savedSource: 'saved', shadowed: 'shadowed', edit: 'Edit', remove: 'Delete', confirmRemove: 'Delete?',
+    add: 'Add entry', update: 'Save entry', cancel: 'Cancel', advanced: 'Advanced: one saved group per role',
     heading: 'Models', scope: 'Apply to', url: 'Endpoint URL', model: 'Model name', key: 'API key',
     save: 'Save', clear: 'Clear saved group', saved: 'Saved', cleared: 'Cleared', loading: 'Loading settings…',
     missing: 'No key set', present: 'Key set', noModel: 'Choose a role and enter a model endpoint, name and key.',
@@ -22,6 +22,9 @@ const labels = {
     storeError: 'Could not read saved model settings. Check secrets.json and its permissions.',
     connected: 'The host model is configured.', unconfigured: 'Ask an administrator to configure a model.' },
   zh: { shared: '所有角色', planner: '规划员', analyst: '分析员', supervisor: '监督员',
+    optimizer: '优化员', library: '模型库', name: '条目名称', api: '接口类型', images: '可读取图像',
+    file: '模型文件', savedSource: '已保存', shadowed: '已被同名文件条目覆盖', edit: '编辑', remove: '删除', confirmRemove: '确认删除？',
+    add: '添加条目', update: '保存条目', cancel: '取消', advanced: '高级：为每个角色单独保存一组设置',
     heading: '模型', scope: '应用到', url: '接口地址', model: '模型名', key: '密钥',
     save: '保存', clear: '清除本组设置', saved: '已保存', cleared: '已清除', loading: '正在加载设置…',
     missing: '未设置密钥', present: '已设置密钥', noModel: '选择角色并输入接口地址、模型名和密钥。',
@@ -94,6 +97,82 @@ function Editor({ details, role, onChange }: { details: Details; role: Scope; on
   </>
 }
 
+const blankEntry = { name: '', base_url: '', model: '', api_key: '', api: 'chat', vision: false }
+
+function ModelLibrary({ entries }: { entries: LibraryModel[] }) {
+  const t = labels[browserLanguage()]
+  const formId = useId()
+  const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [draft, setDraft] = useState(blankEntry)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(false)
+  function reset() {
+    setDraft(blankEntry)
+    setEditing(false)
+    setError(false)
+  }
+  async function write(method: 'PUT' | 'DELETE', name: string) {
+    setBusy(true)
+    setError(false)
+    const { base_url, model, api_key, api, vision } = draft
+    try {
+      const details = await apiFetch<Details>(endpoint + '/library/' + encodeURIComponent(name), {
+        method, redirect: 'error', cache: 'no-store',
+        body: method === 'PUT' ? JSON.stringify({ base_url, model, api, vision, ...(api_key ? { api_key } : {}) }) : undefined,
+      })
+      applyModelDetails(details)
+      if (method === 'PUT' || name === draft.name) reset()
+    } catch { setError(true) }
+    finally { setBusy(false) }
+  }
+  function edit(entry: LibraryModel) {
+    const { name, base_url, model, api, vision } = entry
+    setDraft({ name, base_url, model, api, vision, api_key: '' })
+    setEditing(true)
+    setError(false)
+  }
+  return <section className="model-library">
+    <h3>{t.library}</h3>
+    <ul className="library-entries">{entries.map(entry =>
+      <li key={entry.source + '/' + entry.name}>
+        <div><strong>{entry.name}</strong> <small className="badge">{entry.source === 'file' ? t.file : t.savedSource}</small>
+          {entry.shadowed && <small className="badge">{t.shadowed}</small>}</div>
+        <span>{entry.model}</span><span>{entry.base_url}</span>
+        <small>{entry.key_set ? t.present + (entry.key_tail ? ' ••••' + entry.key_tail : '') : t.missing}</small>
+        {entry.source === 'saved' && <div>
+          <button type="button" disabled={busy || entry.shadowed} onClick={() => edit(entry)}>{t.edit}</button>{' '}
+          <button type="button" className="btn-ghost danger" disabled={busy} onBlur={() => setConfirmDelete(null)}
+            onClick={() => {
+              if (confirmDelete === entry.name) {
+                setConfirmDelete(null)
+                void write('DELETE', entry.name)
+              } else setConfirmDelete(entry.name)
+            }}>{confirmDelete === entry.name ? t.confirmRemove : t.remove}</button>
+        </div>}
+      </li>)}</ul>
+    <fieldset disabled={busy} className="library-fields">
+      <form id={formId} className="form-grid" onSubmit={e => { e.preventDefault(); void write('PUT', draft.name) }}>
+        <label>{t.name}<input className="input-field" required disabled={editing} maxLength={40} pattern="[A-Za-z][A-Za-z0-9_\-]{0,39}"
+          value={draft.name} onChange={e => setDraft({ ...draft, name: e.target.value })} /></label>
+        <label>{t.url}<input className="input-field" required type="url" value={draft.base_url}
+          onChange={e => setDraft({ ...draft, base_url: e.target.value })} /></label>
+        <label>{t.model}<input className="input-field" required value={draft.model}
+          onChange={e => setDraft({ ...draft, model: e.target.value })} /></label>
+        <label>{t.api}<select value={draft.api} onChange={e => setDraft({ ...draft, api: e.target.value })}>
+          <option>chat</option><option>responses</option></select></label>
+        <label><input type="checkbox" checked={draft.vision} onChange={e => setDraft({ ...draft, vision: e.target.checked })} />{t.images}</label>
+      </form>
+      <label>{t.key}<ModelKeyInput value={draft.api_key} onChange={api_key => setDraft({ ...draft, api_key })} /></label>
+      {editing && <small>{t.keep}</small>}
+      <div><button className="btn-primary" form={formId} type="submit">{editing ? t.update : t.add}</button>{' '}
+        {editing && <button type="button" onClick={reset}>{t.cancel}</button>}</div>
+    </fieldset>
+    {error && <p role="alert">{t.error}</p>}
+    <ModelSelectors />
+  </section>
+}
+
 function ServerModels({ token }: { token: string }) {
   const t = labels[browserLanguage()]
   const [details, setDetails] = useState<Details | null>(null)
@@ -101,31 +180,31 @@ function ServerModels({ token }: { token: string }) {
   const [error, setError] = useState('')
   useEffect(() => {
     const controller = new AbortController()
+    const unsubscribe = subscribeModelDetails(result => { controller.abort(); setDetails(result) })
     apiFetch<Details>(endpoint, { signal: controller.signal, redirect: 'error', cache: 'no-store' })
-      .then(result => { if (!controller.signal.aborted) setDetails(result) })
+      .then(result => { if (!controller.signal.aborted) applyModelDetails(result) })
       .catch(e => {
         if (controller.signal.aborted) return
         const status = e instanceof BridgeApiError ? e.status : null
         setError(status === 503 ? t.storeError : status === 403 ? t.unlock : t.error)
       })
-    return () => controller.abort()
+    return () => { unsubscribe(); controller.abort() }
   }, [token, t])
   if (!details) return <p className={error ? "notice" : "skeleton status-line"} role="status">{error || t.loading}</p>
   return <>
     <h3>{t.effective}</h3>
-    <ul className="model-profiles">{ROLES.map(r => <li key={r}><strong>{t[r]}</strong>
+    <ul className="model-profiles">{SELECTOR_ROLES.filter(r => details.models[r]).map(r => <li key={r}><strong>{t[r]}</strong>
       <span>{details.models[r].model || '—'} · {details.models[r].base_url || '—'}</span>
       <small className="badge">{details.models[r].key_set
         ? t.present + (details.models[r].key_tail ? ' ••••' + details.models[r].key_tail : '') : t.missing}</small></li>)}</ul>
+    {details.library && <ModelLibrary entries={details.library} />}
+    <details className="model-advanced"><summary>{t.advanced}</summary>
     <p>{details.configured ? t.env : t.noModel}</p>
     <label>{t.scope} <select value={role} onChange={e => setRole(e.target.value as Scope)}>
       {(['shared', ...ROLES] as const).map(r => <option key={r} value={r}>{t[r]}</option>)}
     </select></label>
-    <Editor key={role} role={role} details={details} onChange={d => {
-      setDetails(d)
-      updateModels(d.configured, { analyst: d.models.analyst.model, planner: d.models.planner.model, supervisor: d.models.supervisor.model })
-      cleanBrowserKey()
-    }} />
+    <Editor key={role} role={role} details={details} onChange={d => applyModelDetails(d, true)} />
+    </details>
   </>
 }
 

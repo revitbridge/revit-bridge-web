@@ -39,7 +39,9 @@ def test_health_and_config_json(make_client, env):
             "slotTokenRequired": False,
             "maxSlots": 3,
             # each role's model name: LLM_MODEL (unset here) without a models file
-            "models": {"analyst": None, "planner": None, "supervisor": None},
+            "models": {"analyst": None, "planner": None, "supervisor": None, "optimizer": None},
+            "modelLibrary": [],
+            "modelSelection": {"analyst": None, "planner": None, "supervisor": None, "optimizer": None},
             "modelsFile": False,
         },
     }

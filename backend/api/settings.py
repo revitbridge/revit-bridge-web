@@ -1,13 +1,45 @@
 """Model settings. Only the boolean status is public on cloud deployments."""
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from contextlib import contextmanager
+import re
+from typing import Literal
 
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel
+from starlette.datastructures import MutableHeaders
+
+from backend.api.errors import ApiError, ErrorBody
 from backend.api.logs import verify_admin
 from backend.config import get_settings, is_loopback
-from backend.model_settings import ProfileWrite, Scope, StoreUnavailable, masked, read_profiles, update_profiles
-from backend.models_file import PLANNER, ROLES, get_models, runtime_profiles, server_model
+from backend.model_settings import (
+    LIBRARY_LIMIT, SAVED_NAME, LibraryProfile, Profile, ProfileWrite, Scope, SelectionRole,
+    SelectionWrite, StoreUnavailable, edit_profiles, read_profiles, replace_profile,
+)
+from backend.models_file import (
+    PLANNER, effective_model, fields_contain_key, get_models, has_entry, host_keys, public_models, runtime_profiles,
+)
 
 router = APIRouter(prefix="/api/v1/settings/models", tags=["settings"])
+UNKNOWN_ENTRY = {"model": ErrorBody, "description": "The entry does not exist (unknown_entry)."}
+INVALID_INPUT = {"model": ErrorBody, "description": "Invalid model settings (invalid_args)."}
+
+
+class ModelSettingsCacheControl:
+    """Also protect errors returned before the settings handler runs."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = Request(scope).url.path if scope["type"] == "http" else ""
+        if path != router.prefix and not path.startswith(router.prefix + "/"):
+            return await self.app(scope, receive, send)
+
+        async def no_store(message):
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["Cache-Control"] = "no-store"
+            await send(message)
+
+        await self.app(scope, receive, no_store)
 
 
 class ModelStatus(BaseModel):
@@ -21,21 +53,29 @@ class MaskedModel(BaseModel):
     key_tail: str | None
 
 
+class LibraryModel(MaskedModel):
+    name: str
+    source: Literal["file", "saved"]
+    api: Literal["chat", "responses"]
+    vision: bool
+    shadowed: bool
+    selectable: bool
+
+
+class RoleSelection(BaseModel):
+    entry: str | None
+    selected_missing: bool
+
+
 class ModelDetails(ModelStatus):
     models: dict[str, MaskedModel]
     saved: dict[Scope, MaskedModel]
+    library: list[LibraryModel]
+    selection: dict[SelectionRole, RoleSelection]
 
 
-def describe(profiles, status_only=False):
-    settings, models = get_settings(), get_models()
-    targets = {r: server_model(settings, models.entry(r) if models else None,
-                               profiles.get(r) or profiles.get("shared")) for r in ROLES}
-    configured = targets[PLANNER].configured
-    if status_only:
-        return ModelStatus(configured=configured)
-    return ModelDetails(configured=configured,
-                        models={r: masked(t.base_url, t.model, t.api_key) for r, t in targets.items()},
-                        saved={r: masked(p.base_url, p.model, p.key) for r, p in profiles.items()})
+def describe(store):
+    return ModelDetails(**public_models(store, get_settings(), get_models()))
 
 
 async def authorize_read(status_only: bool = False, x_admin_token: str | None = Header(None)):
@@ -54,33 +94,90 @@ def unavailable():
 
 
 @router.get("", dependencies=[Depends(authorize_read)])
-def get_models_settings(response: Response, status_only: bool = False) -> ModelDetails | ModelStatus:
-    response.headers["Cache-Control"] = "no-store"
+def get_models_settings(status_only: bool = False) -> ModelDetails | ModelStatus:
     if status_only:
-        return describe(runtime_profiles(get_settings(), get_models()), status_only=True)
+        settings, models = get_settings(), get_models()
+        store = runtime_profiles(settings, models)
+        return ModelStatus(configured=effective_model(PLANNER, store, settings, models).configured)
     try:
         return describe(read_profiles())
     except StoreUnavailable:
         raise unavailable() from None
 
 
-@router.put("", dependencies=[Depends(authorize_write)])
-def put_models_settings(body: ProfileWrite, response: Response) -> ModelDetails:
-    """Save one group. An omitted key retains the saved key at the same endpoint."""
-    response.headers["Cache-Control"] = "no-store"
+@contextmanager
+def edit(*, clear=False, scope_group=False):
     try:
-        return describe(update_profiles(body.role, body))
+        with edit_profiles(clear=clear) as store:
+            yield store
     except ValueError:
-        raise HTTPException(422, "Invalid model settings") from None
+        if scope_group:
+            raise HTTPException(422, "Invalid model settings") from None
+        raise ApiError(422, "invalid_args") from None
     except StoreUnavailable:
         raise unavailable() from None
+
+
+@router.put("", dependencies=[Depends(authorize_write)])
+def put_models_settings(body: ProfileWrite) -> ModelDetails:
+    """Save one group. An omitted key retains the saved key at the same endpoint."""
+    with edit(scope_group=True) as store:
+        profile = Profile.model_validate(body.model_dump(exclude={"role"}))
+        store.profiles[body.role] = replace_profile(profile, store.profiles.get(body.role))
+    return describe(store)
 
 
 @router.delete("", dependencies=[Depends(authorize_write)])
-def delete_models_settings(response: Response, role: Scope | None = None) -> ModelDetails:
-    """Clear one saved group, or all saved groups when role is omitted."""
-    response.headers["Cache-Control"] = "no-store"
-    try:
-        return describe(update_profiles(role))
-    except StoreUnavailable:
-        raise unavailable() from None
+def delete_models_settings(role: Scope | None = None) -> ModelDetails:
+    """Clear one saved group, or all groups, library entries and selections."""
+    with edit(clear=role is None, scope_group=True) as store:
+        store.profiles.pop(role, None)
+    return describe(store)
+
+
+@router.put("/library/{name}", dependencies=[Depends(authorize_write)], responses={
+    409: {"model": ErrorBody, "description": "A file owns the name (file_entry) or the library is full (library_full)."},
+    422: INVALID_INPUT})
+def put_library_entry(name: str, body: LibraryProfile) -> ModelDetails:
+    """Save a named entry. Omitting its key retains it only at the same endpoint."""
+    models = get_models()
+    with edit() as store:
+        profile = replace_profile(body, store.library.get(name))
+        keys = (*host_keys(get_settings(), models), profile.key)
+        if fields_contain_key((name, profile.base_url, profile.model), keys):
+            raise ApiError(422, "invalid_args")
+        if models and name in models.entries:
+            raise ApiError(409, "file_entry")
+        if not re.fullmatch(SAVED_NAME, name):
+            raise ApiError(422, "invalid_args")
+        if name not in store.library and len(store.library) >= LIBRARY_LIMIT:
+            raise ApiError(409, "library_full")
+        store.library[name] = profile
+    return describe(store)
+
+
+@router.delete("/library/{name}", dependencies=[Depends(authorize_write)], responses={404: UNKNOWN_ENTRY, 422: INVALID_INPUT})
+def delete_library_entry(name: str) -> ModelDetails:
+    """Delete a saved entry. Selections using a file entry of the same name survive."""
+    with edit() as store:
+        if store.library.pop(name, None) is None:
+            raise ApiError(404, "unknown_entry")
+        if not has_entry(name, store, get_models()):
+            store.selection = {r: n for r, n in store.selection.items() if n != name}
+    return describe(store)
+
+
+@router.put("/selection", dependencies=[Depends(authorize_write)], responses={
+    404: UNKNOWN_ENTRY, 422: INVALID_INPUT})
+def put_selection(body: SelectionWrite) -> ModelDetails:
+    """Select a library entry for a role. A file entry wins a duplicate name. Null restores the default."""
+    models = get_models()
+    with edit() as store:
+        name = body.entry
+        if name is None:
+            store.selection.pop(body.role, None)
+        elif not has_entry(name, store, models):
+            raise ApiError(404, "unknown_entry")
+        else:
+            store.selection[body.role] = name
+    return describe(store)
