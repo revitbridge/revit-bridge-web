@@ -406,8 +406,15 @@ it('replaces suggestions, skips unchanged fields, and leaves the draft intact on
 it('aborts when leaving the workflow and ignores a late response after another workflow loads', async () => {
   optimizerHost()
   vi.mocked(workflowApi.list).mockResolvedValue([saved])
-  const pending = Promise.withResolvers<typeof suggestion>()
-  const next = Promise.withResolvers<typeof suggestion>()
+  // Node 20 (CI) has no Promise.withResolvers.
+  const deferred = () => {
+    let resolve!: (value: typeof suggestion) => void
+    let reject!: (reason: unknown) => void
+    const promise = new Promise<typeof suggestion>((yes, no) => { resolve = yes; reject = no })
+    return { promise, resolve, reject }
+  }
+  const pending = deferred()
+  const next = deferred()
   const api = vi.spyOn(workflowApi, 'optimizeText').mockResolvedValueOnce(suggestion)
     .mockReturnValueOnce(pending.promise).mockReturnValueOnce(next.promise)
   await mount()
