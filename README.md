@@ -412,32 +412,11 @@ uv run pytest                            # backend tests, no Revit needed
 
 ### Connect an MCP client
 
-Open **Settings → Remote MCP** for the Streamable HTTP address, connection status,
-device tokens and recent calls. A local host enables `/mcp` by default. A direct
-loopback connection uses the same Host, Origin and forwarding-header checks as the
-web app. The local Docker image uses its loopback-published port. For Codex CLI:
-
-```sh
-codex mcp add revit --url http://127.0.0.1:7860/mcp
-```
-
-On a cloud deployment, set `REMOTE_MCP=on` and configure the public HTTPS origin in
-`CORS_ORIGINS` or the relay's public URL in `PUBLIC_WS_BASE`. Use exact origins,
-including any non-default port. A wildcard CORS entry grants no public MCP host.
-`REMOTE_MCP=off` returns HTTP 404 and is the cloud default.
-
-In **Settings → Connection**, select a redeemed pairing. Its browser key authorizes
-token management for that device. An administrator can also manage a selected
-device's tokens. Create a labeled token in **Remote MCP**, copy it once and set
-`REVIT_MCP_TOKEN` in the client environment. Replace the example host below with
-the address on the Settings page.
-
-```sh
-codex mcp add revit --url https://bridge.example/mcp --bearer-token-env-var REVIT_MCP_TOKEN
-```
-
-For Claude Code, add the following entry to the project's `.mcp.json`. For direct
-loopback use the local URL above and omit `headers`.
+The local Streamable HTTP address is `http://127.0.0.1:7860/mcp` by default.
+**Settings → Remote MCP** shows your host's address, connection status, device
+tokens and recent calls. Start with the **Any MCP client** JSON configuration.
+Replace the example URL with your host's address. For direct loopback without a
+token, omit `headers`.
 
 ```json
 {
@@ -450,6 +429,35 @@ loopback use the local URL above and omit `headers`.
   }
 }
 ```
+
+**Client commands**
+
+- **Claude Code** also accepts the JSON above in the project's `.mcp.json`.
+
+  - For loopback, run `claude mcp add --transport http revit http://127.0.0.1:7860/mcp`.
+  - With a token, run `claude mcp add --transport http revit https://bridge.example/mcp --header "Authorization: Bearer ${REVIT_MCP_TOKEN}"`.
+
+- **Codex CLI**
+
+  - For loopback, run `codex mcp add revit --url http://127.0.0.1:7860/mcp`.
+  - With a token, run `codex mcp add revit --url https://bridge.example/mcp --bearer-token-env-var REVIT_MCP_TOKEN`.
+
+- **Cursor** uses the JSON above in `.cursor/mcp.json` with the `type` field omitted.
+- **VS Code** uses the JSON above in `.vscode/mcp.json` with `servers` as the top-level key.
+
+A local host enables `/mcp` by default. A direct loopback connection uses the same
+Host, Origin and forwarding-header checks as the web app. The local Docker image
+uses its loopback-published port.
+
+On a cloud deployment, set `REMOTE_MCP=on` and configure the public HTTPS origin in
+`CORS_ORIGINS` or the relay's public URL in `PUBLIC_WS_BASE`. Use exact origins,
+including any non-default port. A wildcard CORS entry grants no public MCP host.
+`REMOTE_MCP=off` returns HTTP 404 and is the cloud default.
+
+In **Settings → Connection**, select a redeemed pairing. Its browser key authorizes
+token management for that device. An administrator can also manage a selected
+device's tokens. Create a labeled token in **Remote MCP**, copy it once and set
+`REVIT_MCP_TOKEN` in the client environment.
 
 Each device can have five active tokens with labels up to 64 characters. Token
 creation uses its own per-address `CHAT_RATE_LIMIT` counter. Revoking a pairing

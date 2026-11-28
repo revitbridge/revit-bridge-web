@@ -1,6 +1,6 @@
 import Snippet from '../shared/Snippet'
 import { uiText } from '../../utils/strings'
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { apiFetch, BridgeApiError } from '../../api/client'
 import { getConfig } from '../../config'
 import { useSessionStore } from '../../store'
@@ -10,6 +10,56 @@ interface TokenInfo { id: string; label: string; device_id: string; created_at: 
 interface Call { time: string; tool: string; success: boolean; evidence_id: string }
 interface Status { enabled: boolean; device_id: string | null; tokens: TokenInfo[]; calls: Call[] }
 const options: RequestInit = { cache: 'no-store', redirect: 'error' }
+
+const clients = ['Claude Code', 'Codex CLI', 'Cursor', 'VS Code'] as const
+type McpClient = typeof clients[number]
+const clientStorageKey = 'revit-bridge-web.mcpClient'
+const bearer = 'Bearer ${REVIT_MCP_TOKEN}'
+
+function ConnectionSnippets({ address, withToken }: { address: string; withToken: boolean }) {
+  const [client, setClient] = useState<McpClient>(() => {
+    try {
+      const saved = localStorage.getItem(clientStorageKey)
+      return clients.find(name => name === saved) ?? clients[0]
+    } catch { return clients[0] }
+  })
+  const id = useId()
+  const server = { url: address, headers: withToken ? { Authorization: bearer } : undefined }
+  const httpServer = { type: 'http', ...server }
+
+  function select(name: McpClient) {
+    setClient(name)
+    try { localStorage.setItem(clientStorageKey, name) } catch { /* Storage is optional. */ }
+  }
+
+  return <>
+    <Snippet title={uiText('Any MCP client')} text={JSON.stringify({ mcpServers: { revit: httpServer } }, null, 2)} />
+    <h3 id={id}>{uiText('Client commands')}</h3>
+    <div className="subtab-bar" role="tablist" aria-labelledby={id}>
+      {clients.map((name, index) => <button key={name} id={`${id}-${index}`} type="button" role="tab"
+        className={name === client ? 'subtab is-active' : 'subtab'}
+        aria-controls={`${id}-panel`} aria-selected={name === client} tabIndex={name === client ? 0 : -1}
+        onClick={() => select(name)} onKeyDown={event => {
+          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+          event.preventDefault()
+          const step = event.key === 'ArrowRight' ? 1 : -1
+          const next = (index + step + clients.length) % clients.length
+          select(clients[next])
+          document.getElementById(`${id}-${next}`)?.focus()
+        }}>{uiText(name)}</button>)}
+    </div>
+    <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${clients.indexOf(client)}`}>
+      {client === 'Claude Code' && <Snippet text={`claude mcp add --transport http revit ${address}`
+        + (withToken ? ` --header "Authorization: ${bearer}"` : '')} />}
+      {client === 'Codex CLI' && <Snippet text={'codex mcp add revit --url ' + address
+        + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : '')} />}
+      {client === 'Cursor' && <Snippet title={uiText('Add to .cursor/mcp.json')}
+        text={JSON.stringify({ mcpServers: { revit: server } }, null, 2)} />}
+      {client === 'VS Code' && <Snippet title={uiText('Add to .vscode/mcp.json')}
+        text={JSON.stringify({ servers: { revit: httpServer } }, null, 2)} />}
+    </div>
+  </>
+}
 
 function Panel() {
   const [status, setStatus] = useState<Status>()
@@ -52,7 +102,6 @@ function Panel() {
   }
   const address = new URL(getConfig().apiBase.replace(/\/$/, '') + '/mcp', window.location.origin).href
   const cloud = getConfig().features.mode === 'cloud'
-  const claude = { type: 'http', url: address, ...(withToken ? { headers: { Authorization: 'Bearer ${REVIT_MCP_TOKEN}' } } : {}) }
   return <div className="page remote-mcp"><section className="card section">
     <h2>{uiText("Remote MCP")}</h2>
     <p><code>{address}</code> · {status ? (status.enabled ? uiText("Enabled") : uiText("Disabled"))
@@ -63,8 +112,7 @@ function Panel() {
       {uiText("Use an access token in the configuration")}</label>}
     <p>{withToken ? uiText("Set REVIT_MCP_TOKEN in your MCP client environment to the token you create below.")
       : uiText("Direct loopback connections can use these snippets without a token.")}</p>
-    <Snippet title="Codex CLI" text={'codex mcp add revit --url ' + address + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : '')} />
-    <Snippet title="Claude Code · .mcp.json" text={JSON.stringify({ mcpServers: { revit: claude } }, null, 2)} />
+    <ConnectionSnippets address={address} withToken={withToken} />
   </section>
   <section className="card section"><h3>{uiText("Access tokens")}</h3>
     {status?.device_id ? <>

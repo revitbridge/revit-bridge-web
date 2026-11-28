@@ -69,7 +69,7 @@ it('renders Chinese labels across the main pages and composer states', async () 
   localStorage.setItem('rb_language', 'zh')
   await configure()
   useExecutionMode.getState().set(true)
-  const allowed = new Set(['Revit', 'revit-bridge', 'fixture-model', 'Codex CLI', 'Claude Code · .mcp.json', 'ms', 'mm'])
+  const allowed = new Set(['Revit', 'revit-bridge', 'fixture-model', 'ms', 'mm'])
   const failures: string[] = []
   const views = ['/', '/tools', '/capabilities/authoring', '/capabilities/workbench', '/workflows', '/settings',
     '/settings/connection', '/settings/remote-mcp', '/token', '/evidence'].map(path => [path, <App path={path} />] as const)
@@ -82,6 +82,11 @@ it('renders Chinese labels across the main pages and composer states', async () 
     page.innerHTML = renderToStaticMarkup(view)
     // Program listings, example JSON and user-entered field values keep their original syntax.
     const labels = Array.from(page.querySelectorAll<HTMLElement>('[placeholder]'), el => el.getAttribute('placeholder')!)
+    if (path === '/settings/remote-mcp') {
+      const tabs = page.querySelectorAll('.remote-mcp [role="tab"]')
+      expect(Array.from(tabs, tab => tab.textContent)).toEqual(['Claude Code', 'Codex CLI', 'Cursor', 'VS Code'])
+      tabs.forEach(tab => tab.remove())
+    }
     page.querySelectorAll('pre,textarea,.remote-mcp p > code,[aria-hidden="true"]').forEach(el => el.remove())
     const walker = document.createTreeWalker(page, NodeFilter.SHOW_TEXT)
     while (walker.nextNode()) labels.push(walker.currentNode.textContent!.trim())
@@ -91,6 +96,20 @@ it('renders Chinese labels across the main pages and composer states', async () 
   }
   useExecutionMode.getState().set(false)
   expect(failures).toEqual([])
+})
+
+it.each([
+  ['Cursor', '添加到 .cursor/mcp.json'],
+  ['VS Code', '添加到 .vscode/mcp.json'],
+])('shows Chinese configuration labels for %s', async (client, title) => {
+  localStorage.setItem('rb_language', 'zh')
+  localStorage.setItem('revit-bridge-web.mcpClient', client)
+  await configure()
+  const page = document.createElement('div')
+  page.innerHTML = renderToStaticMarkup(<App path="/settings/remote-mcp" />)
+  expect(page.querySelector('.remote-mcp .snippet h3')?.textContent).toBe('任意 MCP 客户端')
+  expect(page.textContent).toContain('客户端命令')
+  expect(page.querySelector('[role="tabpanel"] h3')?.textContent).toBe(title)
 })
 
 it.each(['Create tool', 'Use Remote MCP'])('opens the missing-tool destination for %s without a model call', async choice => {
