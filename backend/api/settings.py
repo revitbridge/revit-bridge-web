@@ -14,7 +14,9 @@ from backend.model_settings import (
     LIBRARY_LIMIT, SAVED_NAME, LibraryProfile, Profile, ProfileWrite, Scope, SelectionRole,
     SelectionWrite, StoreUnavailable, edit_profiles, read_profiles, replace_profile,
 )
-from backend.models_file import PLANNER, effective_model, get_models, has_entry, public_models, runtime_profiles
+from backend.models_file import (
+    PLANNER, effective_model, fields_contain_key, get_models, has_entry, host_keys, public_models, runtime_profiles,
+)
 
 router = APIRouter(prefix="/api/v1/settings/models", tags=["settings"])
 UNKNOWN_ENTRY = {"model": ErrorBody, "description": "The entry does not exist (unknown_entry)."}
@@ -140,13 +142,17 @@ def put_library_entry(name: str, body: LibraryProfile) -> ModelDetails:
     """Save a named entry. Omitting its key retains it only at the same endpoint."""
     models = get_models()
     with edit() as store:
+        profile = replace_profile(body, store.library.get(name))
+        keys = (*host_keys(get_settings(), models), profile.key)
+        if fields_contain_key((name, profile.base_url, profile.model), keys):
+            raise ApiError(422, "invalid_args")
         if models and name in models.entries:
             raise ApiError(409, "file_entry")
         if not re.fullmatch(SAVED_NAME, name):
             raise ApiError(422, "invalid_args")
         if name not in store.library and len(store.library) >= LIBRARY_LIMIT:
             raise ApiError(409, "library_full")
-        store.library[name] = replace_profile(body, store.library.get(name))
+        store.library[name] = profile
     return describe(store)
 
 

@@ -11,6 +11,7 @@ from backend.config import ConfigError
 from backend.llm import LLMError
 from backend.log_store import get_log_store
 from backend.models_file import ALL_ROLES, ROLES, resolve
+from backend.session import get_session_store
 from tests.fake_model import json_turn, text_turn
 from tests.test_deploy_mode import LOCAL
 from tests.test_model_settings import ADMIN, ENV_KEY, FILE_KEY, GROUP, GUEST, GUEST_KEY, URL
@@ -210,6 +211,98 @@ def test_selected_entry_refuses_its_own_credential(keys, make_client, tmp_path, 
         asyncio.run(resolve("planner", GUEST))
     assert exc.value.status == 400
     assert client.get(URL, headers=ADMIN).json()["models"]["planner"][field] == ""
+
+
+@pytest.mark.parametrize("use_file", [False, True], ids=["llm-key", "file-key"])
+def test_host_key_in_library_fields_is_refused_before_selection(keys, make_client, tmp_path, recorder, caplog, use_file):
+    if use_file:
+        write_models(tmp_path, MIXED)
+        key = SMALL_KEY  # A different file entry from the planner.
+    else:
+        keys.setenv("LLM_API_KEY", ENV_KEY)
+        keys.setenv("LLM_BASE_URL", "https://main.example/v1")
+        keys.setenv("LLM_MODEL", "main-model")
+        key = ENV_KEY
+    caplog.set_level(logging.DEBUG)
+    client = make_client()
+    for fields in ({"model": key}, {"model": "m-" + key}, {"base_url": GROUP["base_url"] + "/" + key}):
+        refused = put(client, body={**GROUP, **fields})
+        assert refused.status_code == 422 and refused.json() == {"error": "invalid_args"}
+    config = client.get("/config.json")
+    assert key not in config.text
+    assert all(e["name"] != "Studio" for e in config.json()["features"]["modelLibrary"])
+    missing = select(client, "planner", "Studio")
+    assert missing.status_code == 404 and missing.json() == {"error": "unknown_entry"}
+    recorder.model.turns.append(text_turn("hello"))
+    chat = client.post("/api/chat", json={"message": "hello", "bridge": False})
+    assert chat.status_code == 200 and "event: stage" in chat.text and "event: usage" in chat.text
+    assert [(r["url"], r["body"]["model"]) for r in recorder.sent] == [
+        ("https://main.example/v1/chat/completions", "main-model")]
+    rows = get_log_store().calls_of_session(chat.headers["X-Session-Id"])
+    assert [r["model"] for r in rows] == ["main-model"]
+    assert key not in chat.text + str(rows) + caplog.text
+
+
+@pytest.mark.parametrize("field", ["model", "base_url"])
+def test_saved_selection_rechecks_current_file_keys(keys, make_client, tmp_path, recorder, caplog, field):
+    write_models(tmp_path, MIXED)
+    caplog.set_level(logging.DEBUG)
+    client = make_client()
+    value = GROUP[field] + "/" + ENV_KEY
+    assert put(client, body={**GROUP, field: value}).status_code == 200
+    assert select(client, "planner", "Studio").status_code == 200
+    keys.setenv("W5A_FAKE_SMALL_KEY", ENV_KEY)
+
+    config = client.get("/config.json")
+    assert ENV_KEY not in config.text
+    assert all(e["name"] != "Studio" for e in config.json()["features"]["modelLibrary"])
+    settings = client.get(URL, headers=ADMIN)
+    assert ENV_KEY not in settings.text
+    row = next(e for e in settings.json()["library"] if e["source"] == "saved")
+    assert row["name"] == "Studio" and row[field] == "" and row["selectable"] is False
+    for role in ("planner", "optimizer"):
+        assert settings.json()["models"][role][field] == ""
+        with pytest.raises(LLMError) as exc:
+            asyncio.run(resolve(role, GUEST))
+        assert exc.value.status == 400 and ENV_KEY not in str(exc.value)
+    sid = get_session_store().get_or_create().session_id
+    chat = client.post("/api/chat", json={"session_id": sid, "message": "hello"})
+    assert chat.status_code == 400 and ENV_KEY not in chat.text
+    assert recorder.sent == [] and get_log_store().calls_of_session(sid) == []
+    assert client.delete(LIBRARY + row["name"], headers=ADMIN).status_code == 200
+    assert all(e["name"] != "Studio" for e in client.get(URL, headers=ADMIN).json()["library"])
+    assert ENV_KEY not in caplog.text
+
+
+def test_saved_name_with_host_key_is_private_and_deletable(keys, make_client, tmp_path):
+    write_models(tmp_path, MIXED)
+    client = make_client()
+    name = "Studio-" + ENV_KEY
+    assert put(client, name).status_code == 200
+    assert select(client, "planner", name).status_code == 200
+    keys.setenv("W5A_FAKE_SMALL_KEY", ENV_KEY)
+    refused = put(client, name)
+    assert refused.status_code == 422 and refused.json() == {"error": "invalid_args"}
+    config = client.get("/config.json")
+    assert ENV_KEY not in config.text and config.json()["features"]["modelSelection"]["planner"] is None
+    row = next(e for e in client.get(URL, headers=ADMIN).json()["library"] if e["source"] == "saved")
+    assert row["name"] == name and row["selectable"] is False
+    deleted = client.delete(LIBRARY + row["name"], headers=ADMIN)
+    assert deleted.status_code == 200 and name not in deleted.text
+
+
+def test_unmapped_file_model_masks_other_host_key_only_for_display(keys, make_client, tmp_path):
+    model = "m-" + MAIN_KEY
+    write_models(tmp_path, MIXED.replace(": small\n", ": main\n").replace("small-model", model))
+    client = make_client()
+    row = next(e for e in client.get(URL, headers=ADMIN).json()["library"] if e["name"] == "small")
+    assert row["model"] == "" and row["selectable"] is True
+    config = client.get("/config.json")
+    assert MAIN_KEY not in config.text
+    assert next(e for e in config.json()["features"]["modelLibrary"] if e["name"] == "small")["model"] == ""
+    assert select(client, "planner", "small").status_code == 200
+    target = asyncio.run(resolve("planner", {}))
+    assert target.model == model and target.api_key == SMALL_KEY
 
 
 def test_private_fields_and_live_supervisor_switch(env, make_client, recorder, caplog):
