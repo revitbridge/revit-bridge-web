@@ -3,7 +3,7 @@
   "info": {
     "title": "revit-bridge-web",
     "description": "Demo host for revit-bridge: a thin HTTP surface over the package, a WebSocket relay for remote add-ins and a bring-your-own-model chat.",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "paths": {
     "/api/chat/{session_id}/captures": {

@@ -6,6 +6,8 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
 ### Changed
 
 - A selection made on the page decides the role's model on its next request, ahead of
@@ -1004,4 +1006,6 @@ First standalone release of the demo host, split out of the former
   and every `openai` / `google-genai` / `cohere` / `chromadb` dependency.
 - `/api/settings` and `/api/config`: model settings are per-request headers now.
 
+[Unreleased]: https://github.com/revitbridge/revit-bridge-web/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/revitbridge/revit-bridge-web/releases/tag/v0.2.0
 [0.1.0]: https://github.com/revitbridge/revit-bridge-web/releases/tag/v0.1.0
