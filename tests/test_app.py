@@ -13,7 +13,7 @@ def test_health_and_config_json(make_client, env):
     env.setenv("MAX_DEVICES", "3")
     client = make_client()
 
-    assert client.get("/health").json() == {"status": "ok", "version": "0.1.0"}
+    assert client.get("/health").json() == {"status": "ok", "version": "0.2.0"}
 
     resp = client.get("/config.json")
     assert resp.status_code == 200

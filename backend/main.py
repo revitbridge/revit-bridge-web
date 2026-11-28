@@ -41,7 +41,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 _log = logging.getLogger("backend")
