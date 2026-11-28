@@ -34,6 +34,8 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
   and per-role selections. `/config.json` exposes `features.modelLibrary` and
   `features.modelSelection` for the header and Settings selectors.
 - An optional optimizer role can select its own model or inherit the planner's settings.
+- **Optimize text** suggests a summary and description for an unsaved workflow. Designers
+  can review and apply either field before saving.
 
 - **Sketch on view** in the composer captures a plan or orthographic 3D view.
   In 3D, choose a level to project the strokes onto it. The preview shows

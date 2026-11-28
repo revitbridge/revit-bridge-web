@@ -214,7 +214,7 @@ def test_openapi_lists_the_v1_contract(client):
         "/api/v1/bridge/host-functions",
         "/api/v1/bridge/workflows", "/api/v1/bridge/workflows/{name}", "/api/v1/bridge/workflows/validate",
         "/api/v1/bridge/workflows/import", "/api/v1/bridge/workflows/{name}/export",
-        "/api/v1/bridge/workflows/tools/{name}/result-paths",
+        "/api/v1/bridge/workflows/tools/{name}/result-paths", "/api/v1/bridge/workflows/optimize-text",
         "/api/v1/bridge/devices", "/api/v1/bridge/devices/{device_id}",
         "/api/v1/bridge/devices/pair", "/api/v1/bridge/devices/redeem",
         "/api/v1/bridge/revit-health", "/api/v1/bridge/service-health", "/api/v1/bridge/slots",

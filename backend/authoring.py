@@ -44,7 +44,7 @@ def reference_definition(description, reference):
     return {key: pack.get(key) for key in REFERENCE_FIELDS}
 
 
-async def completion(target, messages, run_id, round_no):
+async def completion(target, messages, run_id, round_no, role="planner"):
     parts = []
     size = 0
     stats = CallStats()
@@ -62,7 +62,7 @@ async def completion(target, messages, run_id, round_no):
     finally:
         if stats.accepted:
             await asyncio.to_thread(get_log_store().record_call, session_id=run_id, run_label=run_id,
-                                    turn=1, round=round_no, role="planner", mode="authoring",
+                                    turn=1, round=round_no, role=role, mode="authoring",
                                     model=target.llm.model, usage=stats.usage.as_dict(),
                                     ms=round((monotonic() - started) * 1000))
     return "".join(parts).strip()

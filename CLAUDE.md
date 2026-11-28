@@ -95,6 +95,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   `mention` evidence against the session's picks (the model's `propose_spec` and `reconcile`, the
   HTTP spec routes; `/spec/confirm` also reads the picks again, `recheck_picks` in `bridge.py`).
 - `backend/api/usage.py` - `GET /api/usage`, `/api/usage/runs` (totals per run label, the run's chat `mode` (`mixed` for more than one), and `by_role`: the same per role and model): the `llm_calls` rows read back.
+- `backend/workflow_text.py` serves `POST /api/v1/bridge/workflows/optimize-text` in `backend/api/workflows.py` by sending draft wording, step identifiers, labels and parameter names to the optimizer and returning suggestions for review.
 - `backend/sketches.py` keeps plan and orthographic 3D capture frames per device for 30 minutes in the bounded `SketchStore`. The page receives the view kind and available levels. The frame stays on the host. `bridge.py` passes the strokes and optional projection level to `revit_bridge.sketch`. `chat.py` resolves them again and appends `sketch_block`. A picture validated by `checked_png` joins the session captures after the turn lock is acquired and is available to the planner on that turn. `components/task/SketchPad.tsx` and `sketch.ts` display the package's open or closed lines and snap targets.
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
   Its optional `mention_cache_scope` identifies the live connection for the package's picker cache.

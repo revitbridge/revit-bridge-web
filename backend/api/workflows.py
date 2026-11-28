@@ -1,14 +1,16 @@
 """Workflow v1 over HTTP. The package owns the files, YAML and validation."""
 import re
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, Request, Response
+from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from revit_bridge.capabilities import ToolStore
 from revit_bridge.workflows import WorkflowError, WorkflowStore, parse_workflow_yaml, validate_workflow
 
-from backend.api.bridge import require_admin, require_tool_name, set_device_context
-from backend.api.errors import ApiError, admin_responses, responses
+from backend import workflow_text
+from backend.api.bridge import bridge_write_rate_limit, require_admin, require_tool_name, set_device_context
+from backend.api.errors import ApiError, ErrorBody, admin_responses, responses
 from backend.workflow_validation import binding_errors
 
 
@@ -140,3 +142,41 @@ def delete_workflow(name: str) -> dict:
     if not WorkflowStore(ToolStore()).delete(require_tool_name(name)):
         raise ApiError(404, "unknown_workflow", f"Unknown workflow: {name}")
     return {"status": "deleted", "name": name}
+
+
+class OptimizeTextRequest(BaseModel):
+    definition: dict = Field(description="Current workflow definition, up to 64 KiB of UTF-8 JSON.")
+    language: Literal["en", "zh"]
+
+
+class TextSuggestion(BaseModel):
+    summary: str = Field(max_length=120)
+    description: str = Field(max_length=4000)
+    model: str
+
+
+@router.post("/optimize-text", dependencies=[*WRITE, Depends(bridge_write_rate_limit)], responses={
+    **admin_responses(422, 429),
+    400: {"model": ErrorBody, "description": "Invalid model settings (model_error)"},
+    413: {"model": ErrorBody, "description": "The definition exceeds 64 KiB (definition_too_large)"},
+    502: {"model": ErrorBody, "description": "Model call failed or output was unusable (model_error, invalid_suggestion)"},
+    503: {"model": ErrorBody, "description": "No model configured (model_required) or admin access disabled"},
+}, openapi_extra={"requestBody": {"required": True, "content": {
+    "application/json": {"schema": OptimizeTextRequest.model_json_schema()}}}})
+async def optimize_text(request: Request) -> TextSuggestion:
+    """Suggest wording for an unsaved workflow using only its text, step metadata and parameter names."""
+    too_large = ApiError(413, "definition_too_large", "The request is larger than a 64 KiB workflow definition can be.")
+    declared = request.headers.get("content-length", "0")
+    if not declared.isdecimal() or int(declared) > workflow_text.MAX_REQUEST_BYTES:
+        raise too_large if declared.isdecimal() else ApiError(422, "invalid_args", "Invalid Content-Length.")
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > workflow_text.MAX_REQUEST_BYTES:
+            raise too_large
+        raw.extend(chunk)
+    try:
+        body = OptimizeTextRequest.model_validate_json(bytes(raw))
+    except ValidationError:
+        # Answer in the bridge error shape without repeating the rejected input.
+        raise ApiError(422, "invalid_args", "Supply a definition object and language en or zh.") from None
+    return await workflow_text.optimize_text(body.definition, body.language, request.headers)

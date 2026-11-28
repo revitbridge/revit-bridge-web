@@ -8,6 +8,7 @@ import { getErrorMessage } from '../../utils/errors'
 import useHostFeatures from '../shared/useHostFeatures'
 import Icon from '../shared/Icon'
 import { ParameterEditor } from './StepEditor'
+import WorkflowTextOptimizer from './WorkflowTextOptimizer'
 import './workflows.css'
 
 function blank(): Workflow {
@@ -50,10 +51,12 @@ function validationLocation(message: string, steps: WorkflowStep[]) {
 function Editor() {
   const editorId = useId()
   const features = useHostFeatures()
+  const browserModel = useSessionStore(s => Boolean(s.llmModel || s.llmBaseUrl || s.llmKey))
   const writable = features.mode === 'local' || features.authoring
   const [tools, setTools] = useState<ToolInfo[]>([])
   const [saved, setSaved] = useState<Workflow[]>([])
   const [selected, setSelected] = useState('')
+  const [loadId, setLoadId] = useState(0)
   const [draft, setDraft] = useState<Workflow>(blank)
   const [query, setQuery] = useState('')
   const [check, setCheck] = useState<{ draft: Workflow; errors: string[] }>()
@@ -96,6 +99,7 @@ function Editor() {
     }
   }, [openLocation])
   function select(w?: Workflow) {
+    setLoadId(id => id + 1)
     setDraft(w ?? blank()); setSelected(w?.name ?? ''); setNotice(''); setOverwrite(false)
   }
   async function action(work: () => Promise<void>) {
@@ -206,11 +210,14 @@ function Editor() {
             'aria-describedby': messages.length ? hintId(key) : undefined,
             onChange: (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft({ ...draft, [key]: e.target.value }),
           }
-          return <div key={key}>
+          return <div key={key} className={key === 'summary' || key === 'description' ? 'workflow-text-field' : undefined}>
             <div className="workflow-field-heading"><label htmlFor={control.id}>{label}</label>{fieldHint(key, messages)}</div>
             {key === 'description' ? <textarea {...control} /> : <input {...control} maxLength={key === 'summary' ? 120 : undefined} />}
           </div>
         })}
+        {writable && <WorkflowTextOptimizer key={loadId} draft={draft}
+          modelAvailable={Boolean(features.modelSelection.optimizer) || features.serverModel || (features.byoModel && browserModel)}
+          apply={text => setDraft(current => ({ ...current, ...text }))} />}
       </div>
       <div className="workflow-columns"><section>
         <h3>{uiText("Tools")}</h3>
