@@ -265,10 +265,11 @@ it('attaches quoted and unquoted host messages only to an exact step ID', async 
   expect(Array.from(box.querySelectorAll('.workflow-validation li'), li => li.textContent)).toEqual([unknown])
 })
 
-function optimizerHost(serverModel = true, byoModel = false) {
+function optimizerHost(serverModel = true, byoModel = false, optimizer: string | null = null) {
   const runtime = config.getConfig()
   vi.spyOn(config, 'getConfig').mockReturnValue({
-    ...runtime, features: { ...runtime.features, mode: 'local', serverModel, byoModel },
+    ...runtime, features: { ...runtime.features, mode: 'local', serverModel, byoModel,
+      models: { ...runtime.features.models, optimizer } },
   })
 }
 
@@ -290,6 +291,10 @@ it('enables optimization for a configured host or an allowed browser model', asy
     await mount()
     expect(buttons('Optimize text')[0].disabled).toBe(true)
     optimizerHost(true, false)
+    await mount()
+    expect(buttons('Optimize text')[0].disabled).toBe(false)
+    // The optimizer has its own model while the planner has none.
+    optimizerHost(false, false, 'copy-editor')
     await mount()
     expect(buttons('Optimize text')[0].disabled).toBe(false)
   } finally {

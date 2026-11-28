@@ -216,7 +216,7 @@ function Editor() {
           </div>
         })}
         {writable && <WorkflowTextOptimizer key={loadId} draft={draft}
-          modelAvailable={features.serverModel || (features.byoModel && browserModel)}
+          modelAvailable={Boolean(features.models.optimizer) || features.serverModel || (features.byoModel && browserModel)}
           apply={text => setDraft(current => ({ ...current, ...text }))} />}
       </div>
       <div className="workflow-columns"><section>

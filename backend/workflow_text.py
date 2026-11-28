@@ -1,6 +1,7 @@
 """Polish a workflow's wording using only the designer's text and step metadata."""
 import json
 import re
+import unicodedata
 from itertools import islice
 from uuid import uuid4
 
@@ -20,7 +21,15 @@ Never invent a step, parameter, number or capability. Parameter names alone do n
 Write in the requested language (en: English, zh: Simplified Chinese). Keep tool names, parameter names and ids verbatim."""
 
 MAX_DEFINITION_BYTES = 64 * 1024
-CONTROLS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# The envelope around a definition of the largest size: the request is refused before it is read past this.
+MAX_REQUEST_BYTES = MAX_DEFINITION_BYTES + 4096
+# Control, format (bidirectional overrides, zero-width marks) and line or paragraph separator
+# characters: a reader must see the text that is saved.
+HIDDEN = ("Cc", "Cf", "Zl", "Zp")
+
+
+def visible(text):
+    return "".join(c for c in text if c == "\n" or unicodedata.category(c) not in HIDDEN)
 
 
 def workflow_data(definition):
@@ -55,9 +64,9 @@ def parse_suggestion(raw):
         return None, ["Return one valid JSON object."]
     if set(value) != {"summary", "description"} or not all(isinstance(v, str) for v in value.values()):
         return None, ["Provide exactly two strings named summary and description."]
-    words = (CONTROLS.sub("", word) for word in value["summary"].split())
+    words = (visible(word) for word in value["summary"].split())
     summary = " ".join(word for word in words if word)
-    description = CONTROLS.sub("", value["description"])
+    description = visible(value["description"])
     if not summary or len(summary) > 120:
         problems.append("Write a one-sentence summary of at most 120 characters.")
     if not description.strip() or len(description) > 4000:

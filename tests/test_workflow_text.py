@@ -186,3 +186,24 @@ def test_invalid_envelope_has_a_safe_error(client, model, definition, language):
     reply = post(client, definition, language)
     assert reply.status_code == 422 and reply.json()["error"] == "invalid_args"
     assert not model.requests
+
+
+def test_hidden_format_characters_are_removed(client, model):
+    hidden = "\u202e\u200b\u2028\u2066\ufeff\x07"
+    model.turns.append(json_turn({"summary": "List" + hidden + " the levels.",
+                                  "description": "Read the levels." + hidden + "\nList their names."}))
+    response = post(client)
+    assert response.status_code == 200
+    assert response.json()["summary"] == "List the levels."
+    assert response.json()["description"] == "Read the levels.\nList their names."
+
+
+def test_an_oversized_body_is_refused_before_it_is_parsed(client, model, monkeypatch):
+    def unexpected(*args, **kwargs):
+        pytest.fail("An oversized body must not be parsed")
+
+    monkeypatch.setattr(workflows.OptimizeTextRequest, "model_validate_json", unexpected)
+    body = b'{"language":"en","definition":{"description":"' + b"x" * (workflow_text.MAX_REQUEST_BYTES + 1) + b'"}}'
+    response = client.post(URL, content=body, headers={**HEADERS, "Content-Type": "application/json"})
+    assert response.status_code == 413 and response.json()["error"] == "definition_too_large"
+    assert model.requests == []
