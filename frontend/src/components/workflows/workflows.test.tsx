@@ -169,3 +169,97 @@ it('lists unscoped messages in the summary alongside the count of all messages',
   expect(Array.from(summary.querySelectorAll('li'), item => item.textContent)).toEqual([unscoped])
   expect(hintMessages(box.querySelector('.workflow-meta .field-hint')!)).toEqual(['expected a version number'])
 })
+
+function expectHintOpen(marker: HTMLButtonElement, open: boolean) {
+  const tooltip = document.getElementById(marker.getAttribute('aria-describedby')!)!
+  expect(marker.getAttribute('aria-expanded')).toBe(String(open))
+  expect(tooltip.hasAttribute('data-open')).toBe(open)
+}
+
+it('toggles one hint at a time and dismisses it with Escape or an outside click', async () => {
+  vi.mocked(workflowApi.validate).mockResolvedValue({ errors: ['name: required', 'version: invalid'] })
+  await mount()
+  await validate()
+  const [name, version] = box.querySelectorAll<HTMLButtonElement>('.workflow-meta .field-hint')
+  const nameInput = box.querySelector<HTMLInputElement>('.workflow-meta input')!
+  const versionTip = version.querySelector<HTMLElement>('[role=tooltip]')!
+  expect(versionTip.classList.contains('field-hint-align-end')).toBe(true)
+  expectHintOpen(name, false)
+  click(name)
+  expectHintOpen(name, true)
+  expect(name.closest('label')).toBeNull()
+  expect(document.activeElement).not.toBe(nameInput)
+  click(name)
+  expectHintOpen(name, false)
+
+  click(name)
+  click(version)
+  expectHintOpen(name, false)
+  expectHintOpen(version, true)
+  act(() => versionTip.querySelector('span')!.click())
+  expectHintOpen(version, true)
+  act(() => {
+    version.focus()
+    version.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  expectHintOpen(version, false)
+  expect(document.activeElement).toBe(version)
+
+  click(version)
+  act(() => box.querySelector('h2')!.click())
+  expectHintOpen(version, false)
+})
+
+it('previews hints on hover and keyboard focus and lets Escape dismiss either preview', async () => {
+  await mount()
+  await validate()
+  const marker = box.querySelector<HTMLButtonElement>('.workflow-steps h3 .field-hint')!
+  const tooltip = marker.querySelector('[role=tooltip]')!
+  const pointer = (target: Element, type: string, relatedTarget: EventTarget | null = null) => act(() => {
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget }))
+  })
+  const escape = () => act(() => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  pointer(marker, 'pointerover')
+  expectHintOpen(marker, true)
+  pointer(marker, 'pointerout', tooltip)
+  expectHintOpen(marker, true)
+  pointer(tooltip, 'pointerout', box)
+  expectHintOpen(marker, false)
+  pointer(marker, 'pointerover')
+  escape()
+  expectHintOpen(marker, false)
+
+  act(() => marker.focus())
+  expectHintOpen(marker, true)
+  escape()
+  expectHintOpen(marker, false)
+  expect(document.activeElement).toBe(marker)
+})
+
+it('keeps a previously open hint closed if its messages return after an edit', async () => {
+  await mount()
+  await validate()
+  const marker = () => box.querySelector<HTMLButtonElement>('.workflow-steps h3 .field-hint')
+  click(marker()!)
+  expectHintOpen(marker()!, true)
+  type(box.querySelector('.workflow-meta input')!, 'updated')
+  expect(marker()).toBeNull()
+  await validate()
+  expectHintOpen(marker()!, false)
+})
+
+it('attaches quoted and unquoted host messages only to an exact step ID', async () => {
+  const matched = [
+    "step 'step_1', parameter 'height': required", 'step "step_1": bad', 'step step_1: bad',
+    "step 'step_1': bad", 'step "step_1", parameter "height": required',
+  ]
+  const unknown = 'step step_10: bad'
+  vi.mocked(workflowApi.validate).mockResolvedValue({ errors: [...matched, unknown] })
+  await mount()
+  click(buttons('Add')[0])
+  await validate()
+  expect(hintMessages(steps()[0].querySelector('.field-hint')!)).toEqual(matched)
+  expect(Array.from(box.querySelectorAll('.workflow-validation li'), li => li.textContent)).toEqual([unknown])
+})
