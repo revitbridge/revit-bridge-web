@@ -4618,6 +4618,147 @@
         }
       }
     },
+    "/api/v1/bridge/workflows/optimize-text": {
+      "post": {
+        "tags": [
+          "bridge"
+        ],
+        "summary": "Optimize Text",
+        "description": "Suggest wording for an unsaved workflow using only its text, step metadata and parameter names.",
+        "operationId": "optimize_text_api_v1_bridge_workflows_optimize_text_post",
+        "parameters": [
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextSuggestion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Body or query parsed but not valid (invalid_args, invalid_spec, invalid_snapshot, invalid_pack)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests from this address (rate_limited)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "X-Admin-Token missing or wrong (admin_required), or a device key that does not verify (invalid_device_key)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No model configured (model_required) or admin access disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid model settings (model_error)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The definition exceeds 64 KiB (definition_too_large)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Model call failed or output was unusable (model_error, invalid_suggestion)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "definition": {
+                    "additionalProperties": true,
+                    "description": "Current workflow definition, up to 64 KiB of UTF-8 JSON.",
+                    "title": "Definition",
+                    "type": "object"
+                  },
+                  "language": {
+                    "enum": [
+                      "en",
+                      "zh"
+                    ],
+                    "title": "Language",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "definition",
+                  "language"
+                ],
+                "title": "OptimizeTextRequest",
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/bridge/devices/pair": {
       "post": {
         "tags": [
@@ -6867,6 +7008,31 @@
           "calls"
         ],
         "title": "Status"
+      },
+      "TextSuggestion": {
+        "properties": {
+          "summary": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Summary"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Description"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          }
+        },
+        "type": "object",
+        "required": [
+          "summary",
+          "description",
+          "model"
+        ],
+        "title": "TextSuggestion"
       },
       "TokenInfo": {
         "properties": {

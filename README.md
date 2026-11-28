@@ -33,6 +33,8 @@ Open **Workflows** to add two to eight packs, drag them into order or use **Move
 earlier result (for example `ElementId` or `created_ids.0`). The editor offers paths shown
 in a pack's fixture expectations or a simple returned object. Validation uses the installed package and current tool store.
 Local users and cloud administrators can save, replace, import and delete workflow YAML.
+Choose **Optimize text** to ask the optimizer model for a summary and description in the page language, even for an unfinished workflow.
+Compare the suggestions with your wording, apply either or both, then choose **Save workflow** when ready.
 
 Choose a workflow in the chat tool drawer or type **Run** followed by its saved name.
 The host asks for missing inputs. In automatic mode it confirms the workflow name when routing alone selected it.

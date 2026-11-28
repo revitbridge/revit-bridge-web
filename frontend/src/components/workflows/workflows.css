@@ -4,7 +4,14 @@
 .workflow-actions label:first-child { margin-inline-end: auto; }
 .workflow-meta,.workflow-columns > section,.workflow-steps ol > li { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--s4); }
 .workflow-meta { display: grid; grid-template-columns: 1fr 1fr minmax(100px,.5fr); gap: var(--s3); }
-.workflow-meta > div:nth-last-child(-n+2) { grid-column: span 3; }
+.workflow-text-field,.workflow-text-optimizer { grid-column: 1/-1; }
+.workflow-text-optimizer > [role=status] { margin-inline-start: var(--s2); color: var(--faint); font-size: var(--sm); }
+.workflow-text-review { display: grid; gap: var(--s3); margin-top: var(--s3); border-top: 1px solid var(--line); padding-top: var(--s3); }
+.workflow-text-comparison { display: grid; gap: var(--s2); grid-template-columns: repeat(2,minmax(0,1fr)); margin-block: var(--s2); }
+.workflow-text-comparison > div { padding: var(--s2) var(--s3); background: var(--bg2); border-radius: var(--radius-sm); }
+.workflow-text-comparison dt { color: var(--faint); font-size: var(--sm); }
+.workflow-text-comparison dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workflow-text-review small { color: var(--faint); overflow-wrap: anywhere; }
 .workflow-meta textarea { min-height: 64px; }
 .workflow-field-heading { position: relative; display: flex; align-items: flex-end; gap: var(--s1); }
 .workflow-meta .workflow-field-heading { margin-bottom: var(--s1); }
@@ -44,7 +51,7 @@
 .workflow-actions label:has(input[type=checkbox]) { display: flex; gap: var(--s2); align-items: center; }
 @media (max-width: 740px) {
   .workflow-meta,.workflow-columns { grid-template-columns: minmax(0,1fr); }
-  .workflow-meta > div:nth-last-child(-n+2) { grid-column: auto; }
+  .workflow-text-comparison { grid-template-columns: minmax(0,1fr); }
   .workflow-packs { max-height: 200px; }
   .workflow-actions label:first-child { width: 100%; }
   .workflow-param { grid-template-columns: minmax(0,1fr); }

@@ -2,6 +2,13 @@ import { browserLanguage } from './language'
 
 const zh: Record<string, string> = {
   "Optimizer": "优化",
+  "Optimize text": "优化文字",
+  "Text suggestion received.": "已收到文字建议。",
+  "Current": "当前",
+  "Suggested": "建议",
+  "No change suggested": "没有修改建议",
+  "Use": "采用",
+  "Use both": "全部采用",
   "Default ({0})": "默认（{0}）",
   "The model library is empty.": "模型库为空。",
   "This model cannot see sketches or captures.": "此模型无法查看草图或截图。",
@@ -267,7 +274,7 @@ const zh: Record<string, string> = {
   "Disabled": "已关闭",
   "Disconnected": "未连接",
   "Disconnected | {0}": "未连接 | {0}",
-  "Dismiss": "隐藏",
+  "Dismiss": "关闭",
   "Display name": "显示名称",
   "Document": "文档",
   "Done": "完成",
