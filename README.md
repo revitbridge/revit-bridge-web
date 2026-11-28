@@ -414,9 +414,10 @@ uv run pytest                            # backend tests, no Revit needed
 
 The local Streamable HTTP address is `http://127.0.0.1:7860/mcp` by default.
 **Settings → Remote MCP** shows your host's address, connection status, device
-tokens and recent calls. Start with the **Any MCP client** JSON configuration.
+tokens and recent calls. Start with the `mcpServers` JSON configuration below.
 Replace the example URL with your host's address. For direct loopback without a
-token, omit `headers`.
+token, omit `headers`. Clients differ in how they read an environment variable:
+`${VAR}` in Claude Code, `${env:VAR}` in Cursor and VS Code.
 
 ```json
 {
@@ -430,20 +431,20 @@ token, omit `headers`.
 }
 ```
 
-**Client commands**
+**Client setup**
 
 - **Claude Code** also accepts the JSON above in the project's `.mcp.json`.
 
   - For loopback, run `claude mcp add --transport http revit http://127.0.0.1:7860/mcp`.
-  - With a token, run `claude mcp add --transport http revit https://bridge.example/mcp --header "Authorization: Bearer ${REVIT_MCP_TOKEN}"`.
+  - With a token, run `claude mcp add --transport http revit https://bridge.example/mcp --header 'Authorization: Bearer ${REVIT_MCP_TOKEN}'`. The single quotes keep `${...}` as text in bash, zsh and PowerShell (in `cmd.exe` use double quotes): Claude Code reads the variable each time it loads the entry.
 
 - **Codex CLI**
 
   - For loopback, run `codex mcp add revit --url http://127.0.0.1:7860/mcp`.
   - With a token, run `codex mcp add revit --url https://bridge.example/mcp --bearer-token-env-var REVIT_MCP_TOKEN`.
 
-- **Cursor** uses the JSON above in `.cursor/mcp.json` with the `type` field omitted.
-- **VS Code** uses the JSON above in `.vscode/mcp.json` with `servers` as the top-level key.
+- **Cursor**: the JSON above in `.cursor/mcp.json` without the `type` field, and the header as `"Bearer ${env:REVIT_MCP_TOKEN}"`.
+- **VS Code**: the JSON above in `.vscode/mcp.json` with `servers` as the top-level key, and the header as `"Bearer ${env:REVIT_MCP_TOKEN}"`.
 
 A local host enables `/mcp` by default. A direct loopback connection uses the same
 Host, Origin and forwarding-header checks as the web app. The local Docker image

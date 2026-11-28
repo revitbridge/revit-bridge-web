@@ -89,9 +89,9 @@ it('leads with neutral JSON and shows the selected client configuration with or 
   const page = await mountLocal()
   const address = window.location.origin + '/mcp'
   const firstSnippet = page.querySelector('.snippet')!
-  expect(firstSnippet.querySelector('h3')?.textContent).toBe('Any MCP client')
+  expect(firstSnippet.querySelector('h3')?.textContent).toBe('MCP JSON (mcpServers)')
   const tablist = page.querySelector('[role="tablist"]')!
-  expect(document.getElementById(tablist.getAttribute('aria-labelledby')!)?.textContent).toBe('Client commands')
+  expect(document.getElementById(tablist.getAttribute('aria-labelledby')!)?.textContent).toBe('Client setup')
   const tabs = [...tablist.querySelectorAll<HTMLButtonElement>('button[role="tab"]')]
   expect(tabs.map(tab => tab.textContent)).toEqual(clientNames)
   expect(tablist.outerHTML).not.toMatch(/recommended/i)
@@ -100,14 +100,15 @@ it('leads with neutral JSON and shows the selected client configuration with or 
   for (const withToken of [false, true]) {
     if (withToken) act(() => checkbox.click())
     expect(checkbox.checked).toBe(withToken)
-    const server = withToken ? { url: address, headers: { Authorization: 'Bearer ${REVIT_MCP_TOKEN}' } } : { url: address }
-    const http = { type: 'http', ...server }
+    const entry = (authorization: string) => withToken ? { url: address, headers: { Authorization: authorization } } : { url: address }
+    const http = { type: 'http', ...entry('Bearer ${REVIT_MCP_TOKEN}') }
+    const env = entry('Bearer ${env:REVIT_MCP_TOKEN}')
     expect(JSON.parse(firstSnippet.querySelector('pre')!.textContent!)).toEqual({ mcpServers: { revit: http } })
     const expected = [
-      'claude mcp add --transport http revit ' + address + (withToken ? ' --header "Authorization: Bearer ${REVIT_MCP_TOKEN}"' : ''),
+      'claude mcp add --transport http revit ' + address + (withToken ? " --header 'Authorization: Bearer ${REVIT_MCP_TOKEN}'" : ''),
       'codex mcp add revit --url ' + address + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : ''),
-      { mcpServers: { revit: server } },
-      { servers: { revit: http } },
+      { mcpServers: { revit: env } },
+      { servers: { revit: { type: 'http', ...env } } },
     ]
     for (const [index, tab] of tabs.entries()) {
       act(() => tab.click())

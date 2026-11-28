@@ -15,6 +15,8 @@ const clients = ['Claude Code', 'Codex CLI', 'Cursor', 'VS Code'] as const
 type McpClient = typeof clients[number]
 const clientStorageKey = 'revit-bridge-web.mcpClient'
 const bearer = 'Bearer ${REVIT_MCP_TOKEN}'
+// Cursor and VS Code read an environment variable as ${env:NAME}; ${NAME} would be sent as it is.
+const envBearer = 'Bearer ${env:REVIT_MCP_TOKEN}'
 
 function ConnectionSnippets({ address, withToken }: { address: string; withToken: boolean }) {
   const [client, setClient] = useState<McpClient>(() => {
@@ -24,8 +26,7 @@ function ConnectionSnippets({ address, withToken }: { address: string; withToken
     } catch { return clients[0] }
   })
   const id = useId()
-  const server = { url: address, headers: withToken ? { Authorization: bearer } : undefined }
-  const httpServer = { type: 'http', ...server }
+  const entry = (authorization: string) => ({ url: address, headers: withToken ? { Authorization: authorization } : undefined })
 
   function select(name: McpClient) {
     setClient(name)
@@ -33,8 +34,9 @@ function ConnectionSnippets({ address, withToken }: { address: string; withToken
   }
 
   return <>
-    <Snippet title={uiText('Any MCP client')} text={JSON.stringify({ mcpServers: { revit: httpServer } }, null, 2)} />
-    <h3 id={id}>{uiText('Client commands')}</h3>
+    <Snippet title={uiText('MCP JSON (mcpServers)')} text={JSON.stringify({ mcpServers: { revit: { type: 'http', ...entry(bearer) } } }, null, 2)} />
+    {withToken && <p>{uiText('Clients differ in how they read an environment variable: ${VAR} in Claude Code, ${env:VAR} in Cursor and VS Code.')}</p>}
+    <h3 id={id}>{uiText('Client setup')}</h3>
     <div className="subtab-bar" role="tablist" aria-labelledby={id}>
       {clients.map((name, index) => <button key={name} id={`${id}-${index}`} type="button" role="tab"
         className={name === client ? 'subtab is-active' : 'subtab'}
@@ -50,13 +52,13 @@ function ConnectionSnippets({ address, withToken }: { address: string; withToken
     </div>
     <div role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${clients.indexOf(client)}`}>
       {client === 'Claude Code' && <Snippet text={`claude mcp add --transport http revit ${address}`
-        + (withToken ? ` --header "Authorization: ${bearer}"` : '')} />}
+        + (withToken ? ` --header 'Authorization: ${bearer}'` : '')} />}
       {client === 'Codex CLI' && <Snippet text={'codex mcp add revit --url ' + address
         + (withToken ? ' --bearer-token-env-var REVIT_MCP_TOKEN' : '')} />}
       {client === 'Cursor' && <Snippet title={uiText('Add to .cursor/mcp.json')}
-        text={JSON.stringify({ mcpServers: { revit: server } }, null, 2)} />}
+        text={JSON.stringify({ mcpServers: { revit: entry(envBearer) } }, null, 2)} />}
       {client === 'VS Code' && <Snippet title={uiText('Add to .vscode/mcp.json')}
-        text={JSON.stringify({ servers: { revit: httpServer } }, null, 2)} />}
+        text={JSON.stringify({ servers: { revit: { type: 'http', ...entry(envBearer) } } }, null, 2)} />}
     </div>
   </>
 }

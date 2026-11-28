@@ -107,8 +107,8 @@ it.each([
   await configure()
   const page = document.createElement('div')
   page.innerHTML = renderToStaticMarkup(<App path="/settings/remote-mcp" />)
-  expect(page.querySelector('.remote-mcp .snippet h3')?.textContent).toBe('任意 MCP 客户端')
-  expect(page.textContent).toContain('客户端命令')
+  expect(page.querySelector('.remote-mcp .snippet h3')?.textContent).toBe('MCP JSON 配置（mcpServers）')
+  expect(page.textContent).toContain('各客户端的配置')
   expect(page.querySelector('[role="tabpanel"] h3')?.textContent).toBe(title)
 })
 

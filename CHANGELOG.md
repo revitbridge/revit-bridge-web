@@ -8,8 +8,9 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
-- Remote MCP settings show a client-neutral configuration first and remember the
-  selected tab for Claude Code, Codex CLI, Cursor or VS Code.
+- Remote MCP settings show the `mcpServers` JSON first, then one tab per client
+  (Claude Code, Codex CLI, Cursor, VS Code) with that client's own syntax; no
+  client is presented as required.
 - Requires `revit-bridge` 0.13.1: grid and level names in the sketch text stand
   between quotes, so a name from the model cannot pose as a host marker, and
   squaring a sketch never adds a self-crossing. 0.13.0 brought the sketch on
