@@ -501,6 +501,18 @@ endpoint. DELETE with `?role=planner`, for example, clears that group. DELETE wi
 clears the model profiles, saved library and role selections. An intact store preserves remote MCP tokens. Responses carry masked summaries.
 Use `X-Admin-Token` for these operations on a cloud host.
 
+The detailed GET also returns the `library` and each role's `selection`. The following
+routes under `/api/v1/settings/models` return the same masked details on success.
+
+| Method and path | Effect | Errors |
+|---|---|---|
+| `PUT /library/{name}` | Create or update a saved entry with `base_url`, `model`, optional write-only `api_key`, `api` and `vision`. An omitted key is retained at the same endpoint. | 409 `file_entry` for a file-owned name, 409 `library_full` when adding a 21st entry, 422 `invalid_args` for invalid input. |
+| `DELETE /library/{name}` | Delete the saved entry and clear roles using it. Selections of a same-name file entry stay active. | 404 `unknown_entry` if no saved entry has that name. |
+| `PUT /selection` | Send `role` and `entry` to select a model for the next request. A file entry wins a duplicate name. Send `null` for `entry` to restore the role default. | 404 `unknown_entry` for an unknown name, 422 `invalid_args` for invalid input. |
+
+These routes require the admin token on cloud hosts (403) and return 503 if the settings
+store is unavailable.
+
 Visitors can enter a key in Settings when browser keys are enabled and the host has no configured
 planner. The next page load removes a legacy browser model key and displays a one-time notice
 once the host confirms a configured planner. On a local upgrade, enter the endpoint, model

@@ -91,6 +91,27 @@ it('closes on Escape, outside click and navigation to Settings', async () => {
   close()
 })
 
+it('keeps the file option when a saved name is shadowed and skips hidden file labels', async () => {
+  const file = { ...entry, source: 'file', model: 'file-model' }
+  const long = { ...file, name: 'possibly-pasted-key' }
+  const { node, calls, open, close } = await mount('local', [file, long])
+  await open()
+  const pick = node.querySelector('select')!
+  expect([...pick.options].map(o => o.value)).toEqual(['', file.name])
+  calls.mockResolvedValueOnce(Response.json({
+    configured: true, models: { planner: { ...fallback, model: file.model } }, saved: {},
+    library: [{ ...file, selectable: true }, { ...entry, shadowed: true }, long,
+      { ...file, name: '<entry #2>', selectable: false }],
+    selection: { planner: { entry: file.name } },
+  }))
+  await act(async () => { pick.value = file.name; pick.dispatchEvent(new Event('change', { bubbles: true })) })
+  for (const selector of node.querySelectorAll('select')) {
+    expect([...selector.options].slice(1).map(o => o.text)).toEqual(['Draft - file-model'])
+  }
+  expect(pick.value).toBe(file.name)
+  close()
+})
+
 it('disables cloud changes without a session token and explains an empty library', async () => {
   const cloud = await mount('cloud')
   await cloud.open()

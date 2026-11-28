@@ -1,7 +1,7 @@
 import { browserLanguage } from './language'
 
 const zh: Record<string, string> = {
-  "Optimizer": "优化",
+  "Optimizer": "优化员",
   "Default ({0})": "默认（{0}）",
   "The model library is empty.": "模型库为空。",
   "This model cannot see sketches or captures.": "此模型无法查看草图或截图。",

@@ -8,6 +8,11 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Changed
 
+- A selection made on the page decides the role's model on its next request, ahead of
+  environment and models file defaults, saved role groups and browser headers.
+- The `secrets.json` size limit for a store with library entries increased from 128 KiB to
+  512 KiB to fit 20 entries and four groups. An older host reports the store as unavailable
+  if it contains library entries or role selections.
 - Requires `revit-bridge` 0.13.1: grid and level names in the sketch text stand
   between quotes, so a name from the model cannot pose as a host marker, and
   squaring a sketch never adds a self-crossing. 0.13.0 brought the sketch on
@@ -21,8 +26,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Added
 
-- Settings can save named model entries alongside read-only models file entries. The header
-  model selector changes the model for a role on its next request.
+- The settings API adds `PUT` and `DELETE /api/v1/settings/models/library/{name}` and
+  `PUT /api/v1/settings/models/selection`. The detailed settings GET includes the library
+  and per-role selections. `/config.json` exposes `features.modelLibrary` and
+  `features.modelSelection` for the header and Settings selectors.
 - An optional optimizer role can select its own model or inherit the planner's settings.
 
 - **Sketch on view** in the composer captures a plan or orthographic 3D view.

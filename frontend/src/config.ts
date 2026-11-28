@@ -87,25 +87,27 @@ function readModels(raw: unknown): RoleModels {
   return raw && typeof raw === 'object' && 'optimizer' in raw ? { ...chat, optimizer } : chat
 }
 
-const fileName = /^[A-Za-z0-9_.-]{1,32}$/
+const fileName = /^[A-Za-z0-9_.-]{1,16}$/ // models_file.SHOWN_ENTRY_MAX
 const savedName = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/
+const hiddenSelection = /^<(?:entry #[1-9][0-9]*|missing entry)>$/
 
 function readSelection(raw: unknown): ModelSelection {
   const selection = readRoleModels(raw)
   for (const role of SELECTOR_ROLES) {
     const name = selection[role]
-    if (name && !fileName.test(name) && !savedName.test(name)) selection[role] = null
+    if (name && !fileName.test(name) && !savedName.test(name) && !hiddenSelection.test(name)) selection[role] = null
   }
   return selection
 }
 
-function readLibrary(raw: unknown): LibraryEntry[] {
+export function readLibrary(raw: unknown): LibraryEntry[] {
   if (!Array.isArray(raw)) return []
   const seen = new Set<string>()
   const entries: LibraryEntry[] = []
   for (const item of raw) {
     if (!item || typeof item.name !== 'string' || typeof item.model !== 'string'
-      || !item.model.trim() || !['file', 'saved'].includes(item.source) || typeof item.vision !== 'boolean'
+      || (item.model !== '' && !item.model.trim())
+      || !['file', 'saved'].includes(item.source) || typeof item.vision !== 'boolean'
       || !(item.source === 'file' ? fileName : savedName).test(item.name)
       || seen.has(item.name)) continue
     seen.add(item.name)

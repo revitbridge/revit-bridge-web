@@ -394,7 +394,7 @@
           "settings"
         ],
         "summary": "Delete Library Entry",
-        "description": "Delete a saved entry and clear the roles that selected it.",
+        "description": "Delete a saved entry. Selections using a file entry of the same name survive.",
         "operationId": "delete_library_entry_api_v1_settings_models_library__name__delete",
         "parameters": [
           {
@@ -463,7 +463,7 @@
           "settings"
         ],
         "summary": "Put Selection",
-        "description": "Select a library entry for a role. A null entry restores its default.",
+        "description": "Select a library entry for a role. A file entry wins a duplicate name. Null restores the default.",
         "operationId": "put_selection_api_v1_settings_models_selection_put",
         "parameters": [
           {
@@ -506,16 +506,6 @@
           },
           "404": {
             "description": "The entry does not exist (unknown_entry).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "A file shadows the saved entry (shadowed).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5872,6 +5862,10 @@
           "shadowed": {
             "type": "boolean",
             "title": "Shadowed"
+          },
+          "selectable": {
+            "type": "boolean",
+            "title": "Selectable"
           }
         },
         "type": "object",
@@ -5884,7 +5878,8 @@
           "source",
           "api",
           "vision",
-          "shadowed"
+          "shadowed",
+          "selectable"
         ],
         "title": "LibraryModel"
       },

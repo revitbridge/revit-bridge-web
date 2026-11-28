@@ -81,6 +81,7 @@ it('adds and edits a saved library entry, assigns a role, then deletes it', asyn
     await act(async () => [...section.querySelectorAll('button')].find(b => b.textContent === label)!.click())
   }
   expect(section.textContent).toContain('models file')
+  expect(section.querySelector('.library-entries')?.textContent).toContain('••••1234')
   expect(section.querySelector('.library-entries button')).toBeNull()
   expect(node.querySelector('details summary')?.textContent).toBe('Advanced: one saved group per role')
   enter(inputs[0], 'Studio')
@@ -105,6 +106,8 @@ it('adds and edits a saved library entry, assigns a role, then deletes it', asyn
   await act(async () => { analyst.value = 'Studio'; analyst.dispatchEvent(new Event('change', { bubbles: true })) })
   expect(JSON.parse(String(calls.mock.calls.at(-1)![1]?.body))).toEqual({ role: 'analyst', entry: 'Studio' })
   await click('Delete')
+  expect(calls.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0)
+  await click('Delete?')
   expect(calls.mock.calls.at(-1)![1]?.method).toBe('DELETE')
   expect(section.querySelectorAll('li')).toHaveLength(1)
   expect(analyst.value).toBe('')

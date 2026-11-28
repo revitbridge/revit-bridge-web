@@ -497,6 +497,16 @@ def reset_models() -> None:
     _loaded = None
 
 
+def _label_keys(store, settings, models):
+    """Credentials that must not be exposed as an entry or variable name."""
+    files = models.entries.values() if models else ()
+    return [settings.llm_api_key, *(entry.api_key() for entry in files), *(p.key for p in store.entries())]
+
+
+def _masked_label(name, keys):
+    return "" if any(has_credential(name, key) for key in keys) else name
+
+
 def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
     """One line for where the models come from; one per role entry whose key variable is
     not set now. Model names, entry labels and short variable names only."""
@@ -504,15 +514,15 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
         _log.info("no models file at %s: every role uses LLM_* and the request's X-LLM-* headers",
                   settings.models_file)
         return
-    keys = public_keys(runtime_profiles(settings, models), settings, models)
-    names = {r: public_text(n, keys) for r, n in models.model_names().items()}
+    names = models.model_names()
+    keys = _label_keys(runtime_profiles(settings, models), settings, models)
     _log.info("models file %s: analyst %s, planner %s, supervisor %s", models.path,
               names[ANALYST], names[PLANNER], names[SUPERVISOR])
     for name in dict.fromkeys(models.roles[role] for role in ROLES):
         entry = models.entries[name]
         if not entry.api_key():
             _log.warning("models file entry %s: %s is not set; its roles need X-LLM-Key from the browser "
-                         "until it is", public_text(entry.label, keys), public_text(entry.shown_key_env, keys))
+                         "until it is", _masked_label(entry.label, keys), _masked_label(entry.shown_key_env, keys))
 
 
 # -- resolving a role ----------------------------------------------------------------------
@@ -576,23 +586,6 @@ def selected_target(role: str, store: ModelStore, settings: WebSettings, models:
     return None
 
 
-def host_fields(settings: WebSettings, models: ModelsFile | None):
-    fields = [settings.llm_model, settings.llm_base_url]
-    keys = [settings.llm_api_key]
-    for entry in models.entries.values() if models else ():
-        fields.extend((entry.name, entry.model, entry.base_url, entry.api or "chat", "file"))
-        keys.append(entry.api_key())
-    return fields, keys
-
-
-def public_keys(store, settings, models):
-    return [*host_fields(settings, models)[1], *(p.key for p in store.entries() if p.key)]
-
-
-def public_text(value: str, keys) -> str:
-    return "" if any(has_credential(value, key) for key in keys) else value
-
-
 def effective_model(role: str, store: ModelStore, settings: WebSettings, models: ModelsFile | None) -> LLMSettings:
     role = source_role(role, store, models)
     target = selected_target(role, store, settings, models)
@@ -603,31 +596,37 @@ def effective_model(role: str, store: ModelStore, settings: WebSettings, models:
 
 
 def public_models(store: ModelStore, settings: WebSettings, models: ModelsFile | None):
-    keys = public_keys(store, settings, models)
+    files = models.entries if models else {}
+    keys = _label_keys(store, settings, models)
 
-    def summary(url, model, key):
-        fields = masked(url, model, key)
-        fields["base_url"] = public_text(fields["base_url"], keys)
-        fields["model"] = public_text(fields["model"], keys)
-        return fields
-
+    labels = {}
     library = []
-    for entry in models.entries.values() if models else ():
-        library.append(dict(name=public_text(entry.name, keys), source="file", api=entry.api or "chat",
-                            vision=entry.vision, shadowed=False, **summary(entry.base_url, entry.model, entry.api_key())))
+    for entry in files.values():
+        name = entry.label if entry.label != entry.name else _masked_label(entry.name, keys)
+        labels[entry.name] = name
+        library.append(dict(name=name, source="file", api=entry.api or "chat", vision=entry.vision,
+                            shadowed=False, selectable=name == entry.name,
+                            **masked(entry.base_url, entry.model, entry.api_key())))
     for name, p in sorted(store.library.items()):
-        library.append(dict(name=public_text(name, keys), source="saved", api=p.api, vision=p.vision,
-                            shadowed=bool(models and name in models.entries), **summary(p.base_url, p.model, p.key)))
+        # Saved rows retain their own name so the settings page can delete them.
+        label = _masked_label(name, keys)
+        labels.setdefault(name, label)
+        library.append(dict(name=label, source="saved", api=p.api, vision=p.vision,
+                            shadowed=name in files, selectable=bool(label) and name not in files,
+                            **masked(p.base_url, p.model, p.key)))
     targets = {r: effective_model(r, store, settings, models) for r in ALL_ROLES}
     selection = {}
     for role in ALL_ROLES:
         name = store.selection.get(role)
-        selection[role] = dict(entry=public_text(name, keys) if name else None,
-                               selected_missing=bool(name and not has_entry(name, store, models)))
+        missing = bool(name and name not in labels)
+        label = labels.get(name)
+        if missing:
+            label = "<missing entry>" if len(name) > SHOWN_ENTRY_MAX else _masked_label(name, keys)
+        selection[role] = dict(entry=label, selected_missing=missing)
     return dict(configured=targets[PLANNER].configured,
-                models={r: summary(t.base_url, t.model, t.api_key) for r, t in targets.items()},
+                models={r: masked(t.base_url, t.model, t.api_key) for r, t in targets.items()},
                 library=library, selection=selection,
-                saved={r: summary(p.base_url, p.model, p.key) for r, p in store.profiles.items()})
+                saved={r: masked(p.base_url, p.model, p.key) for r, p in store.profiles.items()})
 
 
 async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: WebSettings | None = None,
@@ -650,9 +649,8 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     store = await asyncio.to_thread(runtime_profiles, settings, models)
     role = source_role(role, store, models)
     selected = selected_target(role, store, settings, models)
-    keys = public_keys(store, settings, models)
     if selected:
-        if not public_text(selected.model, keys) or not public_text(selected.base_url, keys):
+        if has_credential(selected.model, selected.api_key) or has_credential(selected.base_url, selected.api_key):
             raise LLMError("Model names and endpoints must not contain an API key", 400)
         return selected
     if not settings.allow_browser_keys and HEADER_KEY in request_overrides:
@@ -685,8 +683,6 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
         if server.api_key and server.base_url:
             overrides.pop(HEADER_KEY, None)
     llm = await resolve_llm(overrides, defaults)
-    if public_text(llm.model, keys) != llm.model or public_text(llm.base_url, keys) != llm.base_url:
-        raise LLMError("Model names and endpoints must not contain an API key", 400)
     chose = any(h in overrides for h in (HEADER_BASE_URL, HEADER_MODEL))
     if not entry:
         return ModelTarget(llm=llm, max_tokens=default_limit, browser_model=chose)
@@ -699,9 +695,8 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
 
 def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:
     details = public_models(runtime_profiles(settings, models), settings, models)
-    collisions = {e["name"] for e in details["library"] if e["shadowed"]}
     return {"serverModel": details["configured"], "modelsFile": models is not None,
             "models": {r: t["model"] or None for r, t in details["models"].items()},
             "modelLibrary": [{k: e[k] for k in ("name", "model", "source", "vision")}
-                             for e in details["library"] if e["name"] and e["name"] not in collisions],
+                             for e in details["library"] if e["selectable"]],
             "modelSelection": {r: s["entry"] for r, s in details["selection"].items()}}

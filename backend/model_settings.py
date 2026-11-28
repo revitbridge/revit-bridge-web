@@ -28,6 +28,10 @@ class ModelSettingsFile(PrivateSettingsFile):
             return _GROUP_FILE.read()
 
 
+# UTF-8 JSON needs at most 6 bytes per URL character (escapes), 4 per printable
+# model character and 2 per printable ASCII key character. Allow 256 bytes per
+# row for its name, field names, options and punctuation, and 512 for selections
+# and outer JSON: (20 + 4) * (2048*6 + 200*4 + 4096*2 + 256) + 512 < 512 KiB.
 MODEL_FILE = ModelSettingsFile(_GROUP_FILE.filename, _GROUP_FILE.lockfile, 512 * 1024)
 
 
@@ -110,13 +114,13 @@ class ModelStore(BaseModel):
         return (*self.profiles.values(), *self.library.values())
 
 
-def _check_public_fields(store: ModelStore, host_fields=(), host_keys=()):
-    fields = [*store.library, *store.selection.values(),
+def _check_public_fields(store: ModelStore):
+    # A selection refers to an existing entry. File-owned names are masked on display.
+    fields = [*store.library,
               *(v for p in store.entries() for v in (p.base_url, p.model)),
               *(v for p in store.library.values() for v in (p.api, "saved"))]
     keys = [p.key for p in store.entries() if p.key]
-    if (any(key in v for key in keys for v in (*fields, *host_fields))
-            or any(key and key in v for key in host_keys for v in fields)):
+    if any(key in v for key in keys for v in fields):
         raise ValueError("A public field contains a credential")
 
 
@@ -141,11 +145,11 @@ def store_exists() -> bool:
 
 
 @contextmanager
-def edit_profiles(host_fields=(), host_keys=(), *, clear=False):
+def edit_profiles(*, clear=False):
     with MODEL_FILE.edit(clear_corrupt=clear) as groups:
         store = ModelStore() if clear else _profiles(groups)
         yield store
-        _check_public_fields(store, host_fields, host_keys)
+        _check_public_fields(store)
         groups.clear()
         groups.update({r: _stored(p) for r, p in store.profiles.items()})
         if store.library:
