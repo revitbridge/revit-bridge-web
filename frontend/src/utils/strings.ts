@@ -1,6 +1,13 @@
 import { browserLanguage } from './language'
 
 const zh: Record<string, string> = {
+  "Optimizer": "优化",
+  "Default ({0})": "默认（{0}）",
+  "The model library is empty.": "模型库为空。",
+  "This model cannot see sketches or captures.": "此模型无法查看草图或截图。",
+  "An administrator chooses the models.": "由管理员选择模型。",
+  "Could not change the model.": "无法切换模型。",
+  "Manage models": "管理模型",
   "Configure a model in Settings to generate a draft.": "请先在设置中配置模型，再生成草稿。",
   "Choices from": "选项来源",
   "Describe the tool first.": "请先描述要制作的工具。",

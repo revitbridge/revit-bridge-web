@@ -5,6 +5,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import App from '../../App'
 import { loadRuntimeConfig } from '../../config'
 import { cleanBrowserKey, llmHeaders, useSessionStore } from '../../store'
+import ModelSettings from './ModelSettings'
+import type { LibraryModel, ModelDetails } from '../connect/modelLibrary'
 
 const endpoint = '/api/v1/settings/models'
 const profile = { base_url: 'https://test.example/v1', model: 'test-model', key_set: true, key_tail: '1234' }
@@ -37,6 +39,77 @@ afterEach(() => {
   sessionStorage.clear()
   localStorage.clear()
   useSessionStore.setState(useSessionStore.getInitialState())
+})
+
+it('adds and edits a saved library entry, assigns a role, then deletes it', async () => {
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  const library: LibraryModel[] = [{ ...profile, name: 'Host', source: 'file', api: 'chat', vision: true, shadowed: false }]
+  const selection = { entry: null, selected_missing: false }
+  const state: ModelDetails = { ...details, library, models: { ...details.models, optimizer: profile },
+    selection: { analyst: selection, planner: selection, supervisor: selection, optimizer: selection } }
+  const calls = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/config.json') return Response.json({ features: { mode: 'local' } })
+    if (url === endpoint) return Response.json(state)
+    if (url === endpoint + '/library/Studio') {
+      const index = library.findIndex(e => e.name === 'Studio')
+      if (init?.method === 'DELETE') {
+        library.splice(index, 1)
+        state.selection!.analyst = selection
+      } else {
+        const { model, base_url, api, vision } = JSON.parse(String(init?.body))
+        const entry = { ...profile, name: 'Studio', source: 'saved' as const, model, base_url, api, vision, shadowed: false }
+        library.splice(index < 0 ? library.length : index, index < 0 ? 0 : 1, entry)
+      }
+    } else if (url === endpoint + '/selection') {
+      state.selection!.analyst = { entry: 'Studio', selected_missing: false }
+    } else throw Error('Unexpected request')
+    return Response.json(state)
+  })
+  vi.stubGlobal('fetch', calls)
+  await loadRuntimeConfig()
+  const node = document.createElement('div')
+  document.body.append(node)
+  const root = createRoot(node)
+  await act(async () => root.render(<ModelSettings />))
+  const section = node.querySelector<HTMLElement>('.model-library')!
+  const inputs = [...section.querySelectorAll<HTMLInputElement>('.library-fields input')]
+  const enter = (input: HTMLInputElement, value: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  async function click(label: string) {
+    await act(async () => [...section.querySelectorAll('button')].find(b => b.textContent === label)!.click())
+  }
+  expect(section.textContent).toContain('models file')
+  expect(section.querySelector('.library-entries button')).toBeNull()
+  expect(node.querySelector('details summary')?.textContent).toBe('Advanced: one saved group per role')
+  enter(inputs[0], 'Studio')
+  enter(inputs[1], 'https://studio.example/v1')
+  enter(inputs[2], 'sketch-model')
+  act(() => inputs[3].click())
+  enter(inputs[4], 'fixture-library-key')
+  const api = section.querySelector('form select') as HTMLSelectElement
+  act(() => { api.value = 'responses'; api.dispatchEvent(new Event('change', { bubbles: true })) })
+  await click('Add entry')
+  expect(JSON.parse(String(calls.mock.calls.at(-1)![1]?.body))).toEqual({ api: 'responses', vision: true,
+    api_key: 'fixture-library-key', model: 'sketch-model', base_url: 'https://studio.example/v1' })
+  expect(section.querySelectorAll('li')).toHaveLength(2)
+  await click('Edit')
+  expect(inputs[0].disabled).toBe(true)
+  expect(inputs[4].value).toBe('')
+  enter(inputs[2], 'revised')
+  await click('Save entry')
+  expect(JSON.parse(String(calls.mock.calls.at(-1)![1]?.body))).not.toHaveProperty('api_key')
+  expect(section.textContent).toContain('revised')
+  const analyst = section.querySelectorAll('select')[3]
+  await act(async () => { analyst.value = 'Studio'; analyst.dispatchEvent(new Event('change', { bubbles: true })) })
+  expect(JSON.parse(String(calls.mock.calls.at(-1)![1]?.body))).toEqual({ role: 'analyst', entry: 'Studio' })
+  await click('Delete')
+  expect(calls.mock.calls.at(-1)![1]?.method).toBe('DELETE')
+  expect(section.querySelectorAll('li')).toHaveLength(1)
+  expect(analyst.value).toBe('')
+  act(() => root.unmount())
+  node.remove()
 })
 
 it('removes a legacy key once and suppresses all stale model headers', async () => {

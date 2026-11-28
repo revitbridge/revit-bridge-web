@@ -27,7 +27,7 @@ from starlette.routing import Route
 from revit_bridge.capabilities import ToolStore
 
 from backend.api import bridge, chat, errors, logs, skills, usage
-from backend.api.settings import router as model_settings_router
+from backend.api.settings import ModelSettingsCacheControl, router as model_settings_router
 from backend.api.workflows import router as workflows_router
 from backend.config import CLOUD_ONLY_VARIABLES, ConfigError, WebSettings, get_settings, reset_settings
 from backend.localguard import LocalModeGuard, host_names_for, with_frame_policy
@@ -115,6 +115,7 @@ def create_app(frontend_dist: Path | None = None) -> FastAPI:
     if not settings.remote_mcp:
         app.add_middleware(DisabledRemoteMCP)
 
+    app.add_middleware(ModelSettingsCacheControl)
     errors.install(app)
     app.include_router(chat.router)
     app.include_router(model_settings_router)

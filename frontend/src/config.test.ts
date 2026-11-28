@@ -1,8 +1,37 @@
 import { describe, expect, it, vi } from 'vitest'
 import { loadRuntimeConfig, parseRuntimeConfig } from './config'
 
+describe('the model library config', () => {
+  const roles = { planner: 'Sketch', supervisor: null, analyst: null, optimizer: null }
+  const entry = { name: 'Sketch', model: 'picture', source: 'file', vision: true }
+  it('reads only public entry fields and the four role selections', () => {
+    const cfg = parseRuntimeConfig(JSON.stringify({ features: {
+      modelLibrary: [{ ...entry, base_url: 'https://private.example' }], modelSelection: roles,
+      models: { planner: 'picture', optimizer: 'picture' },
+    } }))
+    expect(cfg.features.modelLibrary).toEqual([entry])
+    expect(cfg.features.modelSelection).toEqual(roles)
+    expect(cfg.features.models.optimizer).toBe('picture')
+  })
+  it('uses an empty library and null selections on an older host or malformed input', () => {
+    for (const features of [{}, { modelLibrary: {}, modelSelection: 'Sketch' }]) {
+      const cfg = parseRuntimeConfig(JSON.stringify({ features }))
+      expect(cfg.features.modelLibrary).toEqual([])
+      expect(cfg.features.modelSelection).toEqual({ ...roles, planner: null })
+    }
+    const cfg = parseRuntimeConfig(JSON.stringify({ features: {
+      modelLibrary: [null, { ...entry, source: 'local' }, { ...entry, vision: 'true' },
+        { ...entry, source: 'saved', name: '3invalid' }, entry, entry],
+      modelSelection: { planner: 3, analyst: '', supervisor: 'invalid name', optimizer: 'Sketch' },
+    } }))
+    expect(cfg.features.modelLibrary).toEqual([entry])
+    expect(cfg.features.modelSelection).toEqual({ ...roles, planner: null, optimizer: 'Sketch' })
+  })
+})
+
 const NO_MODELS = {
   models: { analyst: null, planner: null, supervisor: null }, modelsFile: false, roles: false,
+  modelLibrary: [], modelSelection: { analyst: null, planner: null, supervisor: null, optimizer: null },
   chatModes: [], chatModeDefault: null, runModes: ['confirm'], authoring: false,
 }
 

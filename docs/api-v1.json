@@ -245,7 +245,7 @@
           "settings"
         ],
         "summary": "Delete Models Settings",
-        "description": "Clear one saved group, or all saved groups when role is omitted.",
+        "description": "Clear one saved group, or all groups, library entries and selections.",
         "operationId": "delete_models_settings_api_v1_settings_models_delete",
         "parameters": [
           {
@@ -304,6 +304,232 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/models/library/{name}": {
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Put Library Entry",
+        "description": "Save a named entry. Omitting its key retains it only at the same endpoint.",
+        "operationId": "put_library_entry_api_v1_settings_models_library__name__put",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryProfile"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A file owns the name (file_entry) or the library is full (library_full).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid model settings (invalid_args).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Delete Library Entry",
+        "description": "Delete a saved entry and clear the roles that selected it.",
+        "operationId": "delete_library_entry_api_v1_settings_models_library__name__delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The entry does not exist (unknown_entry).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid model settings (invalid_args).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/models/selection": {
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Put Selection",
+        "description": "Select a library entry for a role. A null entry restores its default.",
+        "operationId": "put_selection_api_v1_settings_models_selection_put",
+        "parameters": [
+          {
+            "name": "x-admin-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Admin-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SelectionWrite"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The entry does not exist (unknown_entry).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A file shadows the saved entry (shadowed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid model settings (invalid_args).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -5594,6 +5820,125 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "LibraryModel": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "key_set": {
+            "type": "boolean",
+            "title": "Key Set"
+          },
+          "key_tail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Tail"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "file",
+              "saved"
+            ],
+            "title": "Source"
+          },
+          "api": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "responses"
+            ],
+            "title": "Api"
+          },
+          "vision": {
+            "type": "boolean",
+            "title": "Vision"
+          },
+          "shadowed": {
+            "type": "boolean",
+            "title": "Shadowed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "model",
+          "key_set",
+          "key_tail",
+          "name",
+          "source",
+          "api",
+          "vision",
+          "shadowed"
+        ],
+        "title": "LibraryModel"
+      },
+      "LibraryProfile": {
+        "properties": {
+          "base_url": {
+            "type": "string",
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4096,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "responses"
+            ],
+            "title": "Api",
+            "default": "chat"
+          },
+          "vision": {
+            "type": "boolean",
+            "title": "Vision",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "base_url",
+          "model"
+        ],
+        "title": "LibraryProfile"
+      },
       "MaskedModel": {
         "properties": {
           "base_url": {
@@ -5684,13 +6029,37 @@
             },
             "type": "object",
             "title": "Saved"
+          },
+          "library": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryModel"
+            },
+            "type": "array",
+            "title": "Library"
+          },
+          "selection": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoleSelection"
+            },
+            "propertyNames": {
+              "enum": [
+                "analyst",
+                "planner",
+                "supervisor",
+                "optimizer"
+              ]
+            },
+            "type": "object",
+            "title": "Selection"
           }
         },
         "type": "object",
         "required": [
           "configured",
           "models",
-          "saved"
+          "saved",
+          "library",
+          "selection"
         ],
         "title": "ModelDetails"
       },
@@ -5951,6 +6320,31 @@
         "title": "RolePart",
         "description": "The calls of one role with one model within a run: each token sum is null when any\nof those calls lacks it."
       },
+      "RoleSelection": {
+        "properties": {
+          "entry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry"
+          },
+          "selected_missing": {
+            "type": "boolean",
+            "title": "Selected Missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entry",
+          "selected_missing"
+        ],
+        "title": "RoleSelection"
+      },
       "RunList": {
         "properties": {
           "items": {
@@ -6145,6 +6539,38 @@
           "count"
         ],
         "title": "SelectionState"
+      },
+      "SelectionWrite": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "analyst",
+              "planner",
+              "supervisor",
+              "optimizer"
+            ],
+            "title": "Role"
+          },
+          "entry": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "entry"
+        ],
+        "title": "SelectionWrite"
       },
       "SessionUsage": {
         "properties": {

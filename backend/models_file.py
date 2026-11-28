@@ -9,7 +9,8 @@
       supervisor: small
 
 This file describes deployment role mappings and provider options. Its path is ``MODELS_FILE``, by default ``models.yml`` in
-``DATA_DIR`` (``WebSettings.models_file``).
+``DATA_DIR`` (``WebSettings.models_file``). A page selection chooses a complete file or saved entry
+before applying any deployment defaults. With no valid selection the following rules apply.
 
 - **No file at the default path**: nothing changes. Every role's model is the one of
   ``LLM_BASE_URL`` / ``LLM_MODEL`` / ``LLM_API_KEY`` and the request's ``X-LLM-*``
@@ -25,9 +26,9 @@ This file describes deployment role mappings and provider options. Its path is `
   variable that holds the key: capital letters, digits and ``_``) and optionally
   ``max_tokens``, ``temperature`` and the provider options below. Any other field is
   refused - ``api_key``, ``key``, ``token``, ``extra_headers`` included: keys never go in
-  this file. Roles are exactly
+  this file. Roles include
   ``analyst``, ``planner`` (required) and ``supervisor``; a role left out uses the
-  planner's entry; several roles may name one entry (that is "one model for all").
+  planner's entry. The optional optimizer inherits the planner unless mapped; several roles may name one entry (that is "one model for all").
   YAML aliases and a key given twice in one mapping are refused.
 - **Keys are read at call time**: ``api_key_env`` is looked up in the environment on
   every ``resolve``. A variable that is not set is no startup error (the browser may
@@ -77,7 +78,7 @@ import httpx
 import yaml
 
 from backend.config import ConfigError, WebSettings, get_settings
-from backend.model_settings import Profile, StoreUnavailable, read_profiles
+from backend.model_settings import ModelStore, Profile, StoreUnavailable, masked, read_profiles, store_exists
 from backend.llm import (
     APIS, BROWSER_KEYS_DISABLED, HEADER_BASE_URL, HEADER_KEY, HEADER_MODEL, MAX_TOKENS_PARAMS, REASONING_EFFORTS, RESPONSES_API, LLMError, LLMSettings,
     endpoint,
@@ -88,6 +89,8 @@ _log = logging.getLogger("backend.models")
 
 ANALYST, PLANNER, SUPERVISOR = "analyst", "planner", "supervisor"
 ROLES = (ANALYST, PLANNER, SUPERVISOR)
+OPTIMIZER = "optimizer"
+ALL_ROLES = (*ROLES, OPTIMIZER)
 REQUIRED_FIELDS = ("base_url", "model", "api_key_env")
 OPTIONAL_FIELDS = ("max_tokens", "temperature", "api", "max_tokens_param", "reasoning_effort", "timeout_s", "vision")
 ENTRY_FIELDS = ", ".join(REQUIRED_FIELDS + OPTIONAL_FIELDS)
@@ -417,11 +420,11 @@ def parse_models(data, path: Path, *, allow_http: bool = False) -> ModelsFile:
         if "roles" not in data:
             problems.append("roles: missing (roles.planner is required)")
         elif not isinstance(named, dict):
-            problems.append("roles: must be a mapping of roles (analyst, planner, supervisor) to entry names")
+            problems.append("roles: must be a mapping of roles (analyst, planner, supervisor, optimizer) to entry names")
         else:
             for role, target in named.items():
-                if role not in ROLES:
-                    problems.append(f"roles: {_shown(role)} is not a role (analyst, planner, supervisor)")
+                if role not in ALL_ROLES:
+                    problems.append(f"roles: {_shown(role)} is not a role (analyst, planner, supervisor, optimizer)")
                 elif not isinstance(target, str) or not isinstance(models, dict) or target not in models:
                     problems.append(f"roles.{role}: must name an entry under models")
                 else:
@@ -501,14 +504,15 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
         _log.info("no models file at %s: every role uses LLM_* and the request's X-LLM-* headers",
                   settings.models_file)
         return
-    names = models.model_names()
+    keys = public_keys(runtime_profiles(settings, models), settings, models)
+    names = {r: public_text(n, keys) for r, n in models.model_names().items()}
     _log.info("models file %s: analyst %s, planner %s, supervisor %s", models.path,
               names[ANALYST], names[PLANNER], names[SUPERVISOR])
     for name in dict.fromkeys(models.roles[role] for role in ROLES):
         entry = models.entries[name]
         if not entry.api_key():
             _log.warning("models file entry %s: %s is not set; its roles need X-LLM-Key from the browser "
-                         "until it is", entry.label, entry.shown_key_env)
+                         "until it is", public_text(entry.label, keys), public_text(entry.shown_key_env, keys))
 
 
 # -- resolving a role ----------------------------------------------------------------------
@@ -516,15 +520,14 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
 _STARTUP = object()
 
 
-def runtime_profiles(settings: WebSettings, models: ModelsFile | None) -> dict[str, Profile]:
-    """Load saved overrides only when they can affect a model request."""
-    if models is None and settings.server_model_configured:
-        return {}
+def runtime_profiles(settings: WebSettings, models: ModelsFile | None) -> ModelStore:
+    """A selection can override a complete environment. Avoid opening an absent store."""
     try:
+        if models is None and settings.server_model_configured and not store_exists():
+            return ModelStore()
         return read_profiles()
-    except StoreUnavailable:
-        # Settings reports the read failure. Other model sources remain usable.
-        return {}
+    except (OSError, StoreUnavailable):
+        return ModelStore()
 
 
 def server_model(settings: WebSettings, entry: ModelEntry | None, profile: Profile | None) -> LLMSettings:
@@ -543,15 +546,100 @@ def server_model(settings: WebSettings, entry: ModelEntry | None, profile: Profi
     return LLMSettings(url, model, env_key or file_key)
 
 
+def file_target(llm: LLMSettings, entry: ModelEntry, default_limit: int | None) -> ModelTarget:
+    return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens or default_limit,
+                       temperature=entry.temperature, api=entry.api, max_tokens_param=entry.max_tokens_param,
+                       reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s,
+                       entry_max_tokens=entry.max_tokens is not None, vision=entry.vision)
+
+
+def has_entry(name: str | None, store: ModelStore, models: ModelsFile | None) -> bool:
+    return name in store.library or (models is not None and name in models.entries)
+
+
+def source_role(role: str, store: ModelStore, models: ModelsFile | None) -> str:
+    if (role == OPTIMIZER and not has_entry(store.selection.get(role), store, models)
+            and not (models and role in models.roles)):
+        return PLANNER
+    return role
+
+
+def selected_target(role: str, store: ModelStore, settings: WebSettings, models: ModelsFile | None) -> ModelTarget | None:
+    name = store.selection.get(role)
+    if models and name in models.entries:
+        entry = models.entries[name]
+        return file_target(server_model(settings, entry, None), entry, settings.llm_max_tokens)
+    if name in store.library:
+        profile = store.library[name]
+        return ModelTarget(LLMSettings(profile.base_url, profile.model, profile.key),
+                           max_tokens=settings.llm_max_tokens, api=profile.api, vision=profile.vision)
+    return None
+
+
+def host_fields(settings: WebSettings, models: ModelsFile | None):
+    fields = [settings.llm_model, settings.llm_base_url]
+    keys = [settings.llm_api_key]
+    for entry in models.entries.values() if models else ():
+        fields.extend((entry.name, entry.model, entry.base_url, entry.api or "chat", "file"))
+        keys.append(entry.api_key())
+    return fields, keys
+
+
+def public_keys(store, settings, models):
+    return [*host_fields(settings, models)[1], *(p.key for p in store.entries() if p.key)]
+
+
+def public_text(value: str, keys) -> str:
+    return "" if any(has_credential(value, key) for key in keys) else value
+
+
+def effective_model(role: str, store: ModelStore, settings: WebSettings, models: ModelsFile | None) -> LLMSettings:
+    role = source_role(role, store, models)
+    target = selected_target(role, store, settings, models)
+    if target:
+        return target.llm
+    return server_model(settings, models.entry(role) if models else None,
+                        store.profiles.get(role) or store.profiles.get("shared"))
+
+
+def public_models(store: ModelStore, settings: WebSettings, models: ModelsFile | None):
+    keys = public_keys(store, settings, models)
+
+    def summary(url, model, key):
+        fields = masked(url, model, key)
+        fields["base_url"] = public_text(fields["base_url"], keys)
+        fields["model"] = public_text(fields["model"], keys)
+        return fields
+
+    library = []
+    for entry in models.entries.values() if models else ():
+        library.append(dict(name=public_text(entry.name, keys), source="file", api=entry.api or "chat",
+                            vision=entry.vision, shadowed=False, **summary(entry.base_url, entry.model, entry.api_key())))
+    for name, p in sorted(store.library.items()):
+        library.append(dict(name=public_text(name, keys), source="saved", api=p.api, vision=p.vision,
+                            shadowed=bool(models and name in models.entries), **summary(p.base_url, p.model, p.key)))
+    targets = {r: effective_model(r, store, settings, models) for r in ALL_ROLES}
+    selection = {}
+    for role in ALL_ROLES:
+        name = store.selection.get(role)
+        selection[role] = dict(entry=public_text(name, keys) if name else None,
+                               selected_missing=bool(name and not has_entry(name, store, models)))
+    return dict(configured=targets[PLANNER].configured,
+                models={r: summary(t.base_url, t.model, t.api_key) for r, t in targets.items()},
+                library=library, selection=selection,
+                saved={r: summary(p.base_url, p.model, p.key) for r, p in store.profiles.items()})
+
+
 async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: WebSettings | None = None,
                   models: ModelsFile | None | object = _STARTUP) -> ModelTarget:
     """Where a call of ``role`` goes for this request. ``request_overrides`` are the
     request's headers (a case-insensitive mapping such as Starlette's, or lower-case keys).
 
-    Environment, saved role/shared profiles, then eligible headers. A YAML entry
+    A selection chooses an entire entry. Otherwise use the role's deployment and
+    saved defaults and eligible headers. A YAML entry
     supplies the role's deployment defaults and provider options. Its named key
     is read at call time and remains bound to its own endpoint."""
-    if role not in ROLES:
+    if role not in ALL_ROLES:
         raise ValueError(f"unknown role {role!r}")
     settings = get_settings() if settings is None else settings
     if models is _STARTUP:
@@ -559,10 +647,17 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     # LLM_MAX_TOKENS: the limit of every call whose entry sets none (unset: nothing is passed and
     # stream_completion's default applies, so the request is the same as before).
     default_limit = settings.llm_max_tokens
+    store = await asyncio.to_thread(runtime_profiles, settings, models)
+    role = source_role(role, store, models)
+    selected = selected_target(role, store, settings, models)
+    keys = public_keys(store, settings, models)
+    if selected:
+        if not public_text(selected.model, keys) or not public_text(selected.base_url, keys):
+            raise LLMError("Model names and endpoints must not contain an API key", 400)
+        return selected
     if not settings.allow_browser_keys and HEADER_KEY in request_overrides:
         raise LLMError(BROWSER_KEYS_DISABLED, 400)
-    profiles = await asyncio.to_thread(runtime_profiles, settings, models)
-    profile = profiles.get(role) or profiles.get("shared")
+    profile = store.profiles.get(role) or store.profiles.get("shared")
     entry = models.entry(role) if models else None
     server = server_model(settings, entry, profile)
     defaults = dataclasses.replace(settings, llm_base_url=server.base_url, llm_model=server.model,
@@ -590,6 +685,8 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
         if server.api_key and server.base_url:
             overrides.pop(HEADER_KEY, None)
     llm = await resolve_llm(overrides, defaults)
+    if public_text(llm.model, keys) != llm.model or public_text(llm.base_url, keys) != llm.base_url:
+        raise LLMError("Model names and endpoints must not contain an API key", 400)
     chose = any(h in overrides for h in (HEADER_BASE_URL, HEADER_MODEL))
     if not entry:
         return ModelTarget(llm=llm, max_tokens=default_limit, browser_model=chose)
@@ -597,19 +694,14 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     if not own:
         # The browser's endpoint or model: the chat api with stream_completion's defaults.
         return ModelTarget(llm=llm, entry=entry.name, max_tokens=default_limit, browser_model=chose)
-    own_limit = entry.max_tokens is not None
-    return ModelTarget(llm=llm, entry=entry.name, max_tokens=entry.max_tokens if own_limit else default_limit,
-                       temperature=entry.temperature, api=entry.api, max_tokens_param=entry.max_tokens_param,
-                       reasoning_effort=entry.reasoning_effort, timeout_s=entry.timeout_s,
-                       entry_max_tokens=own_limit, vision=entry.vision)
+    return file_target(llm, entry, default_limit)
 
 
 def config_features(settings: WebSettings, models: ModelsFile | None) -> dict:
-    """``/config.json``'s ``features`` about models: ``serverModel`` (the planner runs with
-    no browser setting), ``models`` (each role's model NAME - no URL, no key, no variable
-    name; null for a role with none) and ``modelsFile`` (they come from the models file)."""
-    profiles = runtime_profiles(settings, models)
-    targets = {r: server_model(settings, models.entry(r) if models else None,
-                               profiles.get(r) or profiles.get("shared")) for r in ROLES}
-    return {"serverModel": targets[PLANNER].configured, "modelsFile": models is not None,
-            "models": {r: None if has_credential(t.model, t.api_key) else t.model or None for r, t in targets.items()}}
+    details = public_models(runtime_profiles(settings, models), settings, models)
+    collisions = {e["name"] for e in details["library"] if e["shadowed"]}
+    return {"serverModel": details["configured"], "modelsFile": models is not None,
+            "models": {r: t["model"] or None for r, t in details["models"].items()},
+            "modelLibrary": [{k: e[k] for k in ("name", "model", "source", "vision")}
+                             for e in details["library"] if e["name"] and e["name"] not in collisions],
+            "modelSelection": {r: s["entry"] for r, s in details["selection"].items()}}

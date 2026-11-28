@@ -11,6 +11,7 @@ import CapabilitiesPage from './components/pages/CapabilitiesPage'
 import EvidencePage from './components/pages/EvidencePage'
 import TokenPage from './components/pages/TokenPage'
 import ModelSettings from './components/pages/ModelSettings'
+import ModelPopover from './components/connect/ModelPopover'
 import WorkflowsPage from './components/workflows/WorkflowsPage'
 import RemoteMcpSettings from './components/pages/RemoteMcpSettings'
 import { currentPath, showPath, TABS, viewOf, type SettingsView, type View } from './route'
@@ -72,7 +73,7 @@ export default function App({ path }: { path?: string }) {
           className={`tab-button${active === tab ? ' is-active' : ''}`} aria-current={active === tab ? 'page' : undefined}><Icon name={tab} />{zh ? tabsZh[tab] : tab}</button>)}
       </nav>
       <div className="runtime-chips"><ConnectionStatus state={health?.connected ?? null} refresh={refresh} />
-        <div className="runtime-chip model-chip"><Icon name="model" /><span>{uiText("Model")}</span><strong>{model}</strong></div>
+        <ModelPopover model={model} onManage={() => setView({ ...view, tab: 'Settings', settings: 'models' })} />
         <button type="button" className="runtime-chip" aria-label={uiText("Switch to Chinese")}
           onClick={() => setLanguage(zh ? 'en' : 'zh')}>中 / EN</button>
       </div>

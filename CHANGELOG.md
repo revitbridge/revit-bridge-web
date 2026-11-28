@@ -21,6 +21,10 @@ All notable changes to `revit-bridge-web` are recorded here. The format follows
 
 ### Added
 
+- Settings can save named model entries alongside read-only models file entries. The header
+  model selector changes the model for a role on its next request.
+- An optional optimizer role can select its own model or inherit the planner's settings.
+
 - **Sketch on view** in the composer captures a plan or orthographic 3D view.
   In 3D, choose a level to project the strokes onto it. The preview shows
   open and closed lines, segment counts and snaps to walls, grids, columns
