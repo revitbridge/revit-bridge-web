@@ -497,14 +497,18 @@ def reset_models() -> None:
     _loaded = None
 
 
-def _label_keys(store, settings, models):
-    """Credentials that must not be exposed as an entry or variable name."""
+def host_keys(settings: WebSettings, models: ModelsFile | None) -> tuple[str, ...]:
     files = models.entries.values() if models else ()
-    return [settings.llm_api_key, *(entry.api_key() for entry in files), *(p.key for p in store.entries())]
+    keys = (settings.llm_api_key, *(entry.api_key() for entry in files))
+    return tuple(key for key in keys if key)
 
 
-def _masked_label(name, keys):
-    return "" if any(has_credential(name, key) for key in keys) else name
+def fields_contain_key(fields: tuple[str, ...], keys: tuple[str, ...]) -> bool:
+    return any(has_credential(field, key) for key in keys for field in fields)
+
+
+def _masked_field(value, keys):
+    return "" if fields_contain_key((value,), keys) else value
 
 
 def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
@@ -515,14 +519,15 @@ def log_models(settings: WebSettings, models: ModelsFile | None) -> None:
                   settings.models_file)
         return
     names = models.model_names()
-    keys = _label_keys(runtime_profiles(settings, models), settings, models)
+    store = runtime_profiles(settings, models)
+    keys = (*host_keys(settings, models), *(p.key for p in store.entries()))
     _log.info("models file %s: analyst %s, planner %s, supervisor %s", models.path,
               names[ANALYST], names[PLANNER], names[SUPERVISOR])
     for name in dict.fromkeys(models.roles[role] for role in ROLES):
         entry = models.entries[name]
         if not entry.api_key():
             _log.warning("models file entry %s: %s is not set; its roles need X-LLM-Key from the browser "
-                         "until it is", _masked_label(entry.label, keys), _masked_label(entry.shown_key_env, keys))
+                         "until it is", _masked_field(entry.label, keys), _masked_field(entry.shown_key_env, keys))
 
 
 # -- resolving a role ----------------------------------------------------------------------
@@ -597,34 +602,46 @@ def effective_model(role: str, store: ModelStore, settings: WebSettings, models:
 
 def public_models(store: ModelStore, settings: WebSettings, models: ModelsFile | None):
     files = models.entries if models else {}
-    keys = _label_keys(store, settings, models)
+    environment_keys = host_keys(settings, models)
+    label_keys = (*environment_keys, *(p.key for p in store.entries()))
 
     labels = {}
+    summaries = {}
     library = []
     for entry in files.values():
-        name = entry.label if entry.label != entry.name else _masked_label(entry.name, keys)
+        name = entry.label if entry.label != entry.name else _masked_field(entry.name, label_keys)
         labels[entry.name] = name
+        summary = masked(entry.base_url, _masked_field(entry.model, environment_keys), entry.api_key())
+        summaries[entry.name] = summary
         library.append(dict(name=name, source="file", api=entry.api or "chat", vision=entry.vision,
-                            shadowed=False, selectable=name == entry.name,
-                            **masked(entry.base_url, entry.model, entry.api_key())))
+                            shadowed=False, selectable=name == entry.name, **summary))
     for name, p in sorted(store.library.items()):
         # Saved rows retain their own name so the settings page can delete them.
-        label = _masked_label(name, keys)
-        labels.setdefault(name, label)
-        library.append(dict(name=label, source="saved", api=p.api, vision=p.vision,
-                            shadowed=name in files, selectable=bool(label) and name not in files,
-                            **masked(p.base_url, p.model, p.key)))
+        label = _masked_field(name, label_keys)
+        labels.setdefault(name, label or None)
+        summary = masked(_masked_field(p.base_url, environment_keys), _masked_field(p.model, environment_keys), p.key)
+        summaries.setdefault(name, summary)
+        selectable = name not in files and bool(label and summary["base_url"] and summary["model"])
+        library.append(dict(name=name, source="saved", api=p.api, vision=p.vision,
+                            shadowed=name in files, selectable=selectable, **summary))
     targets = {r: effective_model(r, store, settings, models) for r in ALL_ROLES}
+    role_models = {}
     selection = {}
     for role in ALL_ROLES:
+        effective_name = store.selection.get(source_role(role, store, models))
+        if effective_name in summaries:
+            role_models[role] = summaries[effective_name]
+        else:
+            t = targets[role]
+            role_models[role] = masked(t.base_url, t.model, t.api_key)
         name = store.selection.get(role)
         missing = bool(name and name not in labels)
         label = labels.get(name)
         if missing:
-            label = "<missing entry>" if len(name) > SHOWN_ENTRY_MAX else _masked_label(name, keys)
+            label = "<missing entry>" if len(name) > SHOWN_ENTRY_MAX else _masked_field(name, label_keys)
         selection[role] = dict(entry=label, selected_missing=missing)
     return dict(configured=targets[PLANNER].configured,
-                models={r: masked(t.base_url, t.model, t.api_key) for r, t in targets.items()},
+                models=role_models,
                 library=library, selection=selection,
                 saved={r: masked(p.base_url, p.model, p.key) for r, p in store.profiles.items()})
 
@@ -650,7 +667,10 @@ async def resolve(role: str, request_overrides: Mapping[str, str], *, settings: 
     role = source_role(role, store, models)
     selected = selected_target(role, store, settings, models)
     if selected:
-        if has_credential(selected.model, selected.api_key) or has_credential(selected.base_url, selected.api_key):
+        keys = (selected.api_key,)
+        if selected.entry is None:  # Saved selection; file targets carry their entry name.
+            keys += host_keys(settings, models)
+        if fields_contain_key((selected.model, selected.base_url), keys):
             raise LLMError("Model names and endpoints must not contain an API key", 400)
         return selected
     if not settings.allow_browser_keys and HEADER_KEY in request_overrides:
