@@ -127,7 +127,7 @@ def test_3d_capture_and_resolve_use_the_packages_levels(plan_view, client):
     for extra in ({}, {"level": "Missing"}):
         refused = client.post(f"{B}/sketch/resolve", json={**body, **extra})
         assert refused.status_code == 422 and refused.json()["error"] == "invalid_args"
-        assert "Base, Shelf" in refused.json()["message"]
+        assert '"Base", "Shelf"' in refused.json()["message"]
     reply = client.post(f"{B}/sketch/resolve", json={**body, "level": "Shelf"})
     assert reply.status_code == 200
     result = reply.json()
