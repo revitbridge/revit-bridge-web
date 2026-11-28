@@ -100,7 +100,7 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
 - `backend/relay.py` - `DeviceRelay` / `WebSocketRevitClient` (same surface as `RevitClient`).
   Its optional `mention_cache_scope` identifies the live connection for the package's picker cache.
 - `backend/localguard.py` - the request guard of a local host (proxy headers, Host, peer, Origin of writes).
-- `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (the models file: load and check at startup, `resolve(role, headers)` -> `ModelTarget`, the `features.models` of `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
+- `backend/skill_store.py`, `backend/log_store.py` (interaction logs and the `llm_calls` table: one row per model call, no text, no key), `backend/config.py`, `backend/models_file.py` (startup validation, the file and saved model library, per-role selections, optimizer fallback, `resolve(role, headers)` -> `ModelTarget` and the model features in `/config.json`), `backend/upgrade.py` (0.1 data-volume repair at startup).
 - `frontend/src` - Vite + React; `config.ts` loads `/config.json` before render (`features.chatModes` / `chatModeDefault` feed `components/task/chatMode.ts` and the task page's `ChatModeSelect`: the pick in `localStorage`, sent as `mode` by `flow.ts`); pages in `components/pages` (`route.ts`: `/capabilities/workbench` opens the Capabilities page's workbench, every other path the tabs); `components/hostv2/trace` the tool timeline and the token panel, fed by `components/task/flow.ts` (each reply keeps its `stage` / `tool` / `usage` events); `components/hostv2/workbench` the workbench component (editor, check, dry run, save, run, the tool list; every call through the `WorkbenchApi` it is given, types in `types/hostv2.ts`), `api/workbench.ts` its one HTTP client, `components/capabilities/WorkbenchPage.tsx` the page that wires them (with `workbenchRun.ts`: Run runs the saved tool through the spec card); `components/hostv2/mention` the mention input (the `@` picker; `ElementPreview.tsx` and `shape.ts` draw the rough 3D shape of the element the picker is on, from `GET /mentions/preview`), used by `components/task/ChatPanel.tsx`, fed by `components/task/mentions.ts` (`GET /mentions`, 10 s timeout; the picks' statuses from `event: mentions`).
 - `frontend/src/components/connect/ModelPopover.tsx` - header model picker and the role selectors shared with Settings.
 - `bench/` - the token bench (`python -m bench`; `bench/tests` run with `uv run pytest`). `--mode`
@@ -122,14 +122,24 @@ with `tests/fake_model.py` `RoleScriptedModel` answering each role from its own 
   does not expose, add it to the package (PR there), never reimplement it here.
 - The frontend reads `/config.json` (`apiBase`, `wsBase`, `features`) at runtime. No
   `VITE_API_BASE_URL` or any other build-time address.
-- Every model call goes through `models_file.resolve(role, headers)`: a page selection chooses the
-  entire entry, including its endpoint, key and provider options, ahead of browser headers.
-  Saved entries use the host's private, atomically written `secrets.json`, while file entries
-  read their named environment key on each call and send it only to its own endpoint.
-  With an absent or missing selection the host uses its usual environment or startup-validated
-  `models.yml` defaults, saved role/shared groups and eligible browser headers (`ALLOW_BROWSER_KEYS`,
-  public HTTPS unless `LLM_ALLOW_HTTP=1`).
-  An optimizer without a selection or file mapping inherits the planner's resolution.
+- Every model call goes through `models_file.resolve(role, headers)`. A page selection chooses the
+  entry's endpoint, model, key and provider options ahead of the deployment defaults, saved groups
+  and browser headers. A file entry wins a duplicate name. An optimizer without a selection or
+  file mapping inherits the planner's resolution.
+- With an absent or missing selection, environment keys take precedence over the private
+  `secrets.json` store for the same endpoint. Eligible browser headers fill remaining fields.
+  `backend/model_settings.py` writes user-only files atomically under `REVIT_BRIDGE_WEB_HOME`
+  or the per-user config directory. `backend/api/settings.py` exposes masked profiles.
+  Browser credentials require `ALLOW_BROWSER_KEYS` (cloud on, local off by default).
+  Browser endpoints require HTTPS on a public address unless `LLM_ALLOW_HTTP=1`.
+- The host validates `models.yml` (`MODELS_FILE`, default `DATA_DIR/models.yml`) at startup.
+  An invalid file or a missing explicit path refuses the start. Diagnostics name the file,
+  field and problem and never include a field value. Keys never go in the file. Each entry
+  names its environment variable in `api_key_env`, read on every call and bound to the entry's
+  endpoint. Fields such as `api_key`, `token` and `extra_headers` are refused.
+  With no valid selection or file, use `LLM_*`, saved groups and eligible headers. With the
+  file, eligible `X-LLM-*` headers replace only the planner's entry for that request, including
+  for other roles mapped to that entry. `/config.json` `features.models` carries model names only.
 - `DEPLOY_MODE` is `local` (default) or `cloud` (`backend/config.py` validates it at startup).
   `local`: only loopback may reach the host (`HOST`, or in the image the published `BIND_ADDRESS`;
   otherwise it refuses to start), `ADMIN_PASSWORD` or `CORS_ORIGINS` set refuses to start too, no

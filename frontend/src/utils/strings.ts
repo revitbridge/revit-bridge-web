@@ -1,7 +1,7 @@
 import { browserLanguage } from './language'
 
 const zh: Record<string, string> = {
-  "Optimizer": "优化",
+  "Optimizer": "优化员",
   "Optimize text": "优化文字",
   "Text suggestion received.": "已收到文字建议。",
   "Current": "当前",

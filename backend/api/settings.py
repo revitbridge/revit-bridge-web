@@ -5,7 +5,6 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
-from starlette._utils import get_route_path
 from starlette.datastructures import MutableHeaders
 
 from backend.api.errors import ApiError, ErrorBody
@@ -15,7 +14,7 @@ from backend.model_settings import (
     LIBRARY_LIMIT, SAVED_NAME, LibraryProfile, Profile, ProfileWrite, Scope, SelectionRole,
     SelectionWrite, StoreUnavailable, edit_profiles, read_profiles, replace_profile,
 )
-from backend.models_file import PLANNER, effective_model, get_models, has_entry, host_fields, public_models, runtime_profiles
+from backend.models_file import PLANNER, effective_model, get_models, has_entry, public_models, runtime_profiles
 
 router = APIRouter(prefix="/api/v1/settings/models", tags=["settings"])
 UNKNOWN_ENTRY = {"model": ErrorBody, "description": "The entry does not exist (unknown_entry)."}
@@ -29,7 +28,7 @@ class ModelSettingsCacheControl:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        path = get_route_path(scope) if scope["type"] == "http" else ""
+        path = Request(scope).url.path if scope["type"] == "http" else ""
         if path != router.prefix and not path.startswith(router.prefix + "/"):
             return await self.app(scope, receive, send)
 
@@ -58,6 +57,7 @@ class LibraryModel(MaskedModel):
     api: Literal["chat", "responses"]
     vision: bool
     shadowed: bool
+    selectable: bool
 
 
 class RoleSelection(BaseModel):
@@ -106,7 +106,7 @@ def get_models_settings(status_only: bool = False) -> ModelDetails | ModelStatus
 @contextmanager
 def edit(*, clear=False, scope_group=False):
     try:
-        with edit_profiles(*host_fields(get_settings(), get_models()), clear=clear) as store:
+        with edit_profiles(clear=clear) as store:
             yield store
     except ValueError:
         if scope_group:
@@ -152,19 +152,19 @@ def put_library_entry(name: str, body: LibraryProfile) -> ModelDetails:
 
 @router.delete("/library/{name}", dependencies=[Depends(authorize_write)], responses={404: UNKNOWN_ENTRY, 422: INVALID_INPUT})
 def delete_library_entry(name: str) -> ModelDetails:
-    """Delete a saved entry and clear the roles that selected it."""
+    """Delete a saved entry. Selections using a file entry of the same name survive."""
     with edit() as store:
         if store.library.pop(name, None) is None:
             raise ApiError(404, "unknown_entry")
-        store.selection = {r: n for r, n in store.selection.items() if n != name}
+        if not has_entry(name, store, get_models()):
+            store.selection = {r: n for r, n in store.selection.items() if n != name}
     return describe(store)
 
 
 @router.put("/selection", dependencies=[Depends(authorize_write)], responses={
-    404: UNKNOWN_ENTRY, 409: {"model": ErrorBody, "description": "A file shadows the saved entry (shadowed)."},
-    422: INVALID_INPUT})
+    404: UNKNOWN_ENTRY, 422: INVALID_INPUT})
 def put_selection(body: SelectionWrite) -> ModelDetails:
-    """Select a library entry for a role. A null entry restores its default."""
+    """Select a library entry for a role. A file entry wins a duplicate name. Null restores the default."""
     models = get_models()
     with edit() as store:
         name = body.entry
@@ -172,8 +172,6 @@ def put_selection(body: SelectionWrite) -> ModelDetails:
             store.selection.pop(body.role, None)
         elif not has_entry(name, store, models):
             raise ApiError(404, "unknown_entry")
-        elif name in store.library and models and name in models.entries:
-            raise ApiError(409, "shadowed")
         else:
             store.selection[body.role] = name
     return describe(store)

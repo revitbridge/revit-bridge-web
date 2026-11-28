@@ -9,7 +9,7 @@ import { applyModelDetails, endpoint, subscribeModelDetails, type LibraryModel, 
 const labels = {
   en: { shared: 'All roles', planner: 'Planner', analyst: 'Analyst', supervisor: 'Supervisor',
     optimizer: 'Optimizer', library: 'Model library', name: 'Entry name', api: 'API', images: 'Can read images',
-    file: 'models file', savedSource: 'saved', shadowed: 'shadowed', edit: 'Edit', remove: 'Delete',
+    file: 'models file', savedSource: 'saved', shadowed: 'shadowed', edit: 'Edit', remove: 'Delete', confirmRemove: 'Delete?',
     add: 'Add entry', update: 'Save entry', cancel: 'Cancel', advanced: 'Advanced: one saved group per role',
     heading: 'Models', scope: 'Apply to', url: 'Endpoint URL', model: 'Model name', key: 'API key',
     save: 'Save', clear: 'Clear saved group', saved: 'Saved', cleared: 'Cleared', loading: 'Loading settings…',
@@ -22,8 +22,8 @@ const labels = {
     storeError: 'Could not read saved model settings. Check secrets.json and its permissions.',
     connected: 'The host model is configured.', unconfigured: 'Ask an administrator to configure a model.' },
   zh: { shared: '所有角色', planner: '规划员', analyst: '分析员', supervisor: '监督员',
-    optimizer: '优化', library: '模型库', name: '条目名称', api: '接口类型', images: '可读取图像',
-    file: '模型文件', savedSource: '已保存', shadowed: '已被同名文件条目覆盖', edit: '编辑', remove: '删除',
+    optimizer: '优化员', library: '模型库', name: '条目名称', api: '接口类型', images: '可读取图像',
+    file: '模型文件', savedSource: '已保存', shadowed: '已被同名文件条目覆盖', edit: '编辑', remove: '删除', confirmRemove: '确认删除？',
     add: '添加条目', update: '保存条目', cancel: '取消', advanced: '高级：为每个角色单独保存一组设置',
     heading: '模型', scope: '应用到', url: '接口地址', model: '模型名', key: '密钥',
     save: '保存', clear: '清除本组设置', saved: '已保存', cleared: '已清除', loading: '正在加载设置…',
@@ -103,6 +103,7 @@ function ModelLibrary({ entries }: { entries: LibraryModel[] }) {
   const t = labels[browserLanguage()]
   const formId = useId()
   const [editing, setEditing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [draft, setDraft] = useState(blankEntry)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
@@ -138,10 +139,16 @@ function ModelLibrary({ entries }: { entries: LibraryModel[] }) {
         <div><strong>{entry.name}</strong> <small className="badge">{entry.source === 'file' ? t.file : t.savedSource}</small>
           {entry.shadowed && <small className="badge">{t.shadowed}</small>}</div>
         <span>{entry.model}</span><span>{entry.base_url}</span>
-        <small>{entry.key_set ? t.present + (entry.key_tail ? ' ****' + entry.key_tail : '') : t.missing}</small>
+        <small>{entry.key_set ? t.present + (entry.key_tail ? ' ••••' + entry.key_tail : '') : t.missing}</small>
         {entry.source === 'saved' && <div>
           <button type="button" disabled={busy || entry.shadowed} onClick={() => edit(entry)}>{t.edit}</button>{' '}
-          <button type="button" className="btn-ghost danger" disabled={busy} onClick={() => void write('DELETE', entry.name)}>{t.remove}</button>
+          <button type="button" className="btn-ghost danger" disabled={busy} onBlur={() => setConfirmDelete(null)}
+            onClick={() => {
+              if (confirmDelete === entry.name) {
+                setConfirmDelete(null)
+                void write('DELETE', entry.name)
+              } else setConfirmDelete(entry.name)
+            }}>{confirmDelete === entry.name ? t.confirmRemove : t.remove}</button>
         </div>}
       </li>)}</ul>
     <fieldset disabled={busy} className="library-fields">
